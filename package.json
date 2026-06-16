@@ -14,14 +14,18 @@
     "lint:md": "markdownlint-cli2 \"**/*.md\" \"!node_modules/**\" \"!.agents/**\"",
     "format": "biome format --write .",
     "format:check": "biome ci .",
-    "prepare": "husky"
+    "prepare": "husky && node .agents/scripts/sync-claude-commands.js",
+    "sync:commands": "node .agents/scripts/sync-claude-commands.js",
+    "bootstrap": "node .agents/scripts/bootstrap.js",
+    "quality:preview": "node .agents/scripts/quality-preview.js --changed-since HEAD",
+    "quality:watch": "node .agents/scripts/quality-watch.js"
   },
   "lint-staged": {
     "*.{js,json}": "biome check --write --no-errors-on-unmatched",
     "*.md": "markdownlint-cli2 --fix"
   },
   "dependencies": {
-    "mandrel": "1.70.0"
+    "mandrel": "^1.70.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",

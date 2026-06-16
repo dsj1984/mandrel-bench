@@ -15,3 +15,18 @@ temp/
 # NOTE: results/ is intentionally NOT ignored — the append-only scorecard
 # store under results/ is the longitudinal over-time record and must be
 # committed.
+
+# Claude Code command projection is generated from .agents/workflows/ — do not commit.
+.claude/commands/
+
+# Project-scoped MCP config carries secrets — keep out of git.
+.mcp.json
+
+# Personal developer overrides (deep-merged over .agentrc.json) — local only.
+.agentrc.local.json
+
+# Secrets live in .env (e.g. GITHUB_TOKEN) — never commit it. Only .env.example (placeholders) is checked in.
+.env
+
+# Per-clone install record written by bootstrap — not a source artifact.
+.agents/.install-manifest.json
