@@ -1,5 +1,74 @@
 # Mandrel Self-Benchmark Harness
 
+## Current State & Handoff (2026-06-16)
+
+> **Picking up mandrel-bench? Start here.** This file is the *product* framing.
+> The full decision rationale (D-001…D-011, including the in-repo→separate-repo
+> pivot) is in [`decisions.md`](decisions.md); the *technical* run model is in
+> [`architecture.md`](architecture.md); dev/usage is in the [README](../README.md).
+
+### Where it stands
+
+mandrel-bench is a **fully-wired consumer of `mandrel`, with green CI**:
+
+- `mandrel@^1.70.0` installed (lockfile committed); `.agents/` materialized **and
+  committed**; `CLAUDE.md` / `.agentrc.json` / `.claude/` set up; Husky hooks
+  active; Biome + markdownlint + commitlint + release-please configured.
+- All harness **component modules** exist under `bench/` (`metrics`, `schemas`,
+  `driver`, `scenarios`, `collect`, `score`, `report`, `fixtures`) with passing
+  `node:test` unit suites. CI (lint + test) is **green** on `main`.
+
+### What is NOT done yet — the next cycle, start here
+
+No benchmark has actually executed: there is **no run orchestrator and no
+`results/` store**. Remaining work, roughly in order:
+
+1. **Run orchestrator** (e.g. `bench/run.js`) — the loop over
+   `N × scenarios × arms` that ties the components together: provision sandbox →
+   `runSession` (claude -p) → `collect/normalize` → `score/dimensions` +
+   `differential` → `report/render` + `persist` to `results/` → teardown. This
+   is the missing glue.
+2. **Framework-under-test adaptation** — the driver/sandbox must benchmark the
+   **installed** `mandrel` version (the pinned dep + materialized `.agents/`),
+   not a clone of the framework repo. The scenario apps (hello-world, crud-db)
+   are the *targets* mandrel builds in an ephemeral workspace; the mandrel arm
+   runs `/plan`→`/deliver` there using the materialized `.agents/`.
+3. **First real run** → the first scorecard(s) in `results/`; validate the
+   end-to-end pipeline and the variance/noise-band method (start N≈8–10 on
+   hello-world).
+4. **Bump the pin to `^1.71.0`** once mandrel v1.71 publishes (being cut now —
+   see Cross-repo below).
+
+### Retire this risk FIRST (the make-or-break — D-011)
+
+Driving `/plan` headlessly is the load-bearing unknown. `/deliver` is
+headless-drivable (`--yes`), but **`/plan` ships no headless flag**.
+`bench/driver/run-session.js` injects a prompt-level auto-proceed directive as
+the interim mitigation, and a `meta::framework-gap` follow-up is filed on
+mandrel for a proper flag. **Before scaling N, prove a single mandrel-arm run
+completes `/plan`→`/deliver` unattended end to end** — if the HITL gates stall
+the headless session, the whole harness stalls there.
+
+### Standing invariants (don't re-litigate — see `decisions.md`)
+
+- Five dimensions — value: Quality, Planning fidelity, Autonomy; cost:
+  Efficiency, Overhead ratio. **Variance is the reporting method** (distributions
+  + noise-band), never a single composite score.
+- The bare-model **control arm** is first-class; value-add is the *delta*.
+- **Cost comes from the `claude -p` envelope** (mandrel records no token
+  actuals) — the same instrument for both arms.
+- Quality oracle = frozen per-scenario suite + the materialized
+  `acceptance-eval` cross-check. Non-BDD repo (`node:test`).
+- Recommended improvements are **surfaced** in the report, never auto-filed.
+
+### Cross-repo
+
+The dependency is one-directional (`mandrel-bench` → `mandrel`; never the
+reverse). **mandrel v1.71 is being cut now** — a `qa-run` rename-guard CI false
+positive (the changelog quoting the rename) was fixed to unblock its release PR;
+bump the pin here after v1.71 publishes. The `meta::framework-gap` for the
+`/plan` headless flag is tracked on mandrel.
+
 ## Context
 
 *How might we measure whether Mandrel's scaffolding earns its cost — and keep
