@@ -1,11 +1,6 @@
 # Dependencies
 node_modules/
 
-# Materialized Mandrel framework — regenerated from the pinned `mandrel`
-# dependency via `mandrel sync`. The committed source of truth for the
-# framework-under-test is the pinned version in package.json, NOT this tree.
-.agents/
-
 # Scratch / run artifacts (ephemeral sandbox clones, per-run logs, lifecycle
 # ledgers copied out of a run for scoring)
 temp/
@@ -27,6 +22,3 @@ temp/
 
 # Secrets live in .env (e.g. GITHUB_TOKEN) — never commit it. Only .env.example (placeholders) is checked in.
 .env
-
-# Per-clone install record written by bootstrap — not a source artifact.
-.agents/.install-manifest.json
