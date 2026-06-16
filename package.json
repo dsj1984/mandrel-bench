@@ -9,7 +9,7 @@
     "node": ">=22.22.1 <25"
   },
   "scripts": {
-    "test": "node --test tests/bench/",
+    "test": "node --test \"tests/bench/**/*.test.js\"",
     "lint": "biome ci . && npm run lint:md",
     "lint:md": "markdownlint-cli2 \"**/*.md\" \"!node_modules/**\" \"!.agents/**\"",
     "format": "biome format --write .",

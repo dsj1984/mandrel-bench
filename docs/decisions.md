@@ -19,6 +19,7 @@ and green as PR mandrel#4219). That PR was **closed unmerged** and the Epic
 **closed as superseded** when the architecture was reconsidered.
 
 **Why.**
+
 1. **Decouples harness-version from framework-version.** To compare framework
    `vN` vs `vN+1`, the measuring instrument must be held fixed and only the
    thing measured varied. In-repo, the bench code changes across the very
