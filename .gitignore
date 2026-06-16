@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Materialized Mandrel framework — regenerated from the pinned `mandrel`
+# dependency via `mandrel sync`. The committed source of truth for the
+# framework-under-test is the pinned version in package.json, NOT this tree.
+.agents/
+
+# Scratch / run artifacts (ephemeral sandbox clones, per-run logs, lifecycle
+# ledgers copied out of a run for scoring)
+temp/
+*.log
+.DS_Store
+
+# NOTE: results/ is intentionally NOT ignored — the append-only scorecard
+# store under results/ is the longitudinal over-time record and must be
+# committed.
