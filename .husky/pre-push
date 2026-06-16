@@ -1,0 +1,4 @@
+# Pre-push gate — run the harness unit suites before publishing refs.
+# The full benchmark (N x scenarios x arms) is a periodic, manually-triggered
+# capability report, not a pre-push gate; only the fast node:test units run here.
+npm test

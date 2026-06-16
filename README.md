@@ -171,8 +171,26 @@ and the cross-run comparison surfaces the deltas.
 ## See also
 
 - [Mandrel](https://github.com/dsj1984/mandrel) — the framework under test.
+- [`docs/architecture.md`](docs/architecture.md) — technical architecture (run
+  model, components, data flow, security).
+- [`docs/decisions.md`](docs/decisions.md) — the decision log and rationale.
 - [`docs/mandrel-self-benchmark.md`](docs/mandrel-self-benchmark.md) — the
-  design one-pager (problem, dimensions, scope, non-goals).
+  originating design one-pager (problem, dimensions, scope, non-goals).
+
+## Development
+
+- **Node** `>=22.22.1 <25`. `npm install` pulls the pinned `mandrel` and
+  activates the Husky hooks (via the `prepare` script).
+- **Lint / format:** `npm run lint` (Biome + markdownlint), `npm run format`
+  (Biome write).
+- **Test:** `npm test` (node:test). The pure-logic units run standalone; the
+  scenario / acceptance-eval suites additionally need `npx mandrel sync` to
+  materialize `.agents/` for the pinned version.
+- **Hooks** (Husky): `pre-commit` → lint-staged, `commit-msg` → commitlint
+  (Conventional Commits), `pre-push` → `npm test`.
+- **Releases:** [release-please](https://github.com/googleapis/release-please)
+  versions + changelogs on `main` (tags `vX.Y.Z`); **not** published to npm.
+- **CI:** GitHub Actions — `lint` + `test` on every PR to `main`.
 
 ## License
 

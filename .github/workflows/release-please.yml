@@ -1,0 +1,30 @@
+name: release-please
+
+# Version + changelog automation for mandrel-bench. Unlike the mandrel
+# framework repo, this is a PRIVATE internal benchmark — there is NO npm
+# publish step. release-please only opens a release PR that bumps the version
+# and updates docs/CHANGELOG.md, then tags `main` (vX.Y.Z) on merge.
+#
+# NOTE: the default GITHUB_TOKEN cannot trigger CI on the release PR it opens
+# (GitHub's anti-recursion safeguard). That is fine here because mandrel-bench
+# has no required status checks on the release PR. If branch protection is
+# added later, swap GITHUB_TOKEN for a fine-grained PAT secret (see the mandrel
+# repo's release-please.yml + AGENTS.md "One-time PAT setup" for the pattern).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

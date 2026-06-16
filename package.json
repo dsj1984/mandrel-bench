@@ -9,9 +9,26 @@
     "node": ">=22.22.1 <25"
   },
   "scripts": {
-    "test": "node --test tests/bench/"
+    "test": "node --test tests/bench/",
+    "lint": "biome ci . && npm run lint:md",
+    "lint:md": "markdownlint-cli2 \"**/*.md\" \"!node_modules/**\" \"!.agents/**\"",
+    "format": "biome format --write .",
+    "format:check": "biome ci .",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{js,json}": "biome check --write --no-errors-on-unmatched",
+    "*.md": "markdownlint-cli2 --fix"
   },
   "dependencies": {
     "mandrel": "1.70.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.0",
+    "@commitlint/cli": "^21.0.2",
+    "@commitlint/config-conventional": "^21.0.2",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.7",
+    "markdownlint-cli2": "^0.22.1"
   }
 }
