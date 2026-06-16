@@ -52,8 +52,8 @@ the headless session, the whole harness stalls there.
 ### Standing invariants (don't re-litigate — see `decisions.md`)
 
 - Five dimensions — value: Quality, Planning fidelity, Autonomy; cost:
-  Efficiency, Overhead ratio. **Variance is the reporting method** (distributions
-  + noise-band), never a single composite score.
+  Efficiency, Overhead ratio. **Variance is the reporting method**
+  (distributions + noise-band), never a single composite score.
 - The bare-model **control arm** is first-class; value-add is the *delta*.
 - **Cost comes from the `claude -p` envelope** (mandrel records no token
   actuals) — the same instrument for both arms.
