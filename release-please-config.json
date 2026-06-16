@@ -8,6 +8,7 @@
     ".": {
       "package-name": "mandrel-bench",
       "changelog-path": "docs/CHANGELOG.md",
+      "versioning": "always-bump-minor",
       "changelog-sections": [
         { "type": "feat", "section": "Added" },
         { "type": "fix", "section": "Fixed" },
