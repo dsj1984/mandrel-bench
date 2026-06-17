@@ -292,11 +292,20 @@ function benchDeps(record) {
     mkdirFn: () => {},
     writeFileFn: (p, data) => record.writes.push({ p, data }),
     readFileImpl: () => '',
-    // persist seam (in-memory store)
+    // persist seam (in-memory store). `readFileImpl` reads the store back as
+    // optional pre-seeded prior content (a resumed run's already-persisted
+    // cells, via `record.storeSeed`) + everything appended this run — so the
+    // report can render over the FULL store, not just this invocation's cards.
     persistDeps: {
       appendFileImpl: (p, data) => record.appended.push({ p, data }),
       existsImpl: () => true,
       mkdirImpl: () => {},
+      readFileImpl: (p) =>
+        (record.storeSeed?.[p] ?? '') +
+        record.appended
+          .filter((a) => a.p === p)
+          .map((a) => a.data)
+          .join(''),
     },
     // checkpoint seam (in-memory resume ledger). `existsImpl`/`readFileImpl`
     // model the on-disk checkpoint; `record.checkpoint` seeds completed cells.
@@ -702,4 +711,85 @@ test('runFirstBenchmark: maxCostUsd ceiling stops after the cell that crosses it
   // The persisted + checkpointed counts match the completed cells exactly.
   assert.equal(record.appended.length, 2);
   assert.equal(record.checkpointed.length, 2);
+});
+
+test('runFirstBenchmark: a resumed batch renders the report over the FULL store, not just this run', async () => {
+  const storePath = path.join(
+    '/results',
+    'claude-opus-4-8',
+    '1.70.0',
+    'scorecards.ndjson',
+  );
+  // Simulate a prior run that already produced + checkpointed the hello-world
+  // control cell: seed the checkpoint (so it is skipped) AND the store (the
+  // resumed record). This run produces only the mandrel cell.
+  const priorControl = {
+    schemaVersion: 1,
+    runId: 'hello-world-control-prior-r1',
+    timestamp: '2026-06-16T19:00:00.000Z',
+    model: { id: 'claude-opus-4-8' },
+    frameworkVersion: '1.70.0',
+    env: { node: 'v24.16.0', os: 'darwin', host: 'test-host' },
+    scenario: 'hello-world',
+    arm: 'control',
+    dimensions: {
+      quality: {
+        score: 1,
+        frozenSuitePassRate: 1,
+        frozenSuitePassed: 2,
+        frozenSuiteTotal: 2,
+        acceptanceEvalScore: null,
+      },
+      planningFidelity: {
+        score: null,
+        rePlanCount: 0,
+        plannedStoryCount: 0,
+        deliveredStoryCount: 0,
+        fileFootprintDrift: 0,
+      },
+      autonomy: { score: 1, hitlStops: 0, blockedEvents: 0, manualRescues: 0 },
+      efficiency: {
+        wallClockMs: 20000,
+        totalTokens: 80000,
+        inputTokens: 3000,
+        outputTokens: 1200,
+        dispatches: 0,
+        costUsd: 0.16,
+      },
+      overheadRatio: {
+        tokenRatio: 0,
+        timeRatio: 0,
+        ceremonyTokens: 0,
+        codegenTokens: 80000,
+      },
+    },
+    rawRefs: { costEnvelope: '/x' },
+  };
+  const record = freshRecord({
+    checkpoint: [
+      cellKey({ scenario: 'hello-world', arm: 'control', runIndex: 1 }),
+    ],
+    storeSeed: { [storePath]: `${JSON.stringify(priorControl)}\n` },
+  });
+
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel', 'control'],
+      n: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    benchDeps(record),
+  );
+
+  // Only the mandrel cell runs this invocation; control is resumed from the store.
+  assert.equal(result.skipped, 1);
+  assert.equal(result.scorecards.length, 1);
+  assert.equal(result.scorecards[0].arm, 'mandrel');
+
+  // The report reflects the FULL store: this run's mandrel + the resumed
+  // control. Before the fix it rendered only this run's cards, under-counting
+  // the resumed cell (it would have read "1 mandrel / 0 control").
+  assert.match(result.cohorts[0].report, /n = 1 mandrel \/ 1 control/);
 });
