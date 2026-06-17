@@ -312,18 +312,22 @@ test('runFirstBenchmark: emits a schema-valid scorecard per arm and renders a re
   assert.equal(control.dimensions.planningFidelity.score, null);
   assert.equal(typeof mandrel.dimensions.planningFidelity.score, 'number');
 
-  // Arm asymmetries: only the mandrel arm is overlaid, drives the Epic id, and
-  // gets the bypassPermissions extraArgs; both arms are torn down.
+  // Arm asymmetries: only the mandrel arm is overlaid and drives the Epic id.
+  // BOTH arms get the bypassPermissions args (permission mode is orthogonal to
+  // scaffolding — each must act headlessly). Both arms are torn down.
   assert.deepEqual(record.overlays, ['mandrel']);
   assert.equal(record.sessions.find((s) => s.arm === 'mandrel').epicId, 99);
-  assert.ok(
-    record.sessions
-      .find((s) => s.arm === 'mandrel')
-      .extraArgs.includes('bypassPermissions'),
-  );
-  assert.deepEqual(
-    record.sessions.find((s) => s.arm === 'control').extraArgs,
-    [],
+  for (const arm of ['mandrel', 'control']) {
+    assert.ok(
+      record.sessions
+        .find((s) => s.arm === arm)
+        .extraArgs.includes('bypassPermissions'),
+      `${arm} arm should carry bypassPermissions`,
+    );
+  }
+  assert.equal(
+    record.sessions.find((s) => s.arm === 'control').epicId,
+    undefined,
   );
   assert.equal(record.teardowns.length, 2);
 

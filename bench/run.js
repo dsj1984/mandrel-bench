@@ -59,8 +59,15 @@ export function repoRoot() {
   return path.resolve(__dirname, '..');
 }
 
-/** Extra args the mandrel arm passes to `claude -p` for an unattended drive. */
-export const MANDREL_EXTRA_ARGS = Object.freeze([
+/**
+ * Permission args passed to `claude -p` for BOTH arms. Permission mode is
+ * orthogonal to scaffolding: a headless session (bare control or mandrel
+ * pipeline) must be able to write and commit files without a TTY prompt to
+ * act autonomously. The fair-comparison difference between the arms is the
+ * presence of `.agents/` + the pipeline prompt, NOT the ability to act. Safe
+ * because every run executes inside a throwaway sandbox clone.
+ */
+export const SESSION_EXTRA_ARGS = Object.freeze([
   '--permission-mode',
   'bypassPermissions',
 ]);
@@ -379,7 +386,9 @@ export async function runOneRun(opts, deps = {}) {
       );
     }
 
-    const extraArgs = arm === 'mandrel' ? [...MANDREL_EXTRA_ARGS] : [];
+    // Both arms get the permission args so each can act headlessly; the mandrel
+    // arm's /deliver --yes lives in the prompt (buildArmPrompt), not here.
+    const extraArgs = [...SESSION_EXTRA_ARGS];
     const session = runSessionFn(
       {
         arm,
