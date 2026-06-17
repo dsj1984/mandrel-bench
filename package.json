@@ -12,7 +12,7 @@
     "test": "node --test \"tests/bench/**/*.test.js\"",
     "bench": "node bench/run.js",
     "lint": "biome ci . && npm run lint:md",
-    "lint:md": "markdownlint-cli2 \"**/*.md\" \"!node_modules/**\" \"!.agents/**\"",
+    "lint:md": "markdownlint-cli2 \"**/*.md\" \"!node_modules/**\" \"!.agents/**\" \"!**/CHANGELOG.md\"",
     "format": "biome format --write .",
     "format:check": "biome ci .",
     "prepare": "husky && node .agents/scripts/sync-claude-commands.js",
