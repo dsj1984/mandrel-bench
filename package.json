@@ -27,7 +27,7 @@
     "*.md": "markdownlint-cli2 --fix"
   },
   "dependencies": {
-    "mandrel": "^1.70.0"
+    "mandrel": "^1.72.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",
