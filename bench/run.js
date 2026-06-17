@@ -29,6 +29,7 @@
 
 import { execFileSync } from 'node:child_process';
 import {
+  appendFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -312,6 +313,94 @@ export function discoverLedger({ workspacePath }, deps = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Batch resume + ceiling (Story #22)
+// ---------------------------------------------------------------------------
+
+/**
+ * The default checkpoint filename, sitting beside the results tree root. The
+ * checkpoint is an append-only NDJSON ledger of completed `(scenario × arm ×
+ * run)` cell keys — the same crash-safe shape as the scorecard store, so a
+ * partially-written final line never corrupts the cells before it.
+ */
+export const CHECKPOINT_FILENAME = '.batch-checkpoint.ndjson';
+
+/**
+ * Derive the stable identity string for one `(scenario × arm × run)` cell. This
+ * is the unit of resumable work: the batch loop checkpoints a cell once its
+ * scorecard has been persisted, and skips a cell on resume when its key is
+ * already in the checkpoint. Pure — the same inputs always map to the same key.
+ *
+ * The separator is a unit-separator control char (``) so it can never
+ * collide with a scenario id, arm, or run index value.
+ *
+ * @param {object} args
+ * @param {string} args.scenario
+ * @param {'mandrel'|'control'} args.arm
+ * @param {number} args.runIndex   1-based.
+ * @returns {string}
+ */
+export function cellKey({ scenario, arm, runIndex }) {
+  return `${scenario}${arm}${runIndex}`;
+}
+
+/**
+ * Read the set of completed cell keys from the checkpoint ledger. A non-existent
+ * checkpoint reads as an empty set (a batch that never checkpointed is simply
+ * starting fresh, not an error). Malformed / blank lines are skipped defensively
+ * so a half-written final line never strands a resumable batch.
+ *
+ * @param {object} args
+ * @param {string} args.checkpointPath
+ * @param {object} [deps]
+ * @param {(p: string) => boolean} [deps.existsImpl]
+ * @param {(p: string, enc: string) => string} [deps.readFileImpl]
+ * @returns {Set<string>}
+ */
+export function readCheckpoint({ checkpointPath }, deps = {}) {
+  const exists = deps.existsImpl ?? existsSync;
+  const read = deps.readFileImpl ?? readFileSync;
+  const done = new Set();
+  if (!checkpointPath || !exists(checkpointPath)) return done;
+  const text = read(checkpointPath, 'utf8');
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    try {
+      const rec = JSON.parse(trimmed);
+      if (typeof rec?.cell === 'string' && rec.cell.length > 0) {
+        done.add(rec.cell);
+      }
+    } catch {
+      // half-written / corrupt line — skip it; the cell will simply re-run.
+    }
+  }
+  return done;
+}
+
+/**
+ * Append one completed-cell record to the checkpoint ledger, creating the parent
+ * directory and file on first write. Append-only by design — the same crash-safe
+ * semantics as the scorecard store.
+ *
+ * @param {object} args
+ * @param {string} args.checkpointPath
+ * @param {string} args.cell            The cell key (from `cellKey`).
+ * @param {object} [deps]
+ * @param {(p: string, data: string) => void} [deps.appendFileImpl]
+ * @param {(p: string) => boolean} [deps.existsImpl]
+ * @param {(p: string, opts: object) => void} [deps.mkdirImpl]
+ * @returns {void}
+ */
+export function appendCheckpoint({ checkpointPath, cell }, deps = {}) {
+  const append = deps.appendFileImpl ?? appendFileSync;
+  const exists = deps.existsImpl ?? existsSync;
+  const mkdir = deps.mkdirImpl ?? ((p) => mkdirSync(p, { recursive: true }));
+  const dir = path.dirname(checkpointPath);
+  if (dir && dir !== '.' && !exists(dir)) mkdir(dir, { recursive: true });
+  append(checkpointPath, `${JSON.stringify({ cell })}\n`);
+}
+
+// ---------------------------------------------------------------------------
 // I/O shell
 // ---------------------------------------------------------------------------
 
@@ -554,8 +643,18 @@ export async function runOneRun(opts, deps = {}) {
  * @param {{ repoUrl: string, owner: string, repo: string }} opts.sandbox
  * @param {string} [opts.resultsDir]
  * @param {string} [opts.ephemeralRoot]
+ * @param {number} [opts.maxRuns]   Run-count ceiling: stop cleanly after this
+ *   many cells complete in this invocation (resumable cells skipped on resume do
+ *   NOT count). Omit / `null` for no run-count ceiling.
+ * @param {number} [opts.maxCostUsd]   Cost ceiling in USD: stop cleanly once the
+ *   accumulated `dimensions.efficiency.costUsd` of this invocation's completed
+ *   cells reaches it. The check fires AFTER the in-flight cell persists, so the loop
+ *   stops between cells and never abandons a partial scorecard. Omit / `null`
+ *   for no cost ceiling.
+ * @param {string} [opts.checkpointPath]   Override the resume-checkpoint path.
+ *   Defaults to `<resultsDir>/.batch-checkpoint.ndjson`.
  * @param {object} [deps]
- * @returns {Promise<{ scorecards: object[], cohorts: Array<{ dir: string, storePath: string, reportPath: string, report: string }>, dashboardPath: string, dashboard: string }>}
+ * @returns {Promise<{ scorecards: object[], cohorts: Array<{ dir: string, storePath: string, reportPath: string, report: string }>, dashboardPath: string, dashboard: string, skipped: number, stopped: null | { reason: 'maxRuns' | 'maxCostUsd', completed: number, costUsd: number } }>}
  */
 export async function runFirstBenchmark(opts = {}, deps = {}) {
   const {
@@ -566,6 +665,8 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
     sandbox,
     resultsDir = path.join(repoRoot(), 'results'),
     ephemeralRoot,
+    maxRuns = null,
+    maxCostUsd = null,
   } = opts;
 
   if (!sandbox?.repoUrl || !sandbox?.owner || !sandbox?.repo) {
@@ -582,8 +683,40 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
   // drive-from-Epic-id path. Keyed by scenario id; the control arm ignores it.
   const epicIds = opts.epicIds ?? {};
 
+  // Resume substrate: the checkpoint ledger records every completed cell so a
+  // crashed / ceiling-stopped batch resumes without re-running or duplicating a
+  // cell's scorecard. Read the already-done set ONCE up front.
+  const checkpointPath =
+    opts.checkpointPath ?? path.join(resultsDir, CHECKPOINT_FILENAME);
+  const doneCells = readCheckpoint({ checkpointPath }, deps.checkpointDeps);
+
   const scorecards = [];
-  for (const scenarioId of scenarios) {
+  let skipped = 0;
+  let completed = 0;
+  let costUsd = 0;
+  let stopped = null;
+
+  // The append-only store + per-run report + checkpoint are written PER CELL as
+  // it completes, so an interrupted batch (crash or ceiling stop) always leaves a
+  // consistent on-disk state: every persisted scorecard has a matching checkpoint
+  // entry, and no half-written cell is left behind.
+  const cohortReportCards = new Map();
+
+  const persistCell = (scorecard, cell) => {
+    const dir = cohortDir({ resultsDir, scorecard });
+    const storePath = path.join(dir, 'scorecards.ndjson');
+    // Append the scorecard FIRST, then the checkpoint — so a crash between the
+    // two re-runs the cell (harmless duplicate the reader de-dups by runId)
+    // rather than skipping an un-persisted cell (lost work). The scorecard is
+    // persisted UNMUTATED (no `runIndex` field added) so the schema is unchanged
+    // — the cell key lives only in the separate checkpoint ledger.
+    appendScorecards({ storePath, scorecards: [scorecard] }, deps.persistDeps);
+    appendCheckpoint({ checkpointPath, cell }, deps.checkpointDeps);
+    if (!cohortReportCards.has(dir)) cohortReportCards.set(dir, []);
+    cohortReportCards.get(dir).push(scorecard);
+  };
+
+  outer: for (const scenarioId of scenarios) {
     const { scenario, evaluate } = await loadScenario(
       scenarioId,
       deps.loadDeps,
@@ -591,6 +724,14 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
     if (epicIds[scenarioId] != null) scenario.epicId = epicIds[scenarioId];
     for (let runIndex = 1; runIndex <= n; runIndex += 1) {
       for (const arm of arms) {
+        const cell = cellKey({ scenario: scenarioId, arm, runIndex });
+        if (doneCells.has(cell)) {
+          skipped += 1;
+          logger?.info?.(
+            `[run] ⏭️  resume: skip completed ${scenarioId} / ${arm} / run ${runIndex}/${n}`,
+          );
+          continue;
+        }
         logger?.info?.(
           `[run] === ${scenarioId} / ${arm} / run ${runIndex}/${n} ===`,
         );
@@ -608,26 +749,36 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
           deps,
         );
         scorecards.push(scorecard);
+        // Persist + checkpoint the in-flight cell BEFORE evaluating the ceiling,
+        // so a ceiling stop never abandons a partial / un-checkpointed cell.
+        persistCell(scorecard, cell);
+        completed += 1;
+        const cellCost = scorecard?.dimensions?.efficiency?.costUsd;
+        if (typeof cellCost === 'number') costUsd += cellCost;
+
+        // Ceiling check fires AFTER the cell is fully persisted + checkpointed,
+        // so the loop stops cleanly between cells.
+        if (maxRuns != null && completed >= maxRuns) {
+          stopped = { reason: 'maxRuns', completed, costUsd };
+          logger?.info?.(
+            `[run] 🛑 run-count ceiling reached (${completed}/${maxRuns}); stopping after the in-flight run. Resume to continue.`,
+          );
+          break outer;
+        }
+        if (maxCostUsd != null && costUsd >= maxCostUsd) {
+          stopped = { reason: 'maxCostUsd', completed, costUsd };
+          logger?.info?.(
+            `[run] 🛑 cost ceiling reached ($${costUsd.toFixed(2)}/$${Number(maxCostUsd).toFixed(2)}); stopping after the in-flight run. Resume to continue.`,
+          );
+          break outer;
+        }
       }
     }
   }
 
-  // Group this run's scorecards by cohort directory (model-slug ×
-  // frameworkVersion). Each cohort gets its own append-only store and a rendered
-  // Markdown report under `results/<model-slug>/<frameworkVersion>/`. A single
-  // run usually produces one cohort, but multiple are handled correctly.
-  const byCohortDir = new Map();
-  for (const sc of scorecards) {
-    const dir = cohortDir({ resultsDir, scorecard: sc });
-    if (!byCohortDir.has(dir)) byCohortDir.set(dir, []);
-    byCohortDir.get(dir).push(sc);
-  }
-
   const cohorts = [];
-  for (const [dir, cohortCards] of byCohortDir) {
+  for (const [dir, cohortCards] of cohortReportCards) {
     const storePath = path.join(dir, 'scorecards.ndjson');
-    appendScorecards({ storePath, scorecards: cohortCards }, deps.persistDeps);
-
     const report = renderReport({ scorecards: cohortCards, method: 'iqr' });
     const stamp = sanitizeRunId(cohortCards[0]?.timestamp ?? `${Date.now()}`);
     const reportsDir = path.join(dir, 'reports');
@@ -646,7 +797,7 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
   mkdir(resultsDir);
   writeFile(dashboardPath, dashboard);
 
-  return { scorecards, cohorts, dashboardPath, dashboard };
+  return { scorecards, cohorts, dashboardPath, dashboard, skipped, stopped };
 }
 
 // ---------------------------------------------------------------------------
@@ -654,10 +805,78 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Normalize a scenario id into the `BENCH_EPIC_ID_<SCENARIO>` env-var suffix:
+ * uppercased, every run of non `[A-Z0-9]` characters folded to a single `_`.
+ * So `crud-db` → `CRUD_DB`, read as `BENCH_EPIC_ID_CRUD_DB`. Pure.
+ *
+ * @param {string} scenarioId
+ * @returns {string}
+ */
+export function scenarioEnvSuffix(scenarioId) {
+  return String(scenarioId)
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+/**
+ * Resolve the per-scenario seed Epic-id map from the environment, threading them
+ * into `runFirstBenchmark`'s `epicIds` map. Three sources, lowest-to-highest
+ * precedence:
+ *   1. `BENCH_EPIC_ID` — back-compat single-scenario id, applied to `scenarios[0]`.
+ *   2. `BENCH_EPIC_IDS` — a JSON object map `{ "<scenario>": <id>, ... }`.
+ *   3. `BENCH_EPIC_ID_<SCENARIO>` — one var per scenario (see `scenarioEnvSuffix`).
+ * Later sources override earlier ones for the same scenario. Only ids that parse
+ * to a finite number are kept. Pure (reads from the supplied `env` bag).
+ *
+ * @param {string[]} scenarios
+ * @param {Record<string, string|undefined>} [env=process.env]
+ * @returns {Record<string, number>}
+ */
+export function resolveEpicIds(scenarios, env = process.env) {
+  const epicIds = {};
+  const setIf = (scenario, raw) => {
+    if (raw == null || String(raw).trim() === '') return;
+    const num = Number(raw);
+    if (Number.isFinite(num)) epicIds[scenario] = num;
+  };
+  // 1. Single-scenario back-compat: BENCH_EPIC_ID → scenarios[0].
+  if (env.BENCH_EPIC_ID != null && scenarios.length > 0) {
+    setIf(scenarios[0], env.BENCH_EPIC_ID);
+  }
+  // 2. JSON map: BENCH_EPIC_IDS = {"hello-world":99,"crud-db":100}.
+  if (env.BENCH_EPIC_IDS) {
+    try {
+      const parsed = JSON.parse(env.BENCH_EPIC_IDS);
+      if (parsed && typeof parsed === 'object') {
+        for (const [scenario, raw] of Object.entries(parsed)) {
+          setIf(scenario, raw);
+        }
+      }
+    } catch {
+      // Malformed JSON is ignored — the per-var form below still applies, and a
+      // missing seed Epic falls back to the un-flagged ideation path per scenario.
+    }
+  }
+  // 3. Per-scenario vars: BENCH_EPIC_ID_<SCENARIO> (highest precedence).
+  for (const scenario of scenarios) {
+    setIf(scenario, env[`BENCH_EPIC_ID_${scenarioEnvSuffix(scenario)}`]);
+  }
+  return epicIds;
+}
+
+/**
  * Minimal CLI entry. Reads sandbox coordinates from the environment:
  *   BENCH_SANDBOX_REPO_URL, BENCH_SANDBOX_OWNER, BENCH_SANDBOX_REPO.
- * Optional: BENCH_SCENARIOS (csv), BENCH_ARMS (csv), BENCH_N,
- *   BENCH_EPIC_ID (seed Epic id in the sandbox repo for the mandrel arm).
+ * Optional: BENCH_SCENARIOS (csv), BENCH_ARMS (csv), BENCH_N.
+ * Per-scenario seed Epic ids (mandrel arm):
+ *   BENCH_EPIC_ID (single-scenario back-compat → scenarios[0]),
+ *   BENCH_EPIC_IDS (JSON map keyed by scenario id),
+ *   BENCH_EPIC_ID_<SCENARIO> (one var per scenario; see scenarioEnvSuffix).
+ * Batch bounds (resumable, cost-bounded loop):
+ *   BENCH_MAX_RUNS (run-count ceiling for this invocation),
+ *   BENCH_MAX_COST_USD (USD cost ceiling for this invocation),
+ *   BENCH_CHECKPOINT (override the resume-checkpoint path).
  */
 export async function main() {
   const sandbox = {
@@ -668,9 +887,7 @@ export async function main() {
   const scenarios = (process.env.BENCH_SCENARIOS ?? 'hello-world')
     .split(',')
     .map((s) => s.trim());
-  const epicIds = process.env.BENCH_EPIC_ID
-    ? { [scenarios[0]]: Number(process.env.BENCH_EPIC_ID) }
-    : {};
+  const epicIds = resolveEpicIds(scenarios, process.env);
   const opts = {
     sandbox,
     scenarios,
@@ -679,6 +896,17 @@ export async function main() {
       .split(',')
       .map((s) => s.trim()),
     n: Number(process.env.BENCH_N ?? '1'),
+    maxRuns:
+      process.env.BENCH_MAX_RUNS != null
+        ? Number(process.env.BENCH_MAX_RUNS)
+        : null,
+    maxCostUsd:
+      process.env.BENCH_MAX_COST_USD != null
+        ? Number(process.env.BENCH_MAX_COST_USD)
+        : null,
+    ...(process.env.BENCH_CHECKPOINT
+      ? { checkpointPath: process.env.BENCH_CHECKPOINT }
+      : {}),
   };
   const logger = {
     info: (m) => process.stderr.write(`${m}\n`),
@@ -691,9 +919,14 @@ export async function main() {
       (c) => `[run]   store → ${c.storePath}\n[run]   report → ${c.reportPath}`,
     )
     .join('\n');
+  const stoppedLine = result.stopped
+    ? `[run] 🛑 stopped early (${result.stopped.reason}); resume to continue the batch.\n`
+    : '';
   process.stderr.write(
-    `\n[run] ${result.scorecards.length} scorecard(s) across ${result.cohorts.length} cohort(s):\n` +
+    `\n[run] ${result.scorecards.length} scorecard(s) across ${result.cohorts.length} cohort(s)` +
+      ` (${result.skipped} cell(s) skipped on resume):\n` +
       `${cohortLines}\n` +
+      stoppedLine +
       `[run] dashboard → ${result.dashboardPath}\n`,
   );
 }

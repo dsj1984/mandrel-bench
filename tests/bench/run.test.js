@@ -20,14 +20,20 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 
 import {
+  appendCheckpoint,
   buildRunIdentity,
+  CHECKPOINT_FILENAME,
+  cellKey,
   discoverLedger,
   planningInputs,
   qualityInputs,
+  readCheckpoint,
   readFrameworkVersion,
+  resolveEpicIds,
   resolveModelId,
   runFirstBenchmark,
   sanitizeRunId,
+  scenarioEnvSuffix,
 } from '../../bench/run.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -287,11 +293,26 @@ function benchDeps(record) {
       existsImpl: () => true,
       mkdirImpl: () => {},
     },
+    // checkpoint seam (in-memory resume ledger). `existsImpl`/`readFileImpl`
+    // model the on-disk checkpoint; `record.checkpoint` seeds completed cells.
+    checkpointDeps: {
+      existsImpl: (p) => (record.checkpoint ? p === CHECKPOINT_PATH : false),
+      readFileImpl: () =>
+        (record.checkpoint ?? [])
+          .map((cell) => JSON.stringify({ cell }))
+          .join('\n'),
+      appendFileImpl: (p, data) => record.checkpointed.push({ p, data }),
+      mkdirImpl: () => {},
+    },
   };
 }
 
-test('runFirstBenchmark: emits a schema-valid scorecard per arm and renders a report', async () => {
-  const record = {
+/** The default checkpoint path under a `/results` root (Story #22). */
+const CHECKPOINT_PATH = path.join('/results', '.batch-checkpoint.ndjson');
+
+/** A fresh record bag with every seam-capture array initialized. */
+function freshRecord(overrides = {}) {
+  return {
     provisions: [],
     teardowns: [],
     overlays: [],
@@ -299,7 +320,13 @@ test('runFirstBenchmark: emits a schema-valid scorecard per arm and renders a re
     git: [],
     writes: [],
     appended: [],
+    checkpointed: [],
+    ...overrides,
   };
+}
+
+test('runFirstBenchmark: emits a schema-valid scorecard per arm and renders a report', async () => {
+  const record = freshRecord();
   const result = await runFirstBenchmark(
     {
       scenarios: ['hello-world'],
@@ -373,7 +400,19 @@ test('runFirstBenchmark: emits a schema-valid scorecard per arm and renders a re
     `reportPath should be under the cohort reports dir: ${cohort.reportPath}`,
   );
   assert.match(cohort.reportPath, /\.md$/);
-  assert.equal(record.appended.length, 1);
+  // Per-cell persistence (Story #22): one append per (scenario × arm × run) cell,
+  // so the two arms produce two appends — each into the same cohort store.
+  assert.equal(record.appended.length, 2);
+  for (const a of record.appended) assert.equal(a.p, cohort.storePath);
+  // Each completed cell is checkpointed for resume (two cells here).
+  assert.equal(record.checkpointed.length, 2);
+  // The scorecard schema is unchanged: no `runIndex` (or other extra) field is
+  // added to the persisted scorecard — the cell key lives only in the checkpoint.
+  for (const sc of result.scorecards) {
+    assert.equal(sc.runIndex, undefined);
+  }
+  assert.equal(result.skipped, 0);
+  assert.equal(result.stopped, null);
   assert.match(cohort.report, /Value-Add Report/);
 
   // The aggregate dashboard is regenerated at the results root.
@@ -386,4 +425,205 @@ test('runFirstBenchmark: requires sandbox coordinates', async () => {
     runFirstBenchmark({ sandbox: { repoUrl: 'x' } }, {}),
     /sandbox \{ repoUrl, owner, repo \}/,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Story #22 — checkpoint + ceiling pure helpers
+// ---------------------------------------------------------------------------
+
+test('cellKey: stable, separator-isolated identity for a (scenario × arm × run) cell', () => {
+  const a = cellKey({ scenario: 'crud-db', arm: 'mandrel', runIndex: 3 });
+  assert.equal(
+    a,
+    cellKey({ scenario: 'crud-db', arm: 'mandrel', runIndex: 3 }),
+  );
+  // No collision across the three fields (a hostile id can't forge another key).
+  assert.notEqual(
+    cellKey({ scenario: 'crud', arm: 'db-mandrel', runIndex: 3 }),
+    cellKey({ scenario: 'crud-db', arm: 'mandrel', runIndex: 3 }),
+  );
+});
+
+test('readCheckpoint: parses completed cells, skips blank/corrupt lines', () => {
+  const text = [
+    JSON.stringify({ cell: 'a' }),
+    '',
+    '{ not json',
+    JSON.stringify({ cell: 'b' }),
+  ].join('\n');
+  const done = readCheckpoint(
+    { checkpointPath: '/results/.batch-checkpoint.ndjson' },
+    { existsImpl: () => true, readFileImpl: () => text },
+  );
+  assert.deepEqual([...done].sort(), ['a', 'b']);
+});
+
+test('readCheckpoint: a non-existent checkpoint reads as an empty set', () => {
+  const done = readCheckpoint(
+    { checkpointPath: '/nope.ndjson' },
+    { existsImpl: () => false },
+  );
+  assert.equal(done.size, 0);
+});
+
+test('appendCheckpoint: appends one NDJSON cell record, creating the dir', () => {
+  const calls = { appended: [], mkdirs: [] };
+  appendCheckpoint(
+    { checkpointPath: '/results/.batch-checkpoint.ndjson', cell: 'x' },
+    {
+      existsImpl: () => false,
+      mkdirImpl: (p) => calls.mkdirs.push(p),
+      appendFileImpl: (p, data) => calls.appended.push({ p, data }),
+    },
+  );
+  assert.equal(calls.mkdirs.length, 1);
+  assert.equal(calls.appended.length, 1);
+  assert.deepEqual(JSON.parse(calls.appended[0].data.trim()), { cell: 'x' });
+});
+
+// ---------------------------------------------------------------------------
+// Story #22 — per-scenario seed Epic ids in main()'s env parsing
+// ---------------------------------------------------------------------------
+
+test('scenarioEnvSuffix: uppercases and folds non-alnum runs to single _', () => {
+  assert.equal(scenarioEnvSuffix('crud-db'), 'CRUD_DB');
+  assert.equal(scenarioEnvSuffix('hello-world'), 'HELLO_WORLD');
+  assert.equal(scenarioEnvSuffix('a.b/c'), 'A_B_C');
+});
+
+test('resolveEpicIds: single-scenario BENCH_EPIC_ID back-compat → scenarios[0]', () => {
+  const ids = resolveEpicIds(['hello-world'], { BENCH_EPIC_ID: '99' });
+  assert.deepEqual(ids, { 'hello-world': 99 });
+});
+
+test('resolveEpicIds: per-scenario vars drive each rung from its own Epic', () => {
+  const ids = resolveEpicIds(['hello-world', 'crud-db'], {
+    BENCH_EPIC_ID_HELLO_WORLD: '99',
+    BENCH_EPIC_ID_CRUD_DB: '100',
+  });
+  assert.deepEqual(ids, { 'hello-world': 99, 'crud-db': 100 });
+});
+
+test('resolveEpicIds: JSON-map form + per-var override precedence', () => {
+  const ids = resolveEpicIds(['hello-world', 'crud-db'], {
+    BENCH_EPIC_IDS: JSON.stringify({ 'hello-world': 99, 'crud-db': 100 }),
+    // per-scenario var overrides the JSON map for the same scenario
+    BENCH_EPIC_ID_CRUD_DB: '200',
+  });
+  assert.deepEqual(ids, { 'hello-world': 99, 'crud-db': 200 });
+});
+
+test('resolveEpicIds: malformed JSON map is ignored, non-numeric ids dropped', () => {
+  const ids = resolveEpicIds(['hello-world', 'crud-db'], {
+    BENCH_EPIC_IDS: '{ not json',
+    BENCH_EPIC_ID_HELLO_WORLD: 'not-a-number',
+    BENCH_EPIC_ID_CRUD_DB: '100',
+  });
+  assert.deepEqual(ids, { 'crud-db': 100 });
+});
+
+test('CHECKPOINT_FILENAME is the default checkpoint name beside the results root', () => {
+  assert.equal(CHECKPOINT_FILENAME, '.batch-checkpoint.ndjson');
+});
+
+// ---------------------------------------------------------------------------
+// Story #22 — resumable, cost-bounded batch loop in runFirstBenchmark
+// ---------------------------------------------------------------------------
+
+const SANDBOX = {
+  repoUrl: 'git@github.com:dsj1984/mandrel-bench-sandbox.git',
+  owner: 'dsj1984',
+  repo: 'mandrel-bench-sandbox',
+};
+
+test('runFirstBenchmark: threads per-scenario epicIds into the mandrel arm session', async () => {
+  const record = freshRecord();
+  await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel'],
+      n: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+      epicIds: { 'hello-world': 4222 },
+    },
+    benchDeps(record),
+  );
+  // The explicit epicIds map wins over the scenario.json default (99).
+  assert.equal(record.sessions.find((s) => s.arm === 'mandrel').epicId, 4222);
+});
+
+test('runFirstBenchmark: resume skips already-checkpointed cells (idempotent)', async () => {
+  // Seed the checkpoint with the mandrel cell of run 1 already complete.
+  const record = freshRecord({
+    checkpoint: [
+      cellKey({ scenario: 'hello-world', arm: 'mandrel', runIndex: 1 }),
+    ],
+  });
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel', 'control'],
+      n: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    benchDeps(record),
+  );
+  // Only the control cell runs; the completed mandrel cell is skipped — not
+  // re-run (no second mandrel session) and not re-appended (no duplicate).
+  assert.equal(result.skipped, 1);
+  assert.equal(result.scorecards.length, 1);
+  assert.equal(result.scorecards[0].arm, 'control');
+  assert.equal(record.sessions.filter((s) => s.arm === 'mandrel').length, 0);
+  assert.equal(record.appended.length, 1);
+  assert.equal(record.checkpointed.length, 1);
+});
+
+test('runFirstBenchmark: maxRuns ceiling stops cleanly after the in-flight cell', async () => {
+  const record = freshRecord();
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel', 'control'],
+      n: 2, // 4 cells total
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+      maxRuns: 2,
+    },
+    benchDeps(record),
+  );
+  // Stops after exactly 2 cells; each one is persisted AND checkpointed (no
+  // partial/un-checkpointed cell left behind), leaving a resumable checkpoint.
+  assert.equal(result.scorecards.length, 2);
+  assert.equal(record.appended.length, 2);
+  assert.equal(record.checkpointed.length, 2);
+  assert.deepEqual(result.stopped, {
+    reason: 'maxRuns',
+    completed: 2,
+    costUsd: 0.84,
+  });
+});
+
+test('runFirstBenchmark: maxCostUsd ceiling stops after the cell that crosses it', async () => {
+  const record = freshRecord();
+  // Each cell costs 0.42 (fakeEnvelope). A $0.50 budget is crossed by cell #2.
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel', 'control'],
+      n: 2,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+      maxCostUsd: 0.5,
+    },
+    benchDeps(record),
+  );
+  assert.equal(result.scorecards.length, 2);
+  assert.equal(result.stopped.reason, 'maxCostUsd');
+  assert.equal(result.stopped.completed, 2);
+  assert.ok(result.stopped.costUsd >= 0.5);
+  // The persisted + checkpointed counts match the completed cells exactly.
+  assert.equal(record.appended.length, 2);
+  assert.equal(record.checkpointed.length, 2);
 });
