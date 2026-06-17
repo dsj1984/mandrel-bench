@@ -20,6 +20,7 @@ import test from 'node:test';
 import {
   assertInsideRoot,
   provisionSandbox,
+  resetSandboxBaseline,
   SANDBOX_DIR_PREFIX,
   teardownSandbox,
   withSandbox,
@@ -195,6 +196,69 @@ test('provisionSandbox: rejects empty repoUrl and bad arm', () => {
         deps,
       ),
     /must be "mandrel" or "control"/,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// resetSandboxBaseline — clean, repeatable runs
+// ---------------------------------------------------------------------------
+
+test('resetSandboxBaseline: resolves the baseline sha then force-PATCHes main', () => {
+  const ghCalls = [];
+  const ghFn = (args) => {
+    ghCalls.push(args);
+    if (args.some((a) => a.endsWith('git/ref/heads/bench-baseline'))) {
+      return JSON.stringify({ object: { sha: 'deadbeef123' } });
+    }
+    return '';
+  };
+  const res = resetSandboxBaseline(
+    { owner: 'dsj1984', repo: 'mandrel-bench-sandbox' },
+    { ghFn, logger: { info() {}, warn() {} } },
+  );
+
+  assert.deepEqual(res, { reset: true, sha: 'deadbeef123' });
+  assert.equal(ghCalls.length, 2);
+  // 1. Resolve the baseline ref's sha.
+  assert.deepEqual(ghCalls[0], [
+    'api',
+    'repos/dsj1984/mandrel-bench-sandbox/git/ref/heads/bench-baseline',
+  ]);
+  // 2. Force-update main to that sha.
+  assert.deepEqual(ghCalls[1], [
+    'api',
+    '-X',
+    'PATCH',
+    'repos/dsj1984/mandrel-bench-sandbox/git/refs/heads/main',
+    '-f',
+    'sha=deadbeef123',
+    '-F',
+    'force=true',
+  ]);
+});
+
+test('resetSandboxBaseline: honors a custom baselineRef', () => {
+  const ghCalls = [];
+  const ghFn = (args) => {
+    ghCalls.push(args);
+    return JSON.stringify({ object: { sha: 'cafe01' } });
+  };
+  resetSandboxBaseline(
+    { owner: 'o', repo: 'r', baselineRef: 'pristine' },
+    { ghFn },
+  );
+  assert.deepEqual(ghCalls[0], ['api', 'repos/o/r/git/ref/heads/pristine']);
+  assert.equal(ghCalls[1].includes('sha=cafe01'), true);
+});
+
+test('resetSandboxBaseline: rejects a missing owner/repo with a TypeError', () => {
+  assert.throws(
+    () => resetSandboxBaseline({ repo: 'r' }, { ghFn: () => '' }),
+    /non-empty owner/,
+  );
+  assert.throws(
+    () => resetSandboxBaseline({ owner: 'o' }, { ghFn: () => '' }),
+    /non-empty repo/,
   );
 });
 

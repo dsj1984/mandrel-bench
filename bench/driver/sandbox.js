@@ -220,6 +220,86 @@ export function provisionSandbox(opts = {}, deps = {}) {
 }
 
 /**
+ * @typedef {object} ResetBaselineDeps
+ * @property {(args: string[]) => string} [ghFn]  Injected `gh` invoker. Receives
+ *   the argv array and returns stdout. Defaults to a real `execFileSync('gh', …)`
+ *   with an argument array — never a shell string — so an owner/repo value can
+ *   never be interpreted as a shell command. Tests stub this so no real GitHub
+ *   API call runs.
+ * @property {{ info?: Function, warn?: Function }} [logger]
+ */
+
+/**
+ * Reset the sandbox repo's `main` branch back to a preserved clean baseline
+ * branch (`bench-baseline` by default).
+ *
+ * The mandrel arm auto-merges each delivery into the sandbox repo's GitHub
+ * `main`, so runs accumulate state. To keep runs clean and repeatable, the
+ * harness force-resets `main` to the baseline ref before each run (a
+ * defensive secondary check) and after each run (the primary cleanup). This
+ * resolves the baseline commit SHA via the GitHub API, then force-updates the
+ * `main` ref to point at it.
+ *
+ * Pure with respect to the filesystem — the only side effect is the two GitHub
+ * API calls, both injectable so the unit tests exercise the full contract
+ * without touching a real repo.
+ *
+ * @param {object} opts
+ * @param {string} opts.owner  Sandbox repo owner (org/user).
+ * @param {string} opts.repo   Sandbox repo name.
+ * @param {string} [opts.baselineRef='bench-baseline']  The clean baseline branch.
+ * @param {ResetBaselineDeps} [deps]
+ * @returns {{ reset: boolean, sha: string }}
+ * @throws {TypeError} when `owner` or `repo` is not a non-empty string.
+ */
+export function resetSandboxBaseline(
+  { owner, repo, baselineRef = 'bench-baseline' } = {},
+  deps = {},
+) {
+  if (typeof owner !== 'string' || owner.length === 0) {
+    throw new TypeError('resetSandboxBaseline requires a non-empty owner');
+  }
+  if (typeof repo !== 'string' || repo.length === 0) {
+    throw new TypeError('resetSandboxBaseline requires a non-empty repo');
+  }
+
+  const ghFn =
+    deps.ghFn ??
+    ((args) => execFileSync('gh', args, { encoding: 'utf-8', stdio: 'pipe' }));
+  const logger = deps.logger;
+
+  // 1. Resolve the baseline branch's commit SHA.
+  const refJson = ghFn([
+    'api',
+    `repos/${owner}/${repo}/git/ref/heads/${baselineRef}`,
+  ]);
+  const sha = JSON.parse(refJson)?.object?.sha;
+  if (typeof sha !== 'string' || sha.length === 0) {
+    throw new Error(
+      `[sandbox] could not resolve baseline SHA for ${owner}/${repo}@${baselineRef}`,
+    );
+  }
+
+  // 2. Force-update main to the baseline SHA (rewinds any accumulated state).
+  ghFn([
+    'api',
+    '-X',
+    'PATCH',
+    `repos/${owner}/${repo}/git/refs/heads/main`,
+    '-f',
+    `sha=${sha}`,
+    '-F',
+    'force=true',
+  ]);
+
+  logger?.info?.(
+    `[sandbox] Reset ${owner}/${repo}@main → ${baselineRef} (${sha})`,
+  );
+
+  return { reset: true, sha };
+}
+
+/**
  * @typedef {object} TeardownDeps
  * @property {(p: string) => boolean} [existsFn]  Injected `existsSync`.
  * @property {(p: string) => { isDirectory: () => boolean }} [statFn]  Injected `statSync`.

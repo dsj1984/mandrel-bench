@@ -48,7 +48,11 @@ import {
   DEFAULT_SESSION_TIMEOUT_MS,
   runSession as defaultRunSession,
 } from './driver/run-session.js';
-import { provisionSandbox, teardownSandbox } from './driver/sandbox.js';
+import {
+  provisionSandbox,
+  resetSandboxBaseline,
+  teardownSandbox,
+} from './driver/sandbox.js';
 import { aggregateScorecards } from './report/aggregate.js';
 import { cohortDir } from './report/cohort-path.js';
 import { renderDashboard } from './report/html.js';
@@ -444,9 +448,12 @@ export async function runOneRun(opts, deps = {}) {
     timeoutMs = DEFAULT_SESSION_TIMEOUT_MS,
   } = opts;
 
+  const baselineRef = sandbox.baselineRef ?? 'bench-baseline';
+
   const logger = deps.logger;
   const provision = deps.provisionFn ?? provisionSandbox;
   const teardown = deps.teardownFn ?? teardownSandbox;
+  const resetSandbox = deps.resetSandboxFn ?? resetSandboxBaseline;
   const overlay = deps.overlayFn ?? overlayFrameworkUnderTest;
   const runSessionFn = deps.runSessionFn ?? defaultRunSession;
   const withRunningAppFn = deps.withRunningAppFn ?? defaultWithRunningApp;
@@ -475,6 +482,24 @@ export async function runOneRun(opts, deps = {}) {
       ? { epicId: scenario.epicId }
       : {}),
   };
+
+  // Secondary, defensive pre-run reset: rewind the sandbox repo's `main` back
+  // to the clean baseline BEFORE cloning, so the clone is taken from a clean
+  // tree even if a previous run's post-cleanup was skipped or failed. This runs
+  // for BOTH arms — the control arm clones `main` after the mandrel arm has
+  // dirtied it, so it must also start from a clean baseline. Best-effort: a
+  // reset failure must not abort the run (the post-run cleanup is the primary
+  // guarantee).
+  try {
+    resetSandbox(
+      { owner: sandbox.owner, repo: sandbox.repo, baselineRef },
+      { ghFn: deps.ghApiFn, logger },
+    );
+  } catch (err) {
+    logger?.warn?.(
+      `[run] pre-run baseline reset failed (continuing): ${err?.message ?? err}`,
+    );
+  }
 
   const handle = provision(
     { repoUrl: sandbox.repoUrl, arm, ephemeralRoot },
@@ -627,6 +652,19 @@ export async function runOneRun(opts, deps = {}) {
     });
     return scorecard;
   } finally {
+    // Primary post-run cleanup: rewind the sandbox repo's `main` back to the
+    // clean baseline so the next run starts from a pristine tree. Best-effort:
+    // a reset failure must not mask the run's own result or break teardown.
+    try {
+      resetSandbox(
+        { owner: sandbox.owner, repo: sandbox.repo, baselineRef },
+        { ghFn: deps.ghApiFn, logger },
+      );
+    } catch (err) {
+      logger?.warn?.(
+        `[run] post-run baseline reset failed: ${err?.message ?? err}`,
+      );
+    }
     teardown(handle, deps.teardownDeps);
   }
 }
@@ -640,7 +678,9 @@ export async function runOneRun(opts, deps = {}) {
  * @param {Array<'mandrel'|'control'>} [opts.arms=['mandrel','control']]
  * @param {number} [opts.n=1]
  * @param {string} [opts.model]
- * @param {{ repoUrl: string, owner: string, repo: string }} opts.sandbox
+ * @param {{ repoUrl: string, owner: string, repo: string, baselineRef?: string }} opts.sandbox
+ *   Sandbox repo coordinates. `baselineRef` (default `'bench-baseline'`) is the
+ *   clean baseline branch `main` is reset to before/after each run.
  * @param {string} [opts.resultsDir]
  * @param {string} [opts.ephemeralRoot]
  * @param {number} [opts.maxRuns]   Run-count ceiling: stop cleanly after this
@@ -868,7 +908,9 @@ export function resolveEpicIds(scenarios, env = process.env) {
 /**
  * Minimal CLI entry. Reads sandbox coordinates from the environment:
  *   BENCH_SANDBOX_REPO_URL, BENCH_SANDBOX_OWNER, BENCH_SANDBOX_REPO.
- * Optional: BENCH_SCENARIOS (csv), BENCH_ARMS (csv), BENCH_N.
+ * Optional: BENCH_SCENARIOS (csv), BENCH_ARMS (csv), BENCH_N,
+ *   BENCH_SANDBOX_BASELINE_REF (clean baseline branch main is reset to
+ *   before/after each run; default 'bench-baseline').
  * Per-scenario seed Epic ids (mandrel arm):
  *   BENCH_EPIC_ID (single-scenario back-compat → scenarios[0]),
  *   BENCH_EPIC_IDS (JSON map keyed by scenario id),
@@ -883,6 +925,7 @@ export async function main() {
     repoUrl: process.env.BENCH_SANDBOX_REPO_URL,
     owner: process.env.BENCH_SANDBOX_OWNER,
     repo: process.env.BENCH_SANDBOX_REPO,
+    baselineRef: process.env.BENCH_SANDBOX_BASELINE_REF ?? 'bench-baseline',
   };
   const scenarios = (process.env.BENCH_SCENARIOS ?? 'hello-world')
     .split(',')
