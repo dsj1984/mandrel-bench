@@ -32,6 +32,7 @@ import {
   resolveEpicIds,
   resolveModelId,
   runFirstBenchmark,
+  runOneRun,
   sanitizeRunId,
   scenarioEnvSuffix,
 } from '../../bench/run.js';
@@ -248,6 +249,10 @@ function benchDeps(record) {
       };
     },
     teardownFn: (h) => record.teardowns.push(h.workspacePath),
+    resetSandboxFn: (o) => {
+      record.resets.push({ owner: o.owner, baselineRef: o.baselineRef });
+      return { reset: true, sha: 'baselinesha' };
+    },
     overlayFn: (o) => {
       record.overlays.push(o.arm);
       return { overlaid: true, arm: o.arm, copied: [] };
@@ -315,6 +320,7 @@ function freshRecord(overrides = {}) {
   return {
     provisions: [],
     teardowns: [],
+    resets: [],
     overlays: [],
     sessions: [],
     git: [],
@@ -426,6 +432,76 @@ test('runFirstBenchmark: requires sandbox coordinates', async () => {
     /sandbox \{ repoUrl, owner, repo \}/,
   );
 });
+
+test('runOneRun: resets the sandbox baseline before provision AND in the finally', async () => {
+  const record = freshRecord();
+  // Order-capturing seam: every lifecycle step pushes a label so we can assert
+  // the reset brackets the provision (defensive pre-run) and the teardown
+  // (primary post-run cleanup).
+  const order = [];
+  const deps = benchDeps(record);
+  deps.resetSandboxFn = (o) => {
+    order.push('reset');
+    record.resets.push({ owner: o.owner, baselineRef: o.baselineRef });
+    return { reset: true, sha: 'baselinesha' };
+  };
+  deps.provisionFn = (o) => {
+    order.push('provision');
+    record.provisions.push(o.arm);
+    return {
+      workspacePath: `/ws-${o.arm}`,
+      ephemeralRoot: '/tmp/root',
+      arm: o.arm,
+    };
+  };
+  deps.teardownFn = (h) => {
+    order.push('teardown');
+    record.teardowns.push(h.workspacePath);
+  };
+
+  const { scenario, evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario,
+      evaluate,
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'git@github.com:dsj1984/mandrel-bench-sandbox.git',
+        owner: 'dsj1984',
+        repo: 'mandrel-bench-sandbox',
+        baselineRef: 'bench-baseline',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.equal(scorecard.arm, 'mandrel');
+  // Two resets: one BEFORE provision, one in the finally (alongside teardown).
+  assert.equal(record.resets.length, 2);
+  for (const r of record.resets) {
+    assert.equal(r.owner, 'dsj1984');
+    assert.equal(r.baselineRef, 'bench-baseline');
+  }
+  // Bracketing order: reset → provision → … → reset → teardown.
+  assert.equal(order[0], 'reset');
+  assert.equal(order[1], 'provision');
+  assert.equal(order.at(-1), 'teardown');
+  assert.equal(order.at(-2), 'reset');
+});
+
+/** Load the fake scenario + oracle the same way benchDeps' loadDeps does. */
+async function loadScenarioFake() {
+  return {
+    scenario: FAKE_SCENARIO,
+    evaluate: async () => ({
+      scenario: 'hello-world',
+      passed: true,
+      criteria: [{ met: true }, { met: true }],
+    }),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Story #22 — checkpoint + ceiling pure helpers

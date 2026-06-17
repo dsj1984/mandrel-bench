@@ -65,9 +65,23 @@ export function repoRoot() {
 
 /**
  * The clean, minimal consumer `package.json` written into the mandrel-arm
- * clone. It carries no scripts or declared deps so the scenario app is built
- * into an uncluttered tree; the copied `node_modules` resolves the framework
- * runtime deps regardless of what this file declares.
+ * clone. It declares no app deps so the scenario app is built into an
+ * uncluttered tree; the copied `node_modules` resolves the framework runtime
+ * deps regardless of what this file declares.
+ *
+ * It DOES carry no-op gate scripts. The overlay clobbers the clone's
+ * `package.json` wholesale, and Mandrel's close-validation runs the gate
+ * commands hardcoded to `npm run lint` / `npm test` (and `npm run typecheck`)
+ * against whatever `package.json` is present. A scripts-less `package.json`
+ * makes the very first close fail on `npm run typecheck` (no such script),
+ * forcing the delivery agent into a self-recovery cycle that adds the scripts
+ * itself — a sandbox-config artifact that wrongly dings the Autonomy dimension
+ * (verified: a run blocked on `failedGate:"typecheck"` then recovered by
+ * adding scripts). The crap gate is disabled in the overlaid `.agentrc.json`,
+ * so the standalone `test` gate runs `npm test` directly. These no-ops are
+ * correct, NOT gaming: Quality is measured by the frozen acceptance oracle —
+ * never by these scripts — so passing them trivially has zero effect on the
+ * scored signal; it only removes the harness's own sandbox-config friction.
  *
  * @returns {object}
  */
@@ -77,6 +91,11 @@ export function buildTargetPackageJson() {
     version: '0.0.0',
     private: true,
     type: 'module',
+    scripts: {
+      typecheck: 'node --version',
+      lint: 'node --version',
+      test: 'node --version',
+    },
   };
 }
 
