@@ -6,6 +6,9 @@
       "agentRoot": ".agents",
       "docsRoot": "docs",
       "tempRoot": "temp"
+    },
+    "commands": {
+      "typecheck": "npm run typecheck"
     }
   },
   "github": {
