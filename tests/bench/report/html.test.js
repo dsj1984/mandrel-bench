@@ -1,0 +1,209 @@
+// tests/bench/report/html.test.js
+//
+// Unit tier (pure renderer, no I/O) for the dashboard HTML renderer
+// (Epic #2, Story #17). Exercises bench/report/html.js against the Story's
+// binding acceptance items:
+//   - renderDashboard returns ONE self-contained HTML string, deterministic for
+//     a given corpus (no clock, no randomness);
+//   - the corpus is inlined as JSON and the dashboard carries the trend-chart
+//     metrics, an index row per run, and the per-dimension modal detail;
+//   - an empty corpus renders a valid, non-crashing (empty) dashboard.
+
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+
+import {
+  buildDashboardModel,
+  renderDashboard,
+  toRow,
+} from '../../../bench/report/html.js';
+
+function card(overrides = {}) {
+  return {
+    schemaVersion: 1,
+    runId: 'hw-mandrel-r1',
+    timestamp: '2026-06-16T19:42:11.000Z',
+    model: { id: 'claude-opus-4-8[1m]' },
+    frameworkVersion: '1.70.0',
+    env: { node: 'v24.16.0', os: 'darwin', host: 'h' },
+    scenario: 'hello-world',
+    arm: 'mandrel',
+    dimensions: {
+      quality: {
+        score: 1,
+        frozenSuitePassRate: 1,
+        frozenSuitePassed: 3,
+        frozenSuiteTotal: 3,
+        acceptanceEvalScore: 1,
+      },
+      planningFidelity: {
+        score: 0.9,
+        plannedStoryCount: 1,
+        deliveredStoryCount: 1,
+      },
+      autonomy: {
+        score: 0.5,
+        hitlStops: 0,
+        blockedEvents: 1,
+        manualRescues: 0,
+      },
+      efficiency: {
+        wallClockMs: 1000,
+        totalTokens: 7657338,
+        dispatches: 1,
+        costUsd: 8.6,
+      },
+      overheadRatio: { tokenRatio: 0.58 },
+    },
+    rawRefs: {
+      lifecycleNdjson: '.raw/hw-mandrel-r1/lifecycle.ndjson',
+      signalsNdjson: ['.raw/hw-mandrel-r1/signals-0.ndjson'],
+      costEnvelope: '.raw/hw-mandrel-r1/cost-envelope.json',
+    },
+    ...overrides,
+  };
+}
+
+const CONTROL = card({
+  runId: 'hw-control-r1',
+  arm: 'control',
+  timestamp: '2026-06-16T18:00:00.000Z',
+  dimensions: {
+    quality: { score: 1, frozenSuitePassRate: 1 },
+    planningFidelity: { score: null },
+    autonomy: { score: 1, hitlStops: 0, blockedEvents: 0, manualRescues: 0 },
+    efficiency: {
+      wallClockMs: 500,
+      totalTokens: 89398,
+      dispatches: 0,
+      costUsd: 0.16,
+    },
+    overheadRatio: { tokenRatio: 0 },
+  },
+  rawRefs: { costEnvelope: '.raw/hw-control-r1/cost-envelope.json' },
+});
+
+describe('toRow', () => {
+  it('projects index headlines + full dimension breakdown + refs', () => {
+    const row = toRow(card());
+    assert.equal(row.runId, 'hw-mandrel-r1');
+    assert.equal(row.model, 'claude-opus-4-8[1m]');
+    // The slugified cohort reports dir (link to this run's Markdown report).
+    assert.equal(row.reportsDir, 'claude-opus-4-8-1m/1.70.0/reports/');
+    assert.equal(row.quality, 1);
+    assert.equal(row.autonomy, 0.5);
+    assert.equal(row.totalTokens, 7657338);
+    assert.equal(row.costUsd, 8.6);
+    assert.equal(row.overheadRatio, 0.58);
+    // Full breakdown for the modal.
+    assert.equal(row.dimensions.efficiency.dispatches, 1);
+    assert.equal(row.dimensions.autonomy.blockedEvents, 1);
+    assert.deepEqual(row.rawRefs.signalsNdjson, [
+      '.raw/hw-mandrel-r1/signals-0.ndjson',
+    ]);
+  });
+
+  it('coerces non-finite / missing metrics to null', () => {
+    const row = toRow({ model: {}, dimensions: {} });
+    assert.equal(row.quality, null);
+    assert.equal(row.costUsd, null);
+    assert.equal(row.model, '');
+  });
+});
+
+describe('buildDashboardModel', () => {
+  it('sorts rows by timestamp then runId and lists the headline metrics', () => {
+    const model = buildDashboardModel([card(), CONTROL]);
+    assert.deepEqual(
+      model.rows.map((r) => r.runId),
+      ['hw-control-r1', 'hw-mandrel-r1'],
+    );
+    const keys = model.metrics.map((m) => m.key);
+    for (const k of [
+      'quality',
+      'autonomy',
+      'totalTokens',
+      'costUsd',
+      'overheadRatio',
+    ]) {
+      assert.ok(keys.includes(k), `metrics should include ${k}`);
+    }
+  });
+
+  it('throws on a non-array corpus', () => {
+    assert.throws(() => buildDashboardModel(null), /must be an array/);
+  });
+});
+
+describe('renderDashboard', () => {
+  it('returns one self-contained HTML document', () => {
+    const html = renderDashboard({ scorecards: [card(), CONTROL] });
+    assert.match(html, /^<!doctype html>/);
+    assert.match(html, /<\/html>\s*$/);
+    // self-contained: no external script/style/link references.
+    assert.ok(!/<script[^>]+src=/.test(html), 'no external script src');
+    assert.ok(
+      !/<link[^>]+rel=["']stylesheet/.test(html),
+      'no external stylesheet',
+    );
+    assert.ok(
+      !/https?:\/\//.test(html.replace(/rel=["']noopener["']/g, '')),
+      'no network URLs',
+    );
+  });
+
+  it('inlines the corpus as JSON', () => {
+    const html = renderDashboard({ scorecards: [card(), CONTROL] });
+    assert.match(html, /<script type="application\/json" id="corpus">/);
+    // Both run ids appear in the inlined corpus.
+    assert.ok(html.includes('hw-mandrel-r1'));
+    assert.ok(html.includes('hw-control-r1'));
+  });
+
+  it('carries the trend-chart metrics, index table, and modal scaffolding', () => {
+    const html = renderDashboard({ scorecards: [card(), CONTROL] });
+    // Trend chart: both arms in the legend + the metric series keys inlined.
+    assert.ok(html.includes('id="chart"'));
+    assert.ok(html.includes('mandrel') && html.includes('control'));
+    assert.ok(html.includes('"overheadRatio"'));
+    // Index table scaffolding.
+    assert.ok(html.includes('id="idx-head"') && html.includes('id="idx-body"'));
+    // Modal scaffolding + per-dimension breakdown wiring.
+    assert.ok(html.includes('id="modal"') && html.includes('id="modal-body"'));
+    assert.ok(html.includes('Planning fidelity'));
+    // Modal links to raw artifacts + the Markdown report.
+    assert.ok(html.includes('costEnvelope') || html.includes('cost envelope'));
+    assert.ok(
+      html.includes('Markdown report'),
+      'modal links to the Markdown report',
+    );
+    assert.ok(
+      html.includes('reportsDir'),
+      'rows carry the cohort reports-dir pointer',
+    );
+  });
+
+  it('is byte-for-byte deterministic for a given corpus', () => {
+    const a = renderDashboard({ scorecards: [card(), CONTROL] });
+    const b = renderDashboard({ scorecards: [card(), CONTROL] });
+    assert.equal(a, b);
+    // Order-independent: input order does not change the (timestamp-sorted) output.
+    const c = renderDashboard({ scorecards: [CONTROL, card()] });
+    assert.equal(a, c);
+  });
+
+  it('renders a valid, non-crashing empty dashboard for an empty corpus', () => {
+    const html = renderDashboard({ scorecards: [] });
+    assert.match(html, /^<!doctype html>/);
+    assert.match(html, /Results Dashboard/);
+    assert.match(html, /"rows":\[\]/);
+    assert.ok(html.includes('id="chart"'));
+  });
+
+  it('throws on a non-array corpus', () => {
+    assert.throws(
+      () => renderDashboard({ scorecards: null }),
+      /must be an array/,
+    );
+  });
+});

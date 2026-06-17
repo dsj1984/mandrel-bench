@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mandrel Self-Benchmark — Results Dashboard</title>
+<style>
+:root {
+  --bg: #0f1115; --panel: #181b22; --border: #2a2f3a; --fg: #e6e8ec;
+  --muted: #9aa3b2; --accent: #6ea8fe; --mandrel: #6ea8fe; --control: #f0883e;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  background: var(--bg); color: var(--fg);
+}
+header { padding: 20px 24px; border-bottom: 1px solid var(--border); }
+h1 { margin: 0 0 4px; font-size: 18px; }
+.sub { color: var(--muted); font-size: 13px; }
+main { padding: 20px 24px; }
+section { margin-bottom: 28px; }
+h2 { font-size: 15px; margin: 0 0 12px; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; align-items: center; }
+.controls label { color: var(--muted); font-size: 12px; }
+select, input[type=text] {
+  background: var(--panel); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 5px 8px; font: inherit;
+}
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th { cursor: pointer; user-select: none; color: var(--muted); font-weight: 600; }
+th.sorted-asc::after { content: " \25B2"; }
+th.sorted-desc::after { content: " \25BC"; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: rgba(110,168,254,0.08); }
+.empty { color: var(--muted); padding: 24px; text-align: center; }
+.legend { display: flex; gap: 16px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.legend span::before { content: "\25CF "; }
+.legend .mandrel::before { color: var(--mandrel); }
+.legend .control::before { color: var(--control); }
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  display: none; align-items: center; justify-content: center; padding: 24px;
+}
+.modal-backdrop.open { display: flex; }
+.modal {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  max-width: 720px; width: 100%; max-height: 84vh; overflow: auto; padding: 20px;
+}
+.modal h3 { margin: 0 0 4px; font-size: 16px; }
+.modal .close { float: right; cursor: pointer; color: var(--muted); font-size: 20px; line-height: 1; background: none; border: none; }
+.modal table { margin-top: 12px; }
+.modal .links a { color: var(--accent); margin-right: 14px; }
+.modal .links { margin-top: 14px; }
+.dim-group { margin-top: 14px; }
+.dim-group h4 { margin: 0 0 6px; font-size: 13px; color: var(--accent); }
+svg { display: block; width: 100%; height: auto; }
+.metric-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.metric-btns button {
+  background: var(--panel); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 4px 10px; cursor: pointer; font: inherit;
+}
+.metric-btns button.active { border-color: var(--accent); color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+<h1>Mandrel Self-Benchmark — Results Dashboard</h1>
+<div class="sub">Generated artifact (Epic #2). 2 run(s) across every cohort. Pure, deterministic, zero-dependency — regenerated at the end of every <code>bench/run.js</code> run.</div>
+</header>
+<main>
+<section>
+<h2>Trend over time</h2>
+<div class="controls">
+<label for="chart-cohort">Cohort</label>
+<select id="chart-cohort"><option value="">All cohorts</option></select>
+<div class="metric-btns" id="metric-btns"></div>
+</div>
+<div class="panel"><div id="chart"></div>
+<div class="legend"><span class="mandrel">mandrel</span><span class="control">control</span></div>
+</div>
+</section>
+<section>
+<h2>Run index</h2>
+<div class="controls">
+<label for="f-scenario">Scenario</label>
+<select id="f-scenario"><option value="">all</option></select>
+<label for="f-arm">Arm</label>
+<select id="f-arm"><option value="">all</option></select>
+<label for="f-model">Model</label>
+<select id="f-model"><option value="">all</option></select>
+<label for="f-version">Version</label>
+<select id="f-version"><option value="">all</option></select>
+<input type="text" id="f-text" placeholder="free-text filter…">
+</div>
+<div class="panel">
+<table><thead id="idx-head"></thead><tbody id="idx-body"></tbody></table>
+<div class="empty" id="idx-empty" style="display:none">No runs match the current filters.</div>
+</div>
+</section>
+</main>
+<div class="modal-backdrop" id="modal-backdrop">
+<div class="modal" id="modal" role="dialog" aria-modal="true"><div id="modal-body"></div></div>
+</div>
+<script type="application/json" id="corpus">{"rows":[{"runId":"hello-world-control-2026-06-17T00-18-24.225Z-r1","reportsDir":"claude-opus-4-8/1.70.0/reports/","timestamp":"2026-06-17T00:18:24.225Z","scenario":"hello-world","arm":"control","model":"claude-opus-4-8","frameworkVersion":"1.70.0","env":{"node":"v24.16.0","os":"darwin","host":"Daniels-MacBook-Pro.local"},"quality":1,"planningFidelity":null,"autonomy":1,"totalTokens":89398,"costUsd":0.157918,"overheadRatio":0,"dimensions":{"quality":{"score":1,"frozenSuitePassRate":1,"frozenSuitePassed":3,"frozenSuiteTotal":3,"acceptanceEvalScore":null},"planningFidelity":{"score":null,"rePlanCount":0,"plannedStoryCount":0,"deliveredStoryCount":0,"fileFootprintDrift":0},"autonomy":{"score":1,"hitlStops":0,"blockedEvents":0,"manualRescues":0},"efficiency":{"wallClockMs":20687,"totalTokens":89398,"inputTokens":3138,"outputTokens":1281,"dispatches":0,"costUsd":0.157918},"overheadRatio":{"tokenRatio":0,"timeRatio":0,"ceremonyTokens":0,"codegenTokens":89398}},"rawRefs":{"costEnvelope":"/Users/dsj/Development/mandrel-bench/results/.raw/hello-world-control-r1/cost-envelope.json"}},{"runId":"hello-world-mandrel-2026-06-17T00-47-10.691Z-r1","reportsDir":"claude-opus-4-8/1.70.0/reports/","timestamp":"2026-06-17T00:47:10.691Z","scenario":"hello-world","arm":"mandrel","model":"claude-opus-4-8","frameworkVersion":"1.70.0","env":{"node":"v24.16.0","os":"darwin","host":"Daniels-MacBook-Pro.local"},"quality":1,"planningFidelity":1,"autonomy":0.5,"totalTokens":7657338,"costUsd":8.60738425,"overheadRatio":0.5818968909878001,"dimensions":{"quality":{"score":1,"frozenSuitePassRate":1,"frozenSuitePassed":3,"frozenSuiteTotal":3,"acceptanceEvalScore":1},"planningFidelity":{"score":1,"rePlanCount":0,"plannedStoryCount":1,"deliveredStoryCount":1,"fileFootprintDrift":0},"autonomy":{"score":0.5,"hitlStops":0,"blockedEvents":1,"manualRescues":0},"efficiency":{"wallClockMs":582891,"totalTokens":7657338,"inputTokens":6278,"outputTokens":35860,"dispatches":1,"costUsd":8.60738425},"overheadRatio":{"tokenRatio":0.5818968909878001,"timeRatio":0.581896785679393,"ceremonyTokens":2816733,"codegenTokens":4840605}},"rawRefs":{"lifecycleNdjson":"/Users/dsj/Development/mandrel-bench/results/.raw/hello-world-mandrel-r1/lifecycle.ndjson","signalsNdjson":["/Users/dsj/Development/mandrel-bench/results/.raw/hello-world-mandrel-r1/signals-0.ndjson"],"costEnvelope":"/Users/dsj/Development/mandrel-bench/results/.raw/hello-world-mandrel-r1/cost-envelope.json"}}],"metrics":[{"key":"quality","label":"Quality"},{"key":"autonomy","label":"Autonomy"},{"key":"totalTokens","label":"Total tokens"},{"key":"costUsd","label":"Cost (USD)"},{"key":"overheadRatio","label":"Overhead ratio"}]}</script>
+<script>
+"use strict";
+(function () {
+  var dataEl = document.getElementById("corpus");
+  var MODEL = dataEl ? JSON.parse(dataEl.textContent) : { rows: [], metrics: [] };
+  var ROWS = MODEL.rows || [];
+  var METRICS = MODEL.metrics || [];
+
+  // ---- shared cohort + filter state -------------------------------------
+  function uniq(vals) {
+    var seen = {}; var out = [];
+    vals.forEach(function (v) { if (v !== "" && !seen[v]) { seen[v] = 1; out.push(v); } });
+    out.sort();
+    return out;
+  }
+  var COHORTS = uniq(ROWS.map(function (r) { return r.model + " @ " + r.frameworkVersion; }));
+
+  // ---- index table ------------------------------------------------------
+  var COLUMNS = [
+    { key: "timestamp", label: "Timestamp", type: "str" },
+    { key: "scenario", label: "Scenario", type: "str" },
+    { key: "arm", label: "Arm", type: "str" },
+    { key: "model", label: "Model", type: "str" },
+    { key: "frameworkVersion", label: "Version", type: "str" },
+    { key: "quality", label: "Quality", type: "num" },
+    { key: "planningFidelity", label: "Planning", type: "num" },
+    { key: "autonomy", label: "Autonomy", type: "num" },
+    { key: "totalTokens", label: "Tokens", type: "num" },
+    { key: "overheadRatio", label: "Overhead", type: "num" },
+    { key: "env", label: "Env", type: "str" }
+  ];
+  var sortKey = "timestamp";
+  var sortDir = 1;
+
+  function envStr(r) { return (r.env.os || "") + " / " + (r.env.node || ""); }
+  function cell(r, key) {
+    if (key === "env") return envStr(r);
+    var v = r[key];
+    if (v === null || v === undefined) return "—";
+    if (typeof v === "number") {
+      return Math.abs(v) >= 1000 ? String(v) : (Math.round(v * 1000) / 1000);
+    }
+    return v;
+  }
+
+  function activeFilters() {
+    return {
+      scenario: document.getElementById("f-scenario").value,
+      arm: document.getElementById("f-arm").value,
+      model: document.getElementById("f-model").value,
+      version: document.getElementById("f-version").value,
+      text: document.getElementById("f-text").value.toLowerCase().trim()
+    };
+  }
+
+  function filteredRows() {
+    var f = activeFilters();
+    return ROWS.filter(function (r) {
+      if (f.scenario && r.scenario !== f.scenario) return false;
+      if (f.arm && r.arm !== f.arm) return false;
+      if (f.model && r.model !== f.model) return false;
+      if (f.version && r.frameworkVersion !== f.version) return false;
+      if (f.text) {
+        var hay = (r.runId + " " + r.scenario + " " + r.arm + " " + r.model +
+          " " + r.frameworkVersion + " " + envStr(r)).toLowerCase();
+        if (hay.indexOf(f.text) === -1) return false;
+      }
+      return true;
+    });
+  }
+
+  function sortRows(rows) {
+    var col = COLUMNS.filter(function (c) { return c.key === sortKey; })[0] || COLUMNS[0];
+    return rows.slice().sort(function (a, b) {
+      var av = col.key === "env" ? envStr(a) : a[col.key];
+      var bv = col.key === "env" ? envStr(b) : b[col.key];
+      if (col.type === "num") {
+        var an = (av === null || av === undefined) ? -Infinity : av;
+        var bn = (bv === null || bv === undefined) ? -Infinity : bv;
+        return (an - bn) * sortDir;
+      }
+      av = av || ""; bv = bv || "";
+      return (av < bv ? -1 : av > bv ? 1 : 0) * sortDir;
+    });
+  }
+
+  function renderTable() {
+    var rows = sortRows(filteredRows());
+    var thead = document.getElementById("idx-head");
+    var tbody = document.getElementById("idx-body");
+    thead.innerHTML = "";
+    var tr = document.createElement("tr");
+    COLUMNS.forEach(function (c) {
+      var th = document.createElement("th");
+      th.textContent = c.label;
+      if (c.key === sortKey) th.className = sortDir === 1 ? "sorted-asc" : "sorted-desc";
+      th.addEventListener("click", function () {
+        if (sortKey === c.key) { sortDir = -sortDir; } else { sortKey = c.key; sortDir = 1; }
+        renderTable();
+      });
+      tr.appendChild(th);
+    });
+    thead.appendChild(tr);
+
+    tbody.innerHTML = "";
+    var emptyEl = document.getElementById("idx-empty");
+    emptyEl.style.display = rows.length === 0 ? "block" : "none";
+    rows.forEach(function (r) {
+      var trb = document.createElement("tr");
+      trb.setAttribute("data-runid", r.runId);
+      COLUMNS.forEach(function (c) {
+        var td = document.createElement("td");
+        td.textContent = cell(r, c.key);
+        trb.appendChild(td);
+      });
+      trb.addEventListener("click", function () { openModal(r.runId); });
+      tbody.appendChild(trb);
+    });
+  }
+
+  // ---- modal ------------------------------------------------------------
+  function rowById(id) {
+    for (var i = 0; i < ROWS.length; i++) { if (ROWS[i].runId === id) return ROWS[i]; }
+    return null;
+  }
+  function dimTable(obj) {
+    if (!obj) return "<p class='empty'>—</p>";
+    var html = "<table>";
+    Object.keys(obj).forEach(function (k) {
+      var v = obj[k];
+      html += "<tr><td>" + k + "</td><td>" + (v === null || v === undefined ? "—" : v) + "</td></tr>";
+    });
+    return html + "</table>";
+  }
+  function openModal(id) {
+    var r = rowById(id);
+    if (!r) return;
+    var body = document.getElementById("modal-body");
+    var dims = r.dimensions || {};
+    var html = "<button class='close' aria-label='Close'>&times;</button>";
+    html += "<h3></h3><div class='sub'></div>";
+    var groups = [
+      ["Quality", dims.quality], ["Planning fidelity", dims.planningFidelity],
+      ["Autonomy", dims.autonomy], ["Efficiency", dims.efficiency],
+      ["Overhead ratio", dims.overheadRatio]
+    ];
+    groups.forEach(function (g) {
+      html += "<div class='dim-group'><h4></h4>" + dimTable(g[1]) + "</div>";
+    });
+    html += "<div class='links'></div>";
+    body.innerHTML = html;
+    body.querySelector("h3").textContent = r.runId;
+    body.querySelector(".sub").textContent =
+      r.scenario + " · " + r.arm + " · " + r.model + " @ " + r.frameworkVersion +
+      " · " + r.timestamp;
+    var h4s = body.querySelectorAll(".dim-group h4");
+    for (var i = 0; i < h4s.length; i++) h4s[i].textContent = groups[i][0];
+
+    var links = body.querySelector(".links");
+    var refs = r.rawRefs || {};
+    function addLink(href, label) {
+      if (!href) return;
+      var a = document.createElement("a");
+      a.href = href; a.textContent = label; a.target = "_blank"; a.rel = "noopener";
+      links.appendChild(a);
+    }
+    if (refs.costEnvelope) addLink(refs.costEnvelope, "cost envelope");
+    if (refs.lifecycleNdjson) addLink(refs.lifecycleNdjson, "lifecycle");
+    if (refs.signalsNdjson) {
+      refs.signalsNdjson.forEach(function (s, i) { addLink(s, "signals " + i); });
+    }
+    if (refs.acceptanceEvalVerdict) addLink(refs.acceptanceEvalVerdict, "verdict");
+    // Link to this run's cohort Markdown report directory.
+    if (r.reportsDir) addLink(r.reportsDir, "Markdown report");
+
+    body.querySelector(".close").addEventListener("click", closeModal);
+    document.getElementById("modal-backdrop").classList.add("open");
+  }
+  function closeModal() { document.getElementById("modal-backdrop").classList.remove("open"); }
+
+  // ---- trend chart ------------------------------------------------------
+  var selectedMetric = METRICS.length ? METRICS[0].key : null;
+  var selectedCohort = "";
+
+  function chartRows() {
+    return ROWS.filter(function (r) {
+      if (!selectedCohort) return true;
+      return (r.model + " @ " + r.frameworkVersion) === selectedCohort;
+    });
+  }
+  function renderChart() {
+    var host = document.getElementById("chart");
+    var rows = chartRows();
+    var arms = ["mandrel", "control"];
+    var colors = { mandrel: "#6ea8fe", control: "#f0883e" };
+    var W = 760, H = 280, padL = 56, padR = 16, padT = 16, padB = 36;
+    var series = {};
+    var allVals = [];
+    arms.forEach(function (arm) {
+      var pts = rows.filter(function (r) { return r.arm === arm; })
+        .map(function (r) { return { t: r.timestamp, v: r[selectedMetric] }; })
+        .filter(function (p) { return p.v !== null && p.v !== undefined; })
+        .sort(function (a, b) { return a.t < b.t ? -1 : a.t > b.t ? 1 : 0; });
+      series[arm] = pts;
+      pts.forEach(function (p) { allVals.push(p.v); });
+    });
+    if (allVals.length === 0) {
+      host.innerHTML = "<p class='empty'>No data for this metric / cohort.</p>";
+      return;
+    }
+    var n = Math.max.apply(null, arms.map(function (a) { return series[a].length; }));
+    var maxX = Math.max(1, n - 1);
+    var minV = Math.min.apply(null, allVals);
+    var maxV = Math.max.apply(null, allVals);
+    if (minV === maxV) { minV = minV - 1; maxV = maxV + 1; }
+    var plotW = W - padL - padR, plotH = H - padT - padB;
+    function x(i) { return padL + (maxX === 0 ? plotW / 2 : (i / maxX) * plotW); }
+    function y(v) { return padT + plotH - ((v - minV) / (maxV - minV)) * plotH; }
+
+    var svg = "<svg viewBox='0 0 " + W + " " + H + "' role='img' aria-label='Trend chart'>";
+    // axes
+    svg += "<line x1='" + padL + "' y1='" + padT + "' x2='" + padL + "' y2='" + (padT + plotH) + "' stroke='#2a2f3a'/>";
+    svg += "<line x1='" + padL + "' y1='" + (padT + plotH) + "' x2='" + (W - padR) + "' y2='" + (padT + plotH) + "' stroke='#2a2f3a'/>";
+    // y labels (min / max)
+    svg += "<text x='" + (padL - 6) + "' y='" + (padT + 4) + "' fill='#9aa3b2' font-size='10' text-anchor='end'>" + fmtNum(maxV) + "</text>";
+    svg += "<text x='" + (padL - 6) + "' y='" + (padT + plotH) + "' fill='#9aa3b2' font-size='10' text-anchor='end'>" + fmtNum(minV) + "</text>";
+    arms.forEach(function (arm) {
+      var pts = series[arm];
+      if (pts.length === 0) return;
+      var d = "";
+      pts.forEach(function (p, i) {
+        var px = x(i), py = y(p.v);
+        d += (i === 0 ? "M" : "L") + px.toFixed(2) + " " + py.toFixed(2) + " ";
+      });
+      if (pts.length > 1) {
+        svg += "<path d='" + d + "' fill='none' stroke='" + colors[arm] + "' stroke-width='2'/>";
+      }
+      pts.forEach(function (p, i) {
+        svg += "<circle cx='" + x(i).toFixed(2) + "' cy='" + y(p.v).toFixed(2) +
+          "' r='3.5' fill='" + colors[arm] + "'><title>" + arm + ": " + p.v + "</title></circle>";
+      });
+    });
+    svg += "</svg>";
+    host.innerHTML = svg;
+  }
+  function fmtNum(v) {
+    if (Math.abs(v) >= 1000) return String(Math.round(v));
+    return String(Math.round(v * 1000) / 1000);
+  }
+  function renderMetricButtons() {
+    var host = document.getElementById("metric-btns");
+    host.innerHTML = "";
+    METRICS.forEach(function (m) {
+      var b = document.createElement("button");
+      b.textContent = m.label;
+      if (m.key === selectedMetric) b.className = "active";
+      b.addEventListener("click", function () { selectedMetric = m.key; renderMetricButtons(); renderChart(); });
+      host.appendChild(b);
+    });
+  }
+
+  // ---- wire up ----------------------------------------------------------
+  function fillSelect(id, values) {
+    var sel = document.getElementById(id);
+    values.forEach(function (v) {
+      var o = document.createElement("option"); o.value = v; o.textContent = v;
+      sel.appendChild(o);
+    });
+  }
+  fillSelect("f-scenario", uniq(ROWS.map(function (r) { return r.scenario; })));
+  fillSelect("f-arm", uniq(ROWS.map(function (r) { return r.arm; })));
+  fillSelect("f-model", uniq(ROWS.map(function (r) { return r.model; })));
+  fillSelect("f-version", uniq(ROWS.map(function (r) { return r.frameworkVersion; })));
+  ["f-scenario", "f-arm", "f-model", "f-version", "f-text"].forEach(function (id) {
+    var el = document.getElementById(id);
+    el.addEventListener("input", renderTable);
+    el.addEventListener("change", renderTable);
+  });
+
+  var cohortSel = document.getElementById("chart-cohort");
+  fillSelect("chart-cohort", COHORTS);
+  cohortSel.addEventListener("change", function () { selectedCohort = cohortSel.value; renderChart(); });
+
+  document.getElementById("modal-backdrop").addEventListener("click", function (e) {
+    if (e.target === this) closeModal();
+  });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeModal(); });
+
+  renderMetricButtons();
+  renderChart();
+  renderTable();
+})();
+</script>
+</body>
+</html>
