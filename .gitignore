@@ -6,6 +6,7 @@ node_modules/
 temp/
 *.log
 .DS_Store
+.worktrees
 
 # NOTE: results/ is intentionally NOT ignored — the append-only scorecard
 # store under results/ is the longitudinal over-time record and must be
