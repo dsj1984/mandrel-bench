@@ -114,8 +114,7 @@ mandrel-bench/
 │   └── fixtures/     # sample scorecard + sample lifecycle ndjson (test fixtures)
 ├── tests/bench/      # node:test suites mirroring bench/ (pure-logic units)
 ├── results/          # committed longitudinal scorecard store (the over-time record)
-├── docs/
-│   └── mandrel-self-benchmark.md   # the design one-pager
+├── docs/             # architecture.md (run model) + decisions.md (rationale)
 └── package.json      # pins `mandrel` — the version under test
 ```
 
@@ -123,42 +122,57 @@ mandrel-bench/
 
 ## Status
 
-**Transplanted and present:** the full harness component set (metrics model +
+**Wired and exercised end to end.** The full component set (metrics model +
 scorecard schema, scenarios + frozen oracles, run driver + sandbox lifecycle,
 collector, scoring + control differential + derived metrics, report +
-persistence + cross-run compare) with its `node:test` unit suites. This code
-was authored and delivered through Mandrel's own `/plan`→`/deliver` (originally
-as Epic
-[mandrel#4211](https://github.com/dsj1984/mandrel/issues/4211)) and re-homed
-here.
+persistence + cross-run compare) is tied together by a top-level **orchestrator
+(`bench/run.js`)**, a **framework-under-test overlay (`bench/driver/overlay.js`)**,
+and an **app-runner (`bench/driver/app-runner.js`)**, all with `node:test` unit
+suites.
 
-**Remaining wiring (the next cycle — ideally planned *with Mandrel itself*):**
+The **first benchmark result** has landed — `hello-world`, both arms, N=1 on
+`mandrel@1.70.0` / `claude-opus-4-8`. The mandrel arm drove `/plan`→`/deliver`
+fully headless and unattended against a throwaway `mandrel-bench-sandbox` repo;
+see [`results/`](results/) for the scorecards and the value-add report.
 
-- [ ] `npm install` + `mandrel sync` to materialize `.agents/` for the pinned
-      version (the `scenarios/acceptance-eval-adapter` cross-check and the
-      pipeline drive depend on the materialized `.agents/scripts/`).
-- [ ] A top-level run orchestrator (`bench/run.js`) that loops
-      `N × scenarios × arms`, calls driver → collect → score → report, and
-      writes to `results/`.
-- [ ] Adapt the driver's "framework under test" to the *installed* `mandrel`
-      version (currently it assumes a sandbox clone of the framework repo).
+**Done this cycle:**
+
+- [x] A top-level run orchestrator (`bench/run.js`) that loops
+      `N × scenarios × arms`, runs overlay → driver → app-runner → collect →
+      score → report, and writes to `results/`.
+- [x] The driver's "framework under test" is the *installed* `mandrel` version:
+      `overlay.js` copies this repo's materialized `.agents/` (+ `node_modules`)
+      into the mandrel-arm clone and repoints it at the sandbox repo.
+- [x] An app-runner that starts the delivered app and probes it for the frozen
+      Quality oracle.
+- [x] The first live N=1 smoke result, persisted to `results/`.
+
+**Still open (deferred, separately planned):**
+
+- [ ] Scale to N≈8–10 and add the `crud-db` rung for a statistically meaningful
+      verdict (the N=1 result is non-inferential — see [`results/`](results/)).
 - [ ] CI for this repo (run the unit suites; the full benchmark is a periodic,
       manually-triggered capability report, not a per-PR gate).
+- [ ] A first-class `/plan` headless flag and an auto-merge gate that does not
+      block a clean trivial run (both surfaced as findings by the first result).
 
-The unit suites under `tests/bench/` that exercise pure logic (variance,
-dimensions, differential, collect/normalize, report render/persist/compare,
-scorecard-schema) run standalone via `npm test`; the scenario/acceptance-eval
-pieces require the materialized `.agents/` from `mandrel sync`.
+The unit suites under `tests/bench/` run standalone via `npm test`; the
+scenario/acceptance-eval pieces additionally use the materialized `.agents/`.
 
 ---
 
-## Running (once wired)
+## Running
 
 ```bash
 npm install            # pulls the pinned `mandrel` version under test
-npx mandrel sync       # materialize .agents/ for that version
 npm test               # run the harness unit suites
-# npm run bench        # (future) full N × scenarios × arms capability report
+
+# Full capability run (real claude -p sessions against a sandbox repo):
+BENCH_SANDBOX_REPO_URL=https://github.com/<owner>/<sandbox>.git \
+BENCH_SANDBOX_OWNER=<owner> BENCH_SANDBOX_REPO=<sandbox> \
+BENCH_EPIC_ID=<seed-epic-in-sandbox> \
+BENCH_ARMS=control,mandrel BENCH_SCENARIOS=hello-world BENCH_N=1 \
+npm run bench
 ```
 
 To benchmark a different framework version, bump `dependencies.mandrel` in
@@ -174,8 +188,7 @@ and the cross-run comparison surfaces the deltas.
 - [`docs/architecture.md`](docs/architecture.md) — technical architecture (run
   model, components, data flow, security).
 - [`docs/decisions.md`](docs/decisions.md) — the decision log and rationale.
-- [`docs/mandrel-self-benchmark.md`](docs/mandrel-self-benchmark.md) — the
-  originating design one-pager (problem, dimensions, scope, non-goals).
+- [`results/`](results/) — the scorecard store and value-add reports.
 
 ## Development
 

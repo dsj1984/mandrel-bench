@@ -2,9 +2,8 @@
 
 > **Scope.** This is the *technical* architecture (how the harness is built and
 > how data flows). For the *product* framing — problem, dimensions, scope, and
-> non-goals — see [`mandrel-self-benchmark.md`](mandrel-self-benchmark.md), the
-> originating design one-pager. Decisions and their rationale are logged in
-> [`decisions.md`](decisions.md).
+> non-goals — see the [README](../README.md). Decisions and their rationale are
+> logged in [`decisions.md`](decisions.md).
 
 ## 1. What it is
 
