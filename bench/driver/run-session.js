@@ -82,16 +82,29 @@ export function buildArmPrompt(input) {
   if (arm === 'mandrel') {
     // Mandrel pipeline arm. Auto-proceed directive keeps the HITL STOP gates
     // from stalling the headless session (see unattended.md).
-    return (
+    const preamble =
       `You are operating Mandrel's pipeline non-interactively under a headless ` +
       `benchmark driver. There is no human at the keyboard. At every ` +
       `human-in-the-loop STOP / confirmation gate (one-pager confirm, spec ` +
       `review, decomposition diff gate, and the auto-merge-else-operator-merge ` +
       `step), treat the absence of an operator as implicit approval and proceed ` +
-      `with the best available interpretation — never block waiting for input. ` +
-      `Author the plan with /plan and then deliver it with /deliver; do not ` +
-      `pre-stage any planning artifact.\n\nTask (${scenario.id}):\n${scenario.taskPrompt}`
-    );
+      `with the best available interpretation — never block waiting for input. `;
+
+    // When a seed Epic id is supplied, drive `/plan <epicId>`→`/deliver <epicId>`.
+    // Routing through an existing Epic bypasses the `/plan` ideation one-pager —
+    // the one HITL gate with no headless flag (D-011) — while still authoring the
+    // decomposition live, so planning fidelity is genuinely measured (never
+    // pre-staged). With no epicId we fall back to the `--idea`-style drive.
+    const drive =
+      scenario.epicId !== undefined && scenario.epicId !== null
+        ? `An Epic issue (#${scenario.epicId}) capturing the task below has already ` +
+          `been opened in this repository. Plan it with \`/plan ${scenario.epicId}\` ` +
+          `and then deliver it with \`/deliver ${scenario.epicId} --yes\`; do not ` +
+          `re-author the Epic from an idea and do not pre-stage any planning artifact.`
+        : `Author the plan with /plan and then deliver it with /deliver; do not ` +
+          `pre-stage any planning artifact.`;
+
+    return `${preamble}${drive}\n\nTask (${scenario.id}):\n${scenario.taskPrompt}`;
   }
 
   throw new TypeError(
