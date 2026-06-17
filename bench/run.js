@@ -56,7 +56,7 @@ import {
 import { aggregateScorecards } from './report/aggregate.js';
 import { cohortDir } from './report/cohort-path.js';
 import { renderDashboard } from './report/html.js';
-import { appendScorecards } from './report/persist.js';
+import { appendScorecards, readStore } from './report/persist.js';
 import { renderReport } from './report/render.js';
 import { scoreScenarioQuality as defaultScoreScenarioQuality } from './scenarios/acceptance-eval-adapter.js';
 
@@ -819,7 +819,15 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
   const cohorts = [];
   for (const [dir, cohortCards] of cohortReportCards) {
     const storePath = path.join(dir, 'scorecards.ndjson');
-    const report = renderReport({ scorecards: cohortCards, method: 'iqr' });
+    // Render over the FULL on-disk cohort store, NOT just this run's
+    // `cohortCards`. A resumed batch only produces the cells it actually
+    // re-ran (the rest are skipped from the checkpoint), so rendering
+    // `cohortCards` alone under-counts every resumed cell — a resumed N=8 that
+    // re-ran 5 cells would report n=5 instead of the true n=8. This mirrors how
+    // the dashboard reads the corpus (`aggregateScorecards`). Deterministic:
+    // `readStore` + `renderReport` are pure over the append-ordered store.
+    const fullStore = readStore({ storePath }, deps.persistDeps);
+    const report = renderReport({ scorecards: fullStore, method: 'iqr' });
     const stamp = sanitizeRunId(cohortCards[0]?.timestamp ?? `${Date.now()}`);
     const reportsDir = path.join(dir, 'reports');
     const reportPath = path.join(reportsDir, `report-${stamp}.md`);
