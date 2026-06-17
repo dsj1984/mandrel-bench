@@ -135,6 +135,17 @@ test('buildArmPrompt: mandrel arm drives /plan then /deliver with auto-proceed',
   assert.match(prompt, /hello-world/);
 });
 
+test('buildArmPrompt: mandrel arm drives an existing Epic id when one is supplied', () => {
+  const prompt = buildArmPrompt({
+    arm: 'mandrel',
+    scenario: { ...SCENARIO, epicId: 42 },
+  });
+  assert.match(prompt, /\/plan 42/);
+  assert.match(prompt, /\/deliver 42 --yes/);
+  // Still carries the auto-proceed directive.
+  assert.match(prompt, /implicit approval|never block/i);
+});
+
 test('buildArmPrompt: control arm is bare — no Mandrel pipeline', () => {
   const prompt = buildArmPrompt({ arm: 'control', scenario: SCENARIO });
   assert.doesNotMatch(prompt, /\/plan|\/deliver/);
