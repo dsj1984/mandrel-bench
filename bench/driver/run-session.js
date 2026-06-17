@@ -90,19 +90,26 @@ export function buildArmPrompt(input) {
       `step), treat the absence of an operator as implicit approval and proceed ` +
       `with the best available interpretation — never block waiting for input. `;
 
-    // When a seed Epic id is supplied, drive `/plan <epicId>`→`/deliver <epicId>`.
-    // Routing through an existing Epic bypasses the `/plan` ideation one-pager —
-    // the one HITL gate with no headless flag (D-011) — while still authoring the
-    // decomposition live, so planning fidelity is genuinely measured (never
-    // pre-staged). With no epicId we fall back to the `--idea`-style drive.
+    // Both drive paths pass `--yes` to `/plan` (v1.72.0+ headless flag, mandrel#4223):
+    // it deterministically auto-proceeds /plan's HITL stop gates (the ideation
+    // one-pager / scope-triage confirm and the Phase-7 review gate) rather than
+    // relying on the best-effort prompt directive that predated the flag (D-011).
+    //   - With a seed Epic id: `/plan <id> --yes` → `/deliver <id> --yes` (enters at
+    //     the existing Epic; the one-pager is moot but --yes still clears Phase-7).
+    //   - Without one (the default for N>1 cohorts, since each Epic-id run consumes
+    //     and closes its Epic): the `--idea` drive — each run self-authors a fresh
+    //     Epic from the task and runs the full /plan pipeline, the most representative
+    //     consumer path. Planning fidelity is genuinely measured (never pre-staged).
     const drive =
       scenario.epicId !== undefined && scenario.epicId !== null
         ? `An Epic issue (#${scenario.epicId}) capturing the task below has already ` +
-          `been opened in this repository. Plan it with \`/plan ${scenario.epicId}\` ` +
+          `been opened in this repository. Plan it with \`/plan ${scenario.epicId} --yes\` ` +
           `and then deliver it with \`/deliver ${scenario.epicId} --yes\`; do not ` +
           `re-author the Epic from an idea and do not pre-stage any planning artifact.`
-        : `Author the plan with /plan and then deliver it with /deliver; do not ` +
-          `pre-stage any planning artifact.`;
+        : `Author the plan with \`/plan --idea "<the task described below>" --yes\` and ` +
+          `then deliver the resulting Epic with \`/deliver <epicId> --yes\` (the --yes ` +
+          `flags drive /plan and /deliver headlessly through their HITL stop gates); do ` +
+          `not pre-stage any planning artifact.`;
 
     return `${preamble}${drive}\n\nTask (${scenario.id}):\n${scenario.taskPrompt}`;
   }

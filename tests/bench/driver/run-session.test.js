@@ -128,8 +128,9 @@ test('buildClaudeArgs: rejects empty prompt / model / non-array extraArgs', () =
 
 test('buildArmPrompt: mandrel arm drives /plan then /deliver with auto-proceed', () => {
   const prompt = buildArmPrompt({ arm: 'mandrel', scenario: SCENARIO });
-  assert.match(prompt, /\/plan/);
-  assert.match(prompt, /\/deliver/);
+  // No seed Epic → the --idea drive, with /plan's headless --yes flag.
+  assert.match(prompt, /\/plan --idea[\s\S]*--yes/);
+  assert.match(prompt, /\/deliver[\s\S]*--yes/);
   assert.match(prompt, /headless/i);
   assert.match(prompt, /implicit approval|never block/i);
   assert.match(prompt, /hello-world/);
@@ -140,7 +141,7 @@ test('buildArmPrompt: mandrel arm drives an existing Epic id when one is supplie
     arm: 'mandrel',
     scenario: { ...SCENARIO, epicId: 42 },
   });
-  assert.match(prompt, /\/plan 42/);
+  assert.match(prompt, /\/plan 42 --yes/);
   assert.match(prompt, /\/deliver 42 --yes/);
   // Still carries the auto-proceed directive.
   assert.match(prompt, /implicit approval|never block/i);
