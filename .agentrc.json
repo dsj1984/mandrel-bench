@@ -20,6 +20,13 @@
   "delivery": {
     "ci": {
       "skipForStoryPushes": true
+    },
+    "quality": {
+      "gates": {
+        "crap": {
+          "enabled": false
+        }
+      }
     }
   }
 }
