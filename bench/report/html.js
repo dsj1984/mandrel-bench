@@ -27,6 +27,8 @@
 // given corpus. The browser-side JS computes layout at view time, but the
 // emitted string is fixed for a fixed corpus.
 
+import { cohortSegments } from './cohort-path.js';
+
 /**
  * The headline metrics the trend chart plots, each with a label, a unit hint,
  * and a pure accessor onto a scorecard. Kept in module scope so the
@@ -82,8 +84,17 @@ function num(v) {
  */
 export function toRow(sc) {
   const dims = sc?.dimensions ?? {};
+  // The cohort's per-run Markdown reports live under
+  // `<model-slug>/<frameworkVersion>/reports/`, relative to results.html (which
+  // sits at the results root). We carry the relative reports-dir pointer rather
+  // than a single report file because a report stamps a whole run (every cohort
+  // scorecard for that run), not one scorecard — the dir is the deterministic,
+  // record-derivable link to "this run's Markdown report(s)".
+  const { modelSlug, frameworkVersion } = cohortSegments(sc);
+  const reportsDir = `${modelSlug}/${frameworkVersion}/reports/`;
   return {
     runId: typeof sc?.runId === 'string' ? sc.runId : '',
+    reportsDir,
     timestamp: typeof sc?.timestamp === 'string' ? sc.timestamp : '',
     scenario: typeof sc?.scenario === 'string' ? sc.scenario : '',
     arm: typeof sc?.arm === 'string' ? sc.arm : '',
@@ -409,6 +420,8 @@ const SCRIPT = `
       refs.signalsNdjson.forEach(function (s, i) { addLink(s, "signals " + i); });
     }
     if (refs.acceptanceEvalVerdict) addLink(refs.acceptanceEvalVerdict, "verdict");
+    // Link to this run's cohort Markdown report directory.
+    if (r.reportsDir) addLink(r.reportsDir, "Markdown report");
 
     body.querySelector(".close").addEventListener("click", closeModal);
     document.getElementById("modal-backdrop").classList.add("open");

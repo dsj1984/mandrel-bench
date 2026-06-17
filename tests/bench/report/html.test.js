@@ -88,6 +88,8 @@ describe('toRow', () => {
     const row = toRow(card());
     assert.equal(row.runId, 'hw-mandrel-r1');
     assert.equal(row.model, 'claude-opus-4-8[1m]');
+    // The slugified cohort reports dir (link to this run's Markdown report).
+    assert.equal(row.reportsDir, 'claude-opus-4-8-1m/1.70.0/reports/');
     assert.equal(row.quality, 1);
     assert.equal(row.autonomy, 0.5);
     assert.equal(row.totalTokens, 7657338);
@@ -169,8 +171,16 @@ describe('renderDashboard', () => {
     // Modal scaffolding + per-dimension breakdown wiring.
     assert.ok(html.includes('id="modal"') && html.includes('id="modal-body"'));
     assert.ok(html.includes('Planning fidelity'));
-    // Modal links to raw artifacts + report.
+    // Modal links to raw artifacts + the Markdown report.
     assert.ok(html.includes('costEnvelope') || html.includes('cost envelope'));
+    assert.ok(
+      html.includes('Markdown report'),
+      'modal links to the Markdown report',
+    );
+    assert.ok(
+      html.includes('reportsDir'),
+      'rows carry the cohort reports-dir pointer',
+    );
   });
 
   it('is byte-for-byte deterministic for a given corpus', () => {
