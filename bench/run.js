@@ -166,9 +166,11 @@ export function buildRunIdentity({
 }
 
 /**
- * Resolve the exact model id to stamp: prefer the model the `claude -p`
- * envelope actually billed (the first key of `modelUsage`), else the requested
- * model.
+ * Resolve the exact model id to stamp. A `claude -p` session reports usage for
+ * the pinned main model AND any auxiliary models (e.g. a haiku fast-path for
+ * cheap sub-operations), so the first `modelUsage` key is not reliably the
+ * model under test. Prefer the requested (pinned) model when it appears in
+ * `modelUsage` — it ran — else the highest-token-usage key, else the request.
  *
  * @param {object} envelope  Parsed session envelope.
  * @param {string} requestedModel
@@ -178,7 +180,20 @@ export function resolveModelId(envelope, requestedModel) {
   const usage = envelope?.modelUsage;
   if (usage && typeof usage === 'object') {
     const keys = Object.keys(usage);
-    if (keys.length > 0 && keys[0].length > 0) return keys[0];
+    if (keys.includes(requestedModel)) return requestedModel;
+    let best = null;
+    let bestTokens = -1;
+    for (const k of keys) {
+      const u = usage[k] ?? {};
+      const t =
+        (u.inputTokens ?? u.input_tokens ?? 0) +
+        (u.outputTokens ?? u.output_tokens ?? 0);
+      if (t > bestTokens) {
+        bestTokens = t;
+        best = k;
+      }
+    }
+    if (best) return best;
   }
   return requestedModel;
 }

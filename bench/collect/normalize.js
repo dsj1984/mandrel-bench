@@ -323,6 +323,28 @@ export function extractUsage(envelope) {
 }
 
 /**
+ * Extract the session wall-clock duration (ms) from a parsed `claude -p`
+ * envelope, tolerating the normalized shape (`durationMs`) or the raw envelope
+ * (`duration_ms`). Returns 0 when absent. Used as the wall-clock fallback for
+ * the control arm, which produces no lifecycle ledger.
+ *
+ * @param {object} envelope
+ * @returns {number}
+ */
+export function extractDurationMs(envelope) {
+  if (!envelope || typeof envelope !== 'object') return 0;
+  const d =
+    typeof envelope.durationMs === 'number'
+      ? envelope.durationMs
+      : typeof envelope.duration_ms === 'number'
+        ? envelope.duration_ms
+        : typeof envelope.raw?.duration_ms === 'number'
+          ? envelope.raw.duration_ms
+          : 0;
+  return Number.isFinite(d) && d >= 0 ? d : 0;
+}
+
+/**
  * Coerce to a non-negative integer (0 on miss).
  * @param {unknown} v
  * @returns {number}
@@ -395,15 +417,32 @@ export function buildScorecard({
   const emitted = emittedRecords(lifecycle);
 
   // ---- Lifecycle-derived raw sub-signals -------------------------------
-  const wallClockMs = deriveWallClockMs(emitted);
+  // Wall-clock comes from the lifecycle span when present; the control arm
+  // carries no lifecycle ledger, so fall back to the `claude -p` envelope's
+  // session duration so its Efficiency is a real number, not 0.
+  const lifecycleWallMs = deriveWallClockMs(emitted);
+  const wallClockMs =
+    lifecycleWallMs > 0 ? lifecycleWallMs : extractDurationMs(envelope);
   const dispatches = deriveDispatchCount(emitted);
   const autonomy = deriveAutonomyCounters({ lifecycle: emitted, signals });
   const usage = extractUsage(envelope);
-  const split = deriveTokenSplit({
-    lifecycle: emitted,
-    totalTokens: usage.totalTokens,
-    wallClockMs,
-  });
+  // The bare control arm runs no Mandrel pipeline, so it has no ceremony — its
+  // whole session is shippable codegen (README: "control arm sits near the
+  // floor"). Attributing it via dispatch windows (which it lacks) would wrongly
+  // bucket the entire run as ceremony, so the control split is all-codegen.
+  const split =
+    run.arm === 'control'
+      ? {
+          ceremonyTokens: 0,
+          codegenTokens: usage.totalTokens,
+          ceremonyMs: 0,
+          codegenMs: wallClockMs,
+        }
+      : deriveTokenSplit({
+          lifecycle: emitted,
+          totalTokens: usage.totalTokens,
+          wallClockMs,
+        });
 
   // ---- Dimension math (delegated to the scorer) ------------------------
   const dimensions = computeDimensions({

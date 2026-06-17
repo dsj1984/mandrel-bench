@@ -105,10 +105,35 @@ test('planningInputs: counts dispatch starts/ends', () => {
   });
 });
 
-test('resolveModelId: prefers the billed model, else the requested', () => {
+test('resolveModelId: prefers the pinned model when it appears in modelUsage', () => {
+  // The pinned main model ran alongside an auxiliary (e.g. a haiku fast-path);
+  // we must stamp the pinned model, not whichever key happens to be first.
   assert.equal(
-    resolveModelId({ modelUsage: { 'claude-opus-4-8[1m]': {} } }, 'x'),
-    'claude-opus-4-8[1m]',
+    resolveModelId(
+      {
+        modelUsage: {
+          'claude-haiku-4-5': { input_tokens: 50, output_tokens: 10 },
+          'claude-opus-4-8': { input_tokens: 9000, output_tokens: 2000 },
+        },
+      },
+      'claude-opus-4-8',
+    ),
+    'claude-opus-4-8',
+  );
+});
+
+test('resolveModelId: else the highest-usage key, else the request', () => {
+  assert.equal(
+    resolveModelId(
+      {
+        modelUsage: {
+          a: { input_tokens: 5, output_tokens: 5 },
+          b: { input_tokens: 900, output_tokens: 100 },
+        },
+      },
+      'not-present',
+    ),
+    'b',
   );
   assert.equal(resolveModelId({ modelUsage: {} }, 'requested'), 'requested');
 });

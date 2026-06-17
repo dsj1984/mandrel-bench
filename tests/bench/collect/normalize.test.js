@@ -28,6 +28,7 @@ import {
   deriveDispatchCount,
   deriveTokenSplit,
   deriveWallClockMs,
+  extractDurationMs,
   extractUsage,
   normalizeRunFromPaths,
   parseNdjson,
@@ -299,6 +300,46 @@ describe('extractUsage', () => {
       outputTokens: 0,
       costUsd: null,
     });
+  });
+});
+
+describe('extractDurationMs', () => {
+  it('reads durationMs / duration_ms / raw.duration_ms, else 0', () => {
+    assert.equal(extractDurationMs({ durationMs: 1200 }), 1200);
+    assert.equal(extractDurationMs({ duration_ms: 3400 }), 3400);
+    assert.equal(extractDurationMs({ raw: { duration_ms: 5600 } }), 5600);
+    assert.equal(extractDurationMs({}), 0);
+    assert.equal(extractDurationMs(null), 0);
+  });
+});
+
+describe('buildScorecard — control arm efficiency/overhead', () => {
+  it('falls back to the envelope duration for wall-clock and attributes all tokens to codegen', () => {
+    const sc = buildScorecard({
+      run: {
+        runId: 'hw-control-r1',
+        timestamp: '2026-06-17T00:00:00.000Z',
+        model: { id: 'claude-opus-4-8' },
+        frameworkVersion: '1.70.0',
+        env: { node: 'v24.0.0', os: 'darwin' },
+        scenario: 'hello-world',
+        arm: 'control',
+      },
+      lifecycle: [], // control has no ledger
+      signals: [],
+      envelope: {
+        usage: { totalTokens: 100000, inputTokens: 80000, outputTokens: 20000 },
+        cost: { totalUsd: 0.18 },
+        durationMs: 35600,
+      },
+      quality: { frozenSuitePassed: 3, frozenSuiteTotal: 3 },
+    });
+    // Real wall-clock from the envelope, not 0.
+    assert.equal(sc.dimensions.efficiency.wallClockMs, 35600);
+    // Control does no ceremony: all codegen, overhead ratio at the floor.
+    assert.equal(sc.dimensions.overheadRatio.ceremonyTokens, 0);
+    assert.equal(sc.dimensions.overheadRatio.codegenTokens, 100000);
+    assert.equal(sc.dimensions.overheadRatio.tokenRatio, 0);
   });
 });
 
