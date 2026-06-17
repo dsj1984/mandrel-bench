@@ -564,12 +564,17 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
   const writeFile = deps.writeFileFn ?? writeFileSync;
   const mkdir = deps.mkdirFn ?? ((p) => mkdirSync(p, { recursive: true }));
 
+  // Per-scenario seed Epic ids (in the SANDBOX repo) for the mandrel arm's
+  // drive-from-Epic-id path. Keyed by scenario id; the control arm ignores it.
+  const epicIds = opts.epicIds ?? {};
+
   const scorecards = [];
   for (const scenarioId of scenarios) {
     const { scenario, evaluate } = await loadScenario(
       scenarioId,
       deps.loadDeps,
     );
+    if (epicIds[scenarioId] != null) scenario.epicId = epicIds[scenarioId];
     for (let runIndex = 1; runIndex <= n; runIndex += 1) {
       for (const arm of arms) {
         logger?.info?.(
@@ -612,7 +617,8 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
 /**
  * Minimal CLI entry. Reads sandbox coordinates from the environment:
  *   BENCH_SANDBOX_REPO_URL, BENCH_SANDBOX_OWNER, BENCH_SANDBOX_REPO.
- * Optional: BENCH_SCENARIOS (csv), BENCH_ARMS (csv), BENCH_N.
+ * Optional: BENCH_SCENARIOS (csv), BENCH_ARMS (csv), BENCH_N,
+ *   BENCH_EPIC_ID (seed Epic id in the sandbox repo for the mandrel arm).
  */
 export async function main() {
   const sandbox = {
@@ -620,11 +626,16 @@ export async function main() {
     owner: process.env.BENCH_SANDBOX_OWNER,
     repo: process.env.BENCH_SANDBOX_REPO,
   };
+  const scenarios = (process.env.BENCH_SCENARIOS ?? 'hello-world')
+    .split(',')
+    .map((s) => s.trim());
+  const epicIds = process.env.BENCH_EPIC_ID
+    ? { [scenarios[0]]: Number(process.env.BENCH_EPIC_ID) }
+    : {};
   const opts = {
     sandbox,
-    scenarios: (process.env.BENCH_SCENARIOS ?? 'hello-world')
-      .split(',')
-      .map((s) => s.trim()),
+    scenarios,
+    epicIds,
     arms: (process.env.BENCH_ARMS ?? 'mandrel,control')
       .split(',')
       .map((s) => s.trim()),
