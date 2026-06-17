@@ -19,9 +19,11 @@ import test from 'node:test';
 
 import {
   assertInsideRoot,
+  defaultGhInvoke,
   provisionSandbox,
   resetSandboxBaseline,
   SANDBOX_DIR_PREFIX,
+  sanitizeGitHubTokenEnv,
   teardownSandbox,
   withSandbox,
 } from '../../../bench/driver/sandbox.js';
@@ -260,6 +262,60 @@ test('resetSandboxBaseline: rejects a missing owner/repo with a TypeError', () =
     () => resetSandboxBaseline({ owner: 'o' }, { ghFn: () => '' }),
     /non-empty repo/,
   );
+});
+
+// ---------------------------------------------------------------------------
+// gh token sanitization — a malformed ambient token must not break the reset
+// ---------------------------------------------------------------------------
+
+test('sanitizeGitHubTokenEnv: strips a trailing CRLF \\r from the token', () => {
+  const cleaned = sanitizeGitHubTokenEnv({
+    PATH: '/usr/bin',
+    GITHUB_TOKEN: 'ghp_abc123\r',
+  });
+  assert.equal(cleaned.GITHUB_TOKEN, 'ghp_abc123');
+  // Unrelated vars pass through untouched.
+  assert.equal(cleaned.PATH, '/usr/bin');
+});
+
+test('sanitizeGitHubTokenEnv: strips whitespace from GH_TOKEN and GITHUB_TOKEN', () => {
+  const cleaned = sanitizeGitHubTokenEnv({
+    GH_TOKEN: ' gho_x\n',
+    GITHUB_TOKEN: 'ghp_y \t',
+  });
+  assert.equal(cleaned.GH_TOKEN, 'gho_x');
+  assert.equal(cleaned.GITHUB_TOKEN, 'ghp_y');
+});
+
+test('sanitizeGitHubTokenEnv: leaves an unset / empty token untouched (keyring auth)', () => {
+  const cleaned = sanitizeGitHubTokenEnv({ PATH: '/bin', GITHUB_TOKEN: '' });
+  assert.equal(cleaned.GITHUB_TOKEN, '');
+  assert.equal('GH_TOKEN' in cleaned, false);
+});
+
+test('defaultGhInvoke: passes a token-sanitized env to the gh child', () => {
+  const prev = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = 'ghp_carriage\r';
+  try {
+    let capturedEnv;
+    const execFileFn = (cmd, args, opts) => {
+      assert.equal(cmd, 'gh');
+      assert.equal(args[0], 'api');
+      capturedEnv = opts.env;
+      return 'ok';
+    };
+    const out = defaultGhInvoke(
+      ['api', 'repos/o/r/git/ref/heads/bench-baseline'],
+      { execFileFn },
+    );
+    assert.equal(out, 'ok');
+    // The trailing \r that yields "invalid header field value for
+    // Authorization" is gone before gh ever sees the token.
+    assert.equal(capturedEnv.GITHUB_TOKEN, 'ghp_carriage');
+  } finally {
+    if (prev === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = prev;
+  }
 });
 
 // ---------------------------------------------------------------------------

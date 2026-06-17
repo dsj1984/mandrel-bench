@@ -220,12 +220,56 @@ export function provisionSandbox(opts = {}, deps = {}) {
 }
 
 /**
+ * Strip whitespace from the GitHub token environment variables so a malformed
+ * ambient token can't break a `gh` call. A token with a trailing `\r` (e.g. a
+ * `.env` saved with CRLF line endings) makes `gh` fail with
+ * `net/http: invalid header field value for "Authorization"`, which silently
+ * fails the per-run sandbox reset and lets a run clone an un-reset `main`.
+ * GitHub tokens never contain whitespace, so stripping it is always safe.
+ * Returns a shallow copy; unset / empty tokens are left untouched so a clean
+ * `gh` keyring auth still applies.
+ *
+ * @param {NodeJS.ProcessEnv} [env=process.env]
+ * @returns {NodeJS.ProcessEnv}
+ */
+export function sanitizeGitHubTokenEnv(env = process.env) {
+  const out = { ...env };
+  for (const key of ['GH_TOKEN', 'GITHUB_TOKEN']) {
+    const v = out[key];
+    if (typeof v === 'string' && v.length > 0) {
+      out[key] = v.replace(/\s/g, '');
+    }
+  }
+  return out;
+}
+
+/**
+ * Default `gh` invoker for {@link resetSandboxBaseline}: runs `gh <args>` via
+ * `execFileSync` (an argument array — never a shell string) with a
+ * token-sanitized environment ({@link sanitizeGitHubTokenEnv}). Exported with
+ * an injectable `execFileFn` so the sanitization is unit-testable without
+ * spawning a real `gh` process.
+ *
+ * @param {string[]} args  argv passed to `gh`.
+ * @param {{ execFileFn?: typeof execFileSync }} [deps]
+ * @returns {string} `gh` stdout.
+ */
+export function defaultGhInvoke(args, { execFileFn = execFileSync } = {}) {
+  return execFileFn('gh', args, {
+    encoding: 'utf-8',
+    stdio: 'pipe',
+    env: sanitizeGitHubTokenEnv(),
+  });
+}
+
+/**
  * @typedef {object} ResetBaselineDeps
  * @property {(args: string[]) => string} [ghFn]  Injected `gh` invoker. Receives
- *   the argv array and returns stdout. Defaults to a real `execFileSync('gh', …)`
- *   with an argument array — never a shell string — so an owner/repo value can
- *   never be interpreted as a shell command. Tests stub this so no real GitHub
- *   API call runs.
+ *   the argv array and returns stdout. Defaults to {@link defaultGhInvoke},
+ *   which runs `execFileSync('gh', …)` with a token-sanitized environment (an
+ *   argument array — never a shell string — so an owner/repo value can never be
+ *   interpreted as a shell command). Tests stub this so no real GitHub API call
+ *   runs.
  * @property {{ info?: Function, warn?: Function }} [logger]
  */
 
@@ -263,9 +307,7 @@ export function resetSandboxBaseline(
     throw new TypeError('resetSandboxBaseline requires a non-empty repo');
   }
 
-  const ghFn =
-    deps.ghFn ??
-    ((args) => execFileSync('gh', args, { encoding: 'utf-8', stdio: 'pipe' }));
+  const ghFn = deps.ghFn ?? defaultGhInvoke;
   const logger = deps.logger;
 
   // 1. Resolve the baseline branch's commit SHA.
