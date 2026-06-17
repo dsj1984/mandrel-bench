@@ -48,6 +48,9 @@ import {
   runSession as defaultRunSession,
 } from './driver/run-session.js';
 import { provisionSandbox, teardownSandbox } from './driver/sandbox.js';
+import { aggregateScorecards } from './report/aggregate.js';
+import { cohortDir } from './report/cohort-path.js';
+import { renderDashboard } from './report/html.js';
 import { appendScorecards } from './report/persist.js';
 import { renderReport } from './report/render.js';
 import { scoreScenarioQuality as defaultScoreScenarioQuality } from './scenarios/acceptance-eval-adapter.js';
@@ -432,11 +435,22 @@ export async function runOneRun(opts, deps = {}) {
       }
     }
 
+    // Resolve the cohort directory up front (model id + framework version are
+    // both known once the session returns), so every per-run artifact — `.raw/`
+    // provenance, the store, and the Markdown report — lands under this run's
+    // cohort directory `<resultsDir>/<model-slug>/<frameworkVersion>/` rather
+    // than the flat root.
+    const modelId = resolveModelId(session.envelope, model);
+    const cohortDirPath = cohortDir({
+      resultsDir,
+      scorecard: { model: { id: modelId }, frameworkVersion },
+    });
+
     // Discover + copy out the lifecycle ledger before teardown.
     let lifecycle = [];
     const signals = [];
     let rawRefs;
-    const rawDir = path.join(resultsDir, '.raw');
+    const rawDir = path.join(cohortDirPath, '.raw');
     const idStampForRaw = sanitizeRunId(`${scenario.id}-${arm}-r${runIndex}`);
     if (arm === 'mandrel') {
       const found = discoverLedger(
@@ -508,7 +522,7 @@ export async function runOneRun(opts, deps = {}) {
       arm,
       runIndex,
       timestamp: nowIso(),
-      modelId: resolveModelId(session.envelope, model),
+      modelId,
       frameworkVersion,
       env,
     });
@@ -541,7 +555,7 @@ export async function runOneRun(opts, deps = {}) {
  * @param {string} [opts.resultsDir]
  * @param {string} [opts.ephemeralRoot]
  * @param {object} [deps]
- * @returns {Promise<{ scorecards: object[], storePath: string, reportPath: string, report: string }>}
+ * @returns {Promise<{ scorecards: object[], cohorts: Array<{ dir: string, storePath: string, reportPath: string, report: string }>, dashboardPath: string, dashboard: string }>}
  */
 export async function runFirstBenchmark(opts = {}, deps = {}) {
   const {
@@ -598,16 +612,41 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
     }
   }
 
-  const storePath = path.join(resultsDir, 'scorecards.ndjson');
-  appendScorecards({ storePath, scorecards }, deps.persistDeps);
+  // Group this run's scorecards by cohort directory (model-slug ×
+  // frameworkVersion). Each cohort gets its own append-only store and a rendered
+  // Markdown report under `results/<model-slug>/<frameworkVersion>/`. A single
+  // run usually produces one cohort, but multiple are handled correctly.
+  const byCohortDir = new Map();
+  for (const sc of scorecards) {
+    const dir = cohortDir({ resultsDir, scorecard: sc });
+    if (!byCohortDir.has(dir)) byCohortDir.set(dir, []);
+    byCohortDir.get(dir).push(sc);
+  }
 
-  const report = renderReport({ scorecards, method: 'iqr' });
-  const stamp = sanitizeRunId(scorecards[0]?.timestamp ?? `${Date.now()}`);
-  const reportPath = path.join(resultsDir, `report-${stamp}.md`);
+  const cohorts = [];
+  for (const [dir, cohortCards] of byCohortDir) {
+    const storePath = path.join(dir, 'scorecards.ndjson');
+    appendScorecards({ storePath, scorecards: cohortCards }, deps.persistDeps);
+
+    const report = renderReport({ scorecards: cohortCards, method: 'iqr' });
+    const stamp = sanitizeRunId(cohortCards[0]?.timestamp ?? `${Date.now()}`);
+    const reportsDir = path.join(dir, 'reports');
+    const reportPath = path.join(reportsDir, `report-${stamp}.md`);
+    mkdir(reportsDir);
+    writeFile(reportPath, report);
+    cohorts.push({ dir, storePath, reportPath, report });
+  }
+
+  // Regenerate the aggregate dashboard from the FULL corpus across every cohort
+  // (not just this run's scorecards) so `results.html` always reflects the whole
+  // longitudinal history on disk.
+  const corpus = aggregateScorecards({ resultsDir }, deps.aggregateDeps);
+  const dashboard = renderDashboard({ scorecards: corpus });
+  const dashboardPath = path.join(resultsDir, 'results.html');
   mkdir(resultsDir);
-  writeFile(reportPath, report);
+  writeFile(dashboardPath, dashboard);
 
-  return { scorecards, storePath, reportPath, report };
+  return { scorecards, cohorts, dashboardPath, dashboard };
 }
 
 // ---------------------------------------------------------------------------
@@ -647,9 +686,15 @@ export async function main() {
     error: (m) => process.stderr.write(`${m}\n`),
   };
   const result = await runFirstBenchmark(opts, { logger });
+  const cohortLines = result.cohorts
+    .map(
+      (c) => `[run]   store → ${c.storePath}\n[run]   report → ${c.reportPath}`,
+    )
+    .join('\n');
   process.stderr.write(
-    `\n[run] ${result.scorecards.length} scorecard(s) → ${result.storePath}\n` +
-      `[run] report → ${result.reportPath}\n`,
+    `\n[run] ${result.scorecards.length} scorecard(s) across ${result.cohorts.length} cohort(s):\n` +
+      `${cohortLines}\n` +
+      `[run] dashboard → ${result.dashboardPath}\n`,
   );
 }
 

@@ -356,11 +356,29 @@ test('runFirstBenchmark: emits a schema-valid scorecard per arm and renders a re
   );
   assert.equal(record.teardowns.length, 2);
 
-  // Persisted + report rendered.
-  assert.equal(result.storePath, path.join('/results', 'scorecards.ndjson'));
+  // Persisted into the per-cohort directory + report rendered + dashboard
+  // emitted. Both arms share the same cohort (model + framework version), so
+  // there is exactly one cohort store under
+  // results/<model-slug>/<frameworkVersion>/.
+  assert.equal(result.cohorts.length, 1);
+  const cohort = result.cohorts[0];
+  assert.equal(
+    cohort.storePath,
+    path.join('/results', 'claude-opus-4-8', '1.70.0', 'scorecards.ndjson'),
+  );
+  assert.ok(
+    cohort.reportPath.includes(
+      path.join('claude-opus-4-8', '1.70.0', 'reports', 'report-'),
+    ),
+    `reportPath should be under the cohort reports dir: ${cohort.reportPath}`,
+  );
+  assert.match(cohort.reportPath, /\.md$/);
   assert.equal(record.appended.length, 1);
-  assert.match(result.report, /Value-Add Report/);
-  assert.match(result.reportPath, /report-.*\.md$/);
+  assert.match(cohort.report, /Value-Add Report/);
+
+  // The aggregate dashboard is regenerated at the results root.
+  assert.equal(result.dashboardPath, path.join('/results', 'results.html'));
+  assert.match(result.dashboard, /Results Dashboard/);
 });
 
 test('runFirstBenchmark: requires sandbox coordinates', async () => {
