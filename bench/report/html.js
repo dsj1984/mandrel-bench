@@ -71,6 +71,24 @@ const HEADLINE_METRICS = Object.freeze([
     get: (sc) => sc?.dimensions?.autonomy?.score,
   },
   {
+    key: 'maintainability',
+    label: 'Maintainability',
+    side: 'value',
+    better: 'higher',
+    range: '0–1',
+    good: '1.0 = code is clean, well-structured, and easy to change; lower scores indicate complexity, poor naming, or structural debt.',
+    get: (sc) => sc?.dimensions?.maintainability?.score,
+  },
+  {
+    key: 'security',
+    label: 'Security',
+    side: 'value',
+    better: 'higher',
+    range: '0–1',
+    good: '1.0 = no known vulnerabilities or unsafe patterns detected; lower scores indicate secrets, injection risks, or other security findings.',
+    get: (sc) => sc?.dimensions?.security?.score,
+  },
+  {
     key: 'totalTokens',
     label: 'Total tokens',
     side: 'cost',
@@ -142,10 +160,12 @@ export function toRow(sc) {
       os: typeof sc?.env?.os === 'string' ? sc.env.os : '',
       host: typeof sc?.env?.host === 'string' ? sc.env.host : '',
     },
-    // Index headlines (the five dimension headlines).
+    // Index headlines (the seven dimension headlines).
     quality: num(dims?.quality?.score),
     planningFidelity: num(dims?.planningFidelity?.score),
     autonomy: num(dims?.autonomy?.score),
+    maintainability: num(dims?.maintainability?.score),
+    security: num(dims?.security?.score),
     totalTokens: num(dims?.efficiency?.totalTokens),
     costUsd: num(dims?.efficiency?.costUsd),
     overheadRatio: num(dims?.overheadRatio?.tokenRatio),
@@ -154,6 +174,8 @@ export function toRow(sc) {
       quality: dims?.quality ?? null,
       planningFidelity: dims?.planningFidelity ?? null,
       autonomy: dims?.autonomy ?? null,
+      maintainability: dims?.maintainability ?? null,
+      security: dims?.security ?? null,
       efficiency: dims?.efficiency ?? null,
       overheadRatio: dims?.overheadRatio ?? null,
     },
@@ -387,6 +409,8 @@ const SCRIPT = `
     { key: "quality", label: "Quality", type: "num", hint: "Value side · 0–1 · higher is better (1.0 = all assertions pass + judge agrees)" },
     { key: "planningFidelity", label: "Planning", type: "num", hint: "Value side · 0–1 · higher is better · null for control (it authors no plan)" },
     { key: "autonomy", label: "Autonomy", type: "num", hint: "Value side · 0–1 · higher is better (1.0 = fully unattended; <1 = a human stepped in)" },
+    { key: "maintainability", label: "Maintainability", type: "num", hint: "Value side · 0–1 · higher is better · clean, well-structured code scores near 1.0" },
+    { key: "security", label: "Security", type: "num", hint: "Value side · 0–1 · higher is better · 1.0 = no vulnerabilities or unsafe patterns detected" },
     { key: "totalTokens", label: "Tokens", type: "num", hint: "Cost side · lower is cheaper (read against Quality)" },
     { key: "overheadRatio", label: "Overhead", type: "num", hint: "Cost side · lower is cheaper · ceremony tokens per codegen token (control ≈ 0)" },
     { key: "env", label: "Env", type: "str" }
@@ -486,6 +510,8 @@ const SCRIPT = `
     "Quality": "Higher is better (0–1). 1.0 = every frozen assertion passes and the LLM judge agrees.",
     "Planning fidelity": "Higher is better (0–1). How well the plan predicted reality; null for control (no plan authored).",
     "Autonomy": "Higher is better (0–1]. 1.0 = fully unattended; each human intervention lowers it (0.5 = one, 0.33 = two).",
+    "Maintainability": "Higher is better (0–1). 1.0 = clean, well-structured, easy-to-change code; lower scores indicate complexity, poor naming, or structural debt.",
+    "Security": "Higher is better (0–1). 1.0 = no known vulnerabilities or unsafe patterns; lower scores indicate secrets, injection risks, or other security findings.",
     "Efficiency": "Absolute cost vector — lower is cheaper: wall-clock ms, total tokens, dispatches, USD. Judge against Quality.",
     "Overhead ratio": "Lower is cheaper (≥0). Ceremony tokens per shippable-codegen token; control ≈ 0, so the gap is Mandrel's tax."
   };
@@ -511,7 +537,8 @@ const SCRIPT = `
     html += "<h3></h3><div class='sub'></div>";
     var groups = [
       ["Quality", dims.quality], ["Planning fidelity", dims.planningFidelity],
-      ["Autonomy", dims.autonomy], ["Efficiency", dims.efficiency],
+      ["Autonomy", dims.autonomy], ["Maintainability", dims.maintainability],
+      ["Security", dims.security], ["Efficiency", dims.efficiency],
       ["Overhead ratio", dims.overheadRatio]
     ];
     groups.forEach(function (g) {
@@ -782,7 +809,7 @@ export function renderDashboard({ scorecards } = {}) {
 <li>The <b>x-axis is the framework version</b> (one point per cohort), oldest on the left. When more than one model is in view a second tick line shows the model, and the line breaks across a model change — we never draw a cross-model "trend" (only like-model-to-like is comparable).</li>
 <li>Each point is the <b>median</b> across that cohort's N runs for one arm; the faint vertical bar is the <b>inter-quartile (Q1–Q3) spread</b>. Hover a point for n and the exact band.</li>
 <li><b><span class="up">mandrel</span></b> = clone carries <code>.agents/</code> and runs <code>/plan</code>→<code>/deliver</code>; <b>control</b> = bare task prompt, no scaffolding. The gap between the two arms is what the scaffolding buys (value) or charges (cost).</li>
-<li><b>Value side</b> (Quality, Autonomy) — <b>higher is better</b>. <b>Cost side</b> (Tokens, USD, Overhead ratio) — <b>lower is cheaper</b>; cheaper only "wins" at equal quality. The caption under the chart states the direction and what good looks like for the selected metric.</li>
+<li><b>Value side</b> (Quality, Autonomy, Maintainability, Security) — <b>higher is better</b>. <b>Cost side</b> (Tokens, USD, Overhead ratio) — <b>lower is cheaper</b>; cheaper only "wins" at equal quality. The caption under the chart states the direction and what good looks like for the selected metric.</li>
 </ul>
 </details>
 <div class="controls">
@@ -804,6 +831,8 @@ export function renderDashboard({ scorecards } = {}) {
 <li><b>Quality</b> (value · 0–1 · ▲ better) — fraction of the frozen acceptance suite that passes, cross-checked by an LLM judge. 1.0 = fully correct; 0 = no runnable app.</li>
 <li><b>Planning</b> (value · 0–1 · ▲ better) — how well the plan predicted reality (story-count, re-plan, file-footprint). <code>—</code> for control: it authors no plan.</li>
 <li><b>Autonomy</b> (value · 0–1 · ▲ better) — 1.0 = fully unattended; each human intervention drops it (0.5 = one, 0.33 = two). Any value &lt; 1.0 is a finding.</li>
+<li><b>Maintainability</b> (value · 0–1 · ▲ better) — 1.0 = clean, well-structured, easy-to-change code; lower scores indicate complexity or structural debt.</li>
+<li><b>Security</b> (value · 0–1 · ▲ better) — 1.0 = no known vulnerabilities or unsafe patterns; lower scores indicate secrets, injection risks, or other findings.</li>
 <li><b>Tokens</b> (cost · ▼ cheaper) — total tokens the run spent. Lower is cheaper, but only meaningful at equal Quality.</li>
 <li><b>Overhead</b> (cost · ▼ cheaper) — ceremony tokens per shippable-codegen token. Control ≈ 0; the mandrel−control gap is the ceremony tax.</li>
 </ul>
