@@ -375,13 +375,15 @@ describe('buildScorecard — schema conformance (binding acceptance)', () => {
     assert.equal(scorecard.schemaVersion, SCORECARD_SCHEMA_VERSION);
     assert.equal(scorecard.scenario, 'hello-world');
     assert.equal(scorecard.arm, 'mandrel');
-    // Five dimensions present.
+    // Seven dimensions present.
     assert.deepEqual(Object.keys(scorecard.dimensions).sort(), [
       'autonomy',
       'efficiency',
+      'maintainability',
       'overheadRatio',
       'planningFidelity',
       'quality',
+      'security',
     ]);
     // Wall-clock derived from the fixture span (19:32:00 → 19:42:11 = 611000ms).
     assert.equal(scorecard.dimensions.efficiency.wallClockMs, 611000);
