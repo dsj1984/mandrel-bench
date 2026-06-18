@@ -43,13 +43,48 @@ dependencies** — the scorecard corpus is inlined as JSON, the trend chart is
 inline SVG, and sort/filter/modal are vanilla JS — so it works offline and is
 byte-for-byte diffable. It shows:
 
-- an **over-time trend chart** of the headline metrics (quality, autonomy,
-  efficiency total-tokens & cost, overhead ratio), one series per arm, filterable
-  by cohort;
+- an **over-versions trend chart** of the headline metrics (quality,
+  maintainability, security, autonomy, efficiency total-tokens & cost, overhead
+  ratio). The **x-axis is the framework version** (one aggregated point per
+  cohort, oldest first); each point is the median across that cohort's runs with
+  an inter-quartile whisker, one line per arm (the line breaks across a model
+  change). A **Model** filter narrows to one model, and every metric carries an
+  interpretation caption (value/cost side, range, which direction is better,
+  what "good" looks like) plus a delta-vs-control badge for the latest cohort;
 - a **sortable, filterable index table** of every run (timestamp, scenario, arm,
-  model, framework version, the five dimension headlines, and env); and
+  model, framework version, the seven dimension headlines, and env); and
 - an **in-page modal** (click any row) with the full per-dimension breakdown and
   links to that run's `.raw/` artifacts and Markdown report.
+
+The seven dimensions shown on the dashboard are:
+
+| Dimension           | Side  | Range  | Better |
+| ------------------- | ----- | ------ | ------ |
+| Quality             | value | [0, 1] | higher |
+| Maintainability     | value | [0, 1] | higher |
+| Security            | value | [0, 1] | higher |
+| Planning fidelity   | value | [0, 1] | higher |
+| Autonomy            | value | (0, 1] | higher |
+| Efficiency (tokens) | cost  | ≥ 0    | lower  |
+| Overhead ratio      | cost  | ≥ 0    | lower  |
+
+**Maintainability** (added Epic #32) measures how readable and low-complexity
+the delivered output is: objective spine from static-analysis signals (linter
+density, cyclomatic complexity, maintainability index) weighted 0.7, plus an
+LLM judge cross-check against the `engineer`/`refactorer` persona rubric at
+0.3 (folded into the spine when null). It is most likely to diverge between
+arms on the difficulty-3 `project-api` breadth rung, where decomposition
+quality and code-structure choices separate.
+
+**Security** (added Epic #32) measures how free of vulnerabilities the
+delivered output is: objective spine from security-scanner signals
+(critical/high-severity findings, secret detection) weighted 0.7, plus an LLM
+judge cross-check against the `security-baseline.md` MUSTs at 0.3. It is most
+likely to diverge on auth-bearing scenarios where the bare control visibly
+misses Mandrel's inviolable security baseline (edge input-validation, password
+hashing, `httpOnly` token storage, server-side auth checks, rate-limiting).
+
+Both judge cross-checks share a single batched judge call per run.
 
 It is regenerated from the full aggregated corpus at the end of every
 `bench/run.js` run (it is **not** hand-edited). To regenerate it without a fresh

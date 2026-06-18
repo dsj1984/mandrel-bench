@@ -47,6 +47,8 @@ function card(overrides = {}) {
         blockedEvents: 1,
         manualRescues: 0,
       },
+      maintainability: { score: 0.85 },
+      security: { score: 0.95 },
       efficiency: {
         wallClockMs: 1000,
         totalTokens: 7657338,
@@ -92,12 +94,16 @@ describe('toRow', () => {
     assert.equal(row.reportsDir, 'claude-opus-4-8-1m/1.70.0/reports/');
     assert.equal(row.quality, 1);
     assert.equal(row.autonomy, 0.5);
+    assert.equal(row.maintainability, 0.85);
+    assert.equal(row.security, 0.95);
     assert.equal(row.totalTokens, 7657338);
     assert.equal(row.costUsd, 8.6);
     assert.equal(row.overheadRatio, 0.58);
     // Full breakdown for the modal.
     assert.equal(row.dimensions.efficiency.dispatches, 1);
     assert.equal(row.dimensions.autonomy.blockedEvents, 1);
+    assert.equal(row.dimensions.maintainability.score, 0.85);
+    assert.equal(row.dimensions.security.score, 0.95);
     assert.deepEqual(row.rawRefs.signalsNdjson, [
       '.raw/hw-mandrel-r1/signals-0.ndjson',
     ]);
@@ -122,12 +128,21 @@ describe('buildDashboardModel', () => {
     for (const k of [
       'quality',
       'autonomy',
+      'maintainability',
+      'security',
       'totalTokens',
       'costUsd',
       'overheadRatio',
     ]) {
       assert.ok(keys.includes(k), `metrics should include ${k}`);
     }
+    // Maintainability and security are value-side, higher-is-better.
+    const maint = model.metrics.find((m) => m.key === 'maintainability');
+    assert.equal(maint.side, 'value');
+    assert.equal(maint.better, 'higher');
+    const sec = model.metrics.find((m) => m.key === 'security');
+    assert.equal(sec.side, 'value');
+    assert.equal(sec.better, 'higher');
   });
 
   it('throws on a non-array corpus', () => {
@@ -166,11 +181,25 @@ describe('renderDashboard', () => {
     assert.ok(html.includes('id="chart"'));
     assert.ok(html.includes('mandrel') && html.includes('control'));
     assert.ok(html.includes('"overheadRatio"'));
+    // Maintainability and security appear as value-side headline metric keys.
+    assert.ok(
+      html.includes('"maintainability"'),
+      'dashboard inlines maintainability metric key',
+    );
+    assert.ok(
+      html.includes('"security"'),
+      'dashboard inlines security metric key',
+    );
     // Index table scaffolding.
     assert.ok(html.includes('id="idx-head"') && html.includes('id="idx-body"'));
     // Modal scaffolding + per-dimension breakdown wiring.
     assert.ok(html.includes('id="modal"') && html.includes('id="modal-body"'));
     assert.ok(html.includes('Planning fidelity'));
+    assert.ok(
+      html.includes('Maintainability'),
+      'modal groups include Maintainability',
+    );
+    assert.ok(html.includes('Security'), 'modal groups include Security');
     // Modal links to raw artifacts + the Markdown report.
     assert.ok(html.includes('costEnvelope') || html.includes('cost envelope'));
     assert.ok(

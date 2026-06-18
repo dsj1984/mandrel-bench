@@ -24,6 +24,7 @@ import {
   buildRunIdentity,
   CHECKPOINT_FILENAME,
   cellKey,
+  derivedSecurityInputs,
   discoverLedger,
   planningInputs,
   qualityInputs,
@@ -198,6 +199,64 @@ test('discoverLedger: returns null when no ledger exists', () => {
 });
 
 // ---------------------------------------------------------------------------
+// derivedSecurityInputs — pure helper
+// ---------------------------------------------------------------------------
+
+test('derivedSecurityInputs: all MUSTs present, no secrets → high objectiveSecurityScore', () => {
+  const inputs = derivedSecurityInputs(
+    {
+      secretScanCount: 0,
+      depAuditVulnCount: 0,
+      hasEdgeInputValidation: true,
+      hasPasswordHashing: true,
+      hasSafeTokenStorage: true,
+      hasServerSideAuthz: true,
+      hasAuthRateLimiting: true,
+    },
+    null,
+  );
+  assert.equal(inputs.objectiveSecurityScore, 1);
+  assert.equal(inputs.criticalFindings, 0);
+  assert.equal(inputs.highFindings, 0);
+  assert.equal(inputs.secretsDetected, false);
+  assert.equal(inputs.securityJudgeScore, null);
+});
+
+test('derivedSecurityInputs: secrets detected → objectiveSecurityScore drops, secretsDetected true', () => {
+  const inputs = derivedSecurityInputs(
+    {
+      secretScanCount: 2,
+      depAuditVulnCount: 0,
+      hasEdgeInputValidation: true,
+      hasPasswordHashing: true,
+      hasSafeTokenStorage: true,
+      hasServerSideAuthz: true,
+      hasAuthRateLimiting: true,
+    },
+    null,
+  );
+  assert.ok(inputs.objectiveSecurityScore < 1);
+  assert.equal(inputs.criticalFindings, 2);
+  assert.equal(inputs.secretsDetected, true);
+});
+
+test('derivedSecurityInputs: judge scores thread through', () => {
+  const inputs = derivedSecurityInputs({}, { security: 0.75 });
+  assert.equal(inputs.securityJudgeScore, 0.75);
+});
+
+test('derivedSecurityInputs: empty signals → conservative partial score (no secrets = secret ok, no MUSTs = low must score)', () => {
+  const inputs = derivedSecurityInputs({}, null);
+  // No secrets (count absent → 0) and no dep vulns → secretPenalty=1, vulnPenalty=1.
+  // No MUST flags present → mustPresenceScore=0. Total = 0.3*1 + 0.2*1 + 0.5*0 = 0.5.
+  assert.equal(inputs.objectiveSecurityScore, 0.5);
+  assert.equal(inputs.criticalFindings, 0);
+  assert.equal(inputs.highFindings, 0);
+  assert.equal(inputs.secretsDetected, false);
+  assert.equal(inputs.securityJudgeScore, null);
+});
+
+// ---------------------------------------------------------------------------
 // runFirstBenchmark — end to end with everything injected
 // ---------------------------------------------------------------------------
 
@@ -292,6 +351,33 @@ function benchDeps(record) {
     mkdirFn: () => {},
     writeFileFn: (p, data) => record.writes.push({ p, data }),
     readFileImpl: () => '',
+    // collector seams — return fixed sub-signals so tests don't touch the
+    // (non-existent) fake workspace path.
+    collectMaintainabilityFn: (wp) => {
+      record.maintainabilityCollections?.push(wp);
+      return {
+        objectiveMaintainabilityScore: 0.8,
+        lintErrorCount: 2,
+        complexityScore: 0.75,
+        maintainabilityIndex: null,
+      };
+    },
+    collectSecurityFn: (wp) => {
+      record.securityCollections?.push(wp);
+      return {
+        secretScanCount: 0,
+        depAuditVulnCount: 0,
+        hasEdgeInputValidation: true,
+        hasPasswordHashing: false,
+        hasSafeTokenStorage: true,
+        hasServerSideAuthz: false,
+        hasAuthRateLimiting: false,
+      };
+    },
+    runDimensionJudgeFn: async () => ({
+      maintainability: 0.85,
+      security: 0.9,
+    }),
     // persist seam (in-memory store). `readFileImpl` reads the store back as
     // optional pre-seeded prior content (a resumed run's already-persisted
     // cells, via `record.storeSeed`) + everything appended this run — so the
@@ -378,6 +464,21 @@ test('runFirstBenchmark: emits a schema-valid scorecard per arm and renders a re
   assert.equal(control.dimensions.quality.acceptanceEvalScore, null);
   assert.equal(control.dimensions.planningFidelity.score, null);
   assert.equal(typeof mandrel.dimensions.planningFidelity.score, 'number');
+
+  // Maintainability and security are populated for BOTH arms from the collector
+  // stubs (objectiveMaintainabilityScore=0.8, judgeScore=0.85 → score=0.815).
+  for (const sc of [mandrel, control]) {
+    assert.ok(
+      typeof sc.dimensions.maintainability.score === 'number' &&
+        sc.dimensions.maintainability.score > 0,
+      `${sc.arm} maintainability.score should be > 0`,
+    );
+    assert.ok(
+      typeof sc.dimensions.security.score === 'number' &&
+        sc.dimensions.security.score > 0,
+      `${sc.arm} security.score should be > 0`,
+    );
+  }
 
   // Arm asymmetries: only the mandrel arm is overlaid and drives the Epic id.
   // BOTH arms get the bypassPermissions args (permission mode is orthogonal to

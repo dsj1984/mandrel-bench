@@ -40,6 +40,8 @@ function card({
   quality = 1,
   planningFidelity = 0.9,
   autonomy = 1,
+  maintainability = 0.9,
+  security = 1,
   tokenRatio = 4,
   wallClockMs = 600000,
   totalTokens = 180000,
@@ -67,6 +69,8 @@ function card({
         blockedEvents: 0,
         manualRescues: 0,
       },
+      maintainability: { score: maintainability },
+      security: { score: security },
       overheadRatio: { tokenRatio },
       efficiency: { wallClockMs, totalTokens, dispatches, costUsd },
     },
@@ -190,8 +194,8 @@ describe('dimensionRows — distributions per arm + delta verdict', () => {
       })),
     });
     const rows = dimensionRows(cells[0], corpus.perScenario[0], 'iqr');
-    // 4 scalar dimensions + 4 efficiency components = 8 rows.
-    assert.equal(rows.length, 8);
+    // 6 scalar dimensions + 4 efficiency components = 10 rows.
+    assert.equal(rows.length, 10);
     const quality = rows.find((r) => r.metric === 'quality');
     // Both arms have a band (a distribution), not a single number.
     assert.ok(
@@ -424,6 +428,8 @@ describe('renderReport — full Markdown', () => {
     assert.match(md, /Quality/);
     assert.match(md, /Planning fidelity/);
     assert.match(md, /Autonomy/);
+    assert.match(md, /Maintainability/);
+    assert.match(md, /Security/);
     assert.match(md, /Overhead ratio/);
     assert.match(md, /Efficiency · total tokens/);
   });

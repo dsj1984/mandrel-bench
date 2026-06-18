@@ -94,10 +94,12 @@
         "quality",
         "planningFidelity",
         "autonomy",
+        "maintainability",
+        "security",
         "efficiency",
         "overheadRatio"
       ],
-      "description": "The five measured dimensions for this run. Value side: quality, planningFidelity, autonomy. Cost side: efficiency, overheadRatio. Each is a single per-run value; the distribution/noise-band is computed across N runs by the scoring slice, never stored here. Formulas are defined in bench/metrics/README.md.",
+      "description": "The seven measured dimensions for this run. Value side: quality, planningFidelity, autonomy, maintainability, security. Cost side: efficiency, overheadRatio. Each is a single per-run value; the distribution/noise-band is computed across N runs by the scoring slice, never stored here. Formulas are defined in bench/metrics/README.md.",
       "properties": {
         "quality": {
           "$ref": "#/$defs/qualityDimension"
@@ -107,6 +109,12 @@
         },
         "autonomy": {
           "$ref": "#/$defs/autonomyDimension"
+        },
+        "maintainability": {
+          "$ref": "#/$defs/maintainabilityDimension"
+        },
+        "security": {
+          "$ref": "#/$defs/securityDimension"
         },
         "efficiency": {
           "$ref": "#/$defs/efficiencyDimension"
@@ -238,6 +246,77 @@
           "type": "integer",
           "minimum": 0,
           "description": "Count of operator interventions that unblocked or restarted the run."
+        }
+      }
+    },
+    "maintainabilityDimension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score"],
+      "description": "Maintainability — how readable and low-complexity is the output? (value side, Story #36). Two-oracle shape: objective spine (static-analysis / linter signal) weighted 0.7 plus LLM judge cross-check weighted 0.3; judge weight folds into spine when cross-check is null.",
+      "properties": {
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Composite maintainability in [0,1]. Objective spine is weighted 0.7; LLM judge cross-check is weighted 0.3."
+        },
+        "lintWarnings": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Count of linter warnings emitted against the delivered output."
+        },
+        "complexityScore": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Normalised cyclomatic complexity score in [0,1] where 1 is least complex, or null when not measured."
+        },
+        "maintainabilityIndex": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Normalised maintainability index in [0,1] where 1 is most maintainable, or null when not measured."
+        },
+        "maintainabilityJudgeScore": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "LLM judge cross-check score in [0,1], or null when the judge did not run."
+        }
+      }
+    },
+    "securityDimension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score"],
+      "description": "Security — how free of vulnerabilities is the output? (value side, Story #36). Two-oracle shape: objective spine (static-analysis / scanner signal) weighted 0.7 plus LLM judge cross-check weighted 0.3; judge weight folds into spine when cross-check is null.",
+      "properties": {
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Composite security in [0,1]. Objective spine is weighted 0.7; LLM judge cross-check is weighted 0.3."
+        },
+        "criticalFindings": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Count of critical-severity findings from security scanning."
+        },
+        "highFindings": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Count of high-severity findings from security scanning."
+        },
+        "secretsDetected": {
+          "type": "boolean",
+          "description": "True iff a secret (API key, credential, etc.) was detected in the delivered output."
+        },
+        "securityJudgeScore": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "LLM judge cross-check score in [0,1], or null when the judge did not run."
         }
       }
     },

@@ -343,6 +343,102 @@ describe('buildScorecard — control arm efficiency/overhead', () => {
   });
 });
 
+describe('buildScorecard — maintainability and security inputs', () => {
+  it('threads maintainabilityInputs into dimensions.maintainability', () => {
+    const sc = buildScorecard({
+      run: runStamp(),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 2, frozenSuiteTotal: 2 },
+      maintainabilityInputs: {
+        objectiveMaintainabilityScore: 0.8,
+        maintainabilityJudgeScore: 0.9,
+        lintWarnings: 3,
+        complexityScore: 0.75,
+        maintainabilityIndex: null,
+      },
+    });
+    // score = 0.7 * 0.8 + 0.3 * 0.9 = 0.56 + 0.27 = 0.83
+    assert.ok(
+      Math.abs(sc.dimensions.maintainability.score - 0.83) < 0.001,
+      `maintainability.score should be ~0.83, got ${sc.dimensions.maintainability.score}`,
+    );
+    assert.equal(sc.dimensions.maintainability.lintWarnings, 3);
+    assert.equal(sc.dimensions.maintainability.complexityScore, 0.75);
+    assert.equal(sc.dimensions.maintainability.maintainabilityJudgeScore, 0.9);
+  });
+
+  it('threads securityInputs into dimensions.security', () => {
+    const sc = buildScorecard({
+      run: runStamp(),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 2, frozenSuiteTotal: 2 },
+      securityInputs: {
+        objectiveSecurityScore: 0.6,
+        securityJudgeScore: 0.7,
+        criticalFindings: 1,
+        highFindings: 2,
+        secretsDetected: false,
+      },
+    });
+    // score = 0.7 * 0.6 + 0.3 * 0.7 = 0.42 + 0.21 = 0.63
+    assert.ok(
+      Math.abs(sc.dimensions.security.score - 0.63) < 0.001,
+      `security.score should be ~0.63, got ${sc.dimensions.security.score}`,
+    );
+    assert.equal(sc.dimensions.security.criticalFindings, 1);
+    assert.equal(sc.dimensions.security.highFindings, 2);
+    assert.equal(sc.dimensions.security.secretsDetected, false);
+    assert.equal(sc.dimensions.security.securityJudgeScore, 0.7);
+  });
+
+  it('defaults both dimensions to score 0 when inputs are omitted', () => {
+    const sc = buildScorecard({
+      run: runStamp(),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 2, frozenSuiteTotal: 2 },
+      // maintainabilityInputs and securityInputs omitted
+    });
+    assert.equal(sc.dimensions.maintainability.score, 0);
+    assert.equal(sc.dimensions.security.score, 0);
+  });
+
+  it('assembles a schema-valid scorecard with populated maintainability and security', () => {
+    const sc = buildScorecard({
+      run: runStamp(),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: {
+        frozenSuitePassed: 3,
+        frozenSuiteTotal: 3,
+        acceptanceEvalScore: 1,
+      },
+      maintainabilityInputs: {
+        objectiveMaintainabilityScore: 0.72,
+        maintainabilityJudgeScore: 0.8,
+        lintWarnings: 0,
+        complexityScore: 0.85,
+      },
+      securityInputs: {
+        objectiveSecurityScore: 0.9,
+        securityJudgeScore: null,
+        criticalFindings: 0,
+        highFindings: 0,
+        secretsDetected: false,
+      },
+    });
+    const validate = buildValidator();
+    assert.ok(
+      validate(sc),
+      `scorecard failed schema validation: ${JSON.stringify(validate.errors, null, 2)}`,
+    );
+    assert.ok(sc.dimensions.maintainability.score > 0);
+    assert.ok(sc.dimensions.security.score > 0);
+  });
+});
+
 describe('buildScorecard — schema conformance (binding acceptance)', () => {
   it('assembles a per-run record that validates against scorecard.schema.json', () => {
     const lifecycle = parseNdjson(readFileSync(LIFECYCLE_FIXTURE, 'utf8'));
@@ -375,13 +471,15 @@ describe('buildScorecard — schema conformance (binding acceptance)', () => {
     assert.equal(scorecard.schemaVersion, SCORECARD_SCHEMA_VERSION);
     assert.equal(scorecard.scenario, 'hello-world');
     assert.equal(scorecard.arm, 'mandrel');
-    // Five dimensions present.
+    // Seven dimensions present.
     assert.deepEqual(Object.keys(scorecard.dimensions).sort(), [
       'autonomy',
       'efficiency',
+      'maintainability',
       'overheadRatio',
       'planningFidelity',
       'quality',
+      'security',
     ]);
     // Wall-clock derived from the fixture span (19:32:00 → 19:42:11 = 611000ms).
     assert.equal(scorecard.dimensions.efficiency.wallClockMs, 611000);

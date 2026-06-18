@@ -66,15 +66,17 @@ describe('scorecard schema — validates the committed fixture', () => {
     );
   });
 
-  it('the fixture exercises all five dimensions', () => {
+  it('the fixture exercises all seven dimensions', () => {
     assert.deepEqual(
       Object.keys(fixture.dimensions).sort(),
       [
         'autonomy',
         'efficiency',
+        'maintainability',
         'overheadRatio',
         'planningFidelity',
         'quality',
+        'security',
       ].sort(),
     );
   });
@@ -89,9 +91,33 @@ describe('scorecard schema — rejects malformed records', () => {
     assert.equal(validate(bad), false);
   });
 
-  it('rejects a record missing one of the five dimensions', () => {
+  it('rejects a record missing one of the seven dimensions', () => {
     const bad = clone(fixture);
     delete bad.dimensions.overheadRatio;
+    assert.equal(validate(bad), false);
+  });
+
+  it('rejects a record missing the maintainability dimension', () => {
+    const bad = clone(fixture);
+    delete bad.dimensions.maintainability;
+    assert.equal(validate(bad), false);
+  });
+
+  it('rejects a record missing the security dimension', () => {
+    const bad = clone(fixture);
+    delete bad.dimensions.security;
+    assert.equal(validate(bad), false);
+  });
+
+  it('rejects a maintainability.score above its [0,1] range', () => {
+    const bad = clone(fixture);
+    bad.dimensions.maintainability.score = 1.1;
+    assert.equal(validate(bad), false);
+  });
+
+  it('rejects a security.score below its [0,1] range', () => {
+    const bad = clone(fixture);
+    bad.dimensions.security.score = -0.1;
     assert.equal(validate(bad), false);
   });
 
@@ -161,6 +187,8 @@ describe('scorecard schema — control-arm nullable dimensions', () => {
     control.dimensions.quality.acceptanceEvalScore = null;
     control.dimensions.efficiency.costUsd = null;
     control.dimensions.overheadRatio.timeRatio = null;
+    control.dimensions.maintainability.maintainabilityJudgeScore = null;
+    control.dimensions.security.securityJudgeScore = null;
     const ok = validate(control);
     assert.ok(
       ok,
