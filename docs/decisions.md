@@ -39,18 +39,36 @@ mandrel's hard-cutover policy (pin an exact version, upgrade deliberately).
 
 ---
 
-## D-001 — Five dimensions, split value vs. cost; variance is the method, not a dimension
+## D-001 — Seven dimensions, split value vs. cost; variance is the method, not a dimension
 
-**Decision.** Score each run on **Quality, Planning fidelity, Autonomy** (what
-the scaffolding *buys*) and **Efficiency, Overhead ratio** (what it *costs*).
+**Decision.** Score each run on **Quality, Planning fidelity, Autonomy,
+Maintainability, Security** (what the scaffolding *buys*) and **Efficiency,
+Overhead ratio** (what it *costs*).
 Report every dimension as a **distribution across N runs with a noise-band** —
-variance is the reporting method, not a sixth dimension. **Never** collapse to a
-single composite score.
+variance is the reporting method, not an eighth dimension. **Never** collapse to
+a single composite score.
+
+**Amended (Epic #32).** The original five-dimension frontier (Quality, Planning
+fidelity, Autonomy on the value side; Efficiency, Overhead ratio on the cost
+side) was extended to seven by adding **Maintainability** and **Security** as
+value-side dimensions. Both follow the same two-oracle shape as Quality:
+an objective spine (static-analysis signals, weighted 0.7) cross-checked by an
+LLM judge (0.3), with the judge weight folded into the spine when the
+cross-check is null. The spine inputs are distinct per dimension:
+Maintainability reads linter density, cyclomatic complexity, and a
+maintainability index; Security reads secret-scan results, dependency CVE
+findings, and critical/high-severity scanner counts. Neither introduces a new
+composite — each stands alone on the value/cost frontier alongside the
+original five.
 
 **Why.** The deliverable is the value/cost *frontier*. A scalar invites Goodhart
 gaming (optimizing the number erodes the scaffolding the framework exists to
 provide). A delta is only "real" when it clears the noise-band, so run-to-run
-variance is never mistaken for a regression.
+variance is never mistaken for a regression. Quality alone saturated at 1.0 on
+both arms for the first two scenarios (hello-world and crud-db); Maintainability
+and Security give the frontier room to diverge on harder, auth-bearing work
+where Mandrel's baseline rules provide a legitimate rubric the bare control
+lacks.
 
 ---
 
