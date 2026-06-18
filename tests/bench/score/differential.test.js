@@ -17,6 +17,7 @@ import {
   computeDifferential,
   difficultyMonotonicity,
   overheadFloor,
+  SCALAR_DIMENSIONS,
   scoreCorpus,
 } from '../../../bench/score/differential.js';
 
@@ -34,6 +35,8 @@ function card({
   quality = 1,
   planningFidelity = 0.9,
   autonomy = 1,
+  maintainability = 0.9,
+  security = 1,
   tokenRatio = 4,
   wallClockMs = 600000,
   totalTokens = 180000,
@@ -45,11 +48,41 @@ function card({
       quality: { score: quality },
       planningFidelity: { score: planningFidelity },
       autonomy: { score: autonomy },
+      maintainability: { score: maintainability },
+      security: { score: security },
       overheadRatio: { tokenRatio },
       efficiency: { wallClockMs, totalTokens, dispatches, costUsd },
     },
   };
 }
+
+describe('SCALAR_DIMENSIONS — dimension registry', () => {
+  it('includes maintainability and security', () => {
+    const names = SCALAR_DIMENSIONS.map((d) => d.name);
+    assert.ok(
+      names.includes('maintainability'),
+      'maintainability missing from SCALAR_DIMENSIONS',
+    );
+    assert.ok(
+      names.includes('security'),
+      'security missing from SCALAR_DIMENSIONS',
+    );
+  });
+
+  it('accessor for maintainability extracts dimensions.maintainability.score', () => {
+    const entry = SCALAR_DIMENSIONS.find((d) => d.name === 'maintainability');
+    const sc = { maintainability: { score: 0.75 } };
+    assert.equal(entry.accessor(sc), 0.75);
+    assert.equal(entry.accessor({}), null);
+  });
+
+  it('accessor for security extracts dimensions.security.score', () => {
+    const entry = SCALAR_DIMENSIONS.find((d) => d.name === 'security');
+    const sc = { security: { score: 0.9 } };
+    assert.equal(entry.accessor(sc), 0.9);
+    assert.equal(entry.accessor({}), null);
+  });
+});
 
 describe('computeDifferential — real-delta rule', () => {
   it('flags a delta that clears the larger noise-band spread as real', () => {

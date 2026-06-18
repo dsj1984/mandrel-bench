@@ -51,6 +51,11 @@ export const SCALAR_DIMENSIONS = Object.freeze([
   },
   { name: 'autonomy', accessor: (d) => d?.autonomy?.score ?? null },
   {
+    name: 'maintainability',
+    accessor: (d) => d?.maintainability?.score ?? null,
+  },
+  { name: 'security', accessor: (d) => d?.security?.score ?? null },
+  {
     name: 'overheadRatio',
     accessor: (d) => d?.overheadRatio?.tokenRatio ?? null,
   },
