@@ -59,6 +59,9 @@ import { renderDashboard } from './report/html.js';
 import { appendScorecards, readStore } from './report/persist.js';
 import { renderReport } from './report/render.js';
 import { scoreScenarioQuality as defaultScoreScenarioQuality } from './scenarios/acceptance-eval-adapter.js';
+import { runDimensionJudge as defaultRunDimensionJudge } from './scenarios/dimension-judge-adapter.js';
+import { collectMaintainabilitySignals as defaultCollectMaintainabilitySignals } from './scenarios/maintainability-adapter.js';
+import { collectSecuritySignals as defaultCollectSecuritySignals } from './scenarios/security-adapter.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -247,6 +250,68 @@ export function planningInputs(lifecycle = []) {
     plannedStoryCount: starts,
     deliveredStoryCount: ends,
     rePlanCount: 0,
+  };
+}
+
+/**
+ * Derive the `securityInputs` object for `buildScorecard` from the raw
+ * sub-signals returned by `collectSecuritySignals` and the optional judge
+ * scores.
+ *
+ * The security adapter returns boolean MUST-presence signals; we map them to
+ * the `criticalFindings` / `highFindings` / `secretsDetected` sub-signals that
+ * `computeSecurity` in dimensions.js expects, and compute
+ * `objectiveSecurityScore` as a weighted sum:
+ *
+ *   secretPenalty           = secretScanCount > 0 ? 0 : 1        weight 0.30
+ *   vulnPenalty             = max(0, 1 − depAuditVulnCount / 10)  weight 0.20
+ *   mustPresenceScore       = (validationOk + hashingOk + storageOk
+ *                             + authzOk + rateLimitOk) / 5         weight 0.50
+ *   objectiveSecurityScore  = secretPenalty·0.30 + vulnPenalty·0.20
+ *                           + mustPresenceScore·0.50
+ *
+ * @param {object} sigs   Output of collectSecuritySignals (or {}).
+ * @param {{ security?: number } | null} judgeScores  Batched judge output.
+ * @returns {object}
+ */
+export function derivedSecurityInputs(sigs, judgeScores) {
+  const secretScanCount =
+    typeof sigs.secretScanCount === 'number' ? sigs.secretScanCount : 0;
+  const depAuditVulnCount =
+    typeof sigs.depAuditVulnCount === 'number' ? sigs.depAuditVulnCount : 0;
+
+  const secretPenalty = secretScanCount > 0 ? 0 : 1;
+  const vulnPenalty = Math.max(0, 1 - depAuditVulnCount / 10);
+
+  const mustFlags = [
+    sigs.hasEdgeInputValidation,
+    sigs.hasPasswordHashing,
+    sigs.hasSafeTokenStorage,
+    sigs.hasServerSideAuthz,
+    sigs.hasAuthRateLimiting,
+  ];
+  const mustCount = mustFlags.filter(Boolean).length;
+  const mustPresenceScore = mustCount / 5;
+
+  const objectiveSecurityScore = Math.max(
+    0,
+    Math.min(
+      1,
+      secretPenalty * 0.3 + vulnPenalty * 0.2 + mustPresenceScore * 0.5,
+    ),
+  );
+
+  // criticalFindings: treat secret hits as critical; depAudit vulns as high.
+  const criticalFindings = secretScanCount;
+  const highFindings = depAuditVulnCount;
+  const secretsDetected = secretScanCount > 0;
+
+  return {
+    objectiveSecurityScore,
+    securityJudgeScore: judgeScores?.security ?? null,
+    criticalFindings,
+    highFindings,
+    secretsDetected,
   };
 }
 
@@ -459,6 +524,12 @@ export async function runOneRun(opts, deps = {}) {
   const withRunningAppFn = deps.withRunningAppFn ?? defaultWithRunningApp;
   const scoreQualityFn =
     deps.scoreScenarioQualityFn ?? defaultScoreScenarioQuality;
+  const collectMaintainabilityFn =
+    deps.collectMaintainabilityFn ?? defaultCollectMaintainabilitySignals;
+  const collectSecurityFn =
+    deps.collectSecurityFn ?? defaultCollectSecuritySignals;
+  const runDimensionJudgeFn =
+    deps.runDimensionJudgeFn ?? defaultRunDimensionJudge;
   const gitFn =
     deps.gitFn ??
     ((args, cwd) =>
@@ -631,6 +702,61 @@ export async function runOneRun(opts, deps = {}) {
       deps.appRunnerDeps,
     );
 
+    // Collect maintainability and security sub-signals from the materialized
+    // workspace tree. Both arms are measured identically so the comparison is
+    // fair. Failures are best-effort: a collector error must not abort the run;
+    // the dimension simply defaults to 0 (conservative).
+    let maintainabilitySignals = {};
+    try {
+      maintainabilitySignals = collectMaintainabilityFn(
+        handle.workspacePath,
+        deps.collectMaintainabilityPorts,
+      );
+    } catch (err) {
+      logger?.warn?.(
+        `[run] maintainability collector failed (scoring 0): ${err?.message ?? err}`,
+      );
+    }
+
+    let securitySignals = {};
+    try {
+      securitySignals = collectSecurityFn(
+        handle.workspacePath,
+        deps.collectSecurityPorts,
+      );
+    } catch (err) {
+      logger?.warn?.(
+        `[run] security collector failed (scoring 0): ${err?.message ?? err}`,
+      );
+    }
+
+    // Run the single batched LLM-judge cross-check for both new dimensions.
+    // The judge is enabled for both arms so the comparison is fair. A null
+    // result (judge disabled / transport error) folds the 0.3 judge weight
+    // into the objective spine — the dimension is still populated.
+    let judgeScores = null;
+    try {
+      judgeScores = await runDimensionJudgeFn(
+        { maintainabilitySignals, securitySignals },
+        deps.dimensionJudgeDeps,
+      );
+    } catch (err) {
+      logger?.warn?.(
+        `[run] dimension judge failed (judge weight folded into spine): ${err?.message ?? err}`,
+      );
+    }
+
+    const maintainabilityInputs = {
+      objectiveMaintainabilityScore:
+        maintainabilitySignals.objectiveMaintainabilityScore ?? null,
+      maintainabilityJudgeScore: judgeScores?.maintainability ?? null,
+      lintWarnings: maintainabilitySignals.lintErrorCount ?? 0,
+      complexityScore: maintainabilitySignals.complexityScore ?? null,
+      maintainabilityIndex: null,
+    };
+
+    const securityInputs = derivedSecurityInputs(securitySignals, judgeScores);
+
     const run = buildRunIdentity({
       scenario: scenario.id,
       arm,
@@ -648,6 +774,8 @@ export async function runOneRun(opts, deps = {}) {
       envelope: session.envelope,
       quality,
       planning: arm === 'mandrel' ? planningInputs(lifecycle) : {},
+      maintainabilityInputs,
+      securityInputs,
       rawRefs,
     });
     return scorecard;
