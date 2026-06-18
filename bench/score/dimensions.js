@@ -1,19 +1,22 @@
 // bench/score/dimensions.js
 //
-// The five-dimension scorer for the Mandrel self-benchmark harness
-// (Epic #4211, Story #4217). Internal tooling only — never shipped in the
-// distributed `.agents/` bundle, never run against the live repo.
+// The seven-dimension scorer for the Mandrel self-benchmark harness
+// (Epic #4211, Story #4217; extended by Epic #32, Story #36). Internal
+// tooling only — never shipped in the distributed `.agents/` bundle, never
+// run against the live repo.
 //
 // This module is the single source of truth for turning the raw inputs a
 // single run recorded (frozen-suite results, the acceptance-eval verdict,
 // plan-vs-actual counts, lifecycle timings/autonomy counters, the `claude -p`
-// usage envelope, and the ceremony/codegen token split) into the five
-// per-run dimension values that land on a scorecard under `dimensions.<name>`.
+// usage envelope, the ceremony/codegen token split, and the new
+// maintainability/security sub-signals) into the seven per-run dimension
+// values that land on a scorecard under `dimensions.<name>`.
 //
 // Every formula is the verbatim, reproducible definition from the binding
-// measurement contract at bench/metrics/README.md § "The five dimensions":
+// measurement contract at bench/metrics/README.md § "The five dimensions"
+// (original) and § "Maintainability" / § "Security" (Story #36 additions):
 //
-//   value side: quality, planningFidelity, autonomy
+//   value side: quality, planningFidelity, autonomy, maintainability, security
 //   cost side:  efficiency, overheadRatio
 //
 // Determinism: pure functions, no I/O, no clock, no randomness. The same
@@ -265,6 +268,175 @@ export function computeAutonomy(input = {}) {
 }
 
 /**
+ * Maintainability weights — same two-oracle shape as QUALITY_WEIGHTS.
+ * The objective spine (static-analysis / linter signal) is weighted 0.7;
+ * the LLM judge cross-check is weighted 0.3. When the judge did not run
+ * (`maintainabilityJudgeScore == null`) the judge weight folds into the
+ * spine, renormalizing `w_spine` to 1.0 — identical to QUALITY_WEIGHTS
+ * semantics.
+ */
+export const MAINTAINABILITY_WEIGHTS = Object.freeze({
+  spine: 0.7,
+  judge: 0.3,
+});
+
+/**
+ * Security weights — same two-oracle shape as QUALITY_WEIGHTS and
+ * MAINTAINABILITY_WEIGHTS.
+ */
+export const SECURITY_WEIGHTS = Object.freeze({ spine: 0.7, judge: 0.3 });
+
+/**
+ * Maintainability — *how readable and low-complexity is the output?*
+ * (value side, Story #36)
+ *
+ *   spineScore = objectiveMaintainabilityScore          ∈ [0, 1]
+ *   score = w_spine·spineScore + w_judge·judgeScore     ∈ [0, 1]
+ *     with w_judge folded into w_spine (→ 1.0) when judgeScore null.
+ *
+ * Sub-signals recorded for provenance:
+ *   - lintWarnings          — count of linter warnings emitted
+ *   - complexityScore       — normalised cyclomatic complexity score ∈ [0, 1]
+ *   - maintainabilityIndex  — normalised MI score ∈ [0, 1]
+ *
+ * When `objectiveMaintainabilityScore` is not supplied but individual
+ * sub-signals are, the spine is the average of the finite sub-signals.
+ * When neither is supplied the spine defaults to 0.
+ *
+ * @param {object} input
+ * @param {number|null} [input.objectiveMaintainabilityScore]  Pre-computed
+ *   spine in [0, 1], or null to derive from sub-signals.
+ * @param {number|null} [input.maintainabilityJudgeScore]  LLM judge cross-
+ *   check in [0, 1], or null when the judge did not run.
+ * @param {number} [input.lintWarnings]
+ * @param {number|null} [input.complexityScore]
+ * @param {number|null} [input.maintainabilityIndex]
+ * @returns {{
+ *   score: number,
+ *   lintWarnings: number,
+ *   complexityScore: number|null,
+ *   maintainabilityIndex: number|null,
+ *   maintainabilityJudgeScore: number|null
+ * }}
+ */
+export function computeMaintainability(input = {}) {
+  const lintWarnings = nonNegInt(input.lintWarnings);
+  const complexityScore =
+    typeof input.complexityScore === 'number' &&
+    Number.isFinite(input.complexityScore)
+      ? clamp(input.complexityScore)
+      : null;
+  const maintainabilityIndex =
+    typeof input.maintainabilityIndex === 'number' &&
+    Number.isFinite(input.maintainabilityIndex)
+      ? clamp(input.maintainabilityIndex)
+      : null;
+
+  let spineScore;
+  if (
+    typeof input.objectiveMaintainabilityScore === 'number' &&
+    Number.isFinite(input.objectiveMaintainabilityScore)
+  ) {
+    spineScore = clamp(input.objectiveMaintainabilityScore);
+  } else {
+    // Derive from sub-signals when the pre-computed spine is absent.
+    const subs = [complexityScore, maintainabilityIndex].filter(
+      (v) => v !== null,
+    );
+    spineScore =
+      subs.length > 0 ? subs.reduce((a, b) => a + b, 0) / subs.length : 0;
+  }
+
+  const judgeRaw = input.maintainabilityJudgeScore;
+  const judgePresent =
+    typeof judgeRaw === 'number' && Number.isFinite(judgeRaw);
+  const maintainabilityJudgeScore = judgePresent ? clamp(judgeRaw) : null;
+
+  let score;
+  if (maintainabilityJudgeScore === null) {
+    score = spineScore;
+  } else {
+    score =
+      MAINTAINABILITY_WEIGHTS.spine * spineScore +
+      MAINTAINABILITY_WEIGHTS.judge * maintainabilityJudgeScore;
+  }
+
+  return {
+    score: clamp(score),
+    lintWarnings,
+    complexityScore,
+    maintainabilityIndex,
+    maintainabilityJudgeScore,
+  };
+}
+
+/**
+ * Security — *how free of vulnerabilities is the output?* (value side,
+ * Story #36)
+ *
+ *   spineScore = objectiveSecurityScore                 ∈ [0, 1]
+ *   score = w_spine·spineScore + w_judge·judgeScore     ∈ [0, 1]
+ *     with w_judge folded into w_spine (→ 1.0) when judgeScore null.
+ *
+ * Sub-signals recorded for provenance:
+ *   - criticalFindings  — count of critical-severity findings from scanning
+ *   - highFindings      — count of high-severity findings
+ *   - secretsDetected   — boolean, true iff a secret was detected in output
+ *
+ * When `objectiveSecurityScore` is not supplied it defaults to 0 so that a
+ * run with no scan data is conservatively scored lowest.
+ *
+ * @param {object} input
+ * @param {number|null} [input.objectiveSecurityScore]  Pre-computed spine in
+ *   [0, 1], or null/absent to use 0.
+ * @param {number|null} [input.securityJudgeScore]  LLM judge cross-check in
+ *   [0, 1], or null when the judge did not run.
+ * @param {number} [input.criticalFindings]
+ * @param {number} [input.highFindings]
+ * @param {boolean} [input.secretsDetected]
+ * @returns {{
+ *   score: number,
+ *   criticalFindings: number,
+ *   highFindings: number,
+ *   secretsDetected: boolean,
+ *   securityJudgeScore: number|null
+ * }}
+ */
+export function computeSecurity(input = {}) {
+  const criticalFindings = nonNegInt(input.criticalFindings);
+  const highFindings = nonNegInt(input.highFindings);
+  const secretsDetected = input.secretsDetected === true;
+
+  const spineScore =
+    typeof input.objectiveSecurityScore === 'number' &&
+    Number.isFinite(input.objectiveSecurityScore)
+      ? clamp(input.objectiveSecurityScore)
+      : 0;
+
+  const judgeRaw = input.securityJudgeScore;
+  const judgePresent =
+    typeof judgeRaw === 'number' && Number.isFinite(judgeRaw);
+  const securityJudgeScore = judgePresent ? clamp(judgeRaw) : null;
+
+  let score;
+  if (securityJudgeScore === null) {
+    score = spineScore;
+  } else {
+    score =
+      SECURITY_WEIGHTS.spine * spineScore +
+      SECURITY_WEIGHTS.judge * securityJudgeScore;
+  }
+
+  return {
+    score: clamp(score),
+    criticalFindings,
+    highFindings,
+    secretsDetected,
+    securityJudgeScore,
+  };
+}
+
+/**
  * Efficiency — *what did it cost absolutely?* (cost side)
  *
  * A vector, never collapsed to a scalar: wall-clock, tokens, dispatches, plus
@@ -360,7 +532,7 @@ export function computeOverheadRatio(input = {}) {
 }
 
 /**
- * Compute all five dimensions from one run's recorded inputs and return the
+ * Compute all seven dimensions from one run's recorded inputs and return the
  * `dimensions` sub-object exactly as it appears on a scorecard
  * (`bench/schemas/scorecard.schema.json#/properties/dimensions`).
  *
@@ -375,6 +547,8 @@ export function computeOverheadRatio(input = {}) {
  *   quality: ReturnType<typeof computeQuality>,
  *   planningFidelity: ReturnType<typeof computePlanningFidelity>,
  *   autonomy: ReturnType<typeof computeAutonomy>,
+ *   maintainability: ReturnType<typeof computeMaintainability>,
+ *   security: ReturnType<typeof computeSecurity>,
  *   efficiency: ReturnType<typeof computeEfficiency>,
  *   overheadRatio: ReturnType<typeof computeOverheadRatio>
  * }}
@@ -387,6 +561,8 @@ export function computeDimensions(run = {}) {
       ...(run.planningFidelity ?? run),
     }),
     autonomy: computeAutonomy(run.autonomy ?? run),
+    maintainability: computeMaintainability(run.maintainability ?? run),
+    security: computeSecurity(run.security ?? run),
     efficiency: computeEfficiency(run.efficiency ?? run),
     overheadRatio: computeOverheadRatio(run.overheadRatio ?? run),
   };

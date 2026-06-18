@@ -35,6 +35,20 @@
       "blockedEvents": 0,
       "manualRescues": 0
     },
+    "maintainability": {
+      "score": 0.91,
+      "lintWarnings": 0,
+      "complexityScore": 0.92,
+      "maintainabilityIndex": 0.9,
+      "maintainabilityJudgeScore": 0.9
+    },
+    "security": {
+      "score": 1,
+      "criticalFindings": 0,
+      "highFindings": 0,
+      "secretsDetected": false,
+      "securityJudgeScore": 1
+    },
     "efficiency": {
       "wallClockMs": 612000,
       "totalTokens": 184320,

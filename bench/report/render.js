@@ -55,6 +55,8 @@ const DIMENSION_LABELS = Object.freeze({
   quality: 'Quality',
   planningFidelity: 'Planning fidelity',
   autonomy: 'Autonomy',
+  maintainability: 'Maintainability',
+  security: 'Security',
   overheadRatio: 'Overhead ratio (tokens)',
   'efficiency.wallClockMs': 'Efficiency · wall-clock (ms)',
   'efficiency.totalTokens': 'Efficiency · total tokens',

@@ -26,6 +26,8 @@ function card({
   quality = 1,
   planningFidelity = 0.9,
   autonomy = 1,
+  maintainability = 0.9,
+  security = 1,
   tokenRatio = 4,
   wallClockMs = 600000,
   totalTokens = 180000,
@@ -53,6 +55,8 @@ function card({
         blockedEvents: 0,
         manualRescues: 0,
       },
+      maintainability: { score: maintainability },
+      security: { score: security },
       overheadRatio: { tokenRatio },
       efficiency: { wallClockMs, totalTokens, dispatches, costUsd },
     },
@@ -162,13 +166,13 @@ describe('compareRuns — per-dimension cross-run deltas', () => {
     assert.ok(typeof quality.controlCandidateCenter === 'number');
   });
 
-  it('includes every comparable metric (4 dimensions + 4 efficiency components)', () => {
+  it('includes every comparable metric (6 dimensions + 4 efficiency components)', () => {
     const cmp = compareRuns({
       baseline: run({ quality: 0.9 }),
       candidate: run({ quality: 0.9 }),
     });
     const metricNames = cmp.scenarios[0].metrics.map((m) => m.metric);
-    assert.equal(metricNames.length, 8);
+    assert.equal(metricNames.length, 10);
     assert.ok(metricNames.includes('quality'));
     assert.ok(metricNames.includes('efficiency.totalTokens'));
     assert.ok(metricNames.includes('efficiency.costUsd'));

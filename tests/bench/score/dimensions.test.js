@@ -1,10 +1,14 @@
 // tests/bench/score/dimensions.test.js
 //
-// Unit tier (pure logic, no I/O) for the five-dimension scorer
-// (Epic #4211, Story #4217). Exercises bench/score/dimensions.js against the
-// verbatim formulas in bench/metrics/README.md § "The five dimensions":
-// quality, planningFidelity, autonomy, efficiency, overheadRatio — plus the
-// control-arm null behaviour and the divide-by-zero / no-codegen edges.
+// Unit tier (pure logic, no I/O) for the seven-dimension scorer
+// (Epic #4211, Story #4217; extended by Epic #32, Story #36). Exercises
+// bench/score/dimensions.js against the verbatim formulas in
+// bench/metrics/README.md § "The five dimensions" (original) plus the
+// Story #36 additions:
+// quality, planningFidelity, autonomy, maintainability, security,
+// efficiency, overheadRatio — plus the control-arm null behaviour, the
+// divide-by-zero / no-codegen edges, and the judge-fold-when-null path for
+// each two-oracle dimension.
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
@@ -13,11 +17,15 @@ import {
   computeAutonomy,
   computeDimensions,
   computeEfficiency,
+  computeMaintainability,
   computeOverheadRatio,
   computePlanningFidelity,
   computeQuality,
+  computeSecurity,
   fileFootprintDrift,
+  MAINTAINABILITY_WEIGHTS,
   QUALITY_WEIGHTS,
+  SECURITY_WEIGHTS,
 } from '../../../bench/score/dimensions.js';
 
 const approx = (actual, expected, eps = 1e-9) =>
@@ -189,6 +197,115 @@ describe('computeAutonomy', () => {
   });
 });
 
+describe('computeMaintainability', () => {
+  it('blends objective spine (0.7) and judge score (0.3)', () => {
+    const m = computeMaintainability({
+      objectiveMaintainabilityScore: 1,
+      maintainabilityJudgeScore: 0.5,
+    });
+    // 0.7*1 + 0.3*0.5 = 0.85
+    approx(
+      m.score,
+      MAINTAINABILITY_WEIGHTS.spine * 1 + MAINTAINABILITY_WEIGHTS.judge * 0.5,
+    );
+    assert.equal(m.maintainabilityJudgeScore, 0.5);
+  });
+
+  it('folds judge weight onto spine when maintainabilityJudgeScore is null', () => {
+    const m = computeMaintainability({
+      objectiveMaintainabilityScore: 0.8,
+      maintainabilityJudgeScore: null,
+    });
+    // judge null ⇒ score === spine (w_spine renormalized to 1.0)
+    approx(m.score, 0.8);
+    assert.equal(m.maintainabilityJudgeScore, null);
+  });
+
+  it('folds judge weight onto spine when judge is absent (missing field)', () => {
+    const m = computeMaintainability({ objectiveMaintainabilityScore: 0.75 });
+    approx(m.score, 0.75);
+    assert.equal(m.maintainabilityJudgeScore, null);
+  });
+
+  it('derives spine from sub-signals when objectiveMaintainabilityScore absent', () => {
+    // complexityScore=0.8, maintainabilityIndex=0.6 ⇒ spine=(0.8+0.6)/2=0.7
+    const m = computeMaintainability({
+      complexityScore: 0.8,
+      maintainabilityIndex: 0.6,
+    });
+    approx(m.score, 0.7);
+    approx(m.complexityScore, 0.8);
+    approx(m.maintainabilityIndex, 0.6);
+  });
+
+  it('defaults to 0 when no spine input at all', () => {
+    const m = computeMaintainability({});
+    approx(m.score, 0);
+    assert.equal(m.lintWarnings, 0);
+    assert.equal(m.complexityScore, null);
+    assert.equal(m.maintainabilityIndex, null);
+    assert.equal(m.maintainabilityJudgeScore, null);
+  });
+
+  it('records lintWarnings correctly', () => {
+    const m = computeMaintainability({
+      objectiveMaintainabilityScore: 0.9,
+      lintWarnings: 3,
+    });
+    assert.equal(m.lintWarnings, 3);
+    approx(m.score, 0.9);
+  });
+});
+
+describe('computeSecurity', () => {
+  it('blends objective spine (0.7) and judge score (0.3)', () => {
+    const s = computeSecurity({
+      objectiveSecurityScore: 1,
+      securityJudgeScore: 0.5,
+    });
+    // 0.7*1 + 0.3*0.5 = 0.85
+    approx(s.score, SECURITY_WEIGHTS.spine * 1 + SECURITY_WEIGHTS.judge * 0.5);
+    assert.equal(s.securityJudgeScore, 0.5);
+  });
+
+  it('folds judge weight onto spine when securityJudgeScore is null', () => {
+    const s = computeSecurity({
+      objectiveSecurityScore: 0.9,
+      securityJudgeScore: null,
+    });
+    // judge null ⇒ score === spine
+    approx(s.score, 0.9);
+    assert.equal(s.securityJudgeScore, null);
+  });
+
+  it('folds judge weight onto spine when judge is absent (missing field)', () => {
+    const s = computeSecurity({ objectiveSecurityScore: 0.8 });
+    approx(s.score, 0.8);
+    assert.equal(s.securityJudgeScore, null);
+  });
+
+  it('defaults objectiveSecurityScore to 0 when absent (conservative)', () => {
+    const s = computeSecurity({});
+    approx(s.score, 0);
+    assert.equal(s.criticalFindings, 0);
+    assert.equal(s.highFindings, 0);
+    assert.equal(s.secretsDetected, false);
+    assert.equal(s.securityJudgeScore, null);
+  });
+
+  it('records sub-signals — findings and secretsDetected', () => {
+    const s = computeSecurity({
+      objectiveSecurityScore: 0.5,
+      criticalFindings: 2,
+      highFindings: 5,
+      secretsDetected: true,
+    });
+    assert.equal(s.criticalFindings, 2);
+    assert.equal(s.highFindings, 5);
+    assert.equal(s.secretsDetected, true);
+  });
+});
+
 describe('computeEfficiency', () => {
   it('reports the vector and preserves a reported costUsd', () => {
     const e = computeEfficiency({
@@ -247,7 +364,7 @@ describe('computeOverheadRatio', () => {
 });
 
 describe('computeDimensions', () => {
-  it('produces all five dimensions with the canonical keys', () => {
+  it('produces all seven dimensions with the canonical keys', () => {
     const dims = computeDimensions({
       arm: 'mandrel',
       frozenSuitePassed: 6,
@@ -260,6 +377,10 @@ describe('computeDimensions', () => {
       hitlStops: 0,
       blockedEvents: 0,
       manualRescues: 0,
+      objectiveMaintainabilityScore: 0.9,
+      maintainabilityJudgeScore: 0.85,
+      objectiveSecurityScore: 1,
+      securityJudgeScore: 1,
       wallClockMs: 612000,
       totalTokens: 184320,
       inputTokens: 151200,
@@ -272,13 +393,25 @@ describe('computeDimensions', () => {
     assert.deepEqual(Object.keys(dims).sort(), [
       'autonomy',
       'efficiency',
+      'maintainability',
       'overheadRatio',
       'planningFidelity',
       'quality',
+      'security',
     ]);
     approx(dims.quality.score, 1);
     approx(dims.autonomy.score, 1);
     assert.equal(typeof dims.planningFidelity.score, 'number');
+    assert.equal(typeof dims.maintainability.score, 'number');
+    assert.equal(typeof dims.security.score, 'number');
+  });
+
+  it('returns maintainability and security keys alongside the original five', () => {
+    const dims = computeDimensions({});
+    assert.ok('maintainability' in dims, 'maintainability key missing');
+    assert.ok('security' in dims, 'security key missing');
+    assert.equal(typeof dims.maintainability.score, 'number');
+    assert.equal(typeof dims.security.score, 'number');
   });
 
   it('nulls planningFidelity when arm is control', () => {
