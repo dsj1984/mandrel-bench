@@ -428,6 +428,8 @@ describe('renderReport — full Markdown', () => {
     assert.match(md, /Quality/);
     assert.match(md, /Planning fidelity/);
     assert.match(md, /Autonomy/);
+    assert.match(md, /Maintainability/);
+    assert.match(md, /Security/);
     assert.match(md, /Overhead ratio/);
     assert.match(md, /Efficiency · total tokens/);
   });

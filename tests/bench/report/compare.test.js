@@ -174,6 +174,8 @@ describe('compareRuns — per-dimension cross-run deltas', () => {
     const metricNames = cmp.scenarios[0].metrics.map((m) => m.metric);
     assert.equal(metricNames.length, 10);
     assert.ok(metricNames.includes('quality'));
+    assert.ok(metricNames.includes('maintainability'));
+    assert.ok(metricNames.includes('security'));
     assert.ok(metricNames.includes('efficiency.totalTokens'));
     assert.ok(metricNames.includes('efficiency.costUsd'));
   });
