@@ -7,14 +7,25 @@
 // `renderDashboard({ scorecards })` turns the aggregated scorecard corpus (every
 // run across every cohort) into ONE self-contained `results.html` string with:
 //
-//   1. An over-time TREND CHART (inline SVG) of the headline metrics — quality,
-//      autonomy, efficiency total-tokens & cost, and overhead ratio — one series
-//      per arm, filterable by cohort (model + framework version).
+//   1. An over-VERSIONS TREND CHART (inline SVG) of the headline metrics —
+//      quality, autonomy, efficiency total-tokens & cost, and overhead ratio.
+//      The x-axis is the COHORT (model + framework version), ordered
+//      chronologically; each cohort is aggregated to one median point per arm
+//      with an inter-quartile whisker (never a bare point — see metrics/README).
+//      A Model filter narrows to one model so the version-over-version line is
+//      clean; model changes appear as a second x-tick line and break the
+//      connecting line (we never draw a cross-model "trend"). Every metric
+//      carries an interpretation caption (value/cost side, range, which
+//      direction is better, what "good" looks like) and a delta-vs-control
+//      badge for the most recent cohort.
 //   2. A sortable + filterable INDEX TABLE of every run (timestamp, scenario,
 //      arm, model, frameworkVersion, the five dimension headlines, env) — sort
-//      by any header, filter by scenario / arm / model / version + free text.
+//      by any header, filter by scenario / arm / model / version + free text,
+//      with a "how to read" legend that states each dimension's good/bad
+//      direction.
 //   3. An in-page MODAL opened by clicking a row, showing the full per-dimension
-//      breakdown and links to that run's `.raw/` artifacts and Markdown report.
+//      breakdown (each group prefixed with a plain-English good/bad gloss) and
+//      links to that run's `.raw/` artifacts and Markdown report.
 //
 // The dashboard carries ZERO runtime dependencies: the corpus is inlined as
 // JSON, the chart is drawn as inline SVG, and sort/filter/modal are vanilla JS.
@@ -30,35 +41,60 @@
 import { cohortSegments } from './cohort-path.js';
 
 /**
- * The headline metrics the trend chart plots, each with a label, a unit hint,
- * and a pure accessor onto a scorecard. Kept in module scope so the
- * server-side row projection and the client-side chart agree on exactly one set
- * of headlines (no second, divergent interpretation — Story out-of-scope rule).
+ * The headline metrics the trend chart plots, each with a label, the side of
+ * the value/cost frontier it sits on, the direction that is "better", a range
+ * hint, a plain-English "what good looks like" gloss, and a pure accessor onto
+ * a scorecard. Kept in module scope so the server-side row projection and the
+ * client-side chart agree on exactly one set of headlines (no second, divergent
+ * interpretation — Story out-of-scope rule).
+ *
+ * `side`   — 'value' (what scaffolding buys) | 'cost' (what it charges).
+ * `better` — 'higher' | 'lower'. Drives the ▲/▼ hints and the delta verdict.
  */
 const HEADLINE_METRICS = Object.freeze([
   {
     key: 'quality',
     label: 'Quality',
+    side: 'value',
+    better: 'higher',
+    range: '0–1',
+    good: '1.0 = every frozen acceptance assertion passes and the LLM judge agrees; below ~0.9 means assertions failed.',
     get: (sc) => sc?.dimensions?.quality?.score,
   },
   {
     key: 'autonomy',
     label: 'Autonomy',
+    side: 'value',
+    better: 'higher',
+    range: '0–1',
+    good: '1.0 = fully unattended (zero human interventions); each one drops it (0.5 = one, 0.33 = two). Anything under 1.0 is a finding.',
     get: (sc) => sc?.dimensions?.autonomy?.score,
   },
   {
     key: 'totalTokens',
     label: 'Total tokens',
+    side: 'cost',
+    better: 'lower',
+    range: '≥0 (count)',
+    good: 'Absolute token cost for the whole run. Cheaper is better only at equal quality — read it alongside Quality.',
     get: (sc) => sc?.dimensions?.efficiency?.totalTokens,
   },
   {
     key: 'costUsd',
     label: 'Cost (USD)',
+    side: 'cost',
+    better: 'lower',
+    range: '≥0 ($)',
+    good: 'Absolute USD from the claude -p envelope. Lower is cheaper at equal quality; the mandrel−control gap is the price of the scaffolding.',
     get: (sc) => sc?.dimensions?.efficiency?.costUsd,
   },
   {
     key: 'overheadRatio',
     label: 'Overhead ratio',
+    side: 'cost',
+    better: 'lower',
+    range: '≥0',
+    good: 'Ceremony tokens per shippable-codegen token. Control sits near 0; the mandrel−control gap IS the ceremony tax. Should fall as tasks get bigger.',
     get: (sc) => sc?.dimensions?.overheadRatio?.tokenRatio,
   },
 ]);
@@ -128,10 +164,11 @@ export function toRow(sc) {
 /**
  * Build the JSON-safe corpus model the dashboard inlines: the projected rows
  * (sorted by timestamp then runId for a stable, diffable order) and the
- * headline-metric metadata the client chart reads. Pure.
+ * headline-metric metadata the client chart reads (key, label, and the
+ * interpretation fields). Pure.
  *
  * @param {Array<object>} scorecards
- * @returns {{ rows: object[], metrics: Array<{ key: string, label: string }> }}
+ * @returns {{ rows: object[], metrics: Array<object> }}
  */
 export function buildDashboardModel(scorecards) {
   if (!Array.isArray(scorecards)) {
@@ -143,7 +180,16 @@ export function buildDashboardModel(scorecards) {
     }
     return a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0;
   });
-  const metrics = HEADLINE_METRICS.map(({ key, label }) => ({ key, label }));
+  const metrics = HEADLINE_METRICS.map(
+    ({ key, label, side, better, range, good }) => ({
+      key,
+      label,
+      side,
+      better,
+      range,
+      good,
+    }),
+  );
   return { rows, metrics };
 }
 
@@ -187,6 +233,7 @@ const STYLE = `
 :root {
   --bg: #0f1115; --panel: #181b22; --border: #2a2f3a; --fg: #e6e8ec;
   --muted: #9aa3b2; --accent: #6ea8fe; --mandrel: #6ea8fe; --control: #f0883e;
+  --good: #56d364; --bad: #f85149;
 }
 * { box-sizing: border-box; }
 body {
@@ -218,6 +265,18 @@ tbody tr:hover { background: rgba(110,168,254,0.08); }
 .legend span::before { content: "\\25CF "; }
 .legend .mandrel::before { color: var(--mandrel); }
 .legend .control::before { color: var(--control); }
+.metric-caption { margin-top: 10px; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.metric-caption .pill { color: var(--fg); }
+.delta-readout { margin-top: 8px; font-size: 12px; }
+.delta-readout .delta { display: inline-block; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border); }
+.delta-readout .delta.good { color: var(--good); border-color: rgba(86,211,100,0.4); }
+.delta-readout .delta.bad { color: var(--bad); border-color: rgba(248,81,73,0.4); }
+details.help { margin-bottom: 12px; font-size: 12px; color: var(--muted); }
+details.help summary { cursor: pointer; color: var(--accent); }
+details.help ul { margin: 8px 0 0; padding-left: 18px; }
+details.help li { margin: 3px 0; }
+details.help b { color: var(--fg); font-weight: 600; }
+.up { color: var(--good); } .down { color: var(--good); }
 .modal-backdrop {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6);
   display: none; align-items: center; justify-content: center; padding: 24px;
@@ -233,7 +292,8 @@ tbody tr:hover { background: rgba(110,168,254,0.08); }
 .modal .links a { color: var(--accent); margin-right: 14px; }
 .modal .links { margin-top: 14px; }
 .dim-group { margin-top: 14px; }
-.dim-group h4 { margin: 0 0 6px; font-size: 13px; color: var(--accent); }
+.dim-group h4 { margin: 0 0 2px; font-size: 13px; color: var(--accent); }
+.dim-group .gloss { margin: 0 0 6px; font-size: 11px; color: var(--muted); }
 svg { display: block; width: 100%; height: auto; }
 .metric-btns { display: flex; flex-wrap: wrap; gap: 6px; }
 .metric-btns button {
@@ -247,6 +307,10 @@ svg { display: block; width: 100%; height: auto; }
  * The client-side script. A single template string (no template interpolation
  * of corpus data — the corpus is read from the inlined JSON block by id), so the
  * emitted bytes are fixed for a fixed corpus. Vanilla JS only.
+ *
+ * NOTE: this string is itself a JS template literal in the source, so it must
+ * not contain backslash escape sequences (e.g. "\\n"): write separators as
+ * literal characters instead.
  */
 const SCRIPT = `
 "use strict";
@@ -256,14 +320,62 @@ const SCRIPT = `
   var ROWS = MODEL.rows || [];
   var METRICS = MODEL.metrics || [];
 
-  // ---- shared cohort + filter state -------------------------------------
+  // ---- helpers ----------------------------------------------------------
   function uniq(vals) {
     var seen = {}; var out = [];
     vals.forEach(function (v) { if (v !== "" && !seen[v]) { seen[v] = 1; out.push(v); } });
     out.sort();
     return out;
   }
-  var COHORTS = uniq(ROWS.map(function (r) { return r.model + " @ " + r.frameworkVersion; }));
+  function fmtNum(v) {
+    if (v === null || v === undefined) return "—";
+    if (Math.abs(v) >= 1000) return String(Math.round(v));
+    return String(Math.round(v * 1000) / 1000);
+  }
+  // type-7 quantile (the same estimator the IQR noise-band uses in
+  // bench/metrics/README.md), so the chart's median + whisker match the report.
+  function quantile(sorted, p) {
+    var n = sorted.length;
+    if (n === 0) return null;
+    if (n === 1) return sorted[0];
+    var h = (n - 1) * p;
+    var lo = Math.floor(h);
+    var hi = Math.ceil(h);
+    return sorted[lo] + (h - lo) * (sorted[hi] - sorted[lo]);
+  }
+  function summarize(values) {
+    var vals = values
+      .filter(function (v) { return typeof v === "number" && isFinite(v); })
+      .slice()
+      .sort(function (a, b) { return a - b; });
+    if (vals.length === 0) return null;
+    return {
+      n: vals.length,
+      median: quantile(vals, 0.5),
+      q1: quantile(vals, 0.25),
+      q3: quantile(vals, 0.75)
+    };
+  }
+  function metricMeta(key) {
+    for (var i = 0; i < METRICS.length; i++) if (METRICS[i].key === key) return METRICS[i];
+    return null;
+  }
+
+  // ---- cohorts (the x-axis) --------------------------------------------
+  // A cohort is one (model, frameworkVersion) cell. ROWS arrive
+  // timestamp-sorted from the server, so first-seen order is chronological.
+  var COHORTS = (function () {
+    var seen = {}; var list = [];
+    ROWS.forEach(function (r) {
+      var id = r.model + " @ " + r.frameworkVersion;
+      if (!seen[id]) {
+        seen[id] = { id: id, model: r.model, version: r.frameworkVersion };
+        list.push(seen[id]);
+      }
+    });
+    return list;
+  })();
+  var MODELS = uniq(ROWS.map(function (r) { return r.model; }));
 
   // ---- index table ------------------------------------------------------
   var COLUMNS = [
@@ -272,11 +384,11 @@ const SCRIPT = `
     { key: "arm", label: "Arm", type: "str" },
     { key: "model", label: "Model", type: "str" },
     { key: "frameworkVersion", label: "Version", type: "str" },
-    { key: "quality", label: "Quality", type: "num" },
-    { key: "planningFidelity", label: "Planning", type: "num" },
-    { key: "autonomy", label: "Autonomy", type: "num" },
-    { key: "totalTokens", label: "Tokens", type: "num" },
-    { key: "overheadRatio", label: "Overhead", type: "num" },
+    { key: "quality", label: "Quality", type: "num", hint: "Value side · 0–1 · higher is better (1.0 = all assertions pass + judge agrees)" },
+    { key: "planningFidelity", label: "Planning", type: "num", hint: "Value side · 0–1 · higher is better · null for control (it authors no plan)" },
+    { key: "autonomy", label: "Autonomy", type: "num", hint: "Value side · 0–1 · higher is better (1.0 = fully unattended; <1 = a human stepped in)" },
+    { key: "totalTokens", label: "Tokens", type: "num", hint: "Cost side · lower is cheaper (read against Quality)" },
+    { key: "overheadRatio", label: "Overhead", type: "num", hint: "Cost side · lower is cheaper · ceremony tokens per codegen token (control ≈ 0)" },
     { key: "env", label: "Env", type: "str" }
   ];
   var sortKey = "timestamp";
@@ -343,6 +455,7 @@ const SCRIPT = `
     COLUMNS.forEach(function (c) {
       var th = document.createElement("th");
       th.textContent = c.label;
+      if (c.hint) th.title = c.hint;
       if (c.key === sortKey) th.className = sortDir === 1 ? "sorted-asc" : "sorted-desc";
       th.addEventListener("click", function () {
         if (sortKey === c.key) { sortDir = -sortDir; } else { sortKey = c.key; sortDir = 1; }
@@ -369,6 +482,13 @@ const SCRIPT = `
   }
 
   // ---- modal ------------------------------------------------------------
+  var GLOSS = {
+    "Quality": "Higher is better (0–1). 1.0 = every frozen assertion passes and the LLM judge agrees.",
+    "Planning fidelity": "Higher is better (0–1). How well the plan predicted reality; null for control (no plan authored).",
+    "Autonomy": "Higher is better (0–1]. 1.0 = fully unattended; each human intervention lowers it (0.5 = one, 0.33 = two).",
+    "Efficiency": "Absolute cost vector — lower is cheaper: wall-clock ms, total tokens, dispatches, USD. Judge against Quality.",
+    "Overhead ratio": "Lower is cheaper (≥0). Ceremony tokens per shippable-codegen token; control ≈ 0, so the gap is Mandrel's tax."
+  };
   function rowById(id) {
     for (var i = 0; i < ROWS.length; i++) { if (ROWS[i].runId === id) return ROWS[i]; }
     return null;
@@ -395,7 +515,7 @@ const SCRIPT = `
       ["Overhead ratio", dims.overheadRatio]
     ];
     groups.forEach(function (g) {
-      html += "<div class='dim-group'><h4></h4>" + dimTable(g[1]) + "</div>";
+      html += "<div class='dim-group'><h4></h4><p class='gloss'></p>" + dimTable(g[1]) + "</div>";
     });
     html += "<div class='links'></div>";
     body.innerHTML = html;
@@ -404,7 +524,11 @@ const SCRIPT = `
       r.scenario + " · " + r.arm + " · " + r.model + " @ " + r.frameworkVersion +
       " · " + r.timestamp;
     var h4s = body.querySelectorAll(".dim-group h4");
-    for (var i = 0; i < h4s.length; i++) h4s[i].textContent = groups[i][0];
+    var glosses = body.querySelectorAll(".dim-group .gloss");
+    for (var i = 0; i < h4s.length; i++) {
+      h4s[i].textContent = groups[i][0];
+      glosses[i].textContent = GLOSS[groups[i][0]] || "";
+    }
 
     var links = body.querySelector(".links");
     var refs = r.rawRefs || {};
@@ -428,81 +552,158 @@ const SCRIPT = `
   }
   function closeModal() { document.getElementById("modal-backdrop").classList.remove("open"); }
 
-  // ---- trend chart ------------------------------------------------------
+  // ---- trend chart (x-axis = cohort/version) ----------------------------
   var selectedMetric = METRICS.length ? METRICS[0].key : null;
-  var selectedCohort = "";
+  var selectedModel = "";
 
-  function chartRows() {
-    return ROWS.filter(function (r) {
-      if (!selectedCohort) return true;
-      return (r.model + " @ " + r.frameworkVersion) === selectedCohort;
-    });
+  function visibleCohorts() {
+    return COHORTS.filter(function (c) { return !selectedModel || c.model === selectedModel; });
   }
+  function cohortValues(cohort, arm) {
+    return ROWS.filter(function (r) {
+      return r.arm === arm && r.model === cohort.model && r.frameworkVersion === cohort.version;
+    }).map(function (r) { return r[selectedMetric]; });
+  }
+
   function renderChart() {
     var host = document.getElementById("chart");
-    var rows = chartRows();
+    var meta = metricMeta(selectedMetric);
+    var cohorts = visibleCohorts();
     var arms = ["mandrel", "control"];
     var colors = { mandrel: "#6ea8fe", control: "#f0883e" };
-    var W = 760, H = 280, padL = 56, padR = 16, padT = 16, padB = 36;
-    var series = {};
+
+    // Aggregate each cohort to one summary per arm (median + IQR).
+    var data = cohorts.map(function (c) {
+      return {
+        cohort: c,
+        mandrel: summarize(cohortValues(c, "mandrel")),
+        control: summarize(cohortValues(c, "control"))
+      };
+    });
     var allVals = [];
-    arms.forEach(function (arm) {
-      var pts = rows.filter(function (r) { return r.arm === arm; })
-        .map(function (r) { return { t: r.timestamp, v: r[selectedMetric] }; })
-        .filter(function (p) { return p.v !== null && p.v !== undefined; })
-        .sort(function (a, b) { return a.t < b.t ? -1 : a.t > b.t ? 1 : 0; });
-      series[arm] = pts;
-      pts.forEach(function (p) { allVals.push(p.v); });
+    data.forEach(function (d) {
+      arms.forEach(function (a) {
+        if (d[a]) { allVals.push(d[a].q1, d[a].q3, d[a].median); }
+      });
     });
     if (allVals.length === 0) {
-      host.innerHTML = "<p class='empty'>No data for this metric / cohort.</p>";
+      host.innerHTML = "<p class='empty'>No data for this metric / model.</p>";
+      renderCaption(meta, []);
       return;
     }
-    var n = Math.max.apply(null, arms.map(function (a) { return series[a].length; }));
-    var maxX = Math.max(1, n - 1);
+
+    var W = 760, H = 300, padL = 64, padR = 16, padT = 16, padB = 56;
+    var plotW = W - padL - padR, plotH = H - padT - padB;
+    var nC = data.length;
+    function x(i) { return padL + (nC === 1 ? plotW / 2 : (i / (nC - 1)) * plotW); }
     var minV = Math.min.apply(null, allVals);
     var maxV = Math.max.apply(null, allVals);
     if (minV === maxV) { minV = minV - 1; maxV = maxV + 1; }
-    var plotW = W - padL - padR, plotH = H - padT - padB;
-    function x(i) { return padL + (maxX === 0 ? plotW / 2 : (i / maxX) * plotW); }
+    var pad = (maxV - minV) * 0.08;
+    minV -= pad; maxV += pad;
     function y(v) { return padT + plotH - ((v - minV) / (maxV - minV)) * plotH; }
 
-    var svg = "<svg viewBox='0 0 " + W + " " + H + "' role='img' aria-label='Trend chart'>";
+    var svg = "<svg viewBox='0 0 " + W + " " + H + "' role='img' aria-label='Trend over versions'>";
+    // gridlines + y labels (min / mid / max)
+    [minV, (minV + maxV) / 2, maxV].forEach(function (yv) {
+      svg += "<line x1='" + padL + "' y1='" + y(yv).toFixed(1) + "' x2='" + (W - padR) + "' y2='" + y(yv).toFixed(1) + "' stroke='#1e2230'/>";
+      svg += "<text x='" + (padL - 8) + "' y='" + (y(yv) + 3).toFixed(1) + "' fill='#9aa3b2' font-size='10' text-anchor='end'>" + fmtNum(yv) + "</text>";
+    });
     // axes
     svg += "<line x1='" + padL + "' y1='" + padT + "' x2='" + padL + "' y2='" + (padT + plotH) + "' stroke='#2a2f3a'/>";
     svg += "<line x1='" + padL + "' y1='" + (padT + plotH) + "' x2='" + (W - padR) + "' y2='" + (padT + plotH) + "' stroke='#2a2f3a'/>";
-    // y labels (min / max)
-    svg += "<text x='" + (padL - 6) + "' y='" + (padT + 4) + "' fill='#9aa3b2' font-size='10' text-anchor='end'>" + fmtNum(maxV) + "</text>";
-    svg += "<text x='" + (padL - 6) + "' y='" + (padT + plotH) + "' fill='#9aa3b2' font-size='10' text-anchor='end'>" + fmtNum(minV) + "</text>";
+    // y-axis direction hint
+    if (meta && (meta.better === "higher" || meta.better === "lower")) {
+      var dirTxt = meta.better === "higher" ? "▲ better" : "▼ better";
+      var cy = (padT + plotH / 2).toFixed(1);
+      svg += "<text x='14' y='" + cy + "' fill='#9aa3b2' font-size='10' text-anchor='middle' transform='rotate(-90 14 " + cy + ")'>" + dirTxt + "</text>";
+    }
+    // x ticks: version (+ model line when more than one model is in view)
+    var multiModel = uniq(cohorts.map(function (c) { return c.model; })).length > 1;
+    data.forEach(function (d, i) {
+      var px = x(i).toFixed(1);
+      svg += "<text x='" + px + "' y='" + (padT + plotH + 18) + "' fill='#9aa3b2' font-size='10' text-anchor='middle'>" + d.cohort.version + "</text>";
+      if (multiModel) svg += "<text x='" + px + "' y='" + (padT + plotH + 32) + "' fill='#6b7280' font-size='9' text-anchor='middle'>" + d.cohort.model + "</text>";
+    });
+    svg += "<text x='" + (padL + plotW / 2).toFixed(1) + "' y='" + (H - 6) + "' fill='#6b7280' font-size='10' text-anchor='middle'>framework version" + (multiModel ? " / model" : "") + "</text>";
+
+    // series: per-arm segmented line over medians (break when model changes) +
+    // IQR whisker + median dot per cohort.
     arms.forEach(function (arm) {
-      var pts = series[arm];
-      if (pts.length === 0) return;
-      var d = "";
-      pts.forEach(function (p, i) {
-        var px = x(i), py = y(p.v);
-        d += (i === 0 ? "M" : "L") + px.toFixed(2) + " " + py.toFixed(2) + " ";
-      });
-      if (pts.length > 1) {
-        svg += "<path d='" + d + "' fill='none' stroke='" + colors[arm] + "' stroke-width='2'/>";
+      var pts = [];
+      data.forEach(function (d, i) { if (d[arm]) pts.push({ i: i, s: d[arm], model: d.cohort.model }); });
+      for (var k = 0; k < pts.length; k++) {
+        var p = pts[k];
+        var px = x(p.i);
+        if (k > 0 && pts[k - 1].model === p.model) {
+          var q = pts[k - 1];
+          svg += "<line x1='" + x(q.i).toFixed(2) + "' y1='" + y(q.s.median).toFixed(2) +
+            "' x2='" + px.toFixed(2) + "' y2='" + y(p.s.median).toFixed(2) +
+            "' stroke='" + colors[arm] + "' stroke-width='2'/>";
+        }
+        if (p.s.q3 !== p.s.q1) {
+          svg += "<line x1='" + px.toFixed(2) + "' y1='" + y(p.s.q1).toFixed(2) +
+            "' x2='" + px.toFixed(2) + "' y2='" + y(p.s.q3).toFixed(2) +
+            "' stroke='" + colors[arm] + "' stroke-width='1' opacity='0.5'/>";
+        }
+        svg += "<circle cx='" + px.toFixed(2) + "' cy='" + y(p.s.median).toFixed(2) +
+          "' r='4' fill='" + colors[arm] + "'><title>" + arm + " · " + data[p.i].cohort.version +
+          " · median " + fmtNum(p.s.median) + " (n=" + p.s.n + ", IQR " + fmtNum(p.s.q1) + "–" + fmtNum(p.s.q3) + ")</title></circle>";
       }
-      pts.forEach(function (p, i) {
-        svg += "<circle cx='" + x(i).toFixed(2) + "' cy='" + y(p.v).toFixed(2) +
-          "' r='3.5' fill='" + colors[arm] + "'><title>" + arm + ": " + p.v + "</title></circle>";
-      });
     });
     svg += "</svg>";
     host.innerHTML = svg;
+
+    renderCaption(meta, data);
   }
-  function fmtNum(v) {
-    if (Math.abs(v) >= 1000) return String(Math.round(v));
-    return String(Math.round(v * 1000) / 1000);
+
+  function renderCaption(meta, data) {
+    var capEl = document.getElementById("chart-caption");
+    var deltaEl = document.getElementById("chart-delta");
+    if (!capEl || !deltaEl) return;
+    if (!meta) { capEl.textContent = ""; deltaEl.innerHTML = ""; return; }
+    var sideTxt = meta.side === "value"
+      ? "value side (what the scaffolding buys)"
+      : "cost side (what the scaffolding charges)";
+    var dirTxt = meta.better === "higher" ? "▲ higher is better"
+      : meta.better === "lower" ? "▼ lower is cheaper" : "";
+    capEl.innerHTML = "";
+    var strong = document.createElement("span");
+    strong.className = "pill";
+    strong.textContent = meta.label + " — " + sideTxt + " · range " + meta.range + " · " + dirTxt + ". ";
+    capEl.appendChild(strong);
+    capEl.appendChild(document.createTextNode(meta.good));
+
+    // Delta vs control on the most recent visible cohort with both arms.
+    deltaEl.innerHTML = "";
+    var latest = null;
+    for (var i = data.length - 1; i >= 0; i--) {
+      if (data[i].mandrel && data[i].control) { latest = data[i]; break; }
+    }
+    if (!latest) return;
+    var m = latest.mandrel.median, c = latest.control.median;
+    var diff = m - c;
+    var better = meta.better === "higher" ? diff > 0
+      : meta.better === "lower" ? diff < 0 : null;
+    var cls = diff === 0 ? "" : (better ? "good" : "bad");
+    var arrow = diff === 0 ? "=" : (diff > 0 ? "▲" : "▼");
+    var verdict = diff === 0 ? "no difference"
+      : better ? "mandrel better" : "mandrel worse";
+    var span = document.createElement("span");
+    span.className = "delta " + cls;
+    span.textContent = "Latest cohort " + latest.cohort.version + " — mandrel " + fmtNum(m) +
+      " vs control " + fmtNum(c) + "  " + arrow + " " + fmtNum(Math.abs(diff)) + " (" + verdict + ")";
+    deltaEl.appendChild(span);
   }
+
   function renderMetricButtons() {
     var host = document.getElementById("metric-btns");
     host.innerHTML = "";
     METRICS.forEach(function (m) {
       var b = document.createElement("button");
       b.textContent = m.label;
+      b.title = (m.side === "value" ? "Value side · " : "Cost side · ") +
+        (m.better === "higher" ? "higher is better" : "lower is cheaper");
       if (m.key === selectedMetric) b.className = "active";
       b.addEventListener("click", function () { selectedMetric = m.key; renderMetricButtons(); renderChart(); });
       host.appendChild(b);
@@ -527,9 +728,9 @@ const SCRIPT = `
     el.addEventListener("change", renderTable);
   });
 
-  var cohortSel = document.getElementById("chart-cohort");
-  fillSelect("chart-cohort", COHORTS);
-  cohortSel.addEventListener("change", function () { selectedCohort = cohortSel.value; renderChart(); });
+  var modelSel = document.getElementById("chart-model");
+  fillSelect("chart-model", MODELS);
+  modelSel.addEventListener("change", function () { selectedModel = modelSel.value; renderChart(); });
 
   document.getElementById("modal-backdrop").addEventListener("click", function (e) {
     if (e.target === this) closeModal();
@@ -574,18 +775,39 @@ export function renderDashboard({ scorecards } = {}) {
 </header>
 <main>
 <section>
-<h2>Trend over time</h2>
+<h2>Trend over framework versions</h2>
+<details class="help">
+<summary>How to read this chart</summary>
+<ul>
+<li>The <b>x-axis is the framework version</b> (one point per cohort), oldest on the left. When more than one model is in view a second tick line shows the model, and the line breaks across a model change — we never draw a cross-model "trend" (only like-model-to-like is comparable).</li>
+<li>Each point is the <b>median</b> across that cohort's N runs for one arm; the faint vertical bar is the <b>inter-quartile (Q1–Q3) spread</b>. Hover a point for n and the exact band.</li>
+<li><b><span class="up">mandrel</span></b> = clone carries <code>.agents/</code> and runs <code>/plan</code>→<code>/deliver</code>; <b>control</b> = bare task prompt, no scaffolding. The gap between the two arms is what the scaffolding buys (value) or charges (cost).</li>
+<li><b>Value side</b> (Quality, Autonomy) — <b>higher is better</b>. <b>Cost side</b> (Tokens, USD, Overhead ratio) — <b>lower is cheaper</b>; cheaper only "wins" at equal quality. The caption under the chart states the direction and what good looks like for the selected metric.</li>
+</ul>
+</details>
 <div class="controls">
-<label for="chart-cohort">Cohort</label>
-<select id="chart-cohort"><option value="">All cohorts</option></select>
+<label for="chart-model">Model</label>
+<select id="chart-model"><option value="">All models</option></select>
 <div class="metric-btns" id="metric-btns"></div>
 </div>
 <div class="panel"><div id="chart"></div>
 <div class="legend"><span class="mandrel">mandrel</span><span class="control">control</span></div>
+<div class="metric-caption" id="chart-caption"></div>
+<div class="delta-readout" id="chart-delta"></div>
 </div>
 </section>
 <section>
 <h2>Run index</h2>
+<details class="help">
+<summary>What the dimension numbers mean</summary>
+<ul>
+<li><b>Quality</b> (value · 0–1 · ▲ better) — fraction of the frozen acceptance suite that passes, cross-checked by an LLM judge. 1.0 = fully correct; 0 = no runnable app.</li>
+<li><b>Planning</b> (value · 0–1 · ▲ better) — how well the plan predicted reality (story-count, re-plan, file-footprint). <code>—</code> for control: it authors no plan.</li>
+<li><b>Autonomy</b> (value · 0–1 · ▲ better) — 1.0 = fully unattended; each human intervention drops it (0.5 = one, 0.33 = two). Any value &lt; 1.0 is a finding.</li>
+<li><b>Tokens</b> (cost · ▼ cheaper) — total tokens the run spent. Lower is cheaper, but only meaningful at equal Quality.</li>
+<li><b>Overhead</b> (cost · ▼ cheaper) — ceremony tokens per shippable-codegen token. Control ≈ 0; the mandrel−control gap is the ceremony tax.</li>
+</ul>
+</details>
 <div class="controls">
 <label for="f-scenario">Scenario</label>
 <select id="f-scenario"><option value="">all</option></select>

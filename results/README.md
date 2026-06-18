@@ -43,9 +43,14 @@ dependencies** — the scorecard corpus is inlined as JSON, the trend chart is
 inline SVG, and sort/filter/modal are vanilla JS — so it works offline and is
 byte-for-byte diffable. It shows:
 
-- an **over-time trend chart** of the headline metrics (quality, autonomy,
-  efficiency total-tokens & cost, overhead ratio), one series per arm, filterable
-  by cohort;
+- an **over-versions trend chart** of the headline metrics (quality, autonomy,
+  efficiency total-tokens & cost, overhead ratio). The **x-axis is the framework
+  version** (one aggregated point per cohort, oldest first); each point is the
+  median across that cohort's runs with an inter-quartile whisker, one line per
+  arm (the line breaks across a model change). A **Model** filter narrows to one
+  model, and every metric carries an interpretation caption (value/cost side,
+  range, which direction is better, what "good" looks like) plus a
+  delta-vs-control badge for the latest cohort;
 - a **sortable, filterable index table** of every run (timestamp, scenario, arm,
   model, framework version, the five dimension headlines, and env); and
 - an **in-page modal** (click any row) with the full per-dimension breakdown and
