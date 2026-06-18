@@ -411,7 +411,7 @@ describe('project-api frozen oracle behavior', () => {
     });
 
     const authUser = (init) => {
-      const auth = (init?.headers ?? {})['authorization'] ?? '';
+      const auth = init?.headers?.authorization ?? '';
       const token = auth.replace(/^Bearer\s+/i, '');
       return token ? tokens.get(token) : undefined;
     };
