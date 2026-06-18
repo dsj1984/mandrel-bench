@@ -10,7 +10,7 @@
 This document is the **measurement contract** the whole harness conforms to.
 It defines, with explicit reproducible formulas:
 
-1. The **five dimensions** — three on the value side (what scaffolding
+1. The **seven dimensions** — five on the value side (what scaffolding
    _buys_) and two on the cost side (what it _charges_).
 2. The **variance / noise-band method** — how every dimension is reported as a
    distribution across N runs, and the rule for when a Mandrel-vs-control delta
@@ -64,7 +64,7 @@ though the ephemeral workspace is torn down after each run.
 
 ---
 
-## The five dimensions
+## The seven dimensions
 
 Each formula yields a value in a stated range. Per-run values land on the
 scorecard under `dimensions.<name>`; the distribution and band are computed
@@ -145,7 +145,79 @@ autonomy.score = 1 / (1 + interventions)                                  ∈ (0
 - `blockedEvents` — `agent::blocked` transitions in `lifecycle.ndjson`.
 - `manualRescues` — operator interventions that unblocked or restarted the run.
 
-### 4. Efficiency — _what did it cost absolutely?_ (cost side)
+### 4. Maintainability — _how readable and low-complexity is the output?_ (value side)
+
+Added in Epic #32. Same two-oracle shape as Quality: an objective spine
+(static-analysis signals, weighted 0.7) cross-checked by an LLM judge (0.3),
+with the judge weight folded into the spine when the cross-check is null.
+
+```text
+lintScore            = 1 − clamp(lintWarnings / LINT_WARN_FLOOR, 0, 1)
+                                                                     ∈ [0, 1]
+spineScore =
+    objectiveMaintainabilityScore                                    ∈ [0, 1]
+  — or, when the pre-computed spine is absent, the mean of whichever
+    sub-signals are non-null: { complexityScore, maintainabilityIndex }
+
+maintainability.score =
+    w_spine · spineScore  +  w_judge · maintainabilityJudgeScore
+  with w_spine = 0.7, w_judge = 0.3, and w_judge folded into w_spine
+  (renormalized to w_spine = 1.0) when maintainabilityJudgeScore is null
+                                                                     ∈ [0, 1]
+```
+
+Sub-signals recorded for provenance:
+
+| Sub-signal               | Source                                               |
+| ------------------------ | ---------------------------------------------------- |
+| `lintWarnings`           | Biome (or project linter) warning count              |
+| `complexityScore`        | Normalised cyclomatic complexity in [0,1], 1 = least complex |
+| `maintainabilityIndex`   | Normalised maintainability index in [0,1], 1 = most maintainable |
+| `maintainabilityJudgeScore` | LLM judge cross-check against the engineer/refactorer rubric |
+
+- The judge rubric is the mandrel `engineer` + `refactorer` persona baselines
+  (the legitimate "what good looks like" for Mandrel's own output).
+- A run that ships no analyzable output scores `spineScore = 0`.
+- `null` sub-signals are excluded from the spine mean; if all are `null` the
+  spine is 0.
+
+### 5. Security — _how free of vulnerabilities is the output?_ (value side)
+
+Added in Epic #32. Same two-oracle shape: objective spine (scanner signals,
+weighted 0.7) plus judge cross-check (0.3); judge weight folds into spine
+when null.
+
+```text
+spineScore = objectiveSecurityScore                                  ∈ [0, 1]
+  — defaults to 0 when not supplied (conservative: no scan data → lowest score)
+
+security.score =
+    w_spine · spineScore  +  w_judge · securityJudgeScore
+  with w_spine = 0.7, w_judge = 0.3, and w_judge folded into w_spine
+  (renormalized to w_spine = 1.0) when securityJudgeScore is null
+                                                                     ∈ [0, 1]
+```
+
+Sub-signals recorded for provenance:
+
+| Sub-signal           | Source                                                     |
+| -------------------- | ---------------------------------------------------------- |
+| `criticalFindings`   | Critical-severity findings from the security scanner       |
+| `highFindings`       | High-severity findings from the scanner                    |
+| `secretsDetected`    | Boolean — true iff a secret/credential was found in output |
+| `securityJudgeScore` | LLM judge cross-check against the `security-baseline.md` MUSTs |
+
+- The judge rubric is `security-baseline.md` (edge input-validation, password
+  hashing, `httpOnly` token storage, server-side ownership/authorization, auth
+  rate-limiting). This is the inviolable baseline Mandrel enforces by default —
+  the bare control is most likely to miss it on auth-bearing scenarios.
+- `secretsDetected = true` is a hard signal; the spine incorporates it via the
+  pre-computed `objectiveSecurityScore` (computed by `bench/collect/security.js`
+  before the scorer runs).
+- Both new dimension judge cross-checks share **one batched judge call per run**
+  to keep latency and cost contained.
+
+### 6. Efficiency — _what did it cost absolutely?_ (cost side)
 
 Absolute cost as a **vector**, never collapsed to one number. The three
 components are reported independently (each gets its own distribution + band):
@@ -167,7 +239,7 @@ efficiency.costUsd      = total USD from the envelope when reported,
 - GitHub round-trip latency is intentionally **inside** `wallClockMs` — it is
   part of Mandrel's real overhead.
 
-### 5. Overhead ratio — _ceremony tax vs. shippable output?_ (cost side)
+### 7. Overhead ratio — _ceremony tax vs. shippable output?_ (cost side)
 
 The framework's _tax_: how much ceremony (planning, decomposition,
 orchestration, gate machinery) it spends per unit of shippable codegen.
@@ -319,9 +391,32 @@ overheadFloorUsd    = center(efficiency.costUsd,     hello-world, mandrel)
 
 ---
 
+## Scenario ladder and difficulty rungs
+
+The harness runs dimensions across a difficulty-ordered scenario ladder. Each
+rung is a scenario tagged with a `difficulty` integer and a `rung` label:
+
+| Rung label | Difficulty | Scenario         | Purpose                                                         |
+| ---------- | ---------- | ---------------- | --------------------------------------------------------------- |
+| `smoke`    | 1          | `hello-world`    | Overhead floor + pipeline smoke test; Quality saturates at 1.0. |
+| `depth`    | 2          | `crud-db`        | Multi-wave CRUD; exercises decomposition and planning fidelity. |
+| `breadth`  | 3          | `project-api`    | Epic-scale multi-resource API with auth, relations, pagination; genuine decomposition surface for all seven dimensions. |
+
+The **difficulty-3 breadth rung** (`project-api`) was added in Epic #32 to
+give Maintainability and Security room to diverge between arms. On auth-bearing,
+multi-resource work the bare control most visibly misses Mandrel's
+`security-baseline.md` and `engineer`/`refactorer` persona baselines, making
+the frontier thesis observable on the dashboard.
+
+The difficulty-monotonicity check (D-010) requires ≥ 3 rungs; the three rungs
+above satisfy that condition. A fourth rung (real-Epic replay) is deferred
+beyond v1.
+
+---
+
 ## Why these and not a composite
 
-The split — three value dimensions, two cost dimensions, reported as
+The split — five value dimensions, two cost dimensions, reported as
 distributions with an explicit real-delta rule — is deliberate. Collapsing them
 into one number would let a regression on one axis hide behind a gain on
 another, and would invite gaming the scalar. The harness's job is to show the
