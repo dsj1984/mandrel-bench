@@ -376,6 +376,16 @@ function nonNeg(v) {
  * @param {object} [args.planning]         Plan-vs-actual inputs:
  *   `{ rePlanCount?, plannedStoryCount?, deliveredStoryCount?,
  *      fileFootprintDrift?|{plannedPaths, actualPaths} }`. Ignored for control.
+ * @param {object} [args.maintainabilityInputs]  Static-collector sub-signals +
+ *   optional judge cross-check score for the maintainability dimension:
+ *   `{ objectiveMaintainabilityScore?, maintainabilityJudgeScore?,
+ *      lintWarnings?, complexityScore?, maintainabilityIndex? }`.
+ *   When absent the dimension scores 0 (conservative default).
+ * @param {object} [args.securityInputs]   Static-collector sub-signals +
+ *   optional judge cross-check score for the security dimension:
+ *   `{ objectiveSecurityScore?, securityJudgeScore?,
+ *      criticalFindings?, highFindings?, secretsDetected? }`.
+ *   When absent the dimension scores 0 (conservative default).
  * @param {object} [args.rawRefs]          Provenance breadcrumbs for `rawRefs`.
  * @returns {object} A scorecard record conforming to scorecard.schema.json.
  */
@@ -386,6 +396,8 @@ export function buildScorecard({
   envelope,
   quality,
   planning = {},
+  maintainabilityInputs = {},
+  securityInputs = {},
   rawRefs,
 }) {
   if (!run || typeof run !== 'object') {
@@ -464,6 +476,22 @@ export function buildScorecard({
       actualPaths: planning.actualPaths,
     },
     autonomy,
+    maintainability: {
+      objectiveMaintainabilityScore:
+        maintainabilityInputs.objectiveMaintainabilityScore ?? null,
+      maintainabilityJudgeScore:
+        maintainabilityInputs.maintainabilityJudgeScore ?? null,
+      lintWarnings: maintainabilityInputs.lintWarnings,
+      complexityScore: maintainabilityInputs.complexityScore ?? null,
+      maintainabilityIndex: maintainabilityInputs.maintainabilityIndex ?? null,
+    },
+    security: {
+      objectiveSecurityScore: securityInputs.objectiveSecurityScore ?? null,
+      securityJudgeScore: securityInputs.securityJudgeScore ?? null,
+      criticalFindings: securityInputs.criticalFindings,
+      highFindings: securityInputs.highFindings,
+      secretsDetected: securityInputs.secretsDetected,
+    },
     efficiency: {
       wallClockMs,
       totalTokens: usage.totalTokens,
@@ -525,6 +553,8 @@ export function buildScorecard({
  * @param {string} args.costEnvelopePath    Path to the captured envelope JSON.
  * @param {object} args.quality             Quality inputs.
  * @param {object} [args.planning]          Plan-vs-actual inputs.
+ * @param {object} [args.maintainabilityInputs]  Maintainability collector inputs.
+ * @param {object} [args.securityInputs]    Security collector inputs.
  * @param {object} [args.rawRefs]           Provenance overrides; when omitted,
  *   the supplied paths are recorded.
  * @param {object} [deps]
@@ -540,6 +570,8 @@ export function normalizeRunFromPaths(
     costEnvelopePath,
     quality,
     planning = {},
+    maintainabilityInputs = {},
+    securityInputs = {},
     rawRefs,
   },
   deps = {},
@@ -576,6 +608,8 @@ export function normalizeRunFromPaths(
     envelope,
     quality,
     planning,
+    maintainabilityInputs,
+    securityInputs,
     rawRefs: resolvedRawRefs,
   });
 }
