@@ -31,6 +31,7 @@ import {
 } from '../../../bench/scenarios/acceptance-eval-adapter.js';
 import { evaluate as evaluateCrud } from '../../../bench/scenarios/crud-db/acceptance.test.js';
 import { evaluate as evaluateHello } from '../../../bench/scenarios/hello-world/acceptance.test.js';
+import { evaluate as evaluateProjectApi } from '../../../bench/scenarios/project-api/acceptance.test.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIOS_DIR = path.resolve(
@@ -41,7 +42,7 @@ const SCENARIOS_DIR = path.resolve(
   'bench',
   'scenarios',
 );
-const SCENARIO_IDS = ['hello-world', 'crud-db'];
+const SCENARIO_IDS = ['hello-world', 'crud-db', 'project-api'];
 
 function loadScenario(id) {
   const raw = readFileSync(
@@ -84,7 +85,7 @@ function stubFetch(routes) {
 }
 
 describe('scenario seeds (AC1: task seed shared by both arms)', () => {
-  it('exposes exactly the two v1 scenarios on disk', () => {
+  it('exposes exactly the three scenarios on disk', () => {
     const dirs = readdirSync(SCENARIOS_DIR, { withFileTypes: true })
       .filter((d) => d.isDirectory())
       .map((d) => d.name)
@@ -129,12 +130,17 @@ describe('scenario seeds (AC1: task seed shared by both arms)', () => {
     });
   }
 
-  it('difficulty is monotonic across the ladder (hello-world < crud-db)', () => {
+  it('difficulty is monotonic across the ladder (hello-world < crud-db < project-api)', () => {
     const hello = loadScenario('hello-world');
     const crud = loadScenario('crud-db');
+    const projectApi = loadScenario('project-api');
     assert.ok(
       Number(hello.difficulty) < Number(crud.difficulty),
       'crud-db must out-rank hello-world on difficulty for the monotonicity check',
+    );
+    assert.ok(
+      Number(crud.difficulty) < Number(projectApi.difficulty),
+      'project-api must out-rank crud-db on difficulty for the monotonicity check',
     );
   });
 });
@@ -177,6 +183,7 @@ describe('frozen oracles are pure w.r.t. the delivered app (AC2: frozen)', () =>
   it('rejects a non-string baseUrl', async () => {
     await assert.rejects(() => evaluateHello(''), TypeError);
     await assert.rejects(() => evaluateCrud(undefined), TypeError);
+    await assert.rejects(() => evaluateProjectApi(''), TypeError);
   });
 });
 
@@ -376,6 +383,274 @@ describe('crud-db frozen oracle behavior', () => {
     });
     assert.equal(result.passed, false);
     assert.equal(result.criteria.length, 6);
+    assert.ok(result.criteria[0].evidence.includes('ECONNREFUSED'));
+  });
+});
+
+describe('project-api frozen oracle behavior', () => {
+  // A dynamic fetch stub modelling a conforming in-memory project-api backend,
+  // so the full stateful auth + project + task round-trip can be driven
+  // deterministically without a real server.
+  function makeProjectApiFetch() {
+    const users = new Map(); // username → { id, username, password }
+    const tokens = new Map(); // token → userId
+    const projects = new Map(); // projectId → { id, name, ownerId, createdAt }
+    const tasks = new Map(); // taskId → { id, title, projectId, assigneeId, createdAt, done }
+    let seq = 0;
+
+    const send = (status, json) => ({
+      status,
+      headers: { get: () => 'application/json' },
+      async text() {
+        return json === undefined ? '' : JSON.stringify(json);
+      },
+      async json() {
+        if (json === undefined) throw new Error('no json');
+        return json;
+      },
+    });
+
+    const authUser = (init) => {
+      const auth = (init?.headers ?? {})['authorization'] ?? '';
+      const token = auth.replace(/^Bearer\s+/i, '');
+      return token ? tokens.get(token) : undefined;
+    };
+
+    return async (url, init = {}) => {
+      const u = new URL(String(url));
+      const parts = u.pathname.split('/').filter(Boolean);
+      const method = (init.method ?? 'GET').toUpperCase();
+      const body = init.body ? JSON.parse(init.body) : undefined;
+
+      // POST /auth/register
+      if (parts[0] === 'auth' && parts[1] === 'register' && method === 'POST') {
+        const ok =
+          typeof body?.username === 'string' &&
+          body.username.length > 0 &&
+          typeof body?.password === 'string' &&
+          body.password.length > 0;
+        if (!ok) return send(400, { error: 'invalid' });
+        if (users.has(body.username)) return send(409, { error: 'duplicate' });
+        const id = `user-${++seq}`;
+        users.set(body.username, {
+          id,
+          username: body.username,
+          password: body.password,
+        });
+        return send(201, { id, username: body.username });
+      }
+
+      // POST /auth/login
+      if (parts[0] === 'auth' && parts[1] === 'login' && method === 'POST') {
+        const user = users.get(body?.username);
+        if (!user || user.password !== body?.password)
+          return send(401, { error: 'unauthorized' });
+        const token = `tok-${++seq}`;
+        tokens.set(token, user.id);
+        return send(200, { token });
+      }
+
+      // Auth guard for all remaining routes
+      const userId = authUser(init);
+      if (userId === undefined) return send(401, { error: 'unauthorized' });
+
+      // POST /projects
+      if (parts[0] === 'projects' && parts.length === 1 && method === 'POST') {
+        const ok = typeof body?.name === 'string' && body.name.length > 0;
+        if (!ok) return send(400, { error: 'invalid' });
+        const id = `proj-${++seq}`;
+        const project = {
+          id,
+          name: body.name,
+          ownerId: userId,
+          createdAt: '2026-01-01T00:00:00Z',
+        };
+        projects.set(id, project);
+        return send(201, project);
+      }
+
+      // GET /projects
+      if (parts[0] === 'projects' && parts.length === 1 && method === 'GET') {
+        return send(200, [...projects.values()]);
+      }
+
+      // GET /projects/:id
+      if (parts[0] === 'projects' && parts.length === 2 && method === 'GET') {
+        const project = projects.get(decodeURIComponent(parts[1]));
+        return project ? send(200, project) : send(404, { error: 'not found' });
+      }
+
+      // DELETE /projects/:id
+      if (
+        parts[0] === 'projects' &&
+        parts.length === 2 &&
+        method === 'DELETE'
+      ) {
+        const pid = decodeURIComponent(parts[1]);
+        if (!projects.has(pid)) return send(404, { error: 'not found' });
+        projects.delete(pid);
+        // Cascade delete tasks
+        for (const [tid, t] of tasks) {
+          if (t.projectId === pid) tasks.delete(tid);
+        }
+        return send(204);
+      }
+
+      // POST /projects/:projectId/tasks
+      if (
+        parts[0] === 'projects' &&
+        parts[2] === 'tasks' &&
+        parts.length === 3 &&
+        method === 'POST'
+      ) {
+        const pid = decodeURIComponent(parts[1]);
+        if (!projects.has(pid)) return send(404, { error: 'not found' });
+        const ok = typeof body?.title === 'string' && body.title.length > 0;
+        if (!ok) return send(400, { error: 'invalid' });
+        if (body?.assigneeId !== undefined && body.assigneeId !== null) {
+          const known = [...users.values()].some(
+            (u) => u.id === body.assigneeId,
+          );
+          if (!known) return send(400, { error: 'unknown assigneeId' });
+        }
+        const id = `task-${++seq}`;
+        const task = {
+          id,
+          title: body.title,
+          projectId: pid,
+          assigneeId: body?.assigneeId ?? null,
+          createdAt: '2026-01-01T00:00:00Z',
+          done: false,
+        };
+        tasks.set(id, task);
+        return send(201, task);
+      }
+
+      // GET /projects/:projectId/tasks
+      if (
+        parts[0] === 'projects' &&
+        parts[2] === 'tasks' &&
+        parts.length === 3 &&
+        method === 'GET'
+      ) {
+        const pid = decodeURIComponent(parts[1]);
+        if (!projects.has(pid)) return send(404, { error: 'not found' });
+        const page = Math.max(
+          1,
+          parseInt(u.searchParams.get('page') ?? '1', 10) || 1,
+        );
+        const pageSize = Math.min(
+          100,
+          Math.max(
+            1,
+            parseInt(u.searchParams.get('pageSize') ?? '20', 10) || 20,
+          ),
+        );
+        const all = [...tasks.values()].filter((t) => t.projectId === pid);
+        const items = all.slice((page - 1) * pageSize, page * pageSize);
+        return send(200, { items, total: all.length, page, pageSize });
+      }
+
+      // PATCH /projects/:projectId/tasks/:taskId
+      if (
+        parts[0] === 'projects' &&
+        parts[2] === 'tasks' &&
+        parts.length === 4 &&
+        method === 'PATCH'
+      ) {
+        const pid = decodeURIComponent(parts[1]);
+        const tid = decodeURIComponent(parts[3]);
+        if (!projects.has(pid)) return send(404, { error: 'not found' });
+        const task = tasks.get(tid);
+        if (!task || task.projectId !== pid)
+          return send(404, { error: 'not found' });
+        const updated = { ...task };
+        if (body?.title !== undefined) updated.title = body.title;
+        if (body?.done !== undefined) updated.done = body.done;
+        tasks.set(tid, updated);
+        return send(200, updated);
+      }
+
+      // DELETE /projects/:projectId/tasks/:taskId
+      if (
+        parts[0] === 'projects' &&
+        parts[2] === 'tasks' &&
+        parts.length === 4 &&
+        method === 'DELETE'
+      ) {
+        const pid = decodeURIComponent(parts[1]);
+        const tid = decodeURIComponent(parts[3]);
+        if (!projects.has(pid)) return send(404, { error: 'not found' });
+        const task = tasks.get(tid);
+        if (!task || task.projectId !== pid)
+          return send(404, { error: 'not found' });
+        tasks.delete(tid);
+        return send(204);
+      }
+
+      return send(404, { error: 'route not found' });
+    };
+  }
+
+  it('passes the full auth + project + task round-trip against a conforming backend', async () => {
+    const result = await evaluateProjectApi('http://127.0.0.1:3000', {
+      fetchImpl: makeProjectApiFetch(),
+      uniqueSuffix: () => 'fixed',
+    });
+    assert.equal(result.scenario, 'project-api');
+    assert.equal(
+      result.passed,
+      true,
+      `unmet: ${result.criteria
+        .filter((c) => !c.met)
+        .map((c) => `[${c.index}] ${c.criterion} — ${c.evidence}`)
+        .join('; ')}`,
+    );
+    assert.equal(result.criteria.length, 19);
+    assert.deepEqual(
+      result.criteria.map((c) => c.index),
+      Array.from({ length: 19 }, (_, i) => i),
+    );
+  });
+
+  it('flags auth criteria when credentials are rejected', async () => {
+    // A backend that always returns 401 for login fails criterion 3 (valid login).
+    const base = makeProjectApiFetch();
+    const fetchImpl = async (url, init = {}) => {
+      const u = new URL(String(url));
+      if (
+        u.pathname.endsWith('/auth/login') &&
+        (init.method ?? 'POST').toUpperCase() === 'POST'
+      ) {
+        return {
+          status: 401,
+          headers: { get: () => 'application/json' },
+          async text() {
+            return JSON.stringify({ error: 'unauthorized' });
+          },
+          async json() {
+            return { error: 'unauthorized' };
+          },
+        };
+      }
+      return base(url, init);
+    };
+    const result = await evaluateProjectApi('http://127.0.0.1:3000', {
+      fetchImpl,
+      uniqueSuffix: () => 'auth-fail',
+    });
+    const c3 = result.criteria.find((c) => c.index === 3);
+    assert.equal(c3.met, false, 'criterion 3 (valid login) should be unmet');
+  });
+
+  it('does not throw when the backend is unreachable', async () => {
+    const result = await evaluateProjectApi('http://127.0.0.1:3000', {
+      fetchImpl: async () => {
+        throw new Error('ECONNREFUSED');
+      },
+    });
+    assert.equal(result.passed, false);
+    assert.equal(result.criteria.length, 19);
     assert.ok(result.criteria[0].evidence.includes('ECONNREFUSED'));
   });
 });
