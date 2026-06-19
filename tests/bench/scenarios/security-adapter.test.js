@@ -214,6 +214,47 @@ describe('collectSecuritySignals — secret scan', () => {
   });
 });
 
+describe('collectSecuritySignals — overlay-artifact exclusion', () => {
+  it('does NOT scan the overlaid framework tree (.agents / .claude) or CLAUDE.md', () => {
+    // In the mandrel arm the bench overlays the framework into the workspace.
+    // Those files (e.g. a redaction module full of secret-shaped regexes) must
+    // NOT be attributed to the delivered app — that confound made the mandrel
+    // arm look "less secure" than the bare control. Only server.js is delivered.
+    const files = {
+      [`${ROOT}/.agents/scripts/redact.js`]: `const apiKey = 'sk-frameworkSecret1234567890';`,
+      [`${ROOT}/.claude/commands/x.md`]: `password = 'hunter2-framework-secret'`,
+      [`${ROOT}/CLAUDE.md`]: `const accessToken = 'sk-shimSecret1234567890';`,
+      [`${ROOT}/server.js`]: `import http from 'node:http';`,
+    };
+    const signals = collectSecuritySignals(ROOT, {
+      fsImpl: makeFs(files, ROOT),
+    });
+    assert.equal(
+      signals.secretScanCount,
+      0,
+      'overlay secrets must not be counted',
+    );
+  });
+
+  it('still counts a DELIVERED secret while ignoring the overlay (only hidden DIRS are skipped)', () => {
+    // The delivered app has one real hardcoded key; the overlay (.agents) also
+    // has one. The scan must count ONLY the delivered one — proving the fix
+    // skips the overlay dir, not the deliverable.
+    const files = {
+      [`${ROOT}/config.js`]: `const apiKey = 'sk-deliveredSecret1234567890';`,
+      [`${ROOT}/.agents/scripts/redact.js`]: `const apiKey = 'sk-frameworkSecret1234567890';`,
+    };
+    const signals = collectSecuritySignals(ROOT, {
+      fsImpl: makeFs(files, ROOT),
+    });
+    assert.equal(
+      signals.secretScanCount,
+      1,
+      'exactly the delivered secret is counted; the overlay one is skipped',
+    );
+  });
+});
+
 describe('collectSecuritySignals — dependency audit', () => {
   it('sums vulnerabilities from npm audit --json (v7 shape)', () => {
     const auditJson = JSON.stringify({

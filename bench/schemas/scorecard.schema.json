@@ -298,10 +298,10 @@
       "description": "Security — how free of vulnerabilities is the output? (value side, Story #36). Two-oracle shape: objective spine (static-analysis / scanner signal) weighted 0.7 plus LLM judge cross-check weighted 0.3; judge weight folds into spine when cross-check is null.",
       "properties": {
         "score": {
-          "type": "number",
+          "type": ["number", "null"],
           "minimum": 0,
           "maximum": 1,
-          "description": "Composite security in [0,1]. Objective spine is weighted 0.7; LLM judge cross-check is weighted 0.3."
+          "description": "Composite security in [0,1]. Objective spine is weighted 0.7; LLM judge cross-check is weighted 0.3. Null when the dimension was not validly measured — e.g. cohorts produced before the overlay-confound fix, where the scanner read the overlaid framework tree instead of only the delivered app, have had security cleared to null."
         },
         "criticalFindings": {
           "type": "integer",

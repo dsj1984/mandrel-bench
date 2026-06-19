@@ -91,8 +91,18 @@ const SCANNABLE_EXTENSIONS = new Set([
   '.bash',
 ]);
 
-/** Directories to skip when scanning for secrets. */
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.cache']);
+/** Directories to skip when scanning for secrets. (Hidden dirs — `.agents`,
+ * `.claude`, `.git`, `.cache` — are skipped generically in collectSourceFiles.) */
+const SKIP_DIRS = new Set(['node_modules', 'dist', 'build']);
+
+/**
+ * Top-level FILE artifacts the bench overlays into the mandrel arm's workspace
+ * (overlay.js `DEFAULT_OVERLAY_PATHS`) that are framework material, not the
+ * delivered app. Skipped so the scanner measures the deliverable, not the
+ * framework. (The overlaid `.agents` / `.claude` dirs are hidden → skipped by
+ * the dot-dir rule; `node_modules` stays in SKIP_DIRS.)
+ */
+const OVERLAY_FILE_ARTIFACTS = new Set(['CLAUDE.md']);
 
 // ---------------------------------------------------------------------------
 // MUST-presence heuristics (pattern sets — source text searched)
@@ -158,8 +168,21 @@ function collectSourceFiles(dir, fsImpl) {
     if (SKIP_DIRS.has(entry.name)) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
+      // Skip hidden directories. In the mandrel arm the bench overlays the
+      // framework tree (`.agents`, `.claude` — see overlay.js
+      // DEFAULT_OVERLAY_PATHS) into the workspace so the pipeline can run;
+      // scanning those would attribute the framework's own secret-shaped content
+      // (e.g. .agents/scripts/lib/qa/redact-evidence.js) to the delivered app — a
+      // confound the control arm (no overlay) never has. The delivered source is
+      // never in a dot-dir, so this is safe for both arms. (NOTE: hidden *files*
+      // such as `.env` are still scanned below — a delivered secret matters.)
+      if (entry.name.startsWith('.')) continue;
       result.push(...collectSourceFiles(full, fsImpl));
     } else if (entry.isFile()) {
+      // Skip top-level overlay file artifacts (the `CLAUDE.md` instruction shim
+      // overlay.js copies in) for the same reason — it is framework material,
+      // not delivered code.
+      if (OVERLAY_FILE_ARTIFACTS.has(entry.name)) continue;
       const ext = path.extname(entry.name).toLowerCase();
       if (SCANNABLE_EXTENSIONS.has(ext)) {
         result.push(full);
