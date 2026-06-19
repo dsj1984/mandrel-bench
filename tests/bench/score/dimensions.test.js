@@ -164,6 +164,20 @@ describe('computePlanningFidelity', () => {
     const pf = computePlanningFidelity({ planAuthored: false });
     assert.equal(pf.score, null);
   });
+
+  it('scores null when the plan was not observed (no lifecycle ledger)', () => {
+    // The mandrel arm with no ledger carries planned/delivered counts of 0/0,
+    // which would otherwise compute a perfect storyAccuracy (|0−0|/max(…,1)=0
+    // → 1) and a flawless score of 1. planObserved:false makes that unmeasured
+    // case null instead of crediting Mandrel with planning it never showed.
+    const pf = computePlanningFidelity({
+      arm: 'mandrel',
+      plannedStoryCount: 0,
+      deliveredStoryCount: 0,
+      planObserved: false,
+    });
+    assert.equal(pf.score, null);
+  });
 });
 
 describe('computeAutonomy', () => {
@@ -194,6 +208,19 @@ describe('computeAutonomy', () => {
     });
     // -3→0, 'x'→0, 2.9→2 ⇒ interventions 2 ⇒ 1/3
     approx(a.score, 1 / 3);
+  });
+
+  it('scores null when autonomy was not observed (no lifecycle ledger)', () => {
+    // Zero interventions from an ABSENT ledger is unmeasured, not "fully
+    // unattended". Null keeps the unmeasured mandrel arm out of the comparison;
+    // the control arm keeps its 1.0 baseline via the default observed:true.
+    const a = computeAutonomy({
+      hitlStops: 0,
+      blockedEvents: 0,
+      manualRescues: 0,
+      observed: false,
+    });
+    assert.equal(a.score, null);
   });
 });
 
@@ -352,12 +379,18 @@ describe('computeOverheadRatio', () => {
     approx(o.timeRatio, 3.6);
   });
 
-  it('reports 0 (not Infinity) when no codegen tokens were recorded', () => {
+  it('reports null (unmeasured, not 0) when no codegen tokens were recorded', () => {
+    // A zero denominator is an UNDEFINED ratio, not "zero overhead" — e.g. the
+    // mandrel arm produced no lifecycle ledger, so nothing could be attributed
+    // to codegen. Null keeps the unmeasured cell out of the value-add comparison
+    // rather than crediting Mandrel with a flawless zero-overhead ratio.
     const o = computeOverheadRatio({ ceremonyTokens: 1000, codegenTokens: 0 });
-    approx(o.tokenRatio, 0);
+    assert.equal(o.tokenRatio, null);
   });
 
   it('control-arm-like input (near-zero ceremony) sits near the floor', () => {
+    // Distinct from the null case above: codegen IS present, ceremony is ~0, so
+    // the ratio is a genuine, measured 0 (no overhead), not unmeasured.
     const o = computeOverheadRatio({ ceremonyTokens: 0, codegenTokens: 5000 });
     approx(o.tokenRatio, 0);
   });
