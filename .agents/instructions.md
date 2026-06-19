@@ -76,6 +76,15 @@ environment variables that override project defaults. The config resolver
 deep-merges `.agentrc.local.json` over `.agentrc.json` (local wins; absent
 local file is a no-op). Do not modify these local files unless requested.
 
+**Durable slash commands.** Any `.md` file placed at
+`.agents/local/workflows/<name>.md` is automatically projected into
+`.claude/commands/<name>.md` by `sync-claude-commands.js`, making it
+invocable as `/<name>`. Because the entire `.agents/local/` subtree is
+exempt from `mandrel sync`'s prune pass, these commands survive
+`npm install`, `mandrel sync`, and `mandrel update` with no manual
+re-sync. Core payload commands of the same basename always win (the
+local copy is ignored with a `shadowed` warning).
+
 ### F. Modular Global Rules
 
 Before writing code or documentation, verify if any domain-agnostic rules
@@ -86,11 +95,13 @@ apply by checking the `.agents/rules/` directory (e.g.,
 ### G. Structured Configuration
 
 Refer to `.agentrc.json` to understand your operational limits (e.g., allowed
-auto-run permissions, default personas). Refer to the **Tech Stack** section
-of `docs/architecture.md` for the project's specific technology choices
-(database, ORM, API framework, auth provider, validation library, workspace
-paths). Project-specific technology context is intentionally kept out of
-`.agentrc.json`.
+auto-run permissions, default personas). For the project's specific
+technology choices (database, ORM, API framework, auth provider, validation
+library, workspace paths), refer to the project's Tech Stack inventory: a
+dedicated `docs/tech-stack.md` when present (the single-ownership convention),
+otherwise the **Tech Stack** section of `docs/architecture.md` (a numbered or
+decorated heading such as `## 1. Tech Stack` is fine). Project-specific
+technology context is intentionally kept out of `.agentrc.json`.
 
 ### H. Observability & Friction Telemetry
 
@@ -240,7 +251,13 @@ stops.
      data dictionary, decisions log, patterns, etc.) and replaces any
      hardcoded filename list. Resolve each entry against
      `project.paths.docsRoot` (default `docs/`) and skip silently
-     when an entry's file is absent.
+     when an entry's file is absent. The decisions log (`decisions.md`) may
+     be either a single-file dated-entry log or an **index** into a
+     `decisions/` ADR directory — both are first-class layouts (see
+     [`skills/core/documentation-and-adrs`](skills/core/documentation-and-adrs/SKILL.md)).
+     When it is an index, only the index is the mandatory-read; the
+     per-ADR bodies under `decisions/` are link-followed on demand
+     (index-only by default), not auto-loaded into every task's context.
    - **Conditional Reads**: When the task touches UI copy, layout, or
      routing and the corresponding file is present in the project, also
      read `docs/style-guide.md` and `docs/web-routes.md`. Skip both when

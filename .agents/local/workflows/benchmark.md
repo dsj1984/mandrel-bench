@@ -157,23 +157,18 @@ The placement is deliberate and load-bearing:
   subtree is the one zone `mandrel sync` never copies into **nor prunes**
   (Story #3498), so consumer-authored material survives upgrades here.
 - **`.claude/commands/` is generated and gitignored.** The flat command tree is
-  re-derived from `.agents/workflows/` by
-  [`sync-claude-commands.js`](../../scripts/sync-claude-commands.js) — which also
-  **reaps** any command not backed by a workflow, on every `npm install` (the
-  `prepare` hook) and during `mandrel update`'s `sync-commands` step. It is never
-  committed. So a hand-placed command there does not survive either.
+  re-derived by [`sync-claude-commands.js`](../../scripts/sync-claude-commands.js)
+  — which also **reaps** any command not backed by a source workflow, on every
+  `npm install` (the `prepare` hook) and during `mandrel update`'s
+  `sync-commands` step. It is never committed.
 
-**Invocation (current).** The projector reads only `.agents/workflows/`, so this
-workflow is **not** auto-projected to a literal `/benchmark` slash command today.
-Invoke it by **referencing this file** (e.g. "run the benchmark workflow in
-`.agents/local/workflows/benchmark.md`") or via the project skill of the same
-name.
-
-**Invocation (planned).** The durable fix is an upstream Mandrel change that
-teaches `sync-claude-commands.js` to treat `.agents/local/workflows/` as a
-second, **prune-exempt** projection source — at which point this file projects to
-`/benchmark` and survives updates with no consumer-side script. The change is
-tracked upstream at
-[dsj1984/mandrel#4243](https://github.com/dsj1984/mandrel/issues/4243). Until it
-ships, do **not** add a stopgap copy into `.agents/workflows/` or
-`.claude/commands/` — both get reaped.
+**Invocation.** As of **`mandrel` 1.75.0** the projector reads
+`.agents/local/workflows/` as a **second, prune-exempt** projection source
+([dsj1984/mandrel#4244](https://github.com/dsj1984/mandrel/issues/4244), the
+upstream landing of the change requested in
+[#4243](https://github.com/dsj1984/mandrel/issues/4243)). So this file
+auto-projects to a real **`/benchmark`** slash command that survives upgrades —
+no consumer-side script, no ordering race. On a `mandrel` older than 1.75.0 the
+projector reads only `.agents/workflows/`; there this file is not projected and
+is invoked by **referencing it** directly. Either way, do **not** add a stopgap
+copy into `.agents/workflows/` or `.claude/commands/` — both get reaped.
