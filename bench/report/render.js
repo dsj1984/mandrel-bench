@@ -45,6 +45,10 @@ import {
 const DIFFICULTY_BY_SCENARIO = Object.freeze({
   'hello-world': 1,
   'crud-db': 2,
+  // The largest rung — the first scenario that clears Mandrel 1.75.0's
+  // scope-triage bar and routes to a multi-Story Epic (so the Epic-ledger
+  // value dimensions are exercised). See Story #50.
+  'project-api': 3,
 });
 
 /**
