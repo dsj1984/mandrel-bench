@@ -1,0 +1,2 @@
+{"kind":"friction","eventId":"d60ebd59-3758-4a89-a2c5-e0cde522fe83","timestamp":"2026-06-19T16:30:08.555Z","epicId":74,"storyId":80,"taskId":null,"category":"Execution Error","source":{"tool":"diagnose-friction.js","command":"node --test tests/auth.test.js"},"details":"Unknown exit code null"}
+{"kind":"acceptance-eval","epicId":74,"storyId":80,"phase":"implement","source":{"tool":"acceptance-eval.js"},"details":{"decision":"proceed","round":1,"cap":2,"totalCriteria":5,"metCount":5,"reworkedCount":0,"reworkedCriteria":[]},"ts":"2026-06-19T16:31:59.260Z"}
