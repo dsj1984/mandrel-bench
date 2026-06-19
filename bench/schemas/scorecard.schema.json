@@ -79,8 +79,8 @@
     },
     "scenario": {
       "type": "string",
-      "enum": ["hello-world", "crud-db"],
-      "description": "Scenario this run exercised. v1 ships two rungs: 'hello-world' (the overhead floor + end-to-end smoke) and 'crud-db' (decomposition, multi-wave delivery, planning fidelity, autonomy at depth)."
+      "enum": ["hello-world", "crud-db", "project-api"],
+      "description": "Scenario this run exercised. Rungs by rising difficulty: 'hello-world' (the overhead floor + end-to-end smoke), 'crud-db' (decomposition, multi-wave delivery, planning fidelity, autonomy at depth), and 'project-api' (the largest rung — multi-resource API surface)."
     },
     "arm": {
       "type": "string",
