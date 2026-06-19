@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.3.0...mandrel-bench-v0.4.0) (2026-06-19)
+
+
+### Added
+
+* **agents:** add durable /benchmark workflow under .agents/local ([#45](https://github.com/dsj1984/mandrel-bench/issues/45)) ([c43ee5f](https://github.com/dsj1984/mandrel-bench/commit/c43ee5fc54a3395891546a768d0bb372e2528e37))
+* **bench:** instrument the standalone path so its value dims are measured ([#48](https://github.com/dsj1984/mandrel-bench/issues/48)) ([#51](https://github.com/dsj1984/mandrel-bench/issues/51)) ([bd5e517](https://github.com/dsj1984/mandrel-bench/commit/bd5e5171a37b0e34bdb474a26b0effb982e802ea))
+* Epic [#32](https://github.com/dsj1984/mandrel-bench/issues/32) ([#43](https://github.com/dsj1984/mandrel-bench/issues/43)) ([955684a](https://github.com/dsj1984/mandrel-bench/commit/955684ac59cd660073822a16e0ea9e1138fc770b))
+* project-api as the 1.75.0 Epic rung + first complete 1.75.0 cohort (closes [#50](https://github.com/dsj1984/mandrel-bench/issues/50)) ([#52](https://github.com/dsj1984/mandrel-bench/issues/52)) ([e152ab3](https://github.com/dsj1984/mandrel-bench/commit/e152ab31ab32083cc96f2e8d925c10fad528f900))
+
+
+### Fixed
+
+* **bench:** skip npm audit without a lockfile; allow project-api scenario ([#49](https://github.com/dsj1984/mandrel-bench/issues/49)) ([57e40b3](https://github.com/dsj1984/mandrel-bench/commit/57e40b3b265845c61c010642f25dcda3b0ae0493))
+* **score:** null (not a default) for ledger-derived dims when no ledger ([#47](https://github.com/dsj1984/mandrel-bench/issues/47)) ([c3f4a32](https://github.com/dsj1984/mandrel-bench/commit/c3f4a329ad4d8394e72ef3082f06938aac2fc57d))
+
 ## [0.3.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.2.0...mandrel-bench-v0.3.0) (2026-06-18)
 
 
