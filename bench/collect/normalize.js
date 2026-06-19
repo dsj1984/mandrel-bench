@@ -387,6 +387,12 @@ function nonNeg(v) {
  *      criticalFindings?, highFindings?, secretsDetected? }`.
  *   When absent the dimension scores 0 (conservative default).
  * @param {object} [args.rawRefs]          Provenance breadcrumbs for `rawRefs`.
+ * @param {object} [args.standalone]       Standalone-path telemetry (Story #48),
+ *   present only when the mandrel arm produced no Epic ledger but the run
+ *   recovered the standalone Story's GitHub telemetry:
+ *   `{ planning: {...}, autonomy: {...}, routingVerdict: 'story' }`. When
+ *   present it stands in for the absent ledger so planning-fidelity + autonomy
+ *   are measured. Null/absent ⇒ unchanged null behaviour.
  * @returns {object} A scorecard record conforming to scorecard.schema.json.
  */
 export function buildScorecard({
@@ -399,6 +405,7 @@ export function buildScorecard({
   maintainabilityInputs = {},
   securityInputs = {},
   rawRefs,
+  standalone = null,
 }) {
   if (!run || typeof run !== 'object') {
     throw new TypeError('buildScorecard: run identity is required');
@@ -434,6 +441,23 @@ export function buildScorecard({
   // Epic-scoped ledger), those signals are UNMEASURED and must score `null`
   // rather than a misleading default. The control arm never has a ledger.
   const ledgerObserved = emitted.length > 0;
+  // Standalone fallback (Story #48): when the mandrel arm produced no Epic
+  // ledger but the run recovered the standalone Story's GitHub telemetry, those
+  // signals stand in for the ledger so planning-fidelity + autonomy are MEASURED
+  // rather than null. The overhead token-split stays unmeasured (no phase
+  // boundaries — left to fall through to a null tokenRatio). The control arm has
+  // neither source and is unaffected.
+  const standaloneObserved =
+    !ledgerObserved && standalone != null && run.arm === 'mandrel';
+  const valueObserved = ledgerObserved || standaloneObserved;
+  // The routing Mandrel actually took for this cell — `epic` (ledger found),
+  // `story` (standalone telemetry), or null (control / undetermined).
+  const routingVerdict = ledgerObserved
+    ? 'epic'
+    : standaloneObserved
+      ? (standalone.routingVerdict ?? 'story')
+      : null;
+  const planningInput = standaloneObserved ? standalone.planning : planning;
 
   // ---- Lifecycle-derived raw sub-signals -------------------------------
   // Wall-clock comes from the lifecycle span when present; the control arm
@@ -443,7 +467,9 @@ export function buildScorecard({
   const wallClockMs =
     lifecycleWallMs > 0 ? lifecycleWallMs : extractDurationMs(envelope);
   const dispatches = deriveDispatchCount(emitted);
-  const autonomy = deriveAutonomyCounters({ lifecycle: emitted, signals });
+  const autonomy = standaloneObserved
+    ? standalone.autonomy
+    : deriveAutonomyCounters({ lifecycle: emitted, signals });
   const usage = extractUsage(envelope);
   // The bare control arm runs no Mandrel pipeline, so it has no ceremony — its
   // whole session is shippable codegen (README: "control arm sits near the
@@ -475,20 +501,20 @@ export function buildScorecard({
           : (quality.acceptanceEvalScore ?? null),
     },
     planningFidelity: {
-      rePlanCount: planning.rePlanCount,
-      plannedStoryCount: planning.plannedStoryCount,
-      deliveredStoryCount: planning.deliveredStoryCount,
-      fileFootprintDrift: planning.fileFootprintDrift,
-      plannedPaths: planning.plannedPaths,
-      actualPaths: planning.actualPaths,
-      planObserved: ledgerObserved,
+      rePlanCount: planningInput.rePlanCount,
+      plannedStoryCount: planningInput.plannedStoryCount,
+      deliveredStoryCount: planningInput.deliveredStoryCount,
+      fileFootprintDrift: planningInput.fileFootprintDrift,
+      plannedPaths: planningInput.plannedPaths,
+      actualPaths: planningInput.actualPaths,
+      planObserved: valueObserved,
     },
     autonomy: {
       ...autonomy,
-      // The control arm's zero-intervention baseline is defined, not measured
-      // from a ledger, so it is always "observed"; the mandrel arm is observed
-      // only when its lifecycle ledger was found.
-      observed: run.arm === 'control' ? true : ledgerObserved,
+      // The control arm's zero-intervention baseline is defined, not measured,
+      // so it is always "observed"; the mandrel arm is observed when EITHER its
+      // Epic ledger was found OR the standalone telemetry was recovered (#48).
+      observed: run.arm === 'control' ? true : valueObserved,
     },
     maintainability: {
       objectiveMaintainabilityScore:
@@ -543,6 +569,7 @@ export function buildScorecard({
     },
     scenario: run.scenario,
     arm: run.arm,
+    routingVerdict,
     dimensions,
   };
 

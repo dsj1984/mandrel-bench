@@ -335,6 +335,10 @@ function benchDeps(record) {
     gitFn: (args) => record.git.push(args.join(' ')),
     // no ledger on disk (keeps the test free of NDJSON fixtures)
     discoverDeps: { existsImpl: () => false },
+    // no standalone Story either (Story #48): ghJson returns no issues, so the
+    // standalone fallback finds nothing and the mandrel value dims stay null —
+    // the same no-ledger/no-telemetry shape this test asserts below.
+    ghJson: () => [],
     // app + quality seams
     withRunningAppFn: async (_o, fn) =>
       fn('http://127.0.0.1:40000', { ready: true, port: 40000 }),
@@ -541,6 +545,65 @@ test('runFirstBenchmark: emits a schema-valid scorecard per arm and renders a re
   // The aggregate dashboard is regenerated at the results root.
   assert.equal(result.dashboardPath, path.join('/results', 'results.html'));
   assert.match(result.dashboard, /Results Dashboard/);
+});
+
+test('runFirstBenchmark: recovers standalone telemetry when the mandrel arm produced no ledger (Story #48)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  // Route-aware gh stub: the arm opened a standalone Story (created after the
+  // run start nowFn → 2026-06-16T20:00:00Z) that merged and closed agent::done.
+  deps.ghJson = (args) => {
+    const key = `${args[0]} ${args[1]}`;
+    if (key === 'issue list') {
+      return [{ number: 99, createdAt: '2026-06-16T20:30:00.000Z' }];
+    }
+    if (key === 'issue view') {
+      return {
+        number: 99,
+        state: 'CLOSED',
+        labels: [{ name: 'type::story' }, { name: 'agent::done' }],
+        comments: [
+          {
+            body: '<!-- ap:structured-comment type="story-init" -->\n"standalone": true',
+          },
+        ],
+      };
+    }
+    if (key === 'pr list') {
+      return [
+        {
+          number: 100,
+          mergedAt: '2026-06-16T20:50:00.000Z',
+          files: [{ path: 'src/server.js' }],
+        },
+      ];
+    }
+    return [];
+  };
+
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel'],
+      n: 1,
+      sandbox: {
+        repoUrl: 'git@github.com:dsj1984/mandrel-bench-sandbox.git',
+        owner: 'dsj1984',
+        repo: 'mandrel-bench-sandbox',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  const mandrel = result.scorecards.find((s) => s.arm === 'mandrel');
+  // The whole point of #48: a standalone-routed cell is MEASURED, not null.
+  assert.equal(mandrel.routingVerdict, 'story');
+  assert.equal(typeof mandrel.dimensions.planningFidelity.score, 'number');
+  assert.equal(mandrel.dimensions.planningFidelity.deliveredStoryCount, 1);
+  assert.equal(typeof mandrel.dimensions.autonomy.score, 'number');
+  // Overhead stays null — unmeasurable on the standalone path (decided scope).
+  assert.equal(mandrel.dimensions.overheadRatio.tokenRatio, null);
 });
 
 test('runFirstBenchmark: requires sandbox coordinates', async () => {

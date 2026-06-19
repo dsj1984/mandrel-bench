@@ -343,6 +343,89 @@ describe('buildScorecard — control arm efficiency/overhead', () => {
   });
 });
 
+describe('buildScorecard — standalone fallback (Story #48)', () => {
+  it('measures planning + autonomy from standalone telemetry when no ledger exists', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel', scenario: 'crud-db' }),
+      lifecycle: [], // standalone path → no Epic ledger
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
+      standalone: {
+        planning: {
+          plannedStoryCount: 1,
+          deliveredStoryCount: 1,
+          rePlanCount: 0,
+        },
+        autonomy: { hitlStops: 0, blockedEvents: 0, manualRescues: 0 },
+        routingVerdict: 'story',
+      },
+    });
+    // Measured, NOT null — the whole point of #48.
+    assert.equal(sc.dimensions.planningFidelity.score, 1);
+    assert.equal(sc.dimensions.planningFidelity.deliveredStoryCount, 1);
+    assert.equal(sc.dimensions.autonomy.score, 1);
+    assert.equal(sc.routingVerdict, 'story');
+    // Overhead stays null — unmeasurable on the standalone path (decided scope).
+    assert.equal(sc.dimensions.overheadRatio.tokenRatio, null);
+  });
+
+  it('an autonomy intervention from standalone telemetry lowers the score below 1', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+      standalone: {
+        planning: {
+          plannedStoryCount: 1,
+          deliveredStoryCount: 0,
+          rePlanCount: 0,
+        },
+        autonomy: { hitlStops: 0, blockedEvents: 1, manualRescues: 0 },
+        routingVerdict: 'story',
+      },
+    });
+    // 1 intervention ⇒ 1/(1+1) = 0.5
+    assert.ok(Math.abs(sc.dimensions.autonomy.score - 0.5) < 1e-9);
+    // delivered 0 of 1 planned ⇒ storyAccuracy 0 ⇒ score < 1
+    assert.ok(sc.dimensions.planningFidelity.score < 1);
+  });
+
+  it('without standalone telemetry, a no-ledger mandrel cell stays null with routingVerdict null', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.equal(sc.dimensions.planningFidelity.score, null);
+    assert.equal(sc.dimensions.autonomy.score, null);
+    assert.equal(sc.routingVerdict, null);
+  });
+
+  it('an Epic ledger yields routingVerdict "epic"', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:00:00.000Z',
+          event: 'story.dispatch.start',
+        },
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:30:00.000Z',
+          event: 'story.dispatch.end',
+        },
+      ],
+      planning: { plannedStoryCount: 1, deliveredStoryCount: 1 },
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.equal(sc.routingVerdict, 'epic');
+  });
+});
+
 describe('buildScorecard — maintainability and security inputs', () => {
   it('threads maintainabilityInputs into dimensions.maintainability', () => {
     const sc = buildScorecard({

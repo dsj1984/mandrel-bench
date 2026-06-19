@@ -87,6 +87,11 @@
       "enum": ["mandrel", "control"],
       "description": "Which arm produced this run. 'mandrel' clones carry .agents/ and run the /plan→/deliver pipeline; 'control' clones have no scaffolding and receive the bare task prompt. Both arms are costed by the same `claude -p` envelope (apples-to-apples by construction)."
     },
+    "routingVerdict": {
+      "type": ["string", "null"],
+      "enum": ["epic", "story", null],
+      "description": "Which delivery route Mandrel actually took for this mandrel-arm cell: 'epic' (an Epic lifecycle ledger was found), 'story' (the standalone single-Story path — telemetry recovered from GitHub per the standalone adapter), or null (control arm, or routing could not be determined). Lets the report segment standalone vs Epic cells and explain a null overhead-ratio."
+    },
     "dimensions": {
       "type": "object",
       "additionalProperties": false,

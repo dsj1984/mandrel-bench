@@ -303,12 +303,38 @@ const VERDICT_BADGE = Object.freeze({
  * @param {'iqr'|'ci'} method
  * @returns {string}
  */
+/**
+ * Summarize how Mandrel routed this scenario's cells (Story #48), so a reader
+ * understands WHY ledger-derived dimensions are present or n/a. Returns '' when
+ * no run carries a routingVerdict (older scorecards / control-only).
+ *
+ * @param {Array<object>} mandrelRuns
+ * @returns {string}
+ */
+function renderRoutingNote(mandrelRuns) {
+  const verdicts = [
+    ...new Set(
+      (mandrelRuns ?? []).map((sc) => sc?.routingVerdict).filter(Boolean),
+    ),
+  ];
+  if (verdicts.length === 0) return '';
+  if (verdicts.length === 1 && verdicts[0] === 'story') {
+    return '> **Mandrel routing: standalone Story** — planning-fidelity & autonomy recovered from the Story’s GitHub telemetry (no Epic ledger); overhead-ratio is **n/a** (unmeasurable on the standalone path).';
+  }
+  if (verdicts.length === 1 && verdicts[0] === 'epic') {
+    return '> **Mandrel routing: Epic** — all value dimensions derived from the lifecycle ledger.';
+  }
+  return `> **Mandrel routing: mixed** across runs (${verdicts.join(', ')}).`;
+}
+
 function renderScenarioSection(cell, diff, method) {
   const rows = dimensionRows(cell, diff, method);
+  const routingNote = renderRoutingNote(cell.mandrelRuns);
   const header = [
     `### Scenario: \`${cell.scenario}\` (difficulty ${Number.isFinite(cell.difficulty) ? cell.difficulty : '?'})`,
     '',
     `n = ${cell.mandrelRuns.length} mandrel / ${cell.controlRuns.length} control · band = ${method} (\`center [low, high]\`)`,
+    ...(routingNote ? ['', routingNote] : []),
     '',
     '| Dimension | Mandrel | Control | Δ (M−C) | Noise floor | Verdict |',
     '| --- | --- | --- | --- | --- | --- |',
