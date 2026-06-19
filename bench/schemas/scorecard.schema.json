@@ -227,10 +227,10 @@
       "description": "Autonomy — how little human intervention? Counts of HITL stops, agent::blocked transitions, and manual rescues, collapsed to a [0,1] score where 1 = fully unattended.",
       "properties": {
         "score": {
-          "type": "number",
+          "type": ["number", "null"],
           "minimum": 0,
           "maximum": 1,
-          "description": "Autonomy in [0,1]; 1 means the run completed with zero human intervention."
+          "description": "Autonomy in [0,1]; 1 means the run completed with zero human intervention. Null when unmeasured — the mandrel arm produced no lifecycle ledger to read interventions from."
         },
         "hitlStops": {
           "type": "integer",
@@ -365,9 +365,9 @@
       "description": "Overhead ratio — ceremony tax vs. shippable output. Ceremony cost (planning, decomposition, orchestration, gate ceremony) divided by codegen cost (tokens/time spent producing shippable artifacts). For the control arm there is effectively no ceremony, so tokenRatio approaches its floor.",
       "properties": {
         "tokenRatio": {
-          "type": "number",
+          "type": ["number", "null"],
           "minimum": 0,
-          "description": "ceremonyTokens ÷ codegenTokens. A ratio of 4.0 means 4 tokens of ceremony per token of shippable codegen."
+          "description": "ceremonyTokens ÷ codegenTokens. A ratio of 4.0 means 4 tokens of ceremony per token of shippable codegen. Null when codegenTokens is 0 (undefined ratio) — e.g. the mandrel arm produced no lifecycle ledger, so no codegen could be attributed."
         },
         "timeRatio": {
           "type": ["number", "null"],

@@ -207,7 +207,15 @@ export function computePlanningFidelity(input = {}) {
       ? input.planAuthored
       : input.arm !== 'control';
 
-  if (!planAuthored) {
+  // `planObserved` is the caller's signal that a plan ledger was actually
+  // discovered for this run (default: assume observed, for back-compat with
+  // callers that don't thread it). When the mandrel arm produces no lifecycle
+  // ledger, planned/delivered counts default to 0/0, which would otherwise
+  // compute a PERFECT storyAccuracy (|0−0|/max(…,1) = 0 → 1) and credit Mandrel
+  // with flawless planning fidelity it was never measured to have. Score that
+  // unmeasured case as `null` so the report excludes it, never as a default 1.
+  const planObserved = input.planObserved !== false;
+  if (!planAuthored || !planObserved) {
     return {
       score: null,
       rePlanCount,
@@ -243,12 +251,21 @@ export function computePlanningFidelity(input = {}) {
  *
  * `score === 1.0` ⇔ zero interventions (fully unattended).
  *
+ * `observed` is the caller's signal that the intervention counters were
+ * actually read from a lifecycle ledger (default: assume observed). When the
+ * mandrel arm produces no ledger, the counters default to 0 — which would
+ * otherwise score a PERFECT 1.0 (fully unattended) for a run whose autonomy was
+ * never measured. That unmeasured case scores `null` so the report excludes it.
+ * The bare control arm has no ledger by design and is passed `observed: true`:
+ * its zero-intervention 1.0 is the intended baseline, not a missing measurement.
+ *
  * @param {object} input
  * @param {number} [input.hitlStops]
  * @param {number} [input.blockedEvents]
  * @param {number} [input.manualRescues]
+ * @param {boolean} [input.observed=true]  False ⇒ score is `null` (unmeasured).
  * @returns {{
- *   score: number,
+ *   score: number|null,
  *   hitlStops: number,
  *   blockedEvents: number,
  *   manualRescues: number
@@ -259,8 +276,9 @@ export function computeAutonomy(input = {}) {
   const blockedEvents = nonNegInt(input.blockedEvents);
   const manualRescues = nonNegInt(input.manualRescues);
   const interventions = hitlStops + blockedEvents + manualRescues;
+  const observed = input.observed !== false;
   return {
-    score: 1 / (1 + interventions),
+    score: observed ? 1 / (1 + interventions) : null,
     hitlStops,
     blockedEvents,
     manualRescues,
@@ -515,7 +533,12 @@ export function computeEfficiency(input = {}) {
 export function computeOverheadRatio(input = {}) {
   const ceremonyTokens = nonNegInt(input.ceremonyTokens);
   const codegenTokens = nonNegInt(input.codegenTokens);
-  const tokenRatio = codegenTokens > 0 ? ceremonyTokens / codegenTokens : 0;
+  // A ratio with a zero denominator is UNMEASURED, not "zero overhead". A run
+  // with no attributable codegen — e.g. the mandrel arm produced no lifecycle
+  // ledger, so the token split collapsed everything into ceremony — yields
+  // `null` here, NOT 0, so the value-add report excludes it instead of crediting
+  // Mandrel with a flawless zero-overhead ratio it never demonstrated.
+  const tokenRatio = codegenTokens > 0 ? ceremonyTokens / codegenTokens : null;
 
   const ceremonyMs = finiteOr(input.ceremonyMs, Number.NaN);
   const codegenMs = finiteOr(input.codegenMs, Number.NaN);

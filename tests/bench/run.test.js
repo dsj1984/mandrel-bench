@@ -463,7 +463,14 @@ test('runFirstBenchmark: emits a schema-valid scorecard per arm and renders a re
   assert.equal(mandrel.dimensions.quality.acceptanceEvalScore, 1);
   assert.equal(control.dimensions.quality.acceptanceEvalScore, null);
   assert.equal(control.dimensions.planningFidelity.score, null);
-  assert.equal(typeof mandrel.dimensions.planningFidelity.score, 'number');
+  // This fixture runs the mandrel arm with NO lifecycle ledger (discoverDeps
+  // existsImpl → false), the same shape as a trivial scope Mandrel routes
+  // through the standalone single-Story path. Its ledger-derived dimensions are
+  // therefore UNMEASURED → null, never a misleading default (planning/autonomy
+  // would otherwise score a perfect 1, and tokenRatio a flawless 0).
+  assert.equal(mandrel.dimensions.planningFidelity.score, null);
+  assert.equal(mandrel.dimensions.autonomy.score, null);
+  assert.equal(mandrel.dimensions.overheadRatio.tokenRatio, null);
 
   // Maintainability and security are populated for BOTH arms from the collector
   // stubs (objectiveMaintainabilityScore=0.8, judgeScore=0.85 → score=0.815).

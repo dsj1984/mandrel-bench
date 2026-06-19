@@ -427,6 +427,13 @@ export function buildScorecard({
   }
 
   const emitted = emittedRecords(lifecycle);
+  // Did this run produce a discoverable lifecycle ledger? The mandrel arm's
+  // value dimensions (planning fidelity, autonomy) and its token split are
+  // derived from that ledger; when it is absent (e.g. a trivial scope that
+  // Mandrel routed through the standalone single-Story path, which emits no
+  // Epic-scoped ledger), those signals are UNMEASURED and must score `null`
+  // rather than a misleading default. The control arm never has a ledger.
+  const ledgerObserved = emitted.length > 0;
 
   // ---- Lifecycle-derived raw sub-signals -------------------------------
   // Wall-clock comes from the lifecycle span when present; the control arm
@@ -474,8 +481,15 @@ export function buildScorecard({
       fileFootprintDrift: planning.fileFootprintDrift,
       plannedPaths: planning.plannedPaths,
       actualPaths: planning.actualPaths,
+      planObserved: ledgerObserved,
     },
-    autonomy,
+    autonomy: {
+      ...autonomy,
+      // The control arm's zero-intervention baseline is defined, not measured
+      // from a ledger, so it is always "observed"; the mandrel arm is observed
+      // only when its lifecycle ledger was found.
+      observed: run.arm === 'control' ? true : ledgerObserved,
+    },
     maintainability: {
       objectiveMaintainabilityScore:
         maintainabilityInputs.objectiveMaintainabilityScore ?? null,
