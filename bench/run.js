@@ -62,6 +62,11 @@ import { scoreScenarioQuality as defaultScoreScenarioQuality } from './scenarios
 import { runDimensionJudge as defaultRunDimensionJudge } from './scenarios/dimension-judge-adapter.js';
 import { collectMaintainabilitySignals as defaultCollectMaintainabilitySignals } from './scenarios/maintainability-adapter.js';
 import { collectSecuritySignals as defaultCollectSecuritySignals } from './scenarios/security-adapter.js';
+import {
+  collectStandaloneTelemetry,
+  defaultGhJson,
+  discoverStandaloneStory,
+} from './scenarios/standalone-telemetry-adapter.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -592,6 +597,12 @@ export async function runOneRun(opts, deps = {}) {
     // Both arms get the permission args so each can act headlessly; the mandrel
     // arm's /deliver --yes lives in the prompt (buildArmPrompt), not here.
     const extraArgs = [...SESSION_EXTRA_ARGS];
+    // Bound the GitHub-side artifact search (Story #48): any standalone Story
+    // the mandrel arm opens in the sandbox is created at/after this instant, so
+    // it isolates this cell's Story from prior runs' (sandbox issues persist
+    // across the per-run baseline reset).
+    const runStartedAt = nowIso();
+
     const session = runSessionFn(
       {
         arm,
@@ -635,6 +646,10 @@ export async function runOneRun(opts, deps = {}) {
     let lifecycle = [];
     const signals = [];
     let rawRefs;
+    // Standalone-path telemetry (Story #48), filled when the mandrel arm routed
+    // through the single-Story path (no Epic ledger) and its GitHub Story was
+    // recovered. Stays null for the control arm and for Epic-routed cells.
+    let standalone = null;
     const rawDir = path.join(cohortDirPath, '.raw');
     const idStampForRaw = sanitizeRunId(`${scenario.id}-${arm}-r${runIndex}`);
     if (arm === 'mandrel') {
@@ -665,7 +680,38 @@ export async function runOneRun(opts, deps = {}) {
         }
         rawRefs = { lifecycleNdjson: lifeOut, signalsNdjson: signalsOut };
       } else {
-        logger?.warn?.('[run] no lifecycle ledger found for the mandrel arm');
+        // No Epic ledger — Mandrel routed this cell through the standalone
+        // single-Story path. Recover planning + autonomy from the Story's
+        // GitHub telemetry (Story #48) so the value dims are MEASURED, not null.
+        const ghJson = deps.ghJson ?? defaultGhJson;
+        let storyNumber = null;
+        try {
+          storyNumber = discoverStandaloneStory(
+            {
+              owner: sandbox.owner,
+              repo: sandbox.repo,
+              sinceIso: runStartedAt,
+            },
+            { ghJson },
+          );
+        } catch (err) {
+          logger?.warn?.(
+            `[run] standalone Story discovery failed: ${err?.message ?? err}`,
+          );
+        }
+        if (storyNumber != null) {
+          standalone = collectStandaloneTelemetry(
+            { owner: sandbox.owner, repo: sandbox.repo, storyNumber },
+            { ghJson },
+          );
+          logger?.info?.(
+            `[run] no Epic ledger — recovered standalone telemetry from Story #${storyNumber} (routing=story)`,
+          );
+        } else {
+          logger?.warn?.(
+            '[run] no Epic ledger and no standalone Story found for the mandrel arm',
+          );
+        }
       }
     }
 
@@ -777,6 +823,7 @@ export async function runOneRun(opts, deps = {}) {
       maintainabilityInputs,
       securityInputs,
       rawRefs,
+      standalone,
     });
     return scorecard;
   } finally {

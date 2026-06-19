@@ -36,6 +36,7 @@ const FW = '1.70.0';
 function card({
   scenario = 'hello-world',
   arm = 'mandrel',
+  routingVerdict = null,
   runId = `${scenario}-${arm}-r1`,
   quality = 1,
   planningFidelity = 0.9,
@@ -60,6 +61,7 @@ function card({
     env,
     scenario,
     arm,
+    routingVerdict,
     dimensions: {
       quality: { score: quality, frozenSuitePassRate: quality },
       planningFidelity: { score: arm === 'control' ? null : planningFidelity },
@@ -444,6 +446,21 @@ describe('renderReport — full Markdown', () => {
     const md = renderReport({ scorecards: [] });
     assert.match(md, /nothing to render/i);
     assert.match(md, /## Recommended improvements/);
+  });
+
+  it('surfaces the standalone routing verdict so n/a value dims are explained (Story #48)', () => {
+    const scorecards = [
+      card({
+        scenario: 'crud-db',
+        arm: 'mandrel',
+        routingVerdict: 'story',
+        runId: 'm1',
+      }),
+      card({ scenario: 'crud-db', arm: 'control', runId: 'c1' }),
+    ];
+    const md = renderReport({ scorecards, method: 'iqr' });
+    assert.match(md, /Mandrel routing: standalone Story/);
+    assert.match(md, /overhead-ratio is \*\*n\/a\*\*/);
   });
 
   it('surfaces the mixed-cohort warning in the header', () => {
