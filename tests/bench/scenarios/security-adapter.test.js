@@ -52,6 +52,9 @@ function makeFs(files, root) {
   }
 
   return {
+    existsSync(p) {
+      return Object.hasOwn(files, p) || dirs.has(p);
+    },
     readdirSync(dirPath, _opts) {
       return dirs.get(dirPath) ?? [];
     },
@@ -103,6 +106,9 @@ const CLEAN_FILES = {
     app.get('/', (req, res) => res.send('hello'));
     app.listen(3000);
   `,
+  // A lockfile so the dependency audit actually runs (the adapter skips it when
+  // no lockfile is present — see the "skips the audit" test below).
+  [`${ROOT}/package-lock.json`]: '{ "lockfileVersion": 3 }',
 };
 
 const CLEAN_AUDIT = JSON.stringify({
@@ -251,6 +257,29 @@ describe('collectSecuritySignals — dependency audit', () => {
       fsImpl: makeFs(CLEAN_FILES, ROOT),
       execFileSync,
     });
+    assert.equal(signals.depAuditVulnCount, 0);
+  });
+
+  it('skips the audit entirely (count 0) when no lockfile is present', () => {
+    // A zero-dependency single-file delivery has no lockfile; running `npm
+    // audit` there only yields a noisy ENOLOCK error. The adapter must NOT
+    // invoke npm at all, and report 0 dependency vulnerabilities.
+    const filesNoLock = {
+      [`${ROOT}/server.js`]: 'import http from "node:http";',
+    };
+    let called = false;
+    const signals = collectSecuritySignals(ROOT, {
+      fsImpl: makeFs(filesNoLock, ROOT),
+      execFileSync: () => {
+        called = true;
+        return '';
+      },
+    });
+    assert.equal(
+      called,
+      false,
+      'npm audit must not be invoked without a lockfile',
+    );
     assert.equal(signals.depAuditVulnCount, 0);
   });
 });
@@ -497,6 +526,7 @@ describe('collectSecuritySignals — edge cases', () => {
     const goodPath = `${ROOT}/good.js`;
 
     const fsImpl = {
+      existsSync: () => false, // no lockfile → dependency audit is skipped
       readdirSync(dir) {
         if (dir === ROOT) {
           return [

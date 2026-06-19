@@ -62,6 +62,18 @@ const SECRET_PATTERNS = [
   /['"]Bearer [A-Za-z0-9._-]{20,}['"]/g,
 ];
 
+/**
+ * Lockfiles whose presence means `npm audit` has a resolved dependency tree to
+ * audit. Absent all of them, the audit is skipped (see the Dependency audit
+ * step) — a workspace with no lockfile has no dependency vulnerabilities to find.
+ */
+const LOCKFILES = [
+  'package-lock.json',
+  'npm-shrinkwrap.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+];
+
 /** File extensions considered source/config (skip binaries, lockfiles). */
 const SCANNABLE_EXTENSIONS = new Set([
   '.js',
@@ -290,22 +302,31 @@ export function collectSecuritySignals(workspacePath, ports = {}) {
   if (unsafeTokenStorageFound) hasSafeTokenStorage = false;
 
   // ── 3. Dependency audit ───────────────────────────────────────────────────
+  // `npm audit` requires an existing lockfile; without one it exits with
+  // ENOLOCK and prints a noisy error block. A workspace with no lockfile has no
+  // resolved dependency tree to audit — e.g. a zero-dependency single-file
+  // delivery (the shape a trivial scenario produces) — which is genuinely zero
+  // dependency vulnerabilities, so skip the audit rather than provoke the error.
   let depAuditVulnCount = 0;
-  try {
-    const auditJson = execFileSyncImpl('npm', ['audit', '--json'], {
-      cwd: workspacePath,
-      encoding: 'utf8',
-    });
-    depAuditVulnCount = parseAuditVulnCount(auditJson);
-  } catch (err) {
-    // `npm audit` exits non-zero when vulnerabilities are found. The output
-    // is still valid JSON on stdout — extract it from the error object if
-    // available (node's execFileSync throws with .stdout when encoding set).
-    const stdout = err?.stdout ?? '';
-    if (stdout) {
-      depAuditVulnCount = parseAuditVulnCount(stdout);
+  const hasLockfile = LOCKFILES.some((name) =>
+    fsImpl.existsSync(path.join(workspacePath, name)),
+  );
+  if (hasLockfile) {
+    try {
+      const auditJson = execFileSyncImpl('npm', ['audit', '--json'], {
+        cwd: workspacePath,
+        encoding: 'utf8',
+        // Capture stdout; discard the child's stderr so a vulnerabilities-found
+        // run (npm exits non-zero) never leaks npm chatter into the bench log.
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      depAuditVulnCount = parseAuditVulnCount(auditJson);
+    } catch (err) {
+      // `npm audit` exits non-zero when vulnerabilities ARE found. Its JSON is
+      // still on stdout, captured on the thrown error (encoding set above).
+      const stdout = err?.stdout ?? '';
+      if (stdout) depAuditVulnCount = parseAuditVulnCount(stdout);
     }
-    // If stdout is empty (e.g. no package.json), depAuditVulnCount stays 0.
   }
 
   return {
