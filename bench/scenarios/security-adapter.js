@@ -96,6 +96,35 @@ const SCANNABLE_EXTENSIONS = new Set([
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build']);
 
 /**
+ * Test-scaffolding directories whose contents are fixtures, not the deliverable.
+ * Example credentials in a delivered auth test (`password: "owner-pass"`,
+ * `Bearer not-a-real-token`) are *expected* — penalizing them inverts the
+ * benchmark thesis (Story #55): the mandrel arm earns the secret penalty
+ * precisely because it delivers auth + tests, while a bare control that writes
+ * none scores "more secure". These dirs are excluded from the secret scan only;
+ * the MUST-presence heuristics (validation/hashing/authz/…) still see them so a
+ * test that exercises `bcrypt` or `httpOnly` still counts toward the positives.
+ */
+const TEST_DIR_NAMES = new Set([
+  'test',
+  'tests',
+  '__tests__',
+  '__fixtures__',
+  'fixtures',
+]);
+
+/**
+ * True iff `name` is a test file by suffix (`*.test.*`, `*.spec.*`).
+ * Matches `foo.test.js`, `auth.spec.ts`, `api.test.mjs`, etc.
+ *
+ * @param {string} name  — a bare filename (no directory component).
+ * @returns {boolean}
+ */
+function isTestFileName(name) {
+  return /\.(?:test|spec)\.[^.]+$/i.test(name);
+}
+
+/**
  * Top-level FILE artifacts the bench overlays into the mandrel arm's workspace
  * (overlay.js `DEFAULT_OVERLAY_PATHS`) that are framework material, not the
  * delivered app. Skipped so the scanner measures the deliverable, not the
@@ -152,11 +181,19 @@ const AUTH_RATE_LIMITING_RE =
 /**
  * Recursively collect all scannable source files under `dir`.
  *
+ * Each returned entry carries an `isTest` flag: true when the file is a test
+ * file by suffix (`*.test.*` / `*.spec.*`) or sits anywhere under a
+ * test-scaffolding directory (`test/`, `tests/`, `__tests__/`, `__fixtures__/`,
+ * `fixtures/`). The secret scan skips `isTest` files (fixture credentials are
+ * expected, not real secrets — Story #55); the MUST-presence heuristics still
+ * read them so a test exercising `bcrypt`/`httpOnly`/authz still scores.
+ *
  * @param {string} dir  — absolute path to scan.
  * @param {{ readdirSync: typeof fs.readdirSync, statSync: typeof fs.statSync }} fsImpl
- * @returns {string[]}  — absolute paths of scannable files.
+ * @param {boolean} [inTestDir]  — true when an ancestor dir is a test-scaffolding dir.
+ * @returns {Array<{ path: string, isTest: boolean }>}
  */
-function collectSourceFiles(dir, fsImpl) {
+function collectSourceFiles(dir, fsImpl, inTestDir = false) {
   const result = [];
   let entries;
   try {
@@ -177,15 +214,25 @@ function collectSourceFiles(dir, fsImpl) {
       // never in a dot-dir, so this is safe for both arms. (NOTE: hidden *files*
       // such as `.env` are still scanned below — a delivered secret matters.)
       if (entry.name.startsWith('.')) continue;
-      result.push(...collectSourceFiles(full, fsImpl));
+      const childInTestDir = inTestDir || TEST_DIR_NAMES.has(entry.name);
+      result.push(...collectSourceFiles(full, fsImpl, childInTestDir));
     } else if (entry.isFile()) {
       // Skip top-level overlay file artifacts (the `CLAUDE.md` instruction shim
       // overlay.js copies in) for the same reason — it is framework material,
       // not delivered code.
       if (OVERLAY_FILE_ARTIFACTS.has(entry.name)) continue;
-      const ext = path.extname(entry.name).toLowerCase();
+      // `path.extname('.env')` is '' (a leading-dot file has no extension), so a
+      // bare dotfile like `.env` would slip past an extname-only check. Treat the
+      // whole filename as the extension token in that case so a delivered `.env`
+      // secret is still scanned (Story #55 acceptance: a real `.env` secret must
+      // still count).
+      const name = entry.name.toLowerCase();
+      const ext = path.extname(name) || name;
       if (SCANNABLE_EXTENSIONS.has(ext)) {
-        result.push(full);
+        result.push({
+          path: full,
+          isTest: inTestDir || isTestFileName(entry.name),
+        });
       }
     }
   }
@@ -269,7 +316,7 @@ export function collectSecuritySignals(workspacePath, ports = {}) {
   let hasAuthRateLimiting = false;
   let unsafeTokenStorageFound = false;
 
-  for (const filePath of files) {
+  for (const { path: filePath, isTest } of files) {
     let text;
     try {
       text = fsImpl.readFileSync(filePath, 'utf8');
@@ -277,11 +324,16 @@ export function collectSecuritySignals(workspacePath, ports = {}) {
       continue;
     }
 
-    // Secret scan — count matches, never store value
-    for (const pattern of SECRET_PATTERNS) {
-      pattern.lastIndex = 0;
-      const matches = text.match(pattern);
-      if (matches) secretScanCount += matches.length;
+    // Secret scan — count matches, never store value. Skip test files: example
+    // credentials in delivered tests/fixtures (`password: "owner-pass"`,
+    // `Bearer not-a-real-token`) are expected scaffolding, not real secrets.
+    // Counting them inverted the benchmark thesis (Story #55).
+    if (!isTest) {
+      for (const pattern of SECRET_PATTERNS) {
+        pattern.lastIndex = 0;
+        const matches = text.match(pattern);
+        if (matches) secretScanCount += matches.length;
+      }
     }
 
     // MUST: edge input validation
