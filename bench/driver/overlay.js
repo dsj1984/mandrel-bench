@@ -37,7 +37,14 @@
  * overlay contract without copying 144 MB of `node_modules` or touching disk.
  */
 
-import { cpSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -52,6 +59,105 @@ export const DEFAULT_OVERLAY_PATHS = Object.freeze([
   'CLAUDE.md',
   'node_modules',
 ]);
+
+/**
+ * The rewritten consumer artifacts the overlay clobbers in place (in addition
+ * to copying {@link DEFAULT_OVERLAY_PATHS}): the clean minimal `package.json`
+ * and the sandbox-repointed `.agentrc.json`. These are framework-overlay
+ * artifacts, not deliverable app code, so they are git-excluded alongside the
+ * copied paths — otherwise the headless agent would stage them and they would
+ * contaminate the deliverable diff exactly like `.agents/**` does.
+ */
+export const REWRITTEN_OVERLAY_ARTIFACTS = Object.freeze([
+  'package.json',
+  '.agentrc.json',
+]);
+
+/**
+ * Every overlaid path the deliverable diff must never contain: the copied
+ * framework tree plus the rewritten consumer artifacts. This is the exact set
+ * written to the sandbox clone's `.git/info/exclude` at overlay time so the
+ * pipeline can run with the overlay present while the headless agent's
+ * `git add` / commit never picks any of it up.
+ *
+ * @param {readonly string[]} [overlayPaths=DEFAULT_OVERLAY_PATHS]
+ * @returns {string[]} De-duplicated, stable-ordered relative paths.
+ */
+export function overlayExcludePaths(overlayPaths = DEFAULT_OVERLAY_PATHS) {
+  return [...new Set([...overlayPaths, ...REWRITTEN_OVERLAY_ARTIFACTS])];
+}
+
+/**
+ * Append the overlaid paths to a sandbox clone's `.git/info/exclude` so git
+ * never stages them. `.git/info/exclude` is the repo-local, uncommitted
+ * sibling of `.gitignore` — using it (rather than writing a tracked
+ * `.gitignore`) keeps the exclusion invisible to the deliverable diff itself.
+ *
+ * Idempotent: a sentinel header guards the block, and existing patterns are
+ * not duplicated on a re-run. The exclude file (and its parent `.git/info`
+ * directory) is created when absent.
+ *
+ * @param {object} opts
+ * @param {string} opts.workspacePath  Absolute path of the provisioned clone.
+ * @param {readonly string[]} [opts.overlayPaths=DEFAULT_OVERLAY_PATHS]
+ * @param {object} [deps]
+ * @param {(p: string, enc: string) => string} [deps.readFileFn]
+ * @param {(p: string, data: string) => void} [deps.appendFileFn]
+ * @param {(p: string, opts: object) => void} [deps.mkdirFn]
+ * @param {(p: string) => boolean} [deps.existsFn]
+ * @param {{ info?: Function, warn?: Function }} [deps.logger]
+ * @returns {{ excludeFile: string, added: string[], patterns: string[] }}
+ */
+export function excludeOverlayFromGit(opts = {}, deps = {}) {
+  const { workspacePath, overlayPaths = DEFAULT_OVERLAY_PATHS } = opts;
+
+  if (typeof workspacePath !== 'string' || workspacePath.length === 0) {
+    throw new TypeError(
+      'excludeOverlayFromGit requires a non-empty workspacePath',
+    );
+  }
+
+  const readFile = deps.readFileFn ?? readFileSync;
+  const append = deps.appendFileFn ?? appendFileSync;
+  const mkdir = deps.mkdirFn ?? mkdirSync;
+  const exists = deps.existsFn ?? existsSync;
+  const logger = deps.logger;
+
+  const SENTINEL = '# mandrel-bench: framework overlay (never commit)';
+  const infoDir = path.join(workspacePath, '.git', 'info');
+  const excludeFile = path.join(infoDir, 'exclude');
+  // Anchor each pattern to the repo root so `.claude` excludes the directory
+  // without also masking an unrelated nested path, and so `CLAUDE.md` /
+  // `package.json` only match the root artifact the overlay wrote.
+  const patterns = overlayExcludePaths(overlayPaths).map((rel) => `/${rel}`);
+
+  let current = '';
+  if (exists(excludeFile)) {
+    current = readFile(excludeFile, 'utf8');
+  } else if (!exists(infoDir)) {
+    mkdir(infoDir, { recursive: true });
+  }
+
+  const existingLines = new Set(current.split('\n').map((line) => line.trim()));
+  const missing = patterns.filter((p) => !existingLines.has(p));
+
+  if (missing.length === 0) {
+    logger?.info?.(`[overlay] git-exclude already current: ${excludeFile}`);
+    return { excludeFile, added: [], patterns };
+  }
+
+  const needsLeadingNewline = current.length > 0 && !current.endsWith('\n');
+  const block = `${needsLeadingNewline ? '\n' : ''}${
+    existingLines.has(SENTINEL) ? '' : `${SENTINEL}\n`
+  }${missing.join('\n')}\n`;
+
+  append(excludeFile, block);
+  logger?.info?.(
+    `[overlay] git-excluded ${missing.length} overlay path(s) → ${excludeFile}`,
+  );
+
+  return { excludeFile, added: missing, patterns };
+}
 
 /**
  * Absolute path of this repo's root (two levels up from `bench/driver/`).
@@ -145,8 +251,10 @@ export function rewriteAgentrc(agentrcText, sandbox) {
  * @param {(p: string, data: string) => void} [deps.writeFileFn]
  * @param {(p: string, enc: string) => string} [deps.readFileFn]
  * @param {(p: string) => boolean} [deps.existsFn]
+ * @param {(p: string, data: string) => void} [deps.appendFileFn]
+ * @param {(p: string, opts: object) => void} [deps.mkdirFn]
  * @param {{ info?: Function, warn?: Function }} [deps.logger]
- * @returns {{ overlaid: boolean, arm: string, copied: string[], agentrc?: object }}
+ * @returns {{ overlaid: boolean, arm: string, copied: string[], agentrc?: object, excluded?: string[] }}
  */
 export function overlayFrameworkUnderTest(opts = {}, deps = {}) {
   const {
@@ -216,5 +324,20 @@ export function overlayFrameworkUnderTest(opts = {}, deps = {}) {
     `${JSON.stringify(agentrc, null, 2)}\n`,
   );
 
-  return { overlaid: true, arm, copied, agentrc };
+  // Git-exclude every overlaid path (the copied framework tree plus the
+  // rewritten package.json / .agentrc.json) inside the sandbox clone so the
+  // pipeline runs with the overlay present but the headless agent never stages
+  // it — keeping the deliverable diff to app code only (Story #56).
+  const { added: excluded } = excludeOverlayFromGit(
+    { workspacePath, overlayPaths },
+    {
+      readFileFn: readFile,
+      appendFileFn: deps.appendFileFn,
+      mkdirFn: deps.mkdirFn,
+      existsFn: exists,
+      logger,
+    },
+  );
+
+  return { overlaid: true, arm, copied, agentrc, excluded };
 }

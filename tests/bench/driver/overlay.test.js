@@ -19,7 +19,10 @@ import test from 'node:test';
 import {
   buildTargetPackageJson,
   DEFAULT_OVERLAY_PATHS,
+  excludeOverlayFromGit,
+  overlayExcludePaths,
   overlayFrameworkUnderTest,
+  REWRITTEN_OVERLAY_ARTIFACTS,
   rewriteAgentrc,
 } from '../../../bench/driver/overlay.js';
 
@@ -40,7 +43,14 @@ const AGENTRC_SRC = JSON.stringify({
 function fakes(opts = {}) {
   const cpCalls = [];
   const writes = {};
+  const appends = {};
+  const mkdirs = [];
   const missing = new Set(opts.missing ?? []);
+  // The clone's `.git/info/exclude` starts absent — git-clone seeds an empty
+  // working tree and never an exclude file. The append fake models how
+  // appendFileSync grows the file, and existsFn flips it to "present" once
+  // written so a re-run sees the existing block.
+  const excludePath = path.join(WS, '.git', 'info', 'exclude');
   const deps = {
     cpFn: (src, dest, o) => cpCalls.push({ src, dest, opts: o }),
     writeFileFn: (p, data) => {
@@ -48,12 +58,20 @@ function fakes(opts = {}) {
     },
     readFileFn: (p) => {
       if (p.endsWith('.agentrc.json')) return AGENTRC_SRC;
+      if (p === excludePath) return appends[p] ?? '';
       throw new Error(`unexpected read: ${p}`);
     },
-    existsFn: (p) => !missing.has(p),
+    appendFileFn: (p, data) => {
+      appends[p] = (appends[p] ?? '') + data;
+    },
+    mkdirFn: (p, o) => mkdirs.push({ p, opts: o }),
+    existsFn: (p) => {
+      if (p === excludePath) return appends[p] !== undefined;
+      return !missing.has(p);
+    },
     logger: { info() {}, warn() {} },
   };
-  return { deps, cpCalls, writes };
+  return { deps, cpCalls, writes, appends, mkdirs, excludePath };
 }
 
 test('rewriteAgentrc: repoints github and drops projectNumber, preserves the rest', () => {
@@ -170,4 +188,140 @@ test('overlay: rejects a bad arm and a missing workspacePath/sandbox', () => {
       overlayFrameworkUnderTest({ workspacePath: WS, arm: 'mandrel' }, deps),
     /requires sandbox \{ owner, repo \}/,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Story #56 — git-exclude the framework overlay so it never enters the
+// deliverable diff.
+// ---------------------------------------------------------------------------
+
+/**
+ * Simulate which workspace paths git would stage, given a set of root-anchored
+ * `.git/info/exclude` patterns (the `/dir` / `/file` shape the overlay writes).
+ * A path is excluded when it equals an excluded file pattern or sits under an
+ * excluded directory pattern — the same containment git applies. This lets the
+ * regression test assert the overlaid paths are ABSENT from a simulated
+ * commit's file set without spawning a real `git add`.
+ *
+ * @param {string[]} workspaceFiles  Repo-relative paths git sees in the tree.
+ * @param {string[]} excludePatterns  Root-anchored patterns (`/x`).
+ * @returns {string[]} The paths that would actually be staged.
+ */
+function simulateStagedFiles(workspaceFiles, excludePatterns) {
+  const roots = excludePatterns.map((p) => p.replace(/^\//, ''));
+  return workspaceFiles.filter((file) => {
+    return !roots.some((root) => file === root || file.startsWith(`${root}/`));
+  });
+}
+
+test('overlayExcludePaths: copied tree + rewritten artifacts, de-duplicated', () => {
+  const paths = overlayExcludePaths();
+  for (const rel of DEFAULT_OVERLAY_PATHS) assert.ok(paths.includes(rel));
+  for (const rel of REWRITTEN_OVERLAY_ARTIFACTS) assert.ok(paths.includes(rel));
+  // package.json / .agentrc.json must be present (the rewritten artifacts).
+  assert.ok(paths.includes('package.json'));
+  assert.ok(paths.includes('.agentrc.json'));
+  // No duplicates even if an artifact also appears in the overlay list.
+  assert.equal(new Set(paths).size, paths.length);
+});
+
+test('excludeOverlayFromGit: writes every overlaid path to .git/info/exclude', () => {
+  const { deps, appends, excludePath } = fakes();
+  const res = excludeOverlayFromGit({ workspacePath: WS }, deps);
+
+  assert.equal(res.excludeFile, excludePath);
+  const written = appends[excludePath];
+  assert.ok(written, 'exclude file should have been appended to');
+
+  // Every overlaid path + rewritten artifact is present, root-anchored.
+  for (const rel of overlayExcludePaths()) {
+    assert.ok(
+      written.includes(`/${rel}\n`),
+      `expected /${rel} in .git/info/exclude`,
+    );
+    assert.ok(res.patterns.includes(`/${rel}`));
+    assert.ok(res.added.includes(`/${rel}`));
+  }
+  // Carries the sentinel header so a re-run can detect its own block.
+  assert.ok(written.includes('# mandrel-bench: framework overlay'));
+});
+
+test('excludeOverlayFromGit: idempotent — a re-run adds nothing', () => {
+  const { deps, appends, excludePath } = fakes();
+  excludeOverlayFromGit({ workspacePath: WS }, deps);
+  const afterFirst = appends[excludePath];
+
+  const res2 = excludeOverlayFromGit({ workspacePath: WS }, deps);
+  assert.deepEqual(res2.added, []);
+  assert.equal(appends[excludePath], afterFirst, 'no duplicate block appended');
+});
+
+test('excludeOverlayFromGit: creates .git/info when the exclude file is absent', () => {
+  const { deps, mkdirs } = fakes({
+    missing: [path.join(WS, '.git', 'info')],
+  });
+  excludeOverlayFromGit({ workspacePath: WS }, deps);
+  assert.ok(
+    mkdirs.some(
+      (m) => m.p === path.join(WS, '.git', 'info') && m.opts.recursive,
+    ),
+    'expected .git/info to be created recursively',
+  );
+});
+
+test('excludeOverlayFromGit: rejects a missing workspacePath', () => {
+  const { deps } = fakes();
+  assert.throws(
+    () => excludeOverlayFromGit({}, deps),
+    /non-empty workspacePath/,
+  );
+});
+
+test('overlay (mandrel): git-excludes the overlay and a simulated commit carries app code only', () => {
+  const { deps, appends, excludePath } = fakes();
+  const res = overlayFrameworkUnderTest(
+    { workspacePath: WS, arm: 'mandrel', sandbox: SANDBOX, sourceRoot: SOURCE },
+    deps,
+  );
+
+  // The overlay reports the excluded set on its envelope.
+  for (const rel of overlayExcludePaths()) {
+    assert.ok(res.excluded.includes(`/${rel}`), `expected /${rel} excluded`);
+  }
+
+  const patterns = appends[excludePath]
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith('/'));
+
+  // A simulated deliverable commit: app code alongside the overlaid tree.
+  const workspaceFiles = [
+    'src/index.js',
+    'src/lib/util.js',
+    'README.md',
+    '.agents/scripts/single-story-close.js',
+    '.claude/commands/deliver.md',
+    'CLAUDE.md',
+    'node_modules/ajv/package.json',
+    'package.json',
+    '.agentrc.json',
+  ];
+  const staged = simulateStagedFiles(workspaceFiles, patterns);
+
+  // Only app code survives — no framework overlay, no rewritten artifacts.
+  assert.deepEqual(staged, ['src/index.js', 'src/lib/util.js', 'README.md']);
+  assert.ok(!staged.some((f) => f.startsWith('.agents/')));
+  assert.ok(!staged.includes('CLAUDE.md'));
+  assert.ok(!staged.some((f) => f.startsWith('node_modules/')));
+  assert.ok(!staged.includes('package.json'));
+  assert.ok(!staged.includes('.agentrc.json'));
+});
+
+test('overlay (control): no overlay, no git-exclude written', () => {
+  const { deps, appends } = fakes();
+  overlayFrameworkUnderTest(
+    { workspacePath: WS, arm: 'control', sandbox: SANDBOX, sourceRoot: SOURCE },
+    deps,
+  );
+  assert.deepEqual(appends, {});
 });
