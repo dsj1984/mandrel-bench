@@ -268,7 +268,7 @@ export function planningInputs(lifecycle = []) {
  * `computeSecurity` in dimensions.js expects, and compute
  * `objectiveSecurityScore` as a weighted sum:
  *
- *   secretPenalty           = secretScanCount > 0 ? 0 : 1        weight 0.30
+ *   secretPenalty           = max(0, 1 − secretScanCount / 5)     weight 0.30
  *   vulnPenalty             = max(0, 1 − depAuditVulnCount / 10)  weight 0.20
  *   mustPresenceScore       = (validationOk + hashingOk + storageOk
  *                             + authzOk + rateLimitOk) / 5         weight 0.50
@@ -285,7 +285,17 @@ export function derivedSecurityInputs(sigs, judgeScores) {
   const depAuditVulnCount =
     typeof sigs.depAuditVulnCount === 'number' ? sigs.depAuditVulnCount : 0;
 
-  const secretPenalty = secretScanCount > 0 ? 0 : 1;
+  // Proportional secret penalty (Story #55): a single hit no longer zeroes the
+  // full 0.30 weight (the old `secretScanCount > 0 ? 0 : 1` binary cliff). Each
+  // detected secret subtracts 1/5 of the weight, saturating at 5+ hits. The
+  // adapter already excludes test-fixture credentials from the count, so this
+  // penalty now responds to *delivered* secrets in graduated proportion rather
+  // than punishing the mere presence of one example credential.
+  const SECRET_PENALTY_SATURATION = 5;
+  const secretPenalty = Math.max(
+    0,
+    1 - secretScanCount / SECRET_PENALTY_SATURATION,
+  );
   const vulnPenalty = Math.max(0, 1 - depAuditVulnCount / 10);
 
   const mustFlags = [

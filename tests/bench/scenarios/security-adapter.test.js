@@ -255,6 +255,107 @@ describe('collectSecuritySignals — overlay-artifact exclusion', () => {
   });
 });
 
+describe('collectSecuritySignals — test-fixture exclusion (Story #55)', () => {
+  it('does NOT count example credentials in a delivered auth test fixture', () => {
+    // The mandrel arm delivers auth + tests; those tests carry example creds
+    // (`password: "owner-pass"`, `Bearer not-a-real-token` from sandbox PR #192).
+    // Counting them as secrets inverted the thesis — the arm that wrote tests
+    // looked "less secure" than a bare control that wrote none.
+    const files = {
+      [`${ROOT}/tests/auth.test.js`]: `
+        const login = { password: "owner-pass" };
+        const res = await fetch('/me', { headers: { Authorization: 'Bearer not-a-real-token' } });
+      `,
+      [`${ROOT}/src/__fixtures__/users.js`]: `export const seed = { password: "seed-password-123" };`,
+      [`${ROOT}/src/auth.spec.ts`]: `const apiKey = 'sk-spec-fixture-1234567890';`,
+    };
+    const signals = collectSecuritySignals(ROOT, {
+      fsImpl: makeFs(files, ROOT),
+      execFileSync: makeExec(CLEAN_AUDIT),
+    });
+    assert.equal(
+      signals.secretScanCount,
+      0,
+      'test-fixture credentials must not be counted as secrets',
+    );
+  });
+
+  it('still counts a real delivered .env secret while ignoring test fixtures', () => {
+    // The deliverable's .env carries a real hardcoded secret (counts), while the
+    // auth test fixture carries an example credential (does not). Proves the
+    // exclusion is scoped to test files, not a blanket secret-scan disable.
+    const files = {
+      // A real delivered secret in non-test source (quoted assignment matches
+      // the generic SECRET_PATTERNS, mirroring the existing adapter tests).
+      [`${ROOT}/config.js`]: `const dbPassword = "pr0d-s3cret-not-a-placeholder";`,
+      [`${ROOT}/tests/auth.test.js`]: `const login = { password: "owner-pass" };`,
+    };
+    const signals = collectSecuritySignals(ROOT, {
+      fsImpl: makeFs(files, ROOT),
+      execFileSync: makeExec(CLEAN_AUDIT),
+    });
+    assert.equal(
+      signals.secretScanCount,
+      1,
+      'exactly the delivered .env secret is counted; the fixture cred is skipped',
+    );
+  });
+
+  it('a real delivered .env secret still counts (AWS key) while the fixture cred does not', () => {
+    // The acceptance criterion's literal contrast: a delivered `.env` secret
+    // must still register. AWS-style keys match regardless of quoting, so this
+    // exercises the unquoted `.env` assignment shape directly.
+    const files = {
+      [`${ROOT}/.env`]: `AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE`,
+      [`${ROOT}/tests/auth.test.js`]: `const t = 'Bearer not-a-real-token-aaaaaaaaaa';`,
+    };
+    const signals = collectSecuritySignals(ROOT, {
+      fsImpl: makeFs(files, ROOT),
+      execFileSync: makeExec(CLEAN_AUDIT),
+    });
+    assert.equal(
+      signals.secretScanCount,
+      1,
+      'the delivered .env AWS key counts; the test Bearer token is excluded',
+    );
+  });
+
+  it('excludes *.test.* / *.spec.* files by suffix even outside a test dir', () => {
+    const files = {
+      [`${ROOT}/src/handlers/login.test.js`]: `const password = "owner-pass-fixture";`,
+      [`${ROOT}/src/handlers/login.spec.mjs`]: `const apiToken = 'tok-spec-fixture-abcdef';`,
+    };
+    const signals = collectSecuritySignals(ROOT, {
+      fsImpl: makeFs(files, ROOT),
+      execFileSync: makeExec(CLEAN_AUDIT),
+    });
+    assert.equal(signals.secretScanCount, 0);
+  });
+
+  it('test files still feed MUST-presence heuristics (only the secret scan is skipped)', () => {
+    // A delivered auth test that imports bcrypt should still mark password
+    // hashing present — the exclusion narrows the *secret scan*, not the
+    // positive MUST signals.
+    const files = {
+      [`${ROOT}/tests/auth.test.js`]: `
+        import bcrypt from 'bcrypt';
+        const password = "owner-pass";
+        await bcrypt.compare(password, hash);
+      `,
+    };
+    const signals = collectSecuritySignals(ROOT, {
+      fsImpl: makeFs(files, ROOT),
+      execFileSync: makeExec(CLEAN_AUDIT),
+    });
+    assert.equal(signals.secretScanCount, 0, 'fixture cred not counted');
+    assert.equal(
+      signals.hasPasswordHashing,
+      true,
+      'bcrypt in a test still counts toward MUST presence',
+    );
+  });
+});
+
 describe('collectSecuritySignals — dependency audit', () => {
   it('sums vulnerabilities from npm audit --json (v7 shape)', () => {
     const auditJson = JSON.stringify({
