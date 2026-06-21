@@ -27,3 +27,7 @@ results/.batch-checkpoint.ndjson
 
 # Secrets live in .env (e.g. GITHUB_TOKEN) — never commit it. Only .env.example (placeholders) is checked in.
 .env
+# Local env overrides — .env.local is the conventional local-secrets file AND the
+# transient marker active-story-env.js writes per story-init; never commit either.
+.env.local
+.env.*.local
