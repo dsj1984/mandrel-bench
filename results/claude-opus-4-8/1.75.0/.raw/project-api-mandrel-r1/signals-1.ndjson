@@ -1,1 +1,1 @@
-{"kind":"acceptance-eval","epicId":74,"storyId":78,"phase":"implement","source":{"tool":"acceptance-eval.js"},"details":{"decision":"proceed","round":1,"cap":2,"totalCriteria":5,"metCount":5,"reworkedCount":0,"reworkedCriteria":[]},"ts":"2026-06-19T16:20:04.467Z"}
+{"kind":"acceptance-eval","epicId":132,"storyId":136,"phase":"implement","source":{"tool":"acceptance-eval.js"},"details":{"decision":"proceed","round":1,"cap":2,"totalCriteria":4,"metCount":4,"reworkedCount":0,"reworkedCriteria":[]},"ts":"2026-06-20T05:23:01.181Z"}

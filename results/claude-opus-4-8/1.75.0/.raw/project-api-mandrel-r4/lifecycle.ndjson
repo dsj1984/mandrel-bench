@@ -1,0 +1,37 @@
+{"kind":"emitted","ts":"2026-06-20T07:31:14.763Z","event":"story.dispatch.start","payload":{"storyId":159,"waveIndex":0,"dispatchedAt":"2026-06-20T07:31:14.763Z","attempt":1}}
+{"kind":"emitted","ts":"2026-06-20T07:35:01.271Z","event":"story.heartbeat","payload":{"event":"story.heartbeat","storyId":159,"epicId":156,"phase":"implementing","timestamp":"2026-06-20T07:35:01.271Z","operator":"dsj1984"}}
+{"kind":"emitted","ts":"2026-06-20T07:41:02.043Z","event":"story.heartbeat","payload":{"event":"story.heartbeat","storyId":159,"epicId":156,"phase":"closing","timestamp":"2026-06-20T07:41:02.043Z","operator":"dsj1984"}}
+{"kind":"emitted","seqId":1,"ts":"2026-06-20T07:41:16.419Z","event":"close-validate.start","payload":{"epicId":156,"storyId":159}}
+{"kind":"completed","seqId":1,"ts":"2026-06-20T07:41:16.420Z","event":"close-validate.start"}
+{"kind":"emitted","seqId":2,"ts":"2026-06-20T07:41:17.233Z","event":"close-validate.end","payload":{"epicId":156,"storyId":159,"ok":true,"gateCount":6,"durationMs":821}}
+{"kind":"completed","seqId":2,"ts":"2026-06-20T07:41:17.233Z","event":"close-validate.end"}
+{"kind":"emitted","seqId":3,"ts":"2026-06-20T07:41:20.711Z","event":"story.merged","payload":{"storyId":159,"sha":"f99eb8145cb545a646c12375d919055b193bedae"}}
+{"kind":"completed","seqId":3,"ts":"2026-06-20T07:41:20.711Z","event":"story.merged"}
+{"kind":"emitted","ts":"2026-06-20T07:41:35.307Z","event":"story.heartbeat","payload":{"event":"story.heartbeat","storyId":159,"epicId":156,"phase":"done","timestamp":"2026-06-20T07:41:35.307Z","operator":"dsj1984"}}
+{"kind":"emitted","ts":"2026-06-20T07:42:03.777Z","event":"story.dispatch.end","payload":{"storyId":159,"outcome":"done","durationMs":0}}
+{"kind":"emitted","seqId":1,"ts":"2026-06-20T07:45:17.120Z","event":"retro.start","payload":{"epicId":156}}
+{"kind":"completed","seqId":1,"ts":"2026-06-20T07:45:17.120Z","event":"retro.start"}
+{"kind":"emitted","seqId":2,"ts":"2026-06-20T07:45:19.569Z","event":"retro.end","payload":{"epicId":156,"posted":true,"compact":true,"durationMs":2455,"retroPath":"/private/var/folders/9_/_b_wsjg97pz469z8wzf02hhc0000gn/T/mandrel-bench-sandbox-xE1SRQ/temp/epic-156/retro.md"}}
+{"kind":"completed","seqId":2,"ts":"2026-06-20T07:45:19.569Z","event":"retro.end"}
+{"kind":"emitted","seqId":1,"ts":"2026-06-20T07:46:02.052Z","event":"epic.close.end","payload":{"epicId":156}}
+{"kind":"emitted","seqId":2,"ts":"2026-06-20T07:46:02.053Z","event":"acceptance.reconcile.start","payload":{"epicId":156}}
+{"kind":"completed","seqId":2,"ts":"2026-06-20T07:46:02.053Z","event":"acceptance.reconcile.start"}
+{"kind":"emitted","seqId":3,"ts":"2026-06-20T07:46:02.317Z","event":"acceptance.reconcile.waived","payload":{"baseRead":true,"reason":"waiver"}}
+{"kind":"emitted","seqId":4,"ts":"2026-06-20T07:46:02.319Z","event":"epic.finalize.start","payload":{"epicId":156}}
+{"kind":"completed","seqId":4,"ts":"2026-06-20T07:46:02.319Z","event":"epic.finalize.start"}
+{"kind":"emitted","seqId":5,"ts":"2026-06-20T07:46:07.903Z","event":"pr.created","payload":{"prUrl":"https://github.com/dsj1984/mandrel-bench-sandbox/pull/160","head":"epic/156","base":"main"}}
+{"kind":"completed","seqId":5,"ts":"2026-06-20T07:46:07.903Z","event":"pr.created"}
+{"kind":"emitted","seqId":6,"ts":"2026-06-20T07:46:07.906Z","event":"epic.finalize.end","payload":{"epicId":156,"prUrl":"https://github.com/dsj1984/mandrel-bench-sandbox/pull/160"}}
+{"kind":"emitted","seqId":7,"ts":"2026-06-20T07:46:07.908Z","event":"checkpoint.written","payload":{"lastCompletedSeqId":6,"phase":"epic.finalize.end"}}
+{"kind":"completed","seqId":7,"ts":"2026-06-20T07:46:07.908Z","event":"checkpoint.written"}
+{"kind":"completed","seqId":6,"ts":"2026-06-20T07:46:07.908Z","event":"epic.finalize.end"}
+{"kind":"completed","seqId":3,"ts":"2026-06-20T07:46:07.908Z","event":"acceptance.reconcile.waived"}
+{"kind":"completed","seqId":1,"ts":"2026-06-20T07:46:07.908Z","event":"epic.close.end"}
+{"kind":"emitted","seqId":1,"ts":"2026-06-20T07:46:26.016Z","event":"epic.automerge.start","payload":{"epicId":156,"prUrl":"https://github.com/dsj1984/mandrel-bench-sandbox/pull/160"}}
+{"kind":"emitted","seqId":2,"ts":"2026-06-20T07:46:26.298Z","event":"epic.merge.ready","payload":{"prUrl":"https://github.com/dsj1984/mandrel-bench-sandbox/pull/160","reason":"all required checks green; structured signals clean"}}
+{"kind":"completed","seqId":2,"ts":"2026-06-20T07:46:28.304Z","event":"epic.merge.ready"}
+{"kind":"completed","seqId":1,"ts":"2026-06-20T07:46:28.305Z","event":"epic.automerge.start"}
+{"kind":"emitted","seqId":1,"ts":"2026-06-20T07:46:50.548Z","event":"epic.automerge.start","payload":{"epicId":156,"prUrl":"https://github.com/dsj1984/mandrel-bench-sandbox/pull/160"}}
+{"kind":"emitted","seqId":2,"ts":"2026-06-20T07:46:50.797Z","event":"epic.merge.ready","payload":{"prUrl":"https://github.com/dsj1984/mandrel-bench-sandbox/pull/160","reason":"all required checks green; structured signals clean"}}
+{"kind":"completed","seqId":2,"ts":"2026-06-20T07:46:52.751Z","event":"epic.merge.ready"}
+{"kind":"completed","seqId":1,"ts":"2026-06-20T07:46:52.752Z","event":"epic.automerge.start"}

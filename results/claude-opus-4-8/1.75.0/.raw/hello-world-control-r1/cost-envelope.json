@@ -1,0 +1,72 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "api_error_status": null,
+  "duration_ms": 28958,
+  "duration_api_ms": 28545,
+  "ttft_ms": 3084,
+  "ttft_stream_ms": 1657,
+  "time_to_request_ms": 81,
+  "num_turns": 7,
+  "result": "Done. The task is complete and committed.\n\n**What I built:**\n- `server.js` — a minimal ESM HTTP server using Node's built-in `node:http` (no external framework). It listens on `PORT` (default 3000); a `GET /` returns HTTP 200 with `Content-Type: text/html` and a body containing \"Hello, World!\". Other paths return 404.\n- `package.json` — added `\"start\": \"node server.js\"` (kept the existing project name and `\"type\": \"module\"`).\n\n**Verified:** Started the server and confirmed `GET /` returns `200`, `Content-Type: text/html`, body with \"Hello, World!\", and that an unknown path returns `404`.\n\nCommitted as `103ec0b` (staged only the two relevant files; left the unrelated pre-existing `.agents/` working-tree changes untouched).",
+  "stop_reason": "end_turn",
+  "session_id": "83a77fda-563a-4e7a-a0f7-8735c2f45ee3",
+  "total_cost_usd": 0.2577125,
+  "usage": {
+    "input_tokens": 5283,
+    "cache_creation_input_tokens": 11124,
+    "cache_read_input_tokens": 137827,
+    "output_tokens": 2017,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 11124,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 131,
+        "output_tokens": 272,
+        "cache_read_input_tokens": 26328,
+        "cache_creation_input_tokens": 417,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 417
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 639,
+      "outputTokens": 16,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000719,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 5283,
+      "outputTokens": 2017,
+      "cacheReadInputTokens": 137827,
+      "cacheCreationInputTokens": 11124,
+      "webSearchRequests": 0,
+      "costUSD": 0.2569935,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "uuid": "c8441d43-37a1-4a9b-88df-4f618d95565e"
+}
