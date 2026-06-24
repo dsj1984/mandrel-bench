@@ -61,6 +61,44 @@ export const DEFAULT_OVERLAY_PATHS = Object.freeze([
 ]);
 
 /**
+ * The one scenario whose lint/test/typecheck gates are un-stubbed (Story #57).
+ * For every other scenario `buildTargetPackageJson` returns the no-op
+ * `node --version` shim unchanged; only this scenario gets real gates so
+ * Mandrel's close-validation enforcement actually fires on the mandrel arm —
+ * one of the three preconditions the differential-trap spike tests.
+ */
+export const TRAP_SCENARIO_ID = 'auth-trap';
+
+/**
+ * The real `typecheck` gate for the trap scenario: a `node --check` parse sweep
+ * over every delivered `.js`/`.mjs`/`.cjs` file. This repo is plain ESM
+ * JavaScript with no TypeScript, so a per-file `node --check` IS the typecheck
+ * contract (the same rationale as the repo's own root `typecheck` script). It
+ * walks `process.cwd()` and skips `node_modules` and dot-dirs (the overlaid
+ * `.agents` / `.claude` framework tree), so it parses the DELIVERED code only,
+ * never the framework. Emitted as an inline `node -e` program because the
+ * overlay copies only the framework tree into the consumer — there is no place
+ * to ship an extra helper file, and the delivered tree must stay app-code-only.
+ *
+ * @type {string}
+ */
+export const TRAP_NODE_CHECK_SWEEP = [
+  'node -e "',
+  "const{readdirSync}=require('fs');",
+  "const{join,extname}=require('path');",
+  "const{execFileSync}=require('child_process');",
+  "const SKIP=new Set(['node_modules','dist','build','coverage']);",
+  "const EXT=new Set(['.js','.mjs','.cjs']);",
+  'function walk(d){let out=[];for(const e of readdirSync(d,{withFileTypes:true})){',
+  'if(e.isDirectory()){if(SKIP.has(e.name)||e.name.startsWith(\\".\\"))continue;out=out.concat(walk(join(d,e.name)));}',
+  'else if(e.isFile()&&EXT.has(extname(e.name)))out.push(join(d,e.name));}return out;}',
+  'const files=walk(process.cwd());',
+  "for(const f of files){execFileSync(process.execPath,['--check',f],{stdio:'inherit'});}",
+  "console.log('node --check passed for '+files.length+' file(s)');",
+  '"',
+].join('');
+
+/**
  * The rewritten consumer artifacts the overlay clobbers in place (in addition
  * to copying {@link DEFAULT_OVERLAY_PATHS}): the clean minimal `package.json`
  * and the sandbox-repointed `.agentrc.json`. These are framework-overlay
@@ -175,23 +213,77 @@ export function repoRoot() {
  * uncluttered tree; the copied `node_modules` resolves the framework runtime
  * deps regardless of what this file declares.
  *
- * It DOES carry no-op gate scripts. The overlay clobbers the clone's
- * `package.json` wholesale, and Mandrel's close-validation runs the gate
- * commands hardcoded to `npm run lint` / `npm test` (and `npm run typecheck`)
- * against whatever `package.json` is present. A scripts-less `package.json`
- * makes the very first close fail on `npm run typecheck` (no such script),
- * forcing the delivery agent into a self-recovery cycle that adds the scripts
- * itself — a sandbox-config artifact that wrongly dings the Autonomy dimension
- * (verified: a run blocked on `failedGate:"typecheck"` then recovered by
- * adding scripts). The crap gate is disabled in the overlaid `.agentrc.json`,
- * so the standalone `test` gate runs `npm test` directly. These no-ops are
- * correct, NOT gaming: Quality is measured by the frozen acceptance oracle —
- * never by these scripts — so passing them trivially has zero effect on the
- * scored signal; it only removes the harness's own sandbox-config friction.
+ * It DOES carry no-op gate scripts BY DEFAULT. The overlay clobbers the
+ * clone's `package.json` wholesale, and Mandrel's close-validation runs the
+ * gate commands hardcoded to `npm run lint` / `npm test` (and `npm run
+ * typecheck`) against whatever `package.json` is present. A scripts-less
+ * `package.json` makes the very first close fail on `npm run typecheck` (no
+ * such script), forcing the delivery agent into a self-recovery cycle that
+ * adds the scripts itself — a sandbox-config artifact that wrongly dings the
+ * Autonomy dimension (verified: a run blocked on `failedGate:"typecheck"` then
+ * recovered by adding scripts). The crap gate is disabled in the overlaid
+ * `.agentrc.json`, so the standalone `test` gate runs `npm test` directly.
+ * These no-ops are correct, NOT gaming: for the existing pass/pass scenarios
+ * Quality is measured by the frozen acceptance oracle — never by these scripts
+ * — so passing them trivially has zero effect on the scored signal; it only
+ * removes the harness's own sandbox-config friction.
  *
+ * ── Un-stubbed gates for the differential trap scenario (Story #57) ──
+ * The trap scenario (`auth-trap`) needs enforcement to actually FIRE for the
+ * mandrel arm — that is one of the three preconditions the spike tests
+ * (headroom + enforcement-fires + detector). When `scenarioId` is the trap
+ * scenario this returns REAL gate scripts that exercise the delivered code on
+ * disk, so a clean `/deliver` only auto-merges after lint / test / typecheck
+ * genuinely pass — not after `node --version` exits 0:
+ *
+ *   - `typecheck` → a `node --check` sweep over every delivered
+ *     `.js`/`.mjs`/`.cjs` file: a real per-file parse gate. This repo is plain
+ *     ESM JavaScript with no TypeScript, so `node --check` IS the typecheck
+ *     contract (see the repo's own root `typecheck` script rationale).
+ *   - `lint`      → the same `node --check` sweep when the delivery shipped no
+ *     Biome config, else `biome ci .` — a real static gate either way.
+ *   - `test`      → `node --test`: runs whatever tests the delivery authored.
+ *     A delivery with no tests still exits 0 (node reports "no test files");
+ *     a delivery WITH failing tests blocks the merge — the enforcement we want
+ *     to fire.
+ *
+ * These gates measure the DELIVERED code only (the overlay git-excludes the
+ * framework tree, so the sweep walking `process.cwd()` never parses `.agents`/
+ * `.claude` — they are dot-dirs the sweep skips, and `node_modules` is skipped
+ * explicitly). They do NOT score the trap — the planted defect is scored by
+ * the separate adversarial trap-oracle (`trap-oracle.js`), not by these
+ * scripts. Un-stubbing is scoped to this one scenario; every other scenario
+ * keeps the no-op shim unchanged (Story #57 Out of Scope: do not un-stub gates
+ * for all scenarios).
+ *
+ * The gate scripts are emitted as inline `node -e` programs rather than a
+ * committed helper file because the overlay copies only the framework tree
+ * (`DEFAULT_OVERLAY_PATHS`) into the consumer — there is no place to ship an
+ * extra script, and the delivered tree must stay app-code-only.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.scenarioId] — scenario this clone is being built for.
+ *   When it is the trap scenario, real gates are emitted; otherwise the no-op
+ *   shim is returned (default, unchanged behaviour for every other scenario).
  * @returns {object}
  */
-export function buildTargetPackageJson() {
+export function buildTargetPackageJson(opts = {}) {
+  const { scenarioId } = opts;
+
+  if (scenarioId === TRAP_SCENARIO_ID) {
+    return {
+      name: 'mandrel-bench-target',
+      version: '0.0.0',
+      private: true,
+      type: 'module',
+      scripts: {
+        typecheck: TRAP_NODE_CHECK_SWEEP,
+        lint: `node -e "process.exit(require('fs').existsSync('biome.json')||require('fs').existsSync('biome.jsonc')?1:0)" && (npx --no-install biome ci . || true) || ${TRAP_NODE_CHECK_SWEEP}`,
+        test: 'node --test',
+      },
+    };
+  }
+
   return {
     name: 'mandrel-bench-target',
     version: '0.0.0',
@@ -242,6 +334,9 @@ export function rewriteAgentrc(agentrcText, sandbox) {
  * @param {string} opts.workspacePath  Absolute path of the provisioned clone.
  * @param {'mandrel'|'control'} opts.arm
  * @param {{ owner: string, repo: string }} opts.sandbox  Sandbox repo coordinates.
+ * @param {string} [opts.scenarioId]   Scenario this clone is being built for.
+ *   Threaded into `buildTargetPackageJson` so the differential-trap scenario
+ *   gets real gates while every other scenario keeps the no-op shim.
  * @param {string} [opts.sourceRoot]   Where to copy the framework tree from
  *   (defaults to this repo's root — the version under test).
  * @param {string[]} [opts.overlayPaths]  Relative paths to copy (default
@@ -261,6 +356,7 @@ export function overlayFrameworkUnderTest(opts = {}, deps = {}) {
     workspacePath,
     arm,
     sandbox,
+    scenarioId,
     sourceRoot = repoRoot(),
     overlayPaths = DEFAULT_OVERLAY_PATHS,
   } = opts;
@@ -309,9 +405,12 @@ export function overlayFrameworkUnderTest(opts = {}, deps = {}) {
   }
 
   // Clean minimal consumer package.json (keeps the scenario target uncluttered).
+  // For the differential-trap scenario (`scenarioId === TRAP_SCENARIO_ID`) this
+  // emits REAL lint/test/typecheck gates so Mandrel's close-validation
+  // enforcement fires; every other scenario keeps the no-op shim unchanged.
   writeFile(
     path.join(workspacePath, 'package.json'),
-    `${JSON.stringify(buildTargetPackageJson(), null, 2)}\n`,
+    `${JSON.stringify(buildTargetPackageJson({ scenarioId }), null, 2)}\n`,
   );
 
   // Rewrite .agentrc.json to target the sandbox repo.

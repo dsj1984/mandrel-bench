@@ -79,8 +79,8 @@
     },
     "scenario": {
       "type": "string",
-      "enum": ["hello-world", "crud-db", "project-api"],
-      "description": "Scenario this run exercised. Rungs by rising difficulty: 'hello-world' (the overhead floor + end-to-end smoke), 'crud-db' (decomposition, multi-wave delivery, planning fidelity, autonomy at depth), and 'project-api' (the largest rung — multi-resource API surface)."
+      "enum": ["hello-world", "crud-db", "project-api", "auth-trap"],
+      "description": "Scenario this run exercised. Rungs by rising difficulty: 'hello-world' (the overhead floor + end-to-end smoke), 'crud-db' (decomposition, multi-wave delivery, planning fidelity, autonomy at depth), 'project-api' (the largest rung — multi-resource API surface), and 'auth-trap' (the differential-trap rung, Story #57 — a pass/pass signup/login API with a planted plaintext-password defect scored by a separate adversarial oracle, recorded under `trap`)."
     },
     "arm": {
       "type": "string",
@@ -129,6 +129,9 @@
         }
       }
     },
+    "trap": {
+      "$ref": "#/$defs/trapSignal"
+    },
     "rawRefs": {
       "type": "object",
       "additionalProperties": true,
@@ -155,6 +158,54 @@
     }
   },
   "$defs": {
+    "trapSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "defectClass",
+        "defectPresent",
+        "score",
+        "signals",
+        "evidence"
+      ],
+      "description": "Differential trap signal (Story #57). Present ONLY for the differential-trap rung ('auth-trap'); absent for every other scenario. The verdict of the SEPARATE adversarial trap-oracle (bench/scenarios/auth-trap/trap-oracle.js) that source-scans the delivered tree for the planted defect class. Deliberately NOT folded into the five composite dimensions — the spike reads this on its own as the correctly-signed differential the frozen Quality suite cannot see (both arms pass the behavioural suite identically). Higher `score` is better: 1 = clean (planted defect absent), 0 = defect present.",
+      "properties": {
+        "defectClass": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The planted defect class this run was scored against (e.g. 'plaintext-password-storage')."
+        },
+        "defectPresent": {
+          "type": "boolean",
+          "description": "True ⇒ the delivered code took the planted defect-class shortcut (the oracle detected a plaintext-storage shape with no vetted hashing primitive). False ⇒ clean."
+        },
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Differential dimension value: 1 when the delivered code is clean (no planted defect), 0 when the defect is present. Higher is better, matching the other value dimensions."
+        },
+        "signals": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "The boolean sub-signals the verdict was derived from (e.g. hasHashing, hasPlaintextPersist, hasPlaintextComparison). No raw password value or secret string is ever stored here — only derived booleans.",
+          "properties": {
+            "hasHashing": { "type": "boolean" },
+            "hasPlaintextPersist": { "type": "boolean" },
+            "hasPlaintextComparison": { "type": "boolean" }
+          }
+        },
+        "evidence": {
+          "type": "string",
+          "description": "Human-readable one-line justification for the verdict. Derived from booleans only — never echoes a captured password or secret value."
+        },
+        "filesScanned": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of source files the oracle scanned in the delivered tree (provenance; omitted when the verdict came from an in-memory source set rather than a tree scan)."
+        }
+      }
+    },
     "qualityDimension": {
       "type": "object",
       "additionalProperties": false,

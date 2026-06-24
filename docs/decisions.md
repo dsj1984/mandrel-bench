@@ -174,3 +174,110 @@ so the headless session never blocks at a HITL STOP gate.
 mitigation; a proper headless flag is tracked upstream as a `meta::framework-gap`
 follow-up on mandrel. This was the build's make-or-break finding — resolved
 **yellow** (proceed with the mitigation).
+
+---
+
+## D-012 — The differential-trap experiment: a designed scenario where enforcement *can* show a value delta, with an explicit null-result gate (Story #57)
+
+**Decision.** Build one **differential-trap scenario** (`auth-trap`) — and the
+apparatus to score it — as the smallest experiment that makes a real,
+correctly-signed value delta *possible* at depth. This story builds and
+validates the apparatus only; **running** the N-run probe is a separate,
+operator-gated `/benchmark` invocation (a cost), explicitly out of scope here.
+
+**The problem this addresses.** At depth the benchmark measures **cost, not
+value**: only Efficiency shows real deltas (~21×), while Quality saturates
+1.0/1.0 and Maintainability sits within the noise band (the 1.75.0 cohort,
+PR #62). This is an **experiment-design** problem, not a scorer-tuning one. For
+a correctly-signed delta to even be *possible*, three things must be true **at
+once**, and currently **none** are:
+
+1. **Headroom** — the control arm is the *same frontier model* (Opus 4.8), so
+   "model + Mandrel" vs "model alone" has little mean headroom on pass/pass
+   tasks.
+2. **Enforcement-fires** — gates are stubbed (`node --version`), epic acceptance
+   is waived, audits are soft-prose. Mandrel's enforcement never actually runs.
+3. **A detector** — there is no oracle that can *see* a cut corner; the frozen
+   suites only see behaviour both arms satisfy.
+
+`auth-trap` builds the smallest version of all three on one scenario.
+
+**The experiment.**
+
+- **Task.** A persisted signup/login JSON API (`POST /signup`, `POST /login`,
+  `GET /me`) backed by an on-disk store. The **frozen functional suite**
+  (`acceptance.test.js`) exercises only user-visible HTTP behaviour **both arms
+  can pass** — register → login → authenticated read, wrong-password rejection,
+  no-password-echo. This is the headroom-free Quality spine; it is **blind** to
+  the trap.
+- **The planted defect (justified).** **Plaintext password storage.** Chosen
+  because it is (a) **realistic** — a tersely-prompted frontier model under time
+  pressure routinely persists the raw password rather than hashing it, since
+  "login works" is satisfied identically either way; (b) **invisible** to a
+  behavioural HTTP suite and only visible to a source-level oracle — exactly the
+  differential this spike tests; and (c) **grounded in a validated signal** —
+  the security-adapter's `hasPasswordHashing` heuristic (Story #37) already
+  proves the detection pattern discriminates.
+- **Enforcement fires for the mandrel arm.** `auth-trap` is the **only** scenario
+  whose lint/test/typecheck gates are un-stubbed (`bench/driver/overlay.js`
+  `buildTargetPackageJson`, threaded via `scenarioId`): `typecheck` is a real
+  per-file `node --check` sweep over the delivered tree, `test` runs
+  `node --test`, `lint` is a real static gate. The engineer-persona +
+  security-baseline path (MUST: hash passwords) is the enforcement under test.
+  Every other scenario keeps the no-op shim unchanged.
+- **The detector.** A **separate adversarial trap-oracle**
+  (`bench/scenarios/auth-trap/trap-oracle.js`), kept apart from the frozen
+  suite, source-scans the delivered tree for the planted defect and emits a
+  `0..1` verdict (`1` = clean, `0` = defect present). It is wired into the
+  scorecard under a top-level **`trap`** block (`bench/collect/normalize.js` +
+  `bench/schemas/scorecard.schema.json`), deliberately **NOT** folded into the
+  five composite dimensions — it is read on its own as the differential signal.
+- **Arms & N.** Two arms (mandrel vs bare-model control), same pinned model.
+  Target **N ≈ 8–10 runs per arm** (the cohort size the noise-band method in
+  `bench/metrics/variance.js` assumes). The dimension that carries the signal is
+  the **`trap` score** (the mean clean-rate per arm), NOT Quality.
+
+**How to read it.** Report the trap signal as a **distribution, not a point**:
+
+- **Mean delta.** `mean(trap.score | mandrel) − mean(trap.score | control)`. A
+  positive, noise-band-clearing delta means the mandrel arm hashes where the
+  terse control does not — i.e. enforcement has measurable value on this task.
+- **Variance / worst-case.** Also report the per-arm **spread** and the
+  **worst-case** (min) trap score across the N runs. This matters because the
+  held cohort showed Mandrel with a **wider** maintainability spread — so
+  "Mandrel reduces variance" is a hypothesis to **test, not assume**. A higher
+  mean with a worse floor is a different finding than a higher mean with a
+  tighter floor, and the report must distinguish them.
+
+**The explicit null-result gate (this experiment is allowed to conclude "no").**
+If a **designed** trap (real headroom for the defect) **plus** real enforcement
+(gates un-stubbed, security-baseline active) **plus** a **validated** detector
+(discrimination test green) **still** shows **no correctly-signed,
+noise-band-clearing delta** across N, the conclusion is:
+
+> **"Mandrel's value thesis is unmeasurable vs a frontier control at this tier."**
+
+That is a **publishable result — report it and STOP.** Do **not** keep adding
+traps, scenarios, or scorer tweaks chasing a delta; a null result here is
+evidence about the thesis, not a bug in the apparatus. (Conversely, a clean
+positive delta is the green light for the build-out below.)
+
+**The concrete follow-up (gated).**
+
+- **The probe itself** is run by the operator as
+  `/benchmark --scenarios auth-trap --n <N>` (a cost-bearing, gated
+  invocation) — never automatically, and never as part of this story.
+- **If signal is found** (positive, noise-clearing trap delta): file an
+  implementation Epic to (a) generalise the un-stubbed-gate + trap-oracle
+  pattern to additional defect classes (IDOR / missing authz, missing input
+  validation, hardcoded secret) and additional rungs, and (b) make the trap
+  dimension a first-class reported axis.
+
+**Why a spike, not a direct build-out.** The three preconditions are
+*conjunctive* — all must hold for a delta to be possible — and the held cohort
+is direct evidence that at least one (headroom) may not. Building the full
+multi-scenario, multi-defect enforcement surface before a single-scenario
+signal/no-signal read would be a large bet on an unverified premise. The spike
+buys the read cheaply: the apparatus is validated by a **detector-discrimination
+unit test** (`tests/bench/scenarios/auth-trap/trap-oracle.test.js`) on
+hand-crafted vulnerable/clean samples — no expensive run required.

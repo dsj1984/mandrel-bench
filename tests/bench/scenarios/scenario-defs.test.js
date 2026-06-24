@@ -42,7 +42,12 @@ const SCENARIOS_DIR = path.resolve(
   'bench',
   'scenarios',
 );
-const SCENARIO_IDS = ['hello-world', 'crud-db', 'project-api'];
+// The difficulty "ladder" — rungs of rising difficulty whose monotonicity is a
+// calibration guardrail (D-010). The trap rung ('auth-trap', Story #57) is a
+// SEPARATE differential scenario, not a ladder rung, so it is excluded from the
+// monotonicity check but still subject to every scenario/frozen-oracle contract.
+const LADDER_IDS = ['hello-world', 'crud-db', 'project-api'];
+const SCENARIO_IDS = [...LADDER_IDS, 'auth-trap'];
 
 function loadScenario(id) {
   const raw = readFileSync(
@@ -85,7 +90,7 @@ function stubFetch(routes) {
 }
 
 describe('scenario seeds (AC1: task seed shared by both arms)', () => {
-  it('exposes exactly the three scenarios on disk', () => {
+  it('exposes exactly the expected scenarios on disk', () => {
     const dirs = readdirSync(SCENARIOS_DIR, { withFileTypes: true })
       .filter((d) => d.isDirectory())
       .map((d) => d.name)
