@@ -386,6 +386,12 @@ function nonNeg(v) {
  *   `{ objectiveSecurityScore?, securityJudgeScore?,
  *      criticalFindings?, highFindings?, secretsDetected? }`.
  *   When absent the dimension scores 0 (conservative default).
+ * @param {object} [args.trap]             Adversarial trap-oracle verdict for
+ *   the differential-trap rung (Story #57):
+ *   `{ defectClass, defectPresent, score, signals, evidence, filesScanned? }`.
+ *   Present only for the trap scenario; null/absent for every other scenario.
+ *   Recorded under `scorecard.trap` as a SEPARATE differential signal — never
+ *   folded into the five composite dimensions.
  * @param {object} [args.rawRefs]          Provenance breadcrumbs for `rawRefs`.
  * @param {object} [args.standalone]       Standalone-path telemetry (Story #48),
  *   present only when the mandrel arm produced no Epic ledger but the run
@@ -404,6 +410,7 @@ export function buildScorecard({
   planning = {},
   maintainabilityInputs = {},
   securityInputs = {},
+  trap = null,
   rawRefs,
   standalone = null,
 }) {
@@ -572,6 +579,23 @@ export function buildScorecard({
     routingVerdict,
     dimensions,
   };
+
+  // Differential trap signal (Story #57). Present only for the trap rung; the
+  // SEPARATE adversarial oracle's verdict, NOT folded into the five composite
+  // dimensions — it is the differential signal the spike reads on its own. A
+  // `null`/absent trap (every non-trap scenario, or an oracle that failed)
+  // leaves the block off the scorecard entirely, so the schema keeps it
+  // optional and no false delta is introduced.
+  if (trap && typeof trap === 'object') {
+    scorecard.trap = {
+      defectClass: trap.defectClass,
+      defectPresent: Boolean(trap.defectPresent),
+      score: trap.score,
+      signals: trap.signals,
+      evidence: trap.evidence,
+      ...(trap.filesScanned != null ? { filesScanned: trap.filesScanned } : {}),
+    };
+  }
 
   if (rawRefs && typeof rawRefs === 'object') {
     scorecard.rawRefs = rawRefs;

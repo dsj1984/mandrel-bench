@@ -489,13 +489,19 @@ export function appendCheckpoint({ checkpointPath, cell }, deps = {}) {
 // ---------------------------------------------------------------------------
 
 /**
- * Load a scenario definition + its frozen oracle's `evaluate` export.
+ * Load a scenario definition, its frozen oracle's `evaluate` export, and — when
+ * the scenario declares a `trapOracle` (the differential-trap rung, Story #57)
+ * — that oracle's `evaluateTree` export. The trap oracle is the SEPARATE
+ * adversarial face: the frozen suite scores behavioural Quality both arms can
+ * pass, while `evaluateTree` source-scans the delivered tree for the planted
+ * defect. Scenarios without a `trapOracle` return `trapEvaluate: null` and are
+ * scored exactly as before.
  *
  * @param {string} scenarioId
  * @param {object} [deps]
  * @param {(p: string, enc: string) => string} [deps.readFileImpl]
  * @param {(spec: string) => Promise<object>} [deps.importImpl]
- * @returns {Promise<{ scenario: object, evaluate: Function }>}
+ * @returns {Promise<{ scenario: object, evaluate: Function, trapEvaluate: Function|null }>}
  */
 export async function loadScenario(scenarioId, deps = {}) {
   const read = deps.readFileImpl ?? readFileSync;
@@ -504,7 +510,12 @@ export async function loadScenario(scenarioId, deps = {}) {
   const scenario = JSON.parse(read(path.join(dir, 'scenario.json'), 'utf8'));
   const suiteRel = scenario.acceptanceSuite ?? './acceptance.test.js';
   const mod = await importImpl(path.join(dir, suiteRel));
-  return { scenario, evaluate: mod.evaluate };
+  let trapEvaluate = null;
+  if (scenario.trapOracle) {
+    const trapMod = await importImpl(path.join(dir, scenario.trapOracle));
+    trapEvaluate = trapMod.evaluateTree ?? null;
+  }
+  return { scenario, evaluate: mod.evaluate, trapEvaluate };
 }
 
 /**
@@ -518,6 +529,7 @@ export async function runOneRun(opts, deps = {}) {
   const {
     scenario, // the scenario.json object
     evaluate, // the frozen oracle
+    trapEvaluate = null, // the adversarial trap oracle's evaluateTree (Story #57); null for non-trap scenarios
     arm,
     runIndex,
     model = DEFAULT_BENCH_MODEL,
@@ -598,6 +610,7 @@ export async function runOneRun(opts, deps = {}) {
           workspacePath: handle.workspacePath,
           arm,
           sandbox: { owner: sandbox.owner, repo: sandbox.repo },
+          scenarioId: scenario.id,
           sourceRoot,
         },
         deps.overlayDeps,
@@ -786,6 +799,32 @@ export async function runOneRun(opts, deps = {}) {
       );
     }
 
+    // Differential trap signal (Story #57). When the scenario declares a trap
+    // oracle, source-scan the delivered tree for the planted defect. This is
+    // SEPARATE from the frozen Quality suite: it is the differential dimension
+    // the spike exists to measure (did the arm take the planted shortcut?).
+    // Both arms are scanned identically so the comparison is fair. Best-effort:
+    // an oracle error leaves the trap block off the scorecard rather than
+    // aborting the run — a missing trap signal is conservative (no false delta).
+    let trap = null;
+    if (typeof trapEvaluate === 'function') {
+      try {
+        const verdict = trapEvaluate(handle.workspacePath);
+        trap = {
+          defectClass: verdict.defectClass,
+          defectPresent: verdict.defectPresent,
+          score: verdict.score,
+          signals: verdict.signals,
+          evidence: verdict.evidence,
+          filesScanned: verdict.filesScanned ?? null,
+        };
+      } catch (err) {
+        logger?.warn?.(
+          `[run] trap oracle failed (no trap signal recorded): ${err?.message ?? err}`,
+        );
+      }
+    }
+
     // Run the single batched LLM-judge cross-check for both new dimensions.
     // The judge is enabled for both arms so the comparison is fair. A null
     // result (judge disabled / transport error) folds the 0.3 judge weight
@@ -832,6 +871,7 @@ export async function runOneRun(opts, deps = {}) {
       planning: arm === 'mandrel' ? planningInputs(lifecycle) : {},
       maintainabilityInputs,
       securityInputs,
+      trap,
       rawRefs,
       standalone,
     });
@@ -942,7 +982,7 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
   };
 
   outer: for (const scenarioId of scenarios) {
-    const { scenario, evaluate } = await loadScenario(
+    const { scenario, evaluate, trapEvaluate } = await loadScenario(
       scenarioId,
       deps.loadDeps,
     );
@@ -964,6 +1004,7 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
           {
             scenario,
             evaluate,
+            trapEvaluate,
             arm,
             runIndex,
             model,

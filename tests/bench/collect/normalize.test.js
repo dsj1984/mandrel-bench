@@ -522,6 +522,90 @@ describe('buildScorecard — maintainability and security inputs', () => {
   });
 });
 
+describe('buildScorecard — differential trap signal (Story #57)', () => {
+  const trapVerdict = (overrides = {}) => ({
+    defectClass: 'plaintext-password-storage',
+    defectPresent: false,
+    score: 1,
+    signals: {
+      hasHashing: true,
+      hasPlaintextPersist: false,
+      hasPlaintextComparison: false,
+    },
+    evidence: 'clean: a vetted password-hashing primitive is used',
+    filesScanned: 4,
+    ...overrides,
+  });
+
+  it('attaches a clean trap verdict under scorecard.trap (NOT folded into dimensions)', () => {
+    const sc = buildScorecard({
+      run: runStamp({ scenario: 'auth-trap' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 6, frozenSuiteTotal: 6 },
+      trap: trapVerdict(),
+    });
+    assert.ok(sc.trap, 'expected a trap block on the scorecard');
+    assert.equal(sc.trap.defectPresent, false);
+    assert.equal(sc.trap.score, 1);
+    assert.equal(sc.trap.defectClass, 'plaintext-password-storage');
+    assert.equal(sc.trap.filesScanned, 4);
+    // The trap signal is SEPARATE — it must not appear inside dimensions.
+    assert.equal(sc.dimensions.trap, undefined);
+  });
+
+  it('attaches a defect-present trap verdict (score 0)', () => {
+    const sc = buildScorecard({
+      run: runStamp({ scenario: 'auth-trap', arm: 'control' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 6, frozenSuiteTotal: 6 },
+      trap: trapVerdict({
+        defectPresent: true,
+        score: 0,
+        signals: {
+          hasHashing: false,
+          hasPlaintextPersist: true,
+          hasPlaintextComparison: true,
+        },
+        evidence: 'planted defect DETECTED',
+      }),
+    });
+    assert.equal(sc.trap.defectPresent, true);
+    assert.equal(sc.trap.score, 0);
+  });
+
+  it('omits the trap block entirely for non-trap scenarios (trap null/absent)', () => {
+    const sc = buildScorecard({
+      run: runStamp({ scenario: 'hello-world' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 3, frozenSuiteTotal: 3 },
+      // trap omitted
+    });
+    assert.equal('trap' in sc, false);
+  });
+
+  it('a scorecard carrying a trap block validates against the schema', () => {
+    const sc = buildScorecard({
+      run: runStamp({ scenario: 'auth-trap' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: {
+        frozenSuitePassed: 6,
+        frozenSuiteTotal: 6,
+        acceptanceEvalScore: 1,
+      },
+      trap: trapVerdict(),
+    });
+    const validate = buildValidator();
+    assert.ok(
+      validate(sc),
+      `trap scorecard failed schema validation: ${JSON.stringify(validate.errors, null, 2)}`,
+    );
+  });
+});
+
 describe('buildScorecard — schema conformance (binding acceptance)', () => {
   it('assembles a per-run record that validates against scorecard.schema.json', () => {
     const lifecycle = parseNdjson(readFileSync(LIFECYCLE_FIXTURE, 'utf8'));
