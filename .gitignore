@@ -14,6 +14,10 @@ temp/
 
 # Claude Code command projection is generated from .agents/workflows/ — do not commit.
 .claude/commands/
+# Claude Code session/agent state (memory, projects) — local only, never commit.
+.claude/projects/
+# Benchmark batch resume-state — transient run checkpoint, not a result.
+results/.batch-checkpoint.ndjson
 
 # Project-scoped MCP config carries secrets — keep out of git.
 .mcp.json
@@ -23,3 +27,7 @@ temp/
 
 # Secrets live in .env (e.g. GITHUB_TOKEN) — never commit it. Only .env.example (placeholders) is checked in.
 .env
+# Local env overrides — .env.local is the conventional local-secrets file AND the
+# transient marker active-story-env.js writes per story-init; never commit either.
+.env.local
+.env.*.local

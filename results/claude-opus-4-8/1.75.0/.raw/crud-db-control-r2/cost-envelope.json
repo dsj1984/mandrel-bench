@@ -1,0 +1,72 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "api_error_status": null,
+  "duration_ms": 129990,
+  "duration_api_ms": 127899,
+  "ttft_ms": 3349,
+  "ttft_stream_ms": 2393,
+  "time_to_request_ms": 34,
+  "num_turns": 18,
+  "result": "Done. The work is committed (`589677b`).\n\n## What I built\n\nA zero-dependency JSON REST API for a `notes` resource in Node.js (ESM):\n\n- **`src/db.js`** — persistence layer using the built-in `node:sqlite` (`DatabaseSync`), writing to an on-disk file at `data/notes.db`. Prepared statements for create/list/get/update/delete; auto-incrementing `id` and ISO `createdAt` assigned server-side. Path overridable via `DB_PATH`.\n- **`src/server.js`** — plain `node:http` router implementing all five endpoints:\n  - `POST /notes` → validates `title`/`body` are non-empty strings → `201` with the created note, else `400`\n  - `GET /notes` → `200` array of all notes\n  - `GET /notes/:id` → `200` note or `404`\n  - `PUT /notes/:id` → accepts partial `title`/`body`, `200` updated / `400` invalid / `404` absent\n  - `DELETE /notes/:id` → `204` or `404`\n  - Listens on `PORT` (default 3000). Guarded so importing it for tests doesn't auto-listen; also handles malformed JSON and oversized bodies.\n- **`package.json`** — added `start` (`node src/server.js`) and `test` scripts.\n- **`test/notes.test.js`** — full `node:test` suite covering every endpoint and error case.\n- **README** documents endpoints; `.gitignore` excludes the `data/` DB dir.\n\n## Verification\n\n- `npm test` → **6/6 passing**, covering 201/200/400/404/204 paths.\n- **Persistence across restart confirmed manually**: created a note, killed the server, restarted it, and `GET /notes/:id` returned the same note.\n\nOnly my new files were committed; the unrelated pre-existing `.agents/` working-tree deletions were left untouched.",
+  "stop_reason": "end_turn",
+  "session_id": "006896da-55c0-49ab-837b-91112fec6af9",
+  "total_cost_usd": 0.7343835,
+  "usage": {
+    "input_tokens": 5296,
+    "cache_creation_input_tokens": 21019,
+    "cache_read_input_tokens": 521757,
+    "output_tokens": 9438,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 21019,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 634,
+        "cache_read_input_tokens": 35893,
+        "cache_creation_input_tokens": 747,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 747
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 800,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000885,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 5296,
+      "outputTokens": 9438,
+      "cacheReadInputTokens": 521757,
+      "cacheCreationInputTokens": 21019,
+      "webSearchRequests": 0,
+      "costUSD": 0.7334984999999999,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "uuid": "b023c96b-2bf1-4a52-9283-a541c2562de1"
+}
