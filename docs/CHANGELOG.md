@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.4.0...mandrel-bench-v0.5.0) (2026-06-24)
+
+
+### Added
+
+* **bench:** differential-trap spike apparatus — auth-trap scenario (refs [#57](https://github.com/dsj1984/mandrel-bench/issues/57)) ([#63](https://github.com/dsj1984/mandrel-bench/issues/63)) ([b60e2f1](https://github.com/dsj1984/mandrel-bench/commit/b60e2f16e606861f45a660e70d05acd75dd762d1))
+* **results:** 1.75.0 cohort — mandrel@1.75.0 / claude-opus-4-8 ([#62](https://github.com/dsj1984/mandrel-bench/issues/62)) ([e888d0c](https://github.com/dsj1984/mandrel-bench/commit/e888d0c016e88b2d42b0700282deebdc67e6ecea))
+
+
+### Fixed
+
+* **bench:** git-exclude the framework overlay so it never enters the deliverable diff ([#58](https://github.com/dsj1984/mandrel-bench/issues/58)) ([97e5e1e](https://github.com/dsj1984/mandrel-bench/commit/97e5e1edc22edf516bc77fcf1aa9b6d4e83e118c))
+* **bench:** security scanner measured the overlaid framework, not the deliverable ([#53](https://github.com/dsj1984/mandrel-bench/issues/53)) ([54802d8](https://github.com/dsj1984/mandrel-bench/commit/54802d8d324bdb49af0f22bdf2cc6b32cadf0d9d))
+* **bench:** stop counting test-fixture creds as secrets; proportional secret penalty (refs [#55](https://github.com/dsj1984/mandrel-bench/issues/55)) ([#59](https://github.com/dsj1984/mandrel-bench/issues/59)) ([e1a7c40](https://github.com/dsj1984/mandrel-bench/commit/e1a7c40f0aa493c02a899e5e88fd4c37cfb93c44))
+
 ## [0.4.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.3.0...mandrel-bench-v0.4.0) (2026-06-19)
 
 
