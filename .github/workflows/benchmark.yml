@@ -290,10 +290,15 @@ jobs:
             echo "" >> findings-pr-body.md
             echo "No findings section derived (empty or ambiguous results tree)." >> findings-pr-body.md
           fi
+          # Randomize the heredoc delimiter so a findings body can never inject
+          # a premature terminator into GITHUB_OUTPUT (Actions output-injection
+          # hardening, M6). The body is enumerated tokens today, but a random
+          # delimiter closes the class regardless of what the derive step emits.
+          DELIM="FINDINGS_EOF_$(openssl rand -hex 8)"
           {
-            echo 'markdown<<FINDINGS_EOF'
+            echo "markdown<<$DELIM"
             cat findings-pr-body.md
-            echo 'FINDINGS_EOF'
+            echo "$DELIM"
           } >> "$GITHUB_OUTPUT"
 
       # Open a pull request with the merged results. This job NEVER pushes to
