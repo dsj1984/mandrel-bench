@@ -12,7 +12,7 @@ import {
 } from '../../../bench/scenarios/standalone-telemetry-adapter.js';
 
 const OWNER = 'dsj1984';
-const REPO = 'mandrel-bench-sandbox';
+const REPO = 'bench-sbx-c1-hw-mandrel-a1b2';
 
 /**
  * Build a `ghJson` stub that routes by the gh subcommand + selector. Each route

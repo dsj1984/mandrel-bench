@@ -29,8 +29,8 @@ import {
 } from '../../../bench/driver/overlay.js';
 
 const SOURCE = '/repo';
-const WS = '/tmp/ephemeral-root/mandrel-bench-sandbox-abc';
-const SANDBOX = { owner: 'dsj1984', repo: 'mandrel-bench-sandbox' };
+const WS = '/tmp/ephemeral-root/bench-sbx-test-ws-abc';
+const SANDBOX = { owner: 'dsj1984', repo: 'bench-sbx-test-ws' };
 
 const AGENTRC_SRC = JSON.stringify({
   $schema: './.agents/schemas/agentrc.schema.json',
@@ -79,7 +79,7 @@ function fakes(opts = {}) {
 test('rewriteAgentrc: repoints github and drops projectNumber, preserves the rest', () => {
   const cfg = rewriteAgentrc(AGENTRC_SRC, SANDBOX);
   assert.equal(cfg.github.owner, 'dsj1984');
-  assert.equal(cfg.github.repo, 'mandrel-bench-sandbox');
+  assert.equal(cfg.github.repo, 'bench-sbx-test-ws');
   assert.equal(cfg.github.projectNumber, undefined);
   assert.equal(cfg.delivery.ci.skipForStoryPushes, true);
   assert.equal(cfg.project.baseBranch, 'main');
@@ -91,6 +91,31 @@ test('rewriteAgentrc: rejects bad input', () => {
     () => rewriteAgentrc(AGENTRC_SRC, { owner: 'x' }),
     /sandbox \{ owner, repo \}/,
   );
+});
+
+test('rewriteAgentrc: targets the coordinates carried on the EPHEMERAL sandbox handle, not any env-configured standing repo (Story #71)', () => {
+  // The ephemeral per-cell repo's owner/repo are whatever createEphemeralRepo
+  // + sandboxRepoName produced for THIS cell — a fresh, dynamic name every
+  // time, never a fixed standing repo. rewriteAgentrc must be driven purely by
+  // the { owner, repo } it is handed, proving there is no hidden fallback to a
+  // fixed/env-configured repo.
+  const ephemeralHandleCoords = {
+    owner: 'dsj1984',
+    repo: 'bench-sbx-1-75-0-hello-world-mandrel-a1b2c3',
+  };
+  const cfg = rewriteAgentrc(AGENTRC_SRC, ephemeralHandleCoords);
+  assert.equal(cfg.github.owner, ephemeralHandleCoords.owner);
+  assert.equal(cfg.github.repo, ephemeralHandleCoords.repo);
+
+  // A second cell's differently-named ephemeral repo produces a differently
+  // rewritten .agentrc.json — coordinates are handle-sourced, not a constant.
+  const otherCellCoords = {
+    owner: 'dsj1984',
+    repo: 'bench-sbx-1-75-0-hello-world-control-d4e5f6',
+  };
+  const cfg2 = rewriteAgentrc(AGENTRC_SRC, otherCellCoords);
+  assert.equal(cfg2.github.repo, otherCellCoords.repo);
+  assert.notEqual(cfg.github.repo, cfg2.github.repo);
 });
 
 test('buildTargetPackageJson: clean minimal ESM consumer with no-op gate scripts', () => {
@@ -227,7 +252,7 @@ test('overlay (mandrel): copies the framework tree + node_modules and writes con
 
   // .agentrc.json rewritten to the sandbox repo.
   const agentrc = JSON.parse(writes[path.join(WS, '.agentrc.json')]);
-  assert.equal(agentrc.github.repo, 'mandrel-bench-sandbox');
+  assert.equal(agentrc.github.repo, 'bench-sbx-test-ws');
   assert.equal(agentrc.github.projectNumber, undefined);
 });
 

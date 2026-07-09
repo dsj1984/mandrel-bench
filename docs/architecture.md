@@ -27,9 +27,14 @@ The unit of work is one **run** = one headless Claude Code session driving one
 provision → run → collect → score → report → teardown
 ```
 
-1. **provision** (`bench/driver/sandbox.js`) — `git clone` an ephemeral,
-   shallow throwaway workspace under the OS temp dir. For the **control** arm
-   the materialized `.agents/` bundle is stripped so the bare model receives no
+1. **provision** (`bench/driver/sandbox.js`) — create a private, ephemeral
+   **per-cell** GitHub repo (`gh repo create <BENCH_SANDBOX_OWNER>/bench-sbx-<cohort>-<scenario>-<arm>-<nonce> --private`,
+   reserved `bench-sbx-` prefix), seed it from `bench/sandbox-template/`
+   (plus an optional per-scenario overlay at `bench/scenarios/<id>/sandbox/`)
+   as the baseline commit, then `git clone` a shallow throwaway workspace of
+   it under the OS temp dir. Between the cell's serial runs, `main` is
+   force-reset to the recorded baseline SHA. For the **control** arm the
+   materialized `.agents/` bundle is stripped so the bare model receives no
    scaffolding.
 2. **run** (`bench/driver/run-session.js`) — shell out to
    `claude -p --output-format json` (injectable `invokeFn` for tests). The
@@ -49,8 +54,14 @@ provision → run → collect → score → report → teardown
    report; `persist.js` appends the stamped scorecard to the longitudinal store
    under `results/`; `compare.js` surfaces cross-run deltas.
 6. **teardown** (`bench/driver/sandbox.js`) — recursively remove the ephemeral
-   workspace, gated by an `assertInsideRoot` containment check so removal can
-   never escape the throwaway root.
+   local workspace, gated by an `assertInsideRoot` containment check so
+   removal can never escape the throwaway root, then `gh repo delete --yes`
+   the cell's per-cell repo (best-effort on every failure path — a failed
+   delete logs and defers to the janitor rather than failing the cell). Any
+   repo a crash leaks behind is swept by `bench/driver/janitor.js`, which
+   deletes repos under `BENCH_SANDBOX_OWNER` matching the reserved
+   `bench-sbx-` prefix older than a TTL (default 24h); it runs at the start
+   of every `bench/run.js` invocation and as a standalone script.
 
 ## 3. The two arms
 
@@ -113,15 +124,38 @@ decomposition, multi-wave delivery, planning fidelity, autonomy at depth).
 
 ## 7. Security
 
-- **Sandbox containment** — teardown is gated by `assertInsideRoot`, which
-  rejects any path that is not a proper descendant of the ephemeral root
-  (`..`, absolute re-root, root-itself), and refuses non-directory/symlink
+- **Two-secret setup contract** — the sandbox lifecycle needs exactly two
+  environment variables, validated fail-fast at `bench/run.js` startup
+  (before any cost is spent): `BENCH_GITHUB_TOKEN` (a fine-grained PAT or
+  machine-account token scoped to repository create/delete + contents +
+  issues + pull-requests) and `BENCH_SANDBOX_OWNER` (the account/org
+  ephemeral repos are created under). The retired standing-repo vars
+  (`BENCH_SANDBOX_REPO_URL`/`REPO`/`BASELINE_REF`) emit a deprecation
+  warning naming the replacement rather than being silently accepted.
+- **Reserved-prefix guard on the destructive surface** — `destroyEphemeralRepo`
+  and the janitor sweep both refuse to act on any repo name that does not
+  start with the reserved `bench-sbx-` prefix; the janitor additionally
+  filters by owner and TTL. Nothing else under the operator account may use
+  the prefix, which is what makes unattended deletion safe.
+- **Sandbox containment** — local teardown is gated by `assertInsideRoot`,
+  which rejects any path that is not a proper descendant of the ephemeral
+  root (`..`, absolute re-root, root-itself), and refuses non-directory/symlink
   targets. A malformed handle can never escalate into deleting a real repo.
-- **No shell injection** — `git` and `claude` are invoked via `execFileSync` /
-  `spawnSync` with argument arrays (never a shell string on POSIX); the clone
-  uses a `--` separator before the repo URL.
-- **Secrets** — the sandbox token is environment-sourced and never logged; the
+- **No shell injection** — `git`, `gh`, and `claude` are invoked via
+  `execFileSync` / `spawnSync` with argument arrays (never a shell string on
+  POSIX); the clone uses a `--` separator before the repo URL.
+- **Secrets** — `BENCH_GITHUB_TOKEN` is environment-sourced and never logged.
+  `sanitizeGitHubTokenEnv` (`bench/driver/sandbox.js`) strips whitespace from
+  any ambient `GH_TOKEN`/`GITHUB_TOKEN` AND, when `BENCH_GITHUB_TOKEN` is
+  present, writes its value into `GH_TOKEN` — the variable `gh` itself
+  resolves first — so it wins over whatever ambient `gh auth login` session
+  or broader-scoped token the operator's shell happens to carry. Every `git`
+  clone/push and `gh` call this lifecycle makes (provision, seed, reset,
+  destroy, the janitor sweep) is passed this sanitized environment; the
   collector logs token *counts*, never values.
+- **Private, disposable repos** — ephemeral repos are created `--private` and
+  carry only template + benchmark-delivered content; no secrets are ever
+  committed to them.
 
 ## 8. Version-under-test model
 

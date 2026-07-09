@@ -73,9 +73,13 @@ Mandrel-vs-control delta is only called *real* when it clears that band.
 
 For each `(scenario × arm × run)`:
 
-1. **Provision** an ephemeral throwaway clone of a scenario's sandbox repo
-   (`bench/driver/sandbox.js`) under the OS temp dir. The control arm has its
-   `.agents/` stripped so the bare model gets no scaffolding.
+1. **Provision** a private, ephemeral **per-cell** GitHub repo
+   (`bench/driver/sandbox.js`), named `bench-sbx-<cohort>-<scenario>-<arm>-<nonce>`
+   and seeded from `bench/sandbox-template/` (plus an optional per-scenario
+   overlay), then clone it under the OS temp dir. The control arm has its
+   `.agents/` stripped so the bare model gets no scaffolding. Crash-leaked
+   repos are swept by a `bench-sbx-` prefix + TTL janitor
+   (`bench/driver/janitor.js`) at the start of every invocation.
 2. **Run** a headless Claude Code session (`bench/driver/run-session.js` →
    `claude -p --output-format json`). The **mandrel arm** drives `/plan` then
    `/deliver` (real authoring — never pre-staged plans); the **control arm**
@@ -91,8 +95,9 @@ For each `(scenario × arm × run)`:
    deltas, scaling view, Recommended improvements), append the stamped
    scorecard (model + framework-version + env) to the longitudinal store under
    `results/`, and surface cross-run deltas.
-6. **Tear down** the ephemeral workspace (teardown is path-containment-guarded
-   so it can only ever delete the throwaway clone).
+6. **Tear down** the ephemeral workspace and delete the cell's private repo
+   (`gh repo delete`, best-effort on failure paths); local teardown remains
+   path-containment-guarded so it can only ever delete the throwaway clone.
 
 The model is **pinned and recorded** on every scorecard; comparisons are only
 ever like-model to like-model — this is **not** a model benchmark.
@@ -132,8 +137,11 @@ suites.
 
 The **first benchmark result** has landed — `hello-world`, both arms, N=1 on
 `mandrel@1.70.0` / `claude-opus-4-8`. The mandrel arm drove `/plan`→`/deliver`
-fully headless and unattended against a throwaway `mandrel-bench-sandbox` repo;
-see [`results/`](results/) for the scorecards and the value-add report.
+fully headless and unattended against a throwaway sandbox repo (that early
+cohort predates the ephemeral per-cell lifecycle — see
+[`docs/decisions.md`](docs/decisions.md) D-013 for the retirement of the old
+standing sandbox repo it used); see [`results/`](results/) for the scorecards
+and the value-add report.
 
 **Done this cycle:**
 
@@ -167,10 +175,9 @@ scenario/acceptance-eval pieces additionally use the materialized `.agents/`.
 npm install            # pulls the pinned `mandrel` version under test
 npm test               # run the harness unit suites
 
-# Full capability run (real claude -p sessions against a sandbox repo):
-BENCH_SANDBOX_REPO_URL=https://github.com/<owner>/<sandbox>.git \
-BENCH_SANDBOX_OWNER=<owner> BENCH_SANDBOX_REPO=<sandbox> \
-BENCH_EPIC_ID=<seed-epic-in-sandbox> \
+# Full capability run (real claude -p sessions against ephemeral per-cell
+# sandbox repos, created/destroyed automatically — see "Sandbox setup" below):
+BENCH_GITHUB_TOKEN=<token> BENCH_SANDBOX_OWNER=<owner> \
 BENCH_ARMS=control,mandrel BENCH_SCENARIOS=hello-world BENCH_N=1 \
 npm run bench
 ```
@@ -179,6 +186,59 @@ To benchmark a different framework version, bump `dependencies.mandrel` in
 `package.json`, re-run `npm install && npx mandrel sync`, and re-run the
 benchmark; the new scorecards append to `results/` stamped with that version,
 and the cross-run comparison surfaces the deltas.
+
+### Sandbox setup
+
+The sandbox lifecycle is fully self-contained — no standing repo to
+provision by hand. Two secrets are all it takes:
+
+| Var | Required | Meaning |
+| --- | --- | --- |
+| `BENCH_GITHUB_TOKEN` | yes | a fine-grained PAT (or machine-account token) with repository create/delete + contents + issues + pull-requests scopes; used to create and tear down the per-cell `bench-sbx-*` repos |
+| `BENCH_SANDBOX_OWNER` | yes | the account/org the ephemeral repos are created under |
+| `BENCH_JANITOR_TTL_HOURS` | no | overrides the janitor sweep's TTL (hours); defaults to 24 |
+
+Each cell provisions one private repo (`bench-sbx-<cohort>-<scenario>-<arm>-<nonce>`,
+seeded from `bench/sandbox-template/`) and deletes it at teardown; a
+`bench-sbx-` prefix + TTL janitor sweeps anything a crash leaks behind. See
+[`docs/architecture.md`](docs/architecture.md) §2 and
+[`docs/decisions.md`](docs/decisions.md) D-013 for the full design.
+
+`BENCH_SANDBOX_REPO_URL`, `BENCH_SANDBOX_REPO`, and `BENCH_SANDBOX_BASELINE_REF`
+are **retired** — setting any of them emits a deprecation warning naming its
+replacement; they are no longer read.
+
+**Least privilege.** A fine-grained PAT can't be pre-scoped to repos that
+don't exist yet, so in practice `BENCH_GITHUB_TOKEN` carries delete authority
+over every repo under `BENCH_SANDBOX_OWNER` — only the in-process reserved
+`bench-sbx-` prefix guard (`createEphemeralRepo`/`destroyEphemeralRepo`/the
+janitor all refuse any other name) bounds the blast radius, not the token's
+own scoping. Use a dedicated machine account or org that owns nothing else of
+value, rather than a personal account's token.
+
+#### Standalone janitor sweep
+
+The `bench-sbx-` prefix + TTL sweep also runs on its own, outside a benchmark
+invocation:
+
+```bash
+npm run janitor -- --dry-run              # list what would be deleted
+npm run janitor -- --ttl-hours 12         # override the default 24h TTL
+npm run janitor -- --owner someone-else   # override BENCH_SANDBOX_OWNER
+npm run janitor -- --help                 # usage — no env vars required
+```
+
+Flags: `--dry-run`, `--ttl-hours <hours>`, `--owner <owner>`, `--help`. With no
+flags it reads `BENCH_SANDBOX_OWNER` and `BENCH_JANITOR_TTL_HOURS` (or the
+24h default) the same way the sweep embedded in `npm run bench` does.
+
+#### Sandbox retirement (operator runbook)
+
+The benchmark no longer depends on a standing external sandbox repo. If your
+account still has the old pre-ephemeral-lifecycle sandbox repo around, it is
+safe to **archive** (or delete) it once you've confirmed a local run succeeds
+against the ephemeral per-cell lifecycle above — nothing in this repo
+references it anymore.
 
 ---
 
