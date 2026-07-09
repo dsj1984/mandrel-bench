@@ -312,6 +312,46 @@ delta-vs-noise-band in the PR, then merge to publish (which also fires
 | `ANTHROPIC_API_KEY` | the model credential the benchmarked sessions call with. |
 | `BENCH_GITHUB_TOKEN` | token with repo create/delete + contents + issues + pull-requests scopes — used both for the ephemeral per-cell sandboxes and to open the results PR. |
 
+### Merge-gated feedback loop
+
+The benchmark's signal reaches the framework backlog automatically, but **only
+after a human reviews it**. The aggregate job derives the cohort's findings
+([`bench/feedback/derive-cli.js`](bench/feedback/derive-cli.js)) — regressions,
+standing costs, trap differentials, pipeline-calibration gaps — and does two
+things with them: it **commits the finding-envelope JSON** into the results tree
+alongside the scorecards, and it **embeds the findings section in the results-PR
+body**. Merging the results PR lands the envelope on `main`, which fires a
+separate on-merge workflow
+([`.github/workflows/feedback-file.yml`](.github/workflows/feedback-file.yml))
+that files the findings onto the [Mandrel](https://github.com/dsj1984/mandrel)
+repo, fingerprint-deduplicated.
+
+**Why the merge gate.** `feedback-file.yml` triggers **only** on a push to
+`main` that touches a finding envelope under the results tree — i.e. after a
+results-PR merge. It **never** runs on `pull_request`, so an unreviewed cohort
+can never write to the Mandrel repo. That merge gate, plus per-(fingerprint ×
+cohort) dedup in the filer, is the anti-spam design: a first sighting opens a
+fresh issue; a recurrence appends a dated cohort comment to the existing issue;
+an already-recorded cohort writes nothing.
+
+**Token scope.** Filing issues on `dsj1984/mandrel` is a **cross-repo** write,
+so the workflow's own `GITHUB_TOKEN` is not enough. Provide a
+`FEEDBACK_GITHUB_TOKEN` secret — a token with `issues:write` on
+`dsj1984/mandrel`. If that scope is absent or insufficient the filer **degrades
+loudly** (a prominent warning naming the missing scope) and **exits 0**, so a
+missing token never fails CI.
+
+**Label contract.** Every filed issue carries `bench-feedback` (the label the
+filer lists + matches against on later runs) plus `meta::framework-gap` (the
+routing label). The `bench-feedback` label **must exist on `dsj1984/mandrel`**
+for the list-and-match dedup to work — create it there once.
+
+**D-009 fallback.** Because the findings are **always** embedded in the
+results-PR body, the loop degrades gracefully to the prior "findings live in the
+PR, filed by hand" behaviour (decision D-009, which D-016 supersedes) whenever
+the cross-repo token is unavailable — no signal is ever lost, it just isn't
+auto-filed.
+
 ---
 
 ## See also
