@@ -28,6 +28,7 @@ import {
   discoverLedger,
   loadScenario,
   main,
+  parseOptionalNumericEnv,
   planningInputs,
   qualityInputs,
   REQUIRED_SANDBOX_ENV_VARS,
@@ -1340,6 +1341,22 @@ test('resolveEpicIds: malformed JSON map is ignored, non-numeric ids dropped', (
     BENCH_EPIC_ID_STORY_SCOPE: '100',
   });
   assert.deepEqual(ids, { 'story-scope': 100 });
+});
+
+test('parseOptionalNumericEnv: a blank/whitespace BENCH_* value is undefined, NOT the poison Number("")===0', () => {
+  // The CI money-safety regression: workflow_dispatch passes a blank input
+  // through as an empty string. Number('') === 0 would zero every scenario's
+  // targetN and run nothing on the default (blank target_n) dispatch.
+  assert.equal(parseOptionalNumericEnv(''), undefined);
+  assert.equal(parseOptionalNumericEnv('   '), undefined);
+  assert.equal(parseOptionalNumericEnv(undefined), undefined);
+  assert.equal(parseOptionalNumericEnv(null), undefined);
+  assert.equal(parseOptionalNumericEnv('not-a-number'), undefined);
+  // A deliberate explicit value (including an explicit 0) is preserved.
+  assert.equal(parseOptionalNumericEnv('0'), 0);
+  assert.equal(parseOptionalNumericEnv('8'), 8);
+  assert.equal(parseOptionalNumericEnv(' 4 '), 4);
+  assert.equal(parseOptionalNumericEnv('12.5'), 12.5);
 });
 
 test('CHECKPOINT_FILENAME is the default checkpoint name beside the results root', () => {

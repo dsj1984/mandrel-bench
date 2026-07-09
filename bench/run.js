@@ -136,6 +136,30 @@ export function sanitizeRunId(s) {
 }
 
 /**
+ * Parse an OPTIONAL numeric env var (BENCH_N / BENCH_MAX_RUNS /
+ * BENCH_MAX_COST_USD). An unset, empty, whitespace-only, or non-finite value
+ * resolves to `undefined` — the "operator did not specify" signal — NOT the
+ * poison `Number('') === 0`. This matters because CI passes these knobs
+ * straight through from `workflow_dispatch` inputs, and a blank input arrives
+ * as an EMPTY STRING (present, not unset). A blank `BENCH_N` reaching
+ * `Number('')` would resolve to a uniform run-count override of 0, zeroing
+ * every scenario's `targetN` so the cell runs nothing — silently producing an
+ * empty cohort on the default (blank `target_n`) dispatch (Epic #84 review
+ * finding). An explicit `'0'` is preserved (a deliberate zero override); only
+ * blank / non-numeric input degrades to `undefined`.
+ *
+ * @param {unknown} value  A raw env-var value (string | undefined).
+ * @returns {number|undefined}
+ */
+export function parseOptionalNumericEnv(value) {
+  if (value == null) return undefined;
+  const trimmed = String(value).trim();
+  if (trimmed === '') return undefined;
+  const n = Number(trimmed);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/**
  * Build the run identity stamp for one (scenario × arm × run).
  *
  * @param {object} args
@@ -1489,11 +1513,9 @@ export async function main(env = process.env, deps = {}) {
   // every scenario; when unset, leave `n` undefined so
   // `runFirstBenchmark`/`runCell` resolve each scenario's own declared
   // `targetN` sizing contract instead of silently defaulting to 1.
-  const n = env.BENCH_N != null ? Number(env.BENCH_N) : undefined;
-  const maxRuns =
-    env.BENCH_MAX_RUNS != null ? Number(env.BENCH_MAX_RUNS) : null;
-  const maxCostUsd =
-    env.BENCH_MAX_COST_USD != null ? Number(env.BENCH_MAX_COST_USD) : null;
+  const n = parseOptionalNumericEnv(env.BENCH_N);
+  const maxRuns = parseOptionalNumericEnv(env.BENCH_MAX_RUNS) ?? null;
+  const maxCostUsd = parseOptionalNumericEnv(env.BENCH_MAX_COST_USD) ?? null;
   const resultsDir = path.join(repoRoot(), 'results');
   const checkpointPath =
     env.BENCH_CHECKPOINT ?? path.join(resultsDir, CHECKPOINT_FILENAME);
