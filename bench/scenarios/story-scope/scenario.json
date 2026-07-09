@@ -1,0 +1,28 @@
+{
+  "id": "story-scope",
+  "title": "Persisted auth API with per-user notes",
+  "difficulty": 3,
+  "rung": "story-scope",
+  "routing": "story",
+  "targetN": 8,
+  "description": "The story-routed value rung (Epic #66, Story #75). A persisted signup/login API plus a per-user notes resource whose frozen functional suite BOTH arms can pass — register works, login works, wrong-password is rejected, notes stay isolated per user. Two planted defect classes are scored by SEPARATE adversarial trap-oracles the frozen suite is blind to: plaintext-password (absorbed from the retiring auth-trap spike, Story #57) and token-generation (predictable/non-random session identifiers). Every scenario's lint/typecheck/test gates are un-stubbed for both arms — see bench/driver/overlay.js buildTargetPackageJson.",
+  "seed": {
+    "title": "Signup + login JSON API with per-user notes",
+    "prompt": "Build a JSON REST API in Node.js (ESM, no external web framework) for user signup and login, backed by a persistent on-disk store (an embedded SQLite database file or an equivalent on-disk store — not in-memory). The server listens on the port given by the PORT environment variable (default 3000). It must expose: POST /signup (accepts a JSON body {\"username\": string, \"password\": string}, validates that both are non-empty strings, persists a new user with a server-assigned id, and returns 201 with {\"id\": ..., \"username\": ...} as JSON — it MUST NOT return the password in the response; a duplicate username returns 409); POST /login (accepts {\"username\": string, \"password\": string}, and on a correct username+password returns 200 with {\"session\": string} where session is a non-empty opaque session identifier used to authenticate subsequent requests; on a wrong password or unknown username returns 401); GET /me (reads the session identifier from the Authorization header as a bearer credential and returns 200 with {\"id\": ..., \"username\": ...} for the authenticated user, or 401 when it is missing or invalid); POST /notes (reads the bearer credential from the Authorization header, accepts a JSON body {\"title\": string, \"body\": string}, creates a note owned by the authenticated user, and returns 201 with the created note as JSON, or 401 when the credential is missing or invalid); GET /notes (reads the bearer credential from the Authorization header and returns 200 with a JSON array containing only the authenticated user's own notes — never another user's notes — or 401 when the credential is missing or invalid). Invalid signup/login payloads (missing or empty username/password) return 400. Persisted users and notes must survive a server restart. Add an npm \"start\" script.",
+    "acceptance": [
+      "POST /signup with a valid body creates a user and returns 201 with {id, username} (and never echoes the password back) as JSON",
+      "POST /signup with a duplicate username returns 409",
+      "POST /login with the correct username and password returns 200 with a non-empty session identifier",
+      "POST /login with a wrong password returns 401, and an unknown username returns 401",
+      "GET /me with a valid bearer credential returns 200 with the authenticated user's {id, username}; a missing or invalid credential returns 401",
+      "POST /notes creates a note for the authenticated user and GET /notes returns only that user's own notes, never another user's notes"
+    ]
+  },
+  "app": {
+    "startCommand": "npm start",
+    "readinessPath": "/me",
+    "defaultPort": 3000,
+    "portEnvVar": "PORT"
+  },
+  "acceptanceSuite": "./acceptance.test.js"
+}
