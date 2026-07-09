@@ -426,6 +426,139 @@ describe('buildScorecard — standalone fallback (Story #48)', () => {
   });
 });
 
+describe('buildScorecard — standalone overhead phase-split (Epic #66, Story #77)', () => {
+  it('yields a non-null ceremony/codegen split for a story-routed run with phase telemetry', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel', scenario: 'crud-db' }),
+      lifecycle: [], // standalone path → no Epic ledger
+      envelope: normalizedEnvelope({ durationMs: 40 * 60 * 1000 }), // 40min session
+      quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
+      standalone: {
+        planning: {
+          plannedStoryCount: 1,
+          deliveredStoryCount: 1,
+          rePlanCount: 0,
+        },
+        autonomy: { hitlStops: 0, blockedEvents: 0, manualRescues: 0 },
+        routingVerdict: 'story',
+        phases: {
+          createdAt: '2026-06-16T19:00:00Z',
+          closedAt: '2026-06-16T19:38:00Z', // 38min of the 40min session
+          prMergedAt: '2026-06-16T19:38:33Z',
+          codegenMs: 38 * 60 * 1000,
+        },
+      },
+    });
+    assert.notEqual(sc.dimensions.overheadRatio.tokenRatio, null);
+    assert.equal(sc.dimensions.overheadRatio.codegenTokens > 0, true);
+    // ceremony + codegen tokens sum to the session total.
+    assert.equal(
+      sc.dimensions.overheadRatio.ceremonyTokens +
+        sc.dimensions.overheadRatio.codegenTokens,
+      184320,
+    );
+    assert.ok(!sc.warnings.includes('standalone-telemetry-absent'));
+  });
+
+  it('falls back to a null tokenRatio when phases.codegenMs could not be derived', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel', scenario: 'crud-db' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope({ durationMs: 40 * 60 * 1000 }),
+      quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
+      standalone: {
+        planning: {
+          plannedStoryCount: 1,
+          deliveredStoryCount: 1,
+          rePlanCount: 0,
+        },
+        autonomy: { hitlStops: 0, blockedEvents: 0, manualRescues: 0 },
+        routingVerdict: 'story',
+        phases: {
+          createdAt: null,
+          closedAt: null,
+          prMergedAt: null,
+          codegenMs: null,
+        },
+      },
+    });
+    assert.equal(sc.dimensions.overheadRatio.tokenRatio, null);
+  });
+
+  it('marks a loud warning when the mandrel arm has no ledger and no recovered standalone telemetry', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.equal(sc.dimensions.overheadRatio.tokenRatio, null);
+    assert.ok(sc.warnings.includes('standalone-telemetry-absent'));
+  });
+
+  it('never marks the telemetry-absent warning for the control arm', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'control' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.ok(!sc.warnings.includes('standalone-telemetry-absent'));
+  });
+
+  it('never marks the telemetry-absent warning when an Epic ledger was found', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:00:00.000Z',
+          event: 'story.dispatch.start',
+        },
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:30:00.000Z',
+          event: 'story.dispatch.end',
+        },
+      ],
+      planning: { plannedStoryCount: 1, deliveredStoryCount: 1 },
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.ok(!sc.warnings.includes('standalone-telemetry-absent'));
+  });
+
+  it('validates a schema-valid record carrying a non-empty warnings array', () => {
+    const validate = buildValidator();
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.ok(sc.warnings.length > 0);
+    const ok = validate(sc);
+    assert.ok(
+      ok,
+      `record failed schema validation: ${JSON.stringify(validate.errors, null, 2)}`,
+    );
+  });
+});
+
+describe('buildScorecard — autonomy guardrail surfaced on the record (Epic #66, Story #77)', () => {
+  it('carries guardrail.met on dimensions.autonomy', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'control' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.equal(sc.dimensions.autonomy.score, 1);
+    assert.equal(sc.dimensions.autonomy.guardrail.met, true);
+    assert.equal(sc.dimensions.autonomy.guardrail.threshold, 0.99);
+  });
+});
+
 describe('buildScorecard — routing contract enforcement (Epic #66, Story #76)', () => {
   it('marks routingMismatch: true when the observed epic routing diverges from a declared story contract', () => {
     const sc = buildScorecard({

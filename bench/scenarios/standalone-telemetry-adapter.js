@@ -22,6 +22,21 @@
 // attribution), and is handled by leaving the ceremony/codegen split absent so
 // `computeOverheadRatio` reports `tokenRatio: null` (never a faked 0).
 //
+// PHASE-SPLIT (Epic #66, Story #77, target-architecture §8). The "genuinely
+// unmeasurable" framing above undersold what GitHub actually records: the
+// Story issue's `createdAt` → `closedAt` span IS the story-implementation
+// window, the same role `story.dispatch.start`/`.end` play in the Epic
+// ledger. `collectStandaloneTelemetry` now also returns a `phases` block
+// carrying those raw timestamps (plus the PR's `mergedAt`) and a derived
+// `codegenMs` (the createdAt→closedAt span, clamped non-negative). The caller
+// (`buildScorecard`, bench/collect/normalize.js) combines `codegenMs` with the
+// session's total wall-clock + token envelope — which this adapter does not
+// have access to — to produce a real ceremony/codegen token split, exactly
+// the way `deriveTokenSplit` does for the Epic ledger path. When the
+// timestamps can't be parsed, `codegenMs` is `null` and the caller falls back
+// to the prior all-ceremony/no-split behaviour, now surfaced as a loud
+// warning marker rather than a silent null.
+//
 // DETERMINISM. All GitHub access runs through one injected `ghJson` port so the
 // unit tests stub every read with no network. The default port shells `gh` and
 // parses its `--json` output.
@@ -119,7 +134,8 @@ export function discoverStandaloneStory({ owner, repo, sinceIso }, ports = {}) {
  * @returns {{
  *   planning: { plannedStoryCount: number, deliveredStoryCount: number, rePlanCount: number, actualPaths?: string[] },
  *   autonomy: { hitlStops: number, blockedEvents: number, manualRescues: number },
- *   routingVerdict: 'story'
+ *   routingVerdict: 'story',
+ *   phases: { createdAt: string|null, closedAt: string|null, prMergedAt: string|null, codegenMs: number|null }
  * } | null}
  */
 export function collectStandaloneTelemetry(
@@ -139,7 +155,7 @@ export function collectStandaloneTelemetry(
         '--repo',
         repoFlag,
         '--json',
-        'number,state,labels,comments',
+        'number,state,labels,comments,createdAt,closedAt',
       ],
       ports,
     );
@@ -203,6 +219,22 @@ export function collectStandaloneTelemetry(
   const manualRescues = comments.filter((b) => INTERVENTION_RE.test(b)).length;
   const hitlStops = comments.filter((b) => HITL_STOP_RE.test(b)).length;
 
+  // The Story issue's createdAt → closedAt span is the story-implementation
+  // window on the standalone path — the same role the Epic ledger's matched
+  // `story.dispatch.start`/`.end` pair plays for `deriveTokenSplit`. Both
+  // timestamps must parse for the span to be meaningful; a negative span
+  // (clock skew / malformed data) clamps to 0 rather than going negative.
+  const createdAt =
+    typeof issue.createdAt === 'string' ? issue.createdAt : null;
+  const closedAt = typeof issue.closedAt === 'string' ? issue.closedAt : null;
+  const prMergedAt = typeof pr?.mergedAt === 'string' ? pr.mergedAt : null;
+  const createdMs = createdAt ? Date.parse(createdAt) : Number.NaN;
+  const closedMs = closedAt ? Date.parse(closedAt) : Number.NaN;
+  const codegenMs =
+    Number.isFinite(createdMs) && Number.isFinite(closedMs)
+      ? Math.max(0, closedMs - createdMs)
+      : null;
+
   return {
     planning: {
       plannedStoryCount: 1,
@@ -212,5 +244,6 @@ export function collectStandaloneTelemetry(
     },
     autonomy: { hitlStops, blockedEvents, manualRescues },
     routingVerdict: 'story',
+    phases: { createdAt, closedAt, prMergedAt, codegenMs },
   };
 }

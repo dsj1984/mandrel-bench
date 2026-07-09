@@ -71,6 +71,8 @@ describe('collectStandaloneTelemetry', () => {
     'issue view': {
       number: 72,
       state: 'CLOSED',
+      createdAt: '2026-06-19T14:00:00Z',
+      closedAt: '2026-06-19T14:38:00Z',
       labels: [{ name: 'type::story' }, { name: 'agent::done' }],
       comments: [
         {
@@ -102,6 +104,50 @@ describe('collectStandaloneTelemetry', () => {
       hitlStops: 0,
       blockedEvents: 0,
       manualRescues: 0,
+    });
+  });
+
+  describe('phases (Epic #66, Story #77 — overhead phase-split)', () => {
+    it('returns createdAt/closedAt/prMergedAt and a derived codegenMs', () => {
+      const t = collectStandaloneTelemetry(
+        { owner: OWNER, repo: REPO, storyNumber: 72 },
+        { ghJson: makeGh(cleanRoutes) },
+      );
+      assert.equal(t.phases.createdAt, '2026-06-19T14:00:00Z');
+      assert.equal(t.phases.closedAt, '2026-06-19T14:38:00Z');
+      assert.equal(t.phases.prMergedAt, '2026-06-19T14:38:33Z');
+      // 14:38:00 − 14:00:00 = 38 minutes
+      assert.equal(t.phases.codegenMs, 38 * 60 * 1000);
+    });
+
+    it('codegenMs is null when createdAt or closedAt cannot be parsed', () => {
+      const t = collectStandaloneTelemetry(
+        { owner: OWNER, repo: REPO, storyNumber: 72 },
+        {
+          ghJson: makeGh({
+            ...cleanRoutes,
+            'issue view': { ...cleanRoutes['issue view'], closedAt: null },
+          }),
+        },
+      );
+      assert.equal(t.phases.codegenMs, null);
+      assert.equal(t.phases.closedAt, null);
+    });
+
+    it('clamps a negative span (clock skew) to 0 rather than going negative', () => {
+      const t = collectStandaloneTelemetry(
+        { owner: OWNER, repo: REPO, storyNumber: 72 },
+        {
+          ghJson: makeGh({
+            ...cleanRoutes,
+            'issue view': {
+              ...cleanRoutes['issue view'],
+              createdAt: '2026-06-19T15:00:00Z', // after closedAt
+            },
+          }),
+        },
+      );
+      assert.equal(t.phases.codegenMs, 0);
     });
   });
 

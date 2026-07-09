@@ -169,6 +169,26 @@ export function computeQuality(input = {}) {
  * `fileFootprintDrift` may be supplied directly, or derived from
  * `plannedPaths` / `actualPaths` when both arrays are present.
  *
+ * **Footprint proportionality (target-architecture §8).** The Jaccard-based
+ * footprint term is inherently size-relative — one extra/missing file among
+ * ten hurts far less than the same miss among two — so it already "scales
+ * proportionally" as declared plan size grows. What it does NOT handle well
+ * is the small-plan edge: a ≤1-file plan (including a plan that declared NO
+ * files at all, e.g. the standalone single-Story path, which tracks
+ * `actualPaths` but never threads a `plannedPaths` list) has essentially no
+ * footprint signal to measure — a single incidental extra file (a touched
+ * `package.json`, a renamed target) swings drift from 0 to 1 and previously
+ * dragged a functionally-perfect delivery's score down to ~0.67. When the
+ * declared plan size is known (via `plannedFileCount`, or derived from a
+ * `plannedPaths` array — including an empty one) and is ≤1, the footprint
+ * term is DROPPED from the mean entirely (average of the remaining two
+ * sub-scores) rather than included as a noisy, unreliable signal. Plan size
+ * is only "known" when the caller threads footprint-tracking inputs
+ * (`plannedFileCount` or a `plannedPaths`/`actualPaths` array); a bare
+ * precomputed `fileFootprintDrift` number with no path arrays carries no
+ * plan-size signal, so the footprint term is kept in the mean unchanged
+ * (back-compat with callers that only ever reported the scalar drift).
+ *
  * @param {object} input
  * @param {'mandrel'|'control'} [input.arm]
  * @param {boolean} [input.planAuthored]   Explicit override; defaults to
@@ -177,15 +197,19 @@ export function computeQuality(input = {}) {
  * @param {number} [input.plannedStoryCount]
  * @param {number} [input.deliveredStoryCount]
  * @param {number} [input.fileFootprintDrift]  Precomputed Jaccard distance.
+ * @param {number} [input.plannedFileCount]  Explicit declared-plan file
+ *   count; overrides the count derived from `plannedPaths` when supplied.
  * @param {Iterable<string>} [input.plannedPaths]  Used iff fileFootprintDrift
- *   is not supplied and actualPaths is present.
+ *   is not supplied and actualPaths is present. An array here (even empty)
+ *   is also the plan-size signal for the footprint-drop rule above.
  * @param {Iterable<string>} [input.actualPaths]
  * @returns {{
  *   score: number|null,
  *   rePlanCount: number,
  *   plannedStoryCount: number,
  *   deliveredStoryCount: number,
- *   fileFootprintDrift: number
+ *   fileFootprintDrift: number,
+ *   footprintDropped: boolean
  * }}
  */
 export function computePlanningFidelity(input = {}) {
@@ -193,14 +217,37 @@ export function computePlanningFidelity(input = {}) {
   const plannedStoryCount = nonNegInt(input.plannedStoryCount);
   const deliveredStoryCount = nonNegInt(input.deliveredStoryCount);
 
+  const havePlannedPaths = Array.isArray(input.plannedPaths);
+  const haveActualPaths = Array.isArray(input.actualPaths);
+
   let drift;
   if (typeof input.fileFootprintDrift === 'number') {
     drift = clamp(finiteOr(input.fileFootprintDrift, 0));
-  } else if (input.plannedPaths || input.actualPaths) {
+  } else if (havePlannedPaths || haveActualPaths) {
     drift = fileFootprintDrift(input.plannedPaths, input.actualPaths);
   } else {
     drift = 0;
   }
+
+  // Plan size is only knowable when the caller threaded a footprint-tracking
+  // signal. An explicit `plannedFileCount` wins; else derive from a
+  // `plannedPaths` array (its Set size, so an empty array reads as 0); else,
+  // when only `actualPaths` was tracked (the plan declared no files at all —
+  // exactly the standalone-path shape), treat the declared plan as 0 files.
+  // A bare scalar `fileFootprintDrift` with no path arrays leaves plan size
+  // unknown (`null`) so legacy callers keep the original 3-way average.
+  let plannedFileCount = null;
+  if (
+    typeof input.plannedFileCount === 'number' &&
+    Number.isFinite(input.plannedFileCount)
+  ) {
+    plannedFileCount = Math.max(0, Math.trunc(input.plannedFileCount));
+  } else if (havePlannedPaths) {
+    plannedFileCount = new Set(input.plannedPaths).size;
+  } else if (haveActualPaths) {
+    plannedFileCount = 0;
+  }
+  const footprintDropped = plannedFileCount !== null && plannedFileCount <= 1;
 
   const planAuthored =
     typeof input.planAuthored === 'boolean'
@@ -222,6 +269,7 @@ export function computePlanningFidelity(input = {}) {
       plannedStoryCount,
       deliveredStoryCount,
       fileFootprintDrift: drift,
+      footprintDropped,
     };
   }
 
@@ -232,7 +280,9 @@ export function computePlanningFidelity(input = {}) {
   const rePlanPenalty = 1 / (1 + rePlanCount);
   const footprintAccuracy = 1 - drift;
 
-  const score = (storyAccuracy + rePlanPenalty + footprintAccuracy) / 3;
+  const score = footprintDropped
+    ? (storyAccuracy + rePlanPenalty) / 2
+    : (storyAccuracy + rePlanPenalty + footprintAccuracy) / 3;
 
   return {
     score: clamp(score),
@@ -240,7 +290,35 @@ export function computePlanningFidelity(input = {}) {
     plannedStoryCount,
     deliveredStoryCount,
     fileFootprintDrift: drift,
+    footprintDropped,
   };
+}
+
+/** Default cohort guardrail threshold for the autonomy dimension (§8). */
+export const DEFAULT_AUTONOMY_GUARDRAIL_THRESHOLD = 0.99;
+
+/**
+ * Evaluate the autonomy guardrail verdict — is this run's (or cohort's)
+ * autonomy score at/above the threshold a fully-unattended pipeline is
+ * expected to clear? Unlike the retired mandrel-vs-control autonomy DELTA
+ * (target-architecture §8: "autonomy reclassified as a mandrel-arm guardrail
+ * … rather than a delta"), this is a pass/fail gate against a fixed cohort
+ * threshold — a drop below it is itself a finding, not a comparison point.
+ *
+ * @param {number|null} score       Autonomy score in [0,1], or null (unmeasured).
+ * @param {number} [threshold=DEFAULT_AUTONOMY_GUARDRAIL_THRESHOLD]
+ * @returns {{ threshold: number, met: boolean|null }}  `met` is null when the
+ *   score itself is unmeasured — an undetermined guardrail is never reported
+ *   as a pass or a fail.
+ */
+export function computeAutonomyGuardrail(
+  score,
+  threshold = DEFAULT_AUTONOMY_GUARDRAIL_THRESHOLD,
+) {
+  const t = finiteOr(threshold, DEFAULT_AUTONOMY_GUARDRAIL_THRESHOLD);
+  const met =
+    typeof score === 'number' && Number.isFinite(score) ? score >= t : null;
+  return { threshold: t, met };
 }
 
 /**
@@ -259,16 +337,25 @@ export function computePlanningFidelity(input = {}) {
  * The bare control arm has no ledger by design and is passed `observed: true`:
  * its zero-intervention 1.0 is the intended baseline, not a missing measurement.
  *
+ * **Guardrail (§8).** The formula above is unchanged; the record additionally
+ * carries a `guardrail` verdict — the score compared against a cohort
+ * threshold (default `DEFAULT_AUTONOMY_GUARDRAIL_THRESHOLD`, 0.99) — so
+ * reporting can present autonomy as a pass/fail gate rather than a
+ * mandrel-vs-control delta. `guardrail.met` is `null` when the score is
+ * unmeasured.
+ *
  * @param {object} input
  * @param {number} [input.hitlStops]
  * @param {number} [input.blockedEvents]
  * @param {number} [input.manualRescues]
  * @param {boolean} [input.observed=true]  False ⇒ score is `null` (unmeasured).
+ * @param {number} [input.guardrailThreshold=DEFAULT_AUTONOMY_GUARDRAIL_THRESHOLD]
  * @returns {{
  *   score: number|null,
  *   hitlStops: number,
  *   blockedEvents: number,
- *   manualRescues: number
+ *   manualRescues: number,
+ *   guardrail: { threshold: number, met: boolean|null }
  * }}
  */
 export function computeAutonomy(input = {}) {
@@ -277,11 +364,13 @@ export function computeAutonomy(input = {}) {
   const manualRescues = nonNegInt(input.manualRescues);
   const interventions = hitlStops + blockedEvents + manualRescues;
   const observed = input.observed !== false;
+  const score = observed ? 1 / (1 + interventions) : null;
   return {
-    score: observed ? 1 / (1 + interventions) : null,
+    score,
     hitlStops,
     blockedEvents,
     manualRescues,
+    guardrail: computeAutonomyGuardrail(score, input.guardrailThreshold),
   };
 }
 
@@ -321,6 +410,13 @@ export const SECURITY_WEIGHTS = Object.freeze({ spine: 0.7, judge: 0.3 });
  * sub-signals are, the spine is the average of the finite sub-signals.
  * When neither is supplied the spine defaults to 0.
  *
+ * **Loud nulls (§8).** A missing spine (no `objectiveMaintainabilityScore`
+ * and no usable sub-signals) or a missing judge cross-check previously
+ * defaulted / nulled silently — indistinguishable from "measured and it
+ * happens to be 0/null". Both paths now push a warning code onto `warnings`
+ * so the report can surface an operator-visible marker instead of a silent
+ * `n/a`.
+ *
  * @param {object} input
  * @param {number|null} [input.objectiveMaintainabilityScore]  Pre-computed
  *   spine in [0, 1], or null to derive from sub-signals.
@@ -334,7 +430,8 @@ export const SECURITY_WEIGHTS = Object.freeze({ spine: 0.7, judge: 0.3 });
  *   lintWarnings: number,
  *   complexityScore: number|null,
  *   maintainabilityIndex: number|null,
- *   maintainabilityJudgeScore: number|null
+ *   maintainabilityJudgeScore: number|null,
+ *   warnings: string[]
  * }}
  */
 export function computeMaintainability(input = {}) {
@@ -350,6 +447,8 @@ export function computeMaintainability(input = {}) {
       ? clamp(input.maintainabilityIndex)
       : null;
 
+  const warnings = [];
+
   let spineScore;
   if (
     typeof input.objectiveMaintainabilityScore === 'number' &&
@@ -361,14 +460,19 @@ export function computeMaintainability(input = {}) {
     const subs = [complexityScore, maintainabilityIndex].filter(
       (v) => v !== null,
     );
-    spineScore =
-      subs.length > 0 ? subs.reduce((a, b) => a + b, 0) / subs.length : 0;
+    if (subs.length > 0) {
+      spineScore = subs.reduce((a, b) => a + b, 0) / subs.length;
+    } else {
+      spineScore = 0;
+      warnings.push('maintainability-signal-absent');
+    }
   }
 
   const judgeRaw = input.maintainabilityJudgeScore;
   const judgePresent =
     typeof judgeRaw === 'number' && Number.isFinite(judgeRaw);
   const maintainabilityJudgeScore = judgePresent ? clamp(judgeRaw) : null;
+  if (!judgePresent) warnings.push('maintainability-judge-absent');
 
   let score;
   if (maintainabilityJudgeScore === null) {
@@ -385,6 +489,7 @@ export function computeMaintainability(input = {}) {
     complexityScore,
     maintainabilityIndex,
     maintainabilityJudgeScore,
+    warnings,
   };
 }
 
@@ -404,6 +509,12 @@ export function computeMaintainability(input = {}) {
  * When `objectiveSecurityScore` is not supplied it defaults to 0 so that a
  * run with no scan data is conservatively scored lowest.
  *
+ * **Loud nulls (§8).** A missing scan (`objectiveSecurityScore` absent) or a
+ * missing judge cross-check previously defaulted / nulled silently —
+ * indistinguishable from "scanned, genuinely 0" or "judge ran and abstained".
+ * Both paths now push a warning code onto `warnings` so the report surfaces
+ * an operator-visible marker instead of a silent `n/a`.
+ *
  * @param {object} input
  * @param {number|null} [input.objectiveSecurityScore]  Pre-computed spine in
  *   [0, 1], or null/absent to use 0.
@@ -417,7 +528,8 @@ export function computeMaintainability(input = {}) {
  *   criticalFindings: number,
  *   highFindings: number,
  *   secretsDetected: boolean,
- *   securityJudgeScore: number|null
+ *   securityJudgeScore: number|null,
+ *   warnings: string[]
  * }}
  */
 export function computeSecurity(input = {}) {
@@ -425,16 +537,21 @@ export function computeSecurity(input = {}) {
   const highFindings = nonNegInt(input.highFindings);
   const secretsDetected = input.secretsDetected === true;
 
-  const spineScore =
+  const warnings = [];
+
+  const objectiveScorePresent =
     typeof input.objectiveSecurityScore === 'number' &&
-    Number.isFinite(input.objectiveSecurityScore)
-      ? clamp(input.objectiveSecurityScore)
-      : 0;
+    Number.isFinite(input.objectiveSecurityScore);
+  const spineScore = objectiveScorePresent
+    ? clamp(input.objectiveSecurityScore)
+    : 0;
+  if (!objectiveScorePresent) warnings.push('security-signal-absent');
 
   const judgeRaw = input.securityJudgeScore;
   const judgePresent =
     typeof judgeRaw === 'number' && Number.isFinite(judgeRaw);
   const securityJudgeScore = judgePresent ? clamp(judgeRaw) : null;
+  if (!judgePresent) warnings.push('security-judge-absent');
 
   let score;
   if (securityJudgeScore === null) {
@@ -451,6 +568,7 @@ export function computeSecurity(input = {}) {
     highFindings,
     secretsDetected,
     securityJudgeScore,
+    warnings,
   };
 }
 
