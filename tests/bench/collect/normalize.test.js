@@ -27,6 +27,7 @@ import {
   deriveAutonomyCounters,
   deriveDispatchCount,
   deriveTokenSplit,
+  deriveTokenSplitFromCodegenMs,
   deriveWallClockMs,
   extractDurationMs,
   extractUsage,
@@ -263,6 +264,102 @@ describe('deriveTokenSplit', () => {
     assert.equal(split.codegenMs, 200000);
     assert.equal(split.codegenTokens, 800);
     assert.equal(split.ceremonyTokens, 0);
+  });
+});
+
+describe('deriveTokenSplitFromCodegenMs — direct edge-case coverage (Epic #66 audit remediation, M4-M10)', () => {
+  it('attributes tokens proportionally for a plain in-range codegenMs', () => {
+    const split = deriveTokenSplitFromCodegenMs({
+      codegenMs: 50000,
+      totalTokens: 1000,
+      wallClockMs: 200000,
+    });
+    assert.equal(split.codegenMs, 50000);
+    assert.equal(split.ceremonyMs, 150000);
+    assert.equal(split.codegenTokens, 250);
+    assert.equal(split.ceremonyTokens, 750);
+  });
+
+  it('treats a negative codegenMs as 0 (all ceremony)', () => {
+    const split = deriveTokenSplitFromCodegenMs({
+      codegenMs: -5000,
+      totalTokens: 400,
+      wallClockMs: 100000,
+    });
+    assert.equal(split.codegenMs, 0);
+    assert.equal(split.ceremonyMs, 100000);
+    assert.equal(split.codegenTokens, 0);
+    assert.equal(split.ceremonyTokens, 400);
+  });
+
+  it('treats a non-finite codegenMs (NaN/Infinity) as 0', () => {
+    const nanSplit = deriveTokenSplitFromCodegenMs({
+      codegenMs: Number.NaN,
+      totalTokens: 400,
+      wallClockMs: 100000,
+    });
+    assert.equal(nanSplit.codegenMs, 0);
+    assert.equal(nanSplit.codegenTokens, 0);
+
+    const infSplit = deriveTokenSplitFromCodegenMs({
+      codegenMs: Number.POSITIVE_INFINITY,
+      totalTokens: 400,
+      wallClockMs: 100000,
+    });
+    // Infinity is non-finite, so it also falls back to 0 raw codegen — NOT
+    // clamped-to-wall, since the finiteness guard runs before the clamp.
+    assert.equal(infSplit.codegenMs, 0);
+    assert.equal(infSplit.codegenTokens, 0);
+  });
+
+  it('clamps a codegenMs exceeding wallClockMs down to wallClockMs (all codegen)', () => {
+    const split = deriveTokenSplitFromCodegenMs({
+      codegenMs: 999999,
+      totalTokens: 600,
+      wallClockMs: 100000,
+    });
+    assert.equal(split.codegenMs, 100000);
+    assert.equal(split.ceremonyMs, 0);
+    assert.equal(split.codegenTokens, 600);
+    assert.equal(split.ceremonyTokens, 0);
+  });
+
+  it('attributes everything to ceremony when wallClockMs <= 0', () => {
+    const zeroWall = deriveTokenSplitFromCodegenMs({
+      codegenMs: 5000,
+      totalTokens: 300,
+      wallClockMs: 0,
+    });
+    assert.equal(zeroWall.codegenTokens, 0);
+    assert.equal(zeroWall.ceremonyTokens, 300);
+    assert.equal(zeroWall.ceremonyMs, 0);
+
+    const negWall = deriveTokenSplitFromCodegenMs({
+      codegenMs: 5000,
+      totalTokens: 300,
+      wallClockMs: -1000,
+    });
+    assert.equal(negWall.codegenTokens, 0);
+    assert.equal(negWall.ceremonyTokens, 300);
+    assert.equal(negWall.ceremonyMs, 0);
+  });
+
+  it('both buckets are 0 when totalTokens is 0 or negative', () => {
+    const zeroTokens = deriveTokenSplitFromCodegenMs({
+      codegenMs: 5000,
+      totalTokens: 0,
+      wallClockMs: 100000,
+    });
+    assert.equal(zeroTokens.codegenTokens, 0);
+    assert.equal(zeroTokens.ceremonyTokens, 0);
+
+    const negTokens = deriveTokenSplitFromCodegenMs({
+      codegenMs: 5000,
+      totalTokens: -100,
+      wallClockMs: 100000,
+    });
+    assert.equal(negTokens.codegenTokens, 0);
+    assert.equal(negTokens.ceremonyTokens, 0);
   });
 });
 
