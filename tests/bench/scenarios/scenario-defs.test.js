@@ -54,6 +54,19 @@ const SCENARIO_IDS = ['hello-world', 'story-scope', 'epic-scope'];
  * Security-hint terms a trap-scenario prompt must never contain (Epic #66,
  * Story #75 / Story #78) — naming the planted defect class in the prompt
  * would destroy the headroom the trap needs (target-architecture §12).
+ *
+ * Covers all trap classes across both trap-bearing rungs: plaintext-password
+ * / token-generation (story-scope) and plaintext-password / idor /
+ * missing-input-validation / hardcoded-secret (epic-scope). The
+ * hardcoded-secret terms were added after an Epic #66 audit found this list
+ * incomplete — it missed the exact phrasing ("environment variable", "never
+ * be inlined") that leaked the answer to the hardcoded-secret trap directly
+ * in the epic-scope seed prompt (fixed in the same remediation pass). These
+ * terms hint at WHERE/HOW a defect must be avoided (the implementation
+ * choice the trap measures), not at the underlying functional requirement
+ * itself — e.g. a prompt may legitimately say tokens are "signed with a
+ * secret key" (the functional contract) without saying to read that key
+ * from an environment variable and never inline it (the fix).
  */
 const SECURITY_HINT_TERMS = [
   'hash',
@@ -62,7 +75,37 @@ const SECURITY_HINT_TERMS = [
   'encrypt',
   'secure',
   'random token',
+  'environment variable',
+  'env var',
+  'inline',
+  'inlined',
+  '.env',
+  'process.env',
+  'ownership check',
+  'authorization check',
+  'validation guard',
 ];
+
+/**
+ * Benign, non-leaking env-var boilerplate every scenario prompt legitimately
+ * carries (the app's PORT config contract, e.g. "the PORT environment
+ * variable (default 3000)") — stripped before scanning for security-hint
+ * terms so the "environment variable" / "env var" hint terms (added after
+ * the Epic #66 audit found the hardcoded-secret leak) don't false-positive
+ * on ordinary port-config prose that has nothing to do with any trap class.
+ */
+const BENIGN_ENV_VAR_RE = /\bPORT environment variable\b/gi;
+
+/**
+ * Lower-cased seed prompt with the known-benign env-var boilerplate removed,
+ * ready for a security-hint-term scan.
+ *
+ * @param {{ seed: { prompt: string } }} scenario
+ * @returns {string}
+ */
+function scanned(scenario) {
+  return scenario.seed.prompt.replace(BENIGN_ENV_VAR_RE, '').toLowerCase();
+}
 
 function loadScenario(id) {
   const raw = readFileSync(
@@ -173,7 +216,7 @@ describe('scenario seeds (AC1: task seed shared by both arms)', () => {
 
     it('the seed prompt contains no security-hint terms (trap headroom, §12)', () => {
       const s = loadScenario('story-scope');
-      const prompt = s.seed.prompt.toLowerCase();
+      const prompt = scanned(s);
       for (const term of SECURITY_HINT_TERMS) {
         assert.ok(
           !prompt.includes(term.toLowerCase()),
@@ -192,7 +235,7 @@ describe('scenario seeds (AC1: task seed shared by both arms)', () => {
 
     it('the seed prompt contains no security-hint terms (trap headroom, §12)', () => {
       const s = loadScenario('epic-scope');
-      const prompt = s.seed.prompt.toLowerCase();
+      const prompt = scanned(s);
       for (const term of SECURITY_HINT_TERMS) {
         assert.ok(
           !prompt.includes(term.toLowerCase()),
