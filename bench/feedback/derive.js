@@ -43,8 +43,8 @@
 // classes, and metrics are visited in a stable order, so deriving twice from
 // one corpus yields byte-identical findings (and thus identical fingerprints).
 
+import { groupCells, MISMATCH_RATE_FLAG_THRESHOLD } from '../report/cells.js';
 import { compareRuns } from '../report/compare.js';
-import { groupCells } from '../report/render.js';
 import {
   computeDifferential,
   difficultyMonotonicity,
@@ -536,11 +536,13 @@ function derivePipelineCalibration({ cohortCards, cells, cohort, links }) {
         subject: 'routing-mismatch',
         summary:
           `Routing mismatch on \`${cell.scenario}\` is ` +
-          `${(cell.mismatchRate * 100).toFixed(1)}% (>25%): the observed route ` +
-          'diverges from the scenario contract on more than a quarter of runs.',
+          `${(cell.mismatchRate * 100).toFixed(1)}% ` +
+          `(>${(MISMATCH_RATE_FLAG_THRESHOLD * 100).toFixed(0)}%): the observed ` +
+          'route diverges from the scenario contract on more than the flagged ' +
+          'fraction of runs.',
         evidence: {
           mismatchRate: cell.mismatchRate,
-          threshold: 0.25,
+          threshold: MISMATCH_RATE_FLAG_THRESHOLD,
           mismatchedRuns: cell.mismatchedRuns.length,
         },
         cohort,
