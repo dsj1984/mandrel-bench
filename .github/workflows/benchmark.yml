@@ -22,7 +22,8 @@ name: Benchmark
 #   ANTHROPIC_API_KEY  — the model credential the benchmarked sessions call with.
 #   BENCH_GITHUB_TOKEN — token with repo create/delete + contents + issues +
 #                        pull-requests scopes for the ephemeral per-cell sandbox
-#                        AND for opening the results PR.
+#                        (canary + cell jobs ONLY). The results PR is opened with
+#                        the workflow's own GITHUB_TOKEN, not this PAT.
 
 on:
   workflow_dispatch:
@@ -63,9 +64,11 @@ concurrency:
   group: benchmark
   cancel-in-progress: false
 
+# Least privilege by default: the plan / canary / cell jobs only read the repo.
+# Only the aggregate job (which opens the results PR) is granted write scopes,
+# via its own job-level `permissions` block below.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -98,11 +101,13 @@ jobs:
           BENCH_SCENARIOS: ${{ inputs.scenarios }}
         run: |
           set -euo pipefail
-          ARGS="--dry-run --max-cost-usd ${{ inputs.max_cost_usd }}"
-          if [ -n "${{ inputs.model }}" ]; then ARGS="$ARGS --model ${{ inputs.model }}"; fi
-          if [ -n "${{ inputs.target_n }}" ]; then ARGS="$ARGS --n ${{ inputs.target_n }}"; fi
-          if [ -n "${{ inputs.scenarios }}" ]; then ARGS="$ARGS --scenarios ${{ inputs.scenarios }}"; fi
-          node bench/driver/topup-planner.js $ARGS > plan.json
+          # Build the planner argv from the (validated) BENCH_* env vars — never
+          # interpolate `${{ inputs.* }}` into this run: body (shell injection).
+          ARGS=(--dry-run --max-cost-usd "$BENCH_MAX_COST_USD")
+          if [ -n "$BENCH_MODEL" ]; then ARGS+=(--model "$BENCH_MODEL"); fi
+          if [ -n "$BENCH_N" ]; then ARGS+=(--n "$BENCH_N"); fi
+          if [ -n "$BENCH_SCENARIOS" ]; then ARGS+=(--scenarios "$BENCH_SCENARIOS"); fi
+          node bench/driver/topup-planner.js "${ARGS[@]}" > plan.json
           cat plan.json
           node -e '
             const fs = require("node:fs");
@@ -185,6 +190,9 @@ jobs:
           BENCH_ARMS: ${{ matrix.arm }}
           BENCH_N: ${{ inputs.target_n }}
           BENCH_MAX_COST_USD: ${{ matrix.allocatedCostUsd }}
+          # Per-invocation run-count ceiling: a cell is one scenario × arm, so
+          # cap new runs at its deficit — never re-run the full targetN (H2).
+          BENCH_MAX_RUNS: ${{ matrix.deficit }}
         run: node bench/run.js
 
       # Upload this cell's scorecards AND its .raw provenance tree as artifacts
@@ -206,8 +214,15 @@ jobs:
   aggregate:
     name: Aggregate + open results PR
     needs: [plan, cell]
-    if: needs.plan.outputs.has_deficit == 'true' && inputs.dry_run != true
+    # always() so a single failed cell doesn't strand the paid work of the rest
+    # with no results PR — aggregate-cli tolerates partial artifacts (H3).
+    if: always() && needs.plan.outputs.has_deficit == 'true' && inputs.dry_run != true
     runs-on: ubuntu-latest
+    # Only this job needs write scopes — it commits the results branch and opens
+    # the PR. The plan / canary / cell jobs stay read-only (M3).
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -231,9 +246,12 @@ jobs:
       # main — the PR is the review gate. create-pull-request pushes to a
       # dedicated results branch and opens the PR against the default branch.
       - name: Open results PR
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c # v6.x
         with:
-          token: ${{ secrets.BENCH_GITHUB_TOKEN }}
+          # The workflow's own GITHUB_TOKEN (scoped by the job-level write
+          # permissions above) suffices to open the PR — the destructive-scope
+          # BENCH_GITHUB_TOKEN PAT stays confined to the canary/cell jobs (M2).
+          token: ${{ secrets.GITHUB_TOKEN }}
           branch: benchmark/results-${{ github.run_id }}
           base: main
           commit-message: "chore(bench): cohort results from run ${{ github.run_id }}"
