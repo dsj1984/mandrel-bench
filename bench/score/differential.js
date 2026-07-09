@@ -32,12 +32,23 @@
 import { noiseBand } from '../metrics/variance.js';
 
 /**
- * The five scorecard dimensions, in canonical order, each tagged with the
- * single per-run scalar that represents it for differential purposes.
- * `quality`, `planningFidelity`, `autonomy` and `overheadRatio` each have a
- * natural headline scalar. `efficiency` is a vector (README § 4 — "never
- * collapsed to one number"), so it is differenced per-component rather than as
- * a single dimension; see `EFFICIENCY_COMPONENTS`.
+ * The scorecard dimensions compared as a Mandrel-vs-control DELTA, in
+ * canonical order, each tagged with the single per-run scalar that
+ * represents it for differential purposes. `quality`, `planningFidelity` and
+ * `overheadRatio` each have a natural headline scalar. `efficiency` is a
+ * vector (README § 4 — "never collapsed to one number"), so it is
+ * differenced per-component rather than as a single dimension; see
+ * `EFFICIENCY_COMPONENTS`.
+ *
+ * `autonomy` is DELIBERATELY excluded (Epic #66, Story #77 / target-
+ * architecture §8): it is reclassified as a mandrel-arm GUARDRAIL — the score
+ * compared against a fixed cohort threshold (`dimensions.autonomy.guardrail`,
+ * default 0.99) — rather than a mandrel-vs-control delta. The bare control
+ * arm's autonomy is a defined baseline (1.0, zero interventions by
+ * construction), not a measurement, so diffing it against Mandrel's measured
+ * score was never a meaningful comparison; the guardrail verdict is rendered
+ * separately (`bench/report/render.js` `renderAutonomyGuardrailSection`,
+ * `bench/report/html.js`'s guardrail panel).
  *
  * The accessor pulls the scalar out of a scorecard's `dimensions.<name>`
  * sub-object, returning `null` when the value is null (e.g. planningFidelity on
@@ -49,7 +60,6 @@ export const SCALAR_DIMENSIONS = Object.freeze([
     name: 'planningFidelity',
     accessor: (d) => d?.planningFidelity?.score ?? null,
   },
-  { name: 'autonomy', accessor: (d) => d?.autonomy?.score ?? null },
   {
     name: 'maintainability',
     accessor: (d) => d?.maintainability?.score ?? null,

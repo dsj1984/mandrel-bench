@@ -39,6 +39,7 @@
 // emitted string is fixed for a fixed corpus.
 
 import { cohortSegments } from './cohort-path.js';
+import { autonomyGuardrailRows, groupCells, trapAxisRows } from './render.js';
 
 /**
  * The headline metrics the trend chart plots, each with a label, the side of
@@ -67,7 +68,12 @@ const HEADLINE_METRICS = Object.freeze([
     side: 'value',
     better: 'higher',
     range: '0–1',
-    good: '1.0 = fully unattended (zero human interventions); each one drops it (0.5 = one, 0.33 = two). Anything under 1.0 is a finding.',
+    good: '1.0 = fully unattended (zero human interventions); each one drops it (0.5 = one, 0.33 = two). Reclassified as a mandrel-arm GUARDRAIL against a cohort threshold (default 0.99, see the Autonomy guardrail panel below) — never a mandrel-vs-control delta (Epic #66, Story #77/#79).',
+    // Epic #66, Story #79: autonomy is a pass/fail guardrail, not a
+    // mandrel-vs-control comparison — the bare control's zero-intervention
+    // baseline is defined, not measured. The trend chart still plots the
+    // score for inspection, but the delta-vs-control badge is suppressed.
+    deltaExempt: true,
     get: (sc) => sc?.dimensions?.autonomy?.score,
   },
   {
@@ -189,8 +195,14 @@ export function toRow(sc) {
  * headline-metric metadata the client chart reads (key, label, and the
  * interpretation fields). Pure.
  *
+ * Also computes the server-rendered, non-interactive **autonomy guardrail**
+ * and **trap axis** panels (Epic #66, Story #79) by reusing the identical
+ * pure helpers `bench/report/render.js` uses for the Markdown report — the
+ * same "no second, divergent interpretation" discipline this module's header
+ * comment commits to.
+ *
  * @param {Array<object>} scorecards
- * @returns {{ rows: object[], metrics: Array<object> }}
+ * @returns {{ rows: object[], metrics: Array<object>, guardrail: Array<object>, trapAxis: Array<{ scenario: string, rows: Array<object> }> }}
  */
 export function buildDashboardModel(scorecards) {
   if (!Array.isArray(scorecards)) {
@@ -203,16 +215,25 @@ export function buildDashboardModel(scorecards) {
     return a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0;
   });
   const metrics = HEADLINE_METRICS.map(
-    ({ key, label, side, better, range, good }) => ({
+    ({ key, label, side, better, range, good, deltaExempt }) => ({
       key,
       label,
       side,
       better,
       range,
       good,
+      ...(deltaExempt ? { deltaExempt: true } : {}),
     }),
   );
-  return { rows, metrics };
+  const cells = groupCells(scorecards);
+  const guardrail = autonomyGuardrailRows(cells);
+  const trapAxis = cells
+    .map((cell) => ({
+      scenario: cell.scenario,
+      rows: trapAxisRows(cell, 'iqr'),
+    }))
+    .filter((s) => s.rows.length > 0);
+  return { rows, metrics, guardrail, trapAxis };
 }
 
 /**
@@ -703,6 +724,18 @@ const SCRIPT = `
 
     // Delta vs control on the most recent visible cohort with both arms.
     deltaEl.innerHTML = "";
+    if (meta.deltaExempt) {
+      // Epic #66, Story #77/#79: autonomy is a mandrel-arm GUARDRAIL against
+      // a cohort threshold, never a mandrel-vs-control delta — the bare
+      // control's zero-intervention baseline is defined, not measured, so a
+      // delta badge here would misrepresent it as a comparison. See the
+      // "Autonomy guardrail" panel below the run index for the real verdict.
+      var note = document.createElement("span");
+      note.className = "delta";
+      note.textContent = "Guardrail metric — see the Autonomy guardrail panel below, not a mandrel-vs-control delta.";
+      deltaEl.appendChild(note);
+      return;
+    }
     var latest = null;
     for (var i = data.length - 1; i >= 0; i--) {
       if (data[i].mandrel && data[i].control) { latest = data[i]; break; }
@@ -769,6 +802,73 @@ const SCRIPT = `
   renderTable();
 })();
 `;
+
+/**
+ * Server-rendered, static (non-interactive) "Autonomy guardrail" panel
+ * (Epic #66, Story #77/#79): per-scenario met/dropped/unmeasured counts for
+ * the mandrel-arm autonomy guardrail. Deterministic; reuses
+ * `bench/report/render.js`'s `autonomyGuardrailRows` so the dashboard and the
+ * Markdown report never diverge on this verdict.
+ *
+ * @param {Array<object>} rows  `autonomyGuardrailRows` output.
+ * @returns {string}
+ */
+function renderGuardrailSection(rows) {
+  const body = rows.length
+    ? rows
+        .map(
+          (r) =>
+            `<tr><td>${esc(r.scenario)}</td><td>${r.n}</td><td>${r.met}</td><td>${r.dropped}</td><td>${r.unmeasured}</td><td>${r.threshold ?? '—'}</td></tr>`,
+        )
+        .join('')
+    : '';
+  return `<section>
+<h2>Autonomy guardrail (mandrel arm)</h2>
+<div class="sub">Autonomy is a pass/fail guardrail against a cohort threshold (default 0.99) — never a mandrel-vs-control delta (Epic #66, Story #77/#79): the bare control arm's zero-intervention baseline is defined, not measured, so a delta against it was never a meaningful comparison. A drop below threshold is itself a finding.</div>
+<div class="panel">
+${
+  rows.length
+    ? `<table><thead><tr><th>Scenario</th><th>n</th><th>Met</th><th>Dropped</th><th>Unmeasured</th><th>Threshold</th></tr></thead><tbody>${body}</tbody></table>`
+    : '<div class="empty">No mandrel-arm runs to evaluate.</div>'
+}
+</div>
+</section>`;
+}
+
+/**
+ * Server-rendered, static "Trap axis" panel (Epic #66, Story #74/#79):
+ * per-class trap-oracle scores and `cleanRate`, as mean/spread/min
+ * distributions per arm, in a section clearly separate from the seven
+ * composite dimensions. Reuses `bench/report/render.js`'s `trapAxisRows` so
+ * the dashboard and the Markdown report share one interpretation.
+ *
+ * @param {Array<{ scenario: string, rows: Array<object> }>} trapAxis
+ * @returns {string}
+ */
+function renderTrapAxisSectionHtml(trapAxis) {
+  const fmtStat = (s) =>
+    s
+      ? `${Math.round(s.mean * 1000) / 1000} (spread ${Math.round(s.spread * 1000) / 1000}, min ${Math.round(s.min * 1000) / 1000}, n=${s.n})`
+      : '—';
+  const scenarioBlocks = trapAxis
+    .map((s) => {
+      const rows = s.rows
+        .map(
+          (r) =>
+            `<tr><td>${esc(r.label)}</td><td>${fmtStat(r.mandrel)}</td><td>${fmtStat(r.control)}</td></tr>`,
+        )
+        .join('');
+      return `<h3>${esc(s.scenario)}</h3><table><thead><tr><th>Class</th><th>Mandrel</th><th>Control</th></tr></thead><tbody>${rows}</tbody></table>`;
+    })
+    .join('');
+  return `<section>
+<h2>Trap axis (differential — separate from the seven dimensions)</h2>
+<div class="sub">Per-class adversarial trap-oracle verdicts the frozen suite is blind to, plus <code>cleanRate</code> (the mean of the declared classes). Higher is better (1 = clean, 0 = planted defect present). Never folded into the seven composite dimensions (Epic #66, Story #74/#79).</div>
+<div class="panel">
+${trapAxis.length ? scenarioBlocks : '<div class="empty">No scenario in this corpus declares a trap class.</div>'}
+</div>
+</section>`;
+}
 
 /**
  * Render the self-contained dashboard HTML for the aggregated scorecard corpus.
@@ -853,6 +953,8 @@ export function renderDashboard({ scorecards } = {}) {
 <div class="empty" id="idx-empty" style="display:none">No runs match the current filters.</div>
 </div>
 </section>
+${renderGuardrailSection(model.guardrail)}
+${renderTrapAxisSectionHtml(model.trapAxis)}
 </main>
 <div class="modal-backdrop" id="modal-backdrop">
 <div class="modal" id="modal" role="dialog" aria-modal="true"><div id="modal-body"></div></div>

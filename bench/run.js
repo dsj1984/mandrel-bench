@@ -1124,7 +1124,7 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
 /**
  * Normalize a scenario id into the `BENCH_EPIC_ID_<SCENARIO>` env-var suffix:
  * uppercased, every run of non `[A-Z0-9]` characters folded to a single `_`.
- * So `crud-db` → `CRUD_DB`, read as `BENCH_EPIC_ID_CRUD_DB`. Pure.
+ * So `story-scope` → `STORY_SCOPE`, read as `BENCH_EPIC_ID_STORY_SCOPE`. Pure.
  *
  * @param {string} scenarioId
  * @returns {string}
@@ -1142,7 +1142,8 @@ export function scenarioEnvSuffix(scenarioId) {
  * precedence:
  *   1. `BENCH_EPIC_ID` — back-compat single-scenario id, applied to `scenarios[0]`.
  *   2. `BENCH_EPIC_IDS` — a JSON object map `{ "<scenario>": <id>, ... }`.
- *   3. `BENCH_EPIC_ID_<SCENARIO>` — one var per scenario (see `scenarioEnvSuffix`).
+ *   3. `BENCH_EPIC_ID_<SCENARIO>` — one var per scenario (see `scenarioEnvSuffix`),
+ *      e.g. `BENCH_EPIC_ID_STORY_SCOPE`.
  * Later sources override earlier ones for the same scenario. Only ids that parse
  * to a finite number are kept. Pure (reads from the supplied `env` bag).
  *
@@ -1161,7 +1162,7 @@ export function resolveEpicIds(scenarios, env = process.env) {
   if (env.BENCH_EPIC_ID != null && scenarios.length > 0) {
     setIf(scenarios[0], env.BENCH_EPIC_ID);
   }
-  // 2. JSON map: BENCH_EPIC_IDS = {"hello-world":99,"crud-db":100}.
+  // 2. JSON map: BENCH_EPIC_IDS = {"hello-world":99,"story-scope":100}.
   if (env.BENCH_EPIC_IDS) {
     try {
       const parsed = JSON.parse(env.BENCH_EPIC_IDS);

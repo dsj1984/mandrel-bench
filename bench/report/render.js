@@ -41,14 +41,17 @@ import {
   scoreCorpus,
 } from '../score/differential.js';
 
-/** Difficulty ladder order (easy → hard). v1 ships two rungs. */
+/**
+ * Difficulty ladder order (easy → hard) — the Epic #66 3-rung corpus.
+ * `hello-world` is instrumentation only (floor/calibration framing, never a
+ * value-delta rung); `story-scope` and `epic-scope` are the two value rungs,
+ * each carrying its own trap-class axis. Mirrors the `difficulty` integers
+ * declared on each scenario's `scenario.json`.
+ */
 const DIFFICULTY_BY_SCENARIO = Object.freeze({
   'hello-world': 1,
-  'crud-db': 2,
-  // The largest rung — the first scenario that clears Mandrel 1.75.0's
-  // scope-triage bar and routes to a multi-Story Epic (so the Epic-ledger
-  // value dimensions are exercised). See Story #50.
-  'project-api': 3,
+  'story-scope': 3,
+  'epic-scope': 5,
 });
 
 /**
@@ -413,6 +416,246 @@ function renderFloorCalibrationNote(cell) {
   );
 }
 
+/**
+ * Collect the distinct trap-class ids present across a set of scorecards
+ * (Epic #66, Story #74 trap block), sorted for a stable render order.
+ *
+ * @param {Array<object>} scorecards
+ * @returns {string[]}
+ */
+export function collectTrapClasses(scorecards) {
+  const classes = new Set();
+  for (const sc of scorecards ?? []) {
+    for (const entry of sc?.trap?.classes ?? []) {
+      if (typeof entry?.class === 'string') classes.add(entry.class);
+    }
+  }
+  return [...classes].sort();
+}
+
+/**
+ * Summarize one arm's per-run values for a trap accessor as mean + spread +
+ * worst-case (min) — the shape the trap axis reports (Epic #66, Story #79):
+ * "distributions with mean, spread, and min per arm", deliberately reusing
+ * the noise-band's `spread` rather than inventing a second variance
+ * statistic. Returns null when no finite values are present.
+ *
+ * @param {Array<object>} scorecards
+ * @param {(sc: object) => number|null} accessor  Applied to the SCORECARD
+ *   directly (trap lives at the top level, not under `dimensions`).
+ * @param {'iqr'|'ci'} method
+ * @returns {{ mean: number, spread: number, min: number, n: number }|null}
+ */
+export function trapArmStat(scorecards, accessor, method) {
+  const vals = (scorecards ?? [])
+    .map(accessor)
+    .filter((v) => typeof v === 'number' && Number.isFinite(v));
+  if (vals.length === 0) return null;
+  const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+  const min = Math.min(...vals);
+  let spread = 0;
+  try {
+    spread = noiseBand(vals, { method }).spread;
+  } catch {
+    spread = 0;
+  }
+  return { mean, spread, min, n: vals.length };
+}
+
+/**
+ * Build the structured trap-axis rows for one scenario cell: one row per
+ * declared trap class plus a final `cleanRate` row, each with the mandrel
+ * and control arm's { mean, spread, min } stat. Returns `[]` when the cell
+ * carries no trap data at all (a non-trap scenario, e.g. hello-world).
+ *
+ * Deliberately SEPARATE from `dimensionRows` — the trap axis is never folded
+ * into the seven composite dimensions (schema + normalize.js contract).
+ *
+ * @param {object} cell  A `groupCells` entry.
+ * @param {'iqr'|'ci'} method
+ * @returns {Array<{
+ *   metric: string,
+ *   label: string,
+ *   mandrel: { mean: number, spread: number, min: number, n: number }|null,
+ *   control: { mean: number, spread: number, min: number, n: number }|null
+ * }>}
+ */
+export function trapAxisRows(cell, method) {
+  const allRuns = [...cell.mandrelRuns, ...cell.mismatchedRuns];
+  const classes = collectTrapClasses([...allRuns, ...cell.controlRuns]);
+  if (classes.length === 0) return [];
+  const rows = classes.map((cls) => {
+    const accessor = (sc) => {
+      const entry = sc?.trap?.classes?.find((c) => c.class === cls);
+      return typeof entry?.score === 'number' ? entry.score : null;
+    };
+    return {
+      metric: `trap.${cls}`,
+      label: cls,
+      mandrel: trapArmStat(cell.mandrelRuns, accessor, method),
+      control: trapArmStat(cell.controlRuns, accessor, method),
+    };
+  });
+  const cleanRateAccessor = (sc) =>
+    typeof sc?.trap?.cleanRate === 'number' ? sc.trap.cleanRate : null;
+  rows.push({
+    metric: 'trap.cleanRate',
+    label: 'cleanRate (mean of classes)',
+    mandrel: trapArmStat(cell.mandrelRuns, cleanRateAccessor, method),
+    control: trapArmStat(cell.controlRuns, cleanRateAccessor, method),
+  });
+  return rows;
+}
+
+/**
+ * Render one scenario's trap-axis section (Epic #66, Story #79): per-class
+ * scores and `cleanRate` as mean/spread/min distributions per arm, in a
+ * section clearly separate from the seven-dimension table. Returns '' when
+ * the cell carries no trap data.
+ *
+ * @param {object} cell
+ * @param {'iqr'|'ci'} method
+ * @returns {string}
+ */
+export function renderTrapAxisSection(cell, method) {
+  const rows = trapAxisRows(cell, method);
+  if (rows.length === 0) return '';
+  const fmtStat = (s) =>
+    s
+      ? `${fmt(s.mean)} (spread ${fmt(s.spread)}, min ${fmt(s.min)}, n=${s.n})`
+      : '—';
+  const lines = [
+    '#### Trap axis (differential — separate from the seven dimensions)',
+    '',
+    'Per-class adversarial trap-oracle verdicts the frozen suite is blind to.',
+    'Higher is better (1 = clean, 0 = planted defect present).',
+    '',
+    '| Class | Mandrel | Control |',
+    '| --- | --- | --- |',
+  ];
+  for (const r of rows) {
+    lines.push(
+      `| ${r.label} | ${fmtStat(r.mandrel)} | ${fmtStat(r.control)} |`,
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Build the per-scenario autonomy-guardrail summary (Epic #66, Story #77):
+ * autonomy is a mandrel-arm pass/fail GUARDRAIL against a cohort threshold,
+ * never a mandrel-vs-control delta (see `differential.js` `SCALAR_DIMENSIONS`
+ * comment). Counts, per scenario, how many mandrel-arm runs met / dropped
+ * below / left the threshold unmeasured.
+ *
+ * @param {Array<object>} cells  `groupCells` entries.
+ * @returns {Array<{
+ *   scenario: string,
+ *   n: number,
+ *   met: number,
+ *   dropped: number,
+ *   unmeasured: number,
+ *   threshold: number|null
+ * }>}
+ */
+export function autonomyGuardrailRows(cells) {
+  const rows = [];
+  for (const cell of cells) {
+    const runs = cell.mandrelRuns ?? [];
+    if (runs.length === 0) continue;
+    let met = 0;
+    let dropped = 0;
+    let unmeasured = 0;
+    let threshold = null;
+    for (const sc of runs) {
+      const g = sc?.dimensions?.autonomy?.guardrail;
+      if (!g || g.met === null || g.met === undefined) {
+        unmeasured += 1;
+        continue;
+      }
+      threshold = typeof g.threshold === 'number' ? g.threshold : threshold;
+      if (g.met === true) met += 1;
+      else dropped += 1;
+    }
+    rows.push({
+      scenario: cell.scenario,
+      n: runs.length,
+      met,
+      dropped,
+      unmeasured,
+      threshold,
+    });
+  }
+  return rows;
+}
+
+/**
+ * Render the autonomy-guardrail section from `autonomyGuardrailRows`.
+ *
+ * @param {Array<object>} cells
+ * @returns {string}
+ */
+export function renderAutonomyGuardrailSection(cells) {
+  const rows = autonomyGuardrailRows(cells);
+  const lines = [
+    '## Autonomy guardrail (mandrel arm)',
+    '',
+    'Autonomy is a pass/fail GUARDRAIL against a cohort threshold — never a',
+    'mandrel-vs-control delta (Epic #66, Story #77): the bare control arm’s',
+    'zero-intervention baseline is defined, not measured, so a delta against',
+    'it was never a meaningful comparison. A drop below threshold is itself a',
+    'finding.',
+    '',
+  ];
+  if (rows.length === 0) {
+    lines.push('No mandrel-arm runs to evaluate.');
+    return lines.join('\n');
+  }
+  lines.push(
+    '| Scenario | n | Met | Dropped | Unmeasured | Threshold |',
+    '| --- | --- | --- | --- | --- | --- |',
+  );
+  for (const r of rows) {
+    lines.push(
+      `| \`${r.scenario}\` | ${r.n} | ${r.met} | ${r.dropped} | ${r.unmeasured} | ${fmt(r.threshold, 2)} |`,
+    );
+  }
+  const anyDropped = rows.some((r) => r.dropped > 0);
+  lines.push(
+    '',
+    anyDropped
+      ? '⚠️ One or more scenarios dropped below the guardrail threshold — see Recommended improvements.'
+      : '✅ Every measured mandrel-arm run met the guardrail threshold.',
+  );
+  return lines.join('\n');
+}
+
+/**
+ * Findings derived from the autonomy guardrail (Epic #66, Story #77): a
+ * scenario with any dropped run surfaces as a `medium` finding, evidence-
+ * linked to the drop count.
+ *
+ * @param {Array<object>} cells
+ * @returns {Array<{ id: string, severity: string, title: string, evidence: string, action: string }>}
+ */
+export function autonomyGuardrailFindings(cells) {
+  const findings = [];
+  for (const row of autonomyGuardrailRows(cells)) {
+    if (row.dropped === 0) continue;
+    findings.push({
+      id: `autonomy-guardrail-drop-${row.scenario}`,
+      severity: 'medium',
+      title: `Investigate the autonomy guardrail drop on \`${row.scenario}\``,
+      evidence: `${row.dropped}/${row.n} mandrel-arm run(s) fell below the ${fmt(row.threshold, 2)} guardrail threshold.`,
+      action:
+        'A fully-unattended pipeline should clear the guardrail on every run. ' +
+        'Trace the lifecycle for the dropped run(s) to find the HITL stop, ' +
+        'agent::blocked transition, or manual rescue that fired.',
+    });
+  }
+  return findings;
+}
+
 function renderScenarioSection(cell, diff, method) {
   const rows = dimensionRows(cell, diff, method);
   const routingNote = renderRoutingNote(cell.mandrelRuns);
@@ -433,7 +676,10 @@ function renderScenarioSection(cell, diff, method) {
     const digits = r.metric === 'efficiency.wallClockMs' ? 0 : 3;
     return `| ${r.label} | ${fmtBand(r.mandrelBand, digits)} | ${fmtBand(r.controlBand, digits)} | ${fmt(r.delta, digits)} | ${fmt(r.noiseFloor, digits)} | ${VERDICT_BADGE[r.verdict]} |`;
   });
-  return [...header, ...body].join('\n');
+  const trapSection = renderTrapAxisSection(cell, method);
+  return [...header, ...body, ...(trapSection ? ['', trapSection] : [])].join(
+    '\n',
+  );
 }
 
 /**
@@ -569,9 +815,11 @@ export function recommendImprovements(corpus) {
   }
 
   // 3. Real regressions on a value dimension (control beats mandrel).
-  //    Higher-is-better for quality/planningFidelity/autonomy ⇒ a positive
+  //    Higher-is-better for quality/planningFidelity ⇒ a positive
   //    (control − mandrel) gap that clears the noise floor is a regression.
-  const valueDimensions = new Set(['quality', 'planningFidelity', 'autonomy']);
+  //    autonomy is EXCLUDED here — it is a guardrail, not a delta (see
+  //    `autonomyGuardrailFindings`).
+  const valueDimensions = new Set(['quality', 'planningFidelity']);
   for (const scenarioDiff of corpus.perScenario) {
     for (const name of valueDimensions) {
       const cmp = scenarioDiff.dimensions[name];
@@ -670,9 +918,14 @@ export function renderReport({ scorecards, method = 'iqr' } = {}) {
     }
   }
 
+  sections.push(renderAutonomyGuardrailSection(cells), '');
+
   sections.push(renderScalingView(cells, corpus, method), '');
 
-  const findings = recommendImprovements(corpus);
+  const findings = [
+    ...recommendImprovements(corpus),
+    ...autonomyGuardrailFindings(cells),
+  ];
   sections.push(renderRecommendations(findings));
 
   return `${sections
@@ -720,9 +973,14 @@ export function buildReportModel({ scorecards, method = 'iqr' } = {}) {
       scenario: cell.scenario,
       difficulty: cell.difficulty,
       rows: dimensionRows(cell, corpus.perScenario[i], method),
+      trap: trapAxisRows(cell, method),
     })),
     monotonicity: corpus.difficultyMonotonicity,
     overheadFloor: corpus.overheadFloor,
-    recommendations: recommendImprovements(corpus),
+    autonomyGuardrail: autonomyGuardrailRows(cells),
+    recommendations: [
+      ...recommendImprovements(corpus),
+      ...autonomyGuardrailFindings(cells),
+    ],
   };
 }

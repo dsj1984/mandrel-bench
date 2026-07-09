@@ -166,13 +166,14 @@ describe('compareRuns — per-dimension cross-run deltas', () => {
     assert.ok(typeof quality.controlCandidateCenter === 'number');
   });
 
-  it('includes every comparable metric (6 dimensions + 4 efficiency components)', () => {
+  it('includes every comparable metric (5 dimensions + 4 efficiency components; autonomy is a guardrail, not a delta — Epic #66, Story #77/#79)', () => {
     const cmp = compareRuns({
       baseline: run({ quality: 0.9 }),
       candidate: run({ quality: 0.9 }),
     });
     const metricNames = cmp.scenarios[0].metrics.map((m) => m.metric);
-    assert.equal(metricNames.length, 10);
+    assert.equal(metricNames.length, 9);
+    assert.ok(!metricNames.includes('autonomy'));
     assert.ok(metricNames.includes('quality'));
     assert.ok(metricNames.includes('maintainability'));
     assert.ok(metricNames.includes('security'));
@@ -214,16 +215,16 @@ describe('compareRuns — scenario presence', () => {
     const candidate = [
       ...run({ quality: 0.9 }),
       card({
-        scenario: 'crud-db',
+        scenario: 'story-scope',
         arm: 'mandrel',
-        runId: 'crud-m',
+        runId: 'story-m',
         quality: 0.8,
       }),
     ];
     const cmp = compareRuns({ baseline, candidate });
-    const crud = cmp.scenarios.find((s) => s.scenario === 'crud-db');
-    assert.equal(crud.inBaseline, false);
-    assert.equal(crud.inCandidate, true);
+    const story = cmp.scenarios.find((s) => s.scenario === 'story-scope');
+    assert.equal(story.inBaseline, false);
+    assert.equal(story.inCandidate, true);
   });
 });
 
