@@ -12,7 +12,7 @@ framework**, not part of it. It pins a *published* `mandrel` version
 (`dependencies.mandrel` in `package.json` — the version under test),
 materializes it via `mandrel sync`, then drives Mandrel's own
 `/plan`→`/deliver` pipeline (and a bare-model control) over a scenario corpus,
-scores each run across five dimensions, and tracks the framework's **value-add
+scores each run across seven dimensions, and tracks the framework's **value-add
 over the bare-model baseline** across versions and models.
 
 The dependency is **one-directional**: `mandrel-bench` depends on `mandrel`;
@@ -46,7 +46,7 @@ provision → run → collect → score → report → teardown
    telemetry (`temp/epic-<id>/lifecycle.ndjson` + per-Story `signals.ndjson`,
    written by `/deliver`) plus the `claude -p` cost envelope into a single
    per-run record conforming to `bench/schemas/scorecard.schema.json`.
-4. **score** (`bench/score/`) — `dimensions.js` computes the five dimensions
+4. **score** (`bench/score/`) — `dimensions.js` computes the seven dimensions
    per the `bench/metrics/README.md` formulas; `differential.js` computes the
    Mandrel-vs-control delta (with the real-delta rule from
    `bench/metrics/variance.js`) plus the two cross-scenario derived metrics.
