@@ -32,6 +32,7 @@ import {
 import { evaluate as evaluateCrud } from '../../../bench/scenarios/crud-db/acceptance.test.js';
 import { evaluate as evaluateHello } from '../../../bench/scenarios/hello-world/acceptance.test.js';
 import { evaluate as evaluateProjectApi } from '../../../bench/scenarios/project-api/acceptance.test.js';
+import { evaluate as evaluateStoryScope } from '../../../bench/scenarios/story-scope/acceptance.test.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIOS_DIR = path.resolve(
@@ -43,11 +44,26 @@ const SCENARIOS_DIR = path.resolve(
   'scenarios',
 );
 // The difficulty "ladder" — rungs of rising difficulty whose monotonicity is a
-// calibration guardrail (D-010). The trap rung ('auth-trap', Story #57) is a
-// SEPARATE differential scenario, not a ladder rung, so it is excluded from the
-// monotonicity check but still subject to every scenario/frozen-oracle contract.
+// calibration guardrail (D-010). The trap rungs ('auth-trap', Story #57;
+// 'story-scope', Epic #66 Story #75) are SEPARATE differential scenarios, not
+// ladder rungs, so they are excluded from the monotonicity check but still
+// subject to every scenario/frozen-oracle contract.
 const LADDER_IDS = ['hello-world', 'crud-db', 'project-api'];
-const SCENARIO_IDS = [...LADDER_IDS, 'auth-trap'];
+const SCENARIO_IDS = [...LADDER_IDS, 'auth-trap', 'story-scope'];
+
+/**
+ * Security-hint terms a trap-scenario prompt must never contain (Epic #66,
+ * Story #75) — naming the planted defect class in the prompt would destroy
+ * the headroom the trap needs (target-architecture §12).
+ */
+const SECURITY_HINT_TERMS = [
+  'hash',
+  'bcrypt',
+  'salt',
+  'encrypt',
+  'secure',
+  'random token',
+];
 
 function loadScenario(id) {
   const raw = readFileSync(
@@ -148,6 +164,25 @@ describe('scenario seeds (AC1: task seed shared by both arms)', () => {
       'project-api must out-rank crud-db on difficulty for the monotonicity check',
     );
   });
+
+  describe('story-scope scenario contract (Epic #66, Story #75)', () => {
+    it('declares routing "story" and targetN 8', () => {
+      const s = loadScenario('story-scope');
+      assert.equal(s.routing, 'story');
+      assert.equal(s.targetN, 8);
+    });
+
+    it('the seed prompt contains no security-hint terms (trap headroom, §12)', () => {
+      const s = loadScenario('story-scope');
+      const prompt = s.seed.prompt.toLowerCase();
+      for (const term of SECURITY_HINT_TERMS) {
+        assert.ok(
+          !prompt.includes(term.toLowerCase()),
+          `seed prompt must not contain the security-hint term "${term}"`,
+        );
+      }
+    });
+  });
 });
 
 describe('frozen oracles are pure w.r.t. the delivered app (AC2: frozen)', () => {
@@ -189,6 +224,7 @@ describe('frozen oracles are pure w.r.t. the delivered app (AC2: frozen)', () =>
     await assert.rejects(() => evaluateHello(''), TypeError);
     await assert.rejects(() => evaluateCrud(undefined), TypeError);
     await assert.rejects(() => evaluateProjectApi(''), TypeError);
+    await assert.rejects(() => evaluateStoryScope(''), TypeError);
   });
 });
 
@@ -656,6 +692,186 @@ describe('project-api frozen oracle behavior', () => {
     });
     assert.equal(result.passed, false);
     assert.equal(result.criteria.length, 19);
+    assert.ok(result.criteria[0].evidence.includes('ECONNREFUSED'));
+  });
+});
+
+describe('story-scope frozen oracle behavior', () => {
+  // A dynamic fetch stub modelling a conforming persisted-auth + per-user
+  // notes backend, so the full signup/login/me/notes round-trip (including
+  // cross-user isolation) can be driven deterministically without a server.
+  function makeStoryScopeFetch() {
+    const users = new Map(); // username → { id, username, password }
+    const sessions = new Map(); // session → userId
+    const notes = new Map(); // noteId → { id, title, body, ownerId }
+    let seq = 0;
+
+    const send = (status, json) => ({
+      status,
+      headers: { get: () => 'application/json' },
+      async text() {
+        return json === undefined ? '' : JSON.stringify(json);
+      },
+      async json() {
+        if (json === undefined) throw new Error('no json');
+        return json;
+      },
+    });
+
+    const authUser = (init) => {
+      const auth = init?.headers?.authorization ?? '';
+      const session = auth.replace(/^Bearer\s+/i, '');
+      return session ? sessions.get(session) : undefined;
+    };
+
+    return async (url, init = {}) => {
+      const u = new URL(String(url));
+      const method = (init.method ?? 'GET').toUpperCase();
+      const body = init.body ? JSON.parse(init.body) : undefined;
+
+      if (u.pathname === '/signup' && method === 'POST') {
+        const ok =
+          typeof body?.username === 'string' &&
+          body.username.length > 0 &&
+          typeof body?.password === 'string' &&
+          body.password.length > 0;
+        if (!ok) return send(400, { error: 'invalid' });
+        if (users.has(body.username)) return send(409, { error: 'duplicate' });
+        const id = `user-${++seq}`;
+        users.set(body.username, {
+          id,
+          username: body.username,
+          password: body.password,
+        });
+        return send(201, { id, username: body.username });
+      }
+
+      if (u.pathname === '/login' && method === 'POST') {
+        const user = users.get(body?.username);
+        if (!user || user.password !== body?.password)
+          return send(401, { error: 'unauthorized' });
+        const session = `sess-${++seq}`;
+        sessions.set(session, user.id);
+        return send(200, { session });
+      }
+
+      if (u.pathname === '/me' && method === 'GET') {
+        const userId = authUser(init);
+        if (userId === undefined) return send(401, { error: 'unauthorized' });
+        const user = [...users.values()].find((x) => x.id === userId);
+        return send(200, { id: user.id, username: user.username });
+      }
+
+      if (u.pathname === '/notes' && method === 'POST') {
+        const userId = authUser(init);
+        if (userId === undefined) return send(401, { error: 'unauthorized' });
+        const ok = typeof body?.title === 'string' && body.title.length > 0;
+        if (!ok) return send(400, { error: 'invalid' });
+        const id = `note-${++seq}`;
+        const note = {
+          id,
+          title: body.title,
+          body: body.body,
+          ownerId: userId,
+        };
+        notes.set(id, note);
+        return send(201, note);
+      }
+
+      if (u.pathname === '/notes' && method === 'GET') {
+        const userId = authUser(init);
+        if (userId === undefined) return send(401, { error: 'unauthorized' });
+        const own = [...notes.values()].filter((n) => n.ownerId === userId);
+        return send(200, own);
+      }
+
+      return send(404, { error: 'route not found' });
+    };
+  }
+
+  it('passes the full signup/login/me/notes round-trip against a conforming, isolating backend', async () => {
+    const result = await evaluateStoryScope('http://127.0.0.1:3000', {
+      fetchImpl: makeStoryScopeFetch(),
+      uniqueSuffix: (() => {
+        let n = 0;
+        return () => `fixed-${++n}`;
+      })(),
+    });
+    assert.equal(result.scenario, 'story-scope');
+    assert.equal(
+      result.passed,
+      true,
+      `unmet: ${result.criteria
+        .filter((c) => !c.met)
+        .map((c) => `[${c.index}] ${c.criterion} — ${c.evidence}`)
+        .join('; ')}`,
+    );
+    assert.equal(result.criteria.length, 6);
+    assert.deepEqual(
+      result.criteria.map((c) => c.index),
+      [0, 1, 2, 3, 4, 5],
+    );
+  });
+
+  it("flags the cross-user isolation criterion when the backend leaks another user's notes", async () => {
+    // A backend that returns ALL notes regardless of owner fails criterion 5.
+    const base = makeStoryScopeFetch();
+    const fetchImpl = async (url, init = {}) => {
+      const res = await base(url, init);
+      const u = new URL(String(url));
+      if (
+        u.pathname === '/notes' &&
+        (init.method ?? 'GET').toUpperCase() === 'GET'
+      ) {
+        // Re-fetch with a fabricated admin-like override that leaks all
+        // notes: simulate by wrapping the json() to append a foreign note.
+        const original = await res.json();
+        const leaked = [
+          ...original,
+          {
+            id: 'leak',
+            title: 'B note',
+            body: 'leaked',
+            ownerId: 'someone-else',
+          },
+        ];
+        return {
+          status: res.status,
+          headers: res.headers,
+          async text() {
+            return JSON.stringify(leaked);
+          },
+          async json() {
+            return leaked;
+          },
+        };
+      }
+      return res;
+    };
+    const result = await evaluateStoryScope('http://127.0.0.1:3000', {
+      fetchImpl,
+      uniqueSuffix: (() => {
+        let n = 0;
+        return () => `leak-${++n}`;
+      })(),
+    });
+    const c5 = result.criteria.find((c) => c.index === 5);
+    assert.equal(
+      c5.met,
+      false,
+      'criterion 5 (cross-user notes isolation) should be unmet',
+    );
+    assert.equal(result.passed, false);
+  });
+
+  it('does not throw when the backend is unreachable', async () => {
+    const result = await evaluateStoryScope('http://127.0.0.1:3000', {
+      fetchImpl: async () => {
+        throw new Error('ECONNREFUSED');
+      },
+    });
+    assert.equal(result.passed, false);
+    assert.equal(result.criteria.length, 6);
     assert.ok(result.criteria[0].evidence.includes('ECONNREFUSED'));
   });
 });
