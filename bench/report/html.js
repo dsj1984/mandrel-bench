@@ -225,7 +225,7 @@ function cohortTripleKey(sc) {
     sc?.model?.id ?? '',
     sc?.frameworkVersion ?? '',
     sc?.benchmarkVersion ?? '',
-  ].join(' ');
+  ].join('\u0000');
 }
 
 /**
