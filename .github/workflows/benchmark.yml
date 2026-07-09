@@ -1,0 +1,247 @@
+name: Benchmark
+
+# Run a full benchmark cohort from a single manual dispatch, spending only on
+# the deficit and landing everything as a reviewable results PR (Epic #84,
+# Story #90). Topology:
+#
+#   plan  → compute the per-cell deficit (bench/driver/topup-planner.js) and the
+#           per-cell cost allocation; a complete cohort is a near-zero-cost no-op.
+#   canary→ run the cheapest rung (hello-world) FIRST as an end-to-end smoke; a
+#           canary failure aborts the invocation before any expensive cell runs.
+#   matrix→ one job per deficit cell (max-parallel 6); each job runs its single
+#           cell, exports its BENCH_MAX_COST_USD share so the in-loop stop
+#           enforces the per-cell ceiling, and uploads its scorecards + .raw
+#           provenance as artifacts.
+#   aggregate→ download every cell's artifacts, merge them into results/
+#           (append-only NDJSON) and render the cohort report + results.html
+#           (bench/report/aggregate-cli.js), then OPEN A PULL REQUEST. No job in
+#           this workflow pushes to main directly — results-PR review replaces
+#           the interactive STOP gates the local /benchmark flow uses.
+#
+# Required Action secrets:
+#   ANTHROPIC_API_KEY  — the model credential the benchmarked sessions call with.
+#   BENCH_GITHUB_TOKEN — token with repo create/delete + contents + issues +
+#                        pull-requests scopes for the ephemeral per-cell sandbox
+#                        AND for opening the results PR.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mandrel_version:
+        description: Framework (mandrel) version under test; blank uses the pinned dependency.
+        type: string
+        required: false
+        default: ''
+      model:
+        description: Model id for the cohort stamp (e.g. claude-opus-4-8).
+        type: string
+        required: false
+        default: ''
+      scenarios:
+        description: Comma-separated scenario ids to benchmark (blank = the 3-rung corpus).
+        type: string
+        required: false
+        default: ''
+      target_n:
+        description: Uniform per-scenario run-count override; blank uses each scenario's targetN.
+        type: string
+        required: false
+        default: ''
+      max_cost_usd:
+        description: USD ceiling allocated across the deficit cells for this invocation.
+        type: string
+        required: false
+        default: '150'
+      dry_run:
+        description: Plan only — print the deficit plan and skip every paid cell.
+        type: boolean
+        required: false
+        default: false
+
+# One benchmark invocation at a time; never cancel an in-flight cohort mid-spend.
+concurrency:
+  group: benchmark
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # plan — compute the per-cell deficit and cost allocation (no run).
+  # ---------------------------------------------------------------------------
+  plan:
+    name: Plan cohort top-up
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_deficit: ${{ steps.plan.outputs.has_deficit }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --ignore-scripts
+      - run: npx mandrel sync
+
+      # Run the pure top-up planner and reduce its JSON plan to a matrix of
+      # deficit cells, each carrying its allocated BENCH_MAX_COST_USD share
+      # (total ceiling / number of deficit cells). Emits an empty matrix + a
+      # has_deficit=false flag for a complete cohort so the paid jobs skip.
+      - name: Plan deficit + allocate per-cell cost
+        id: plan
+        env:
+          BENCH_MODEL: ${{ inputs.model }}
+          BENCH_N: ${{ inputs.target_n }}
+          BENCH_MAX_COST_USD: ${{ inputs.max_cost_usd }}
+          BENCH_SCENARIOS: ${{ inputs.scenarios }}
+        run: |
+          set -euo pipefail
+          ARGS="--dry-run --max-cost-usd ${{ inputs.max_cost_usd }}"
+          if [ -n "${{ inputs.model }}" ]; then ARGS="$ARGS --model ${{ inputs.model }}"; fi
+          if [ -n "${{ inputs.target_n }}" ]; then ARGS="$ARGS --n ${{ inputs.target_n }}"; fi
+          if [ -n "${{ inputs.scenarios }}" ]; then ARGS="$ARGS --scenarios ${{ inputs.scenarios }}"; fi
+          node bench/driver/topup-planner.js $ARGS > plan.json
+          cat plan.json
+          node -e '
+            const fs = require("node:fs");
+            const plan = JSON.parse(fs.readFileSync("plan.json", "utf8"));
+            const cells = plan.deficitCells ?? [];
+            const share = cells.length > 0
+              ? Math.max(0.01, Number(plan.maxCostUsd ?? 0) / cells.length)
+              : 0;
+            const include = cells.map((c) => ({
+              scenario: c.scenario,
+              arm: c.arm,
+              deficit: c.deficit,
+              allocatedCostUsd: Math.round(share * 1e4) / 1e4,
+            }));
+            const out = process.env.GITHUB_OUTPUT;
+            fs.appendFileSync(out, `matrix=${JSON.stringify({ include })}\n`);
+            fs.appendFileSync(out, `has_deficit=${include.length > 0}\n`);
+          '
+
+  # ---------------------------------------------------------------------------
+  # canary — cheapest rung FIRST; a failure aborts the invocation.
+  # ---------------------------------------------------------------------------
+  canary:
+    name: Canary (hello-world smoke)
+    needs: plan
+    if: needs.plan.outputs.has_deficit == 'true' && inputs.dry_run != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --ignore-scripts
+      - run: npx mandrel sync
+
+      # Run the hello-world rung end to end BEFORE the paid matrix fans out. If
+      # this fails the whole invocation aborts (the matrix `needs` this job), so
+      # a broken harness never burns the full cohort budget.
+      - name: Run hello-world canary
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BENCH_GITHUB_TOKEN: ${{ secrets.BENCH_GITHUB_TOKEN }}
+          BENCH_SANDBOX_OWNER: ${{ github.repository_owner }}
+          BENCH_MODEL: ${{ inputs.model }}
+          BENCH_SCENARIOS: hello-world
+          BENCH_MAX_COST_USD: '5'
+        run: node bench/run.js
+
+  # ---------------------------------------------------------------------------
+  # matrix — one job per deficit cell (max-parallel 6). Only runs after the
+  # canary passes, so a canary failure aborts the whole invocation.
+  # ---------------------------------------------------------------------------
+  cell:
+    name: Cell ${{ matrix.scenario }} / ${{ matrix.arm }}
+    needs: [plan, canary]
+    if: needs.plan.outputs.has_deficit == 'true' && inputs.dry_run != true
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --ignore-scripts
+      - run: npx mandrel sync
+
+      # Run this single deficit cell. BENCH_MAX_COST_USD carries THIS cell's
+      # allocated share of the invocation ceiling, so the in-loop stop enforces
+      # the per-cell ceiling and no single cell can overspend the cohort budget.
+      - name: Run cell
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BENCH_GITHUB_TOKEN: ${{ secrets.BENCH_GITHUB_TOKEN }}
+          BENCH_SANDBOX_OWNER: ${{ github.repository_owner }}
+          BENCH_MODEL: ${{ inputs.model }}
+          BENCH_SCENARIOS: ${{ matrix.scenario }}
+          BENCH_ARMS: ${{ matrix.arm }}
+          BENCH_N: ${{ inputs.target_n }}
+          BENCH_MAX_COST_USD: ${{ matrix.allocatedCostUsd }}
+        run: node bench/run.js
+
+      # Upload this cell's scorecards AND its .raw provenance tree as artifacts
+      # so the aggregate job can merge them without re-running anything.
+      - name: Upload cell scorecards + provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scorecards-${{ matrix.scenario }}-${{ matrix.arm }}
+          path: |
+            results/**/scorecards.ndjson
+            results/**/.raw/**
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # aggregate — merge every cell's artifacts, render, and OPEN A PR (never push
+  # to main). Results-PR review replaces the interactive STOP gates.
+  # ---------------------------------------------------------------------------
+  aggregate:
+    name: Aggregate + open results PR
+    needs: [plan, cell]
+    if: needs.plan.outputs.has_deficit == 'true' && inputs.dry_run != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --ignore-scripts
+
+      # Pull down every cell's scorecards + provenance into a single tree.
+      - name: Download all cell artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      # Merge the downloaded scorecards into results/ (append-only NDJSON) and
+      # render the cohort report + results.html from the resulting tree WITHOUT
+      # invoking any run.
+      - name: Merge + render results tree
+        run: node bench/report/aggregate-cli.js --artifacts-dir artifacts --results-dir results
+
+      # Open a pull request with the merged results. This job NEVER pushes to
+      # main — the PR is the review gate. create-pull-request pushes to a
+      # dedicated results branch and opens the PR against the default branch.
+      - name: Open results PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.BENCH_GITHUB_TOKEN }}
+          branch: benchmark/results-${{ github.run_id }}
+          base: main
+          commit-message: "chore(bench): cohort results from run ${{ github.run_id }}"
+          title: "chore(bench): benchmark cohort results (run ${{ github.run_id }})"
+          body: |
+            Automated benchmark cohort results from workflow run ${{ github.run_id }}.
+
+            Review this PR in place of the interactive STOP gate: inspect the
+            rendered scorecard + delta-vs-noise-band, then merge to publish.
+          add-paths: |
+            results/**

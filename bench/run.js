@@ -68,11 +68,12 @@ import {
   seedFromTemplate,
   teardownSandbox,
 } from './driver/sandbox.js';
-import { aggregateScorecards } from './report/aggregate.js';
 import { cohortDir } from './report/cohort-path.js';
-import { renderDashboard } from './report/html.js';
-import { appendScorecards, readStore } from './report/persist.js';
-import { renderReport } from './report/render.js';
+import { appendScorecards } from './report/persist.js';
+import {
+  renderCohortReport,
+  renderDashboardFile,
+} from './report/render-tree.js';
 import { scoreScenarioQuality as defaultScoreScenarioQuality } from './scenarios/acceptance-eval-adapter.js';
 import { runDimensionJudge as defaultRunDimensionJudge } from './scenarios/dimension-judge-adapter.js';
 import { collectMaintainabilitySignals as defaultCollectMaintainabilitySignals } from './scenarios/maintainability-adapter.js';
@@ -1142,34 +1143,38 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
     }
   }
 
+  // Render over the FULL on-disk cohort store, NOT just this run's cards. A
+  // resumed batch only produces the cells it actually re-ran (the rest are
+  // skipped from the checkpoint), so rendering the run's cards alone
+  // under-counts every resumed cell — a resumed N=8 that re-ran 5 cells would
+  // report n=5 instead of the true n=8. The render logic is shared with the
+  // standalone aggregate CLI via bench/report/render-tree.js (Story #90).
   const cohorts = [];
   for (const [dir, cohortCards] of cohortReportCards) {
-    const storePath = path.join(dir, 'scorecards.ndjson');
-    // Render over the FULL on-disk cohort store, NOT just this run's
-    // `cohortCards`. A resumed batch only produces the cells it actually
-    // re-ran (the rest are skipped from the checkpoint), so rendering
-    // `cohortCards` alone under-counts every resumed cell — a resumed N=8 that
-    // re-ran 5 cells would report n=5 instead of the true n=8. This mirrors how
-    // the dashboard reads the corpus (`aggregateScorecards`). Deterministic:
-    // `readStore` + `renderReport` are pure over the append-ordered store.
-    const fullStore = readStore({ storePath }, deps.persistDeps);
-    const report = renderReport({ scorecards: fullStore, method: 'iqr' });
     const stamp = sanitizeRunId(cohortCards[0]?.timestamp ?? `${Date.now()}`);
-    const reportsDir = path.join(dir, 'reports');
-    const reportPath = path.join(reportsDir, `report-${stamp}.md`);
-    mkdir(reportsDir);
-    writeFile(reportPath, report);
-    cohorts.push({ dir, storePath, reportPath, report });
+    cohorts.push(
+      renderCohortReport(
+        { cohortDir: dir, stamp, method: 'iqr' },
+        {
+          readStoreDeps: deps.persistDeps,
+          writeFileImpl: writeFile,
+          mkdirImpl: mkdir,
+        },
+      ),
+    );
   }
 
   // Regenerate the aggregate dashboard from the FULL corpus across every cohort
   // (not just this run's scorecards) so `results.html` always reflects the whole
   // longitudinal history on disk.
-  const corpus = aggregateScorecards({ resultsDir }, deps.aggregateDeps);
-  const dashboard = renderDashboard({ scorecards: corpus });
-  const dashboardPath = path.join(resultsDir, 'results.html');
-  mkdir(resultsDir);
-  writeFile(dashboardPath, dashboard);
+  const { dashboardPath, dashboard } = renderDashboardFile(
+    { resultsDir },
+    {
+      aggregateDeps: deps.aggregateDeps,
+      writeFileImpl: writeFile,
+      mkdirImpl: mkdir,
+    },
+  );
 
   return { scorecards, cohorts, dashboardPath, dashboard, skipped, stopped };
 }
