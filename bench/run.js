@@ -910,6 +910,8 @@ export async function runOneRun(opts, deps = {}) {
       trap,
       rawRefs,
       standalone,
+      scenarioRouting:
+        typeof scenario?.routing === 'string' ? scenario.routing : null,
     });
     return scorecard;
   } finally {

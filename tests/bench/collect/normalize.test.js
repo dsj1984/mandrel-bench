@@ -426,6 +426,121 @@ describe('buildScorecard — standalone fallback (Story #48)', () => {
   });
 });
 
+describe('buildScorecard — routing contract enforcement (Epic #66, Story #76)', () => {
+  it('marks routingMismatch: true when the observed epic routing diverges from a declared story contract', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:00:00.000Z',
+          event: 'story.dispatch.start',
+        },
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:30:00.000Z',
+          event: 'story.dispatch.end',
+        },
+      ],
+      planning: { plannedStoryCount: 1, deliveredStoryCount: 1 },
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+      scenarioRouting: 'story',
+    });
+    assert.equal(sc.routingVerdict, 'epic');
+    assert.equal(sc.routingMismatch, true);
+  });
+
+  it('carries routingMismatch: false when the observed routing matches the declared contract', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel', scenario: 'crud-db' }),
+      lifecycle: [], // standalone path → no Epic ledger
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
+      standalone: {
+        planning: {
+          plannedStoryCount: 1,
+          deliveredStoryCount: 1,
+          rePlanCount: 0,
+        },
+        autonomy: { hitlStops: 0, blockedEvents: 0, manualRescues: 0 },
+        routingVerdict: 'story',
+      },
+      scenarioRouting: 'story',
+    });
+    assert.equal(sc.routingVerdict, 'story');
+    assert.equal(sc.routingMismatch, false);
+  });
+
+  it('defaults routingMismatch to false when no scenario contract is declared', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:00:00.000Z',
+          event: 'story.dispatch.start',
+        },
+      ],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.equal(sc.routingMismatch, false);
+  });
+
+  it('defaults routingMismatch to false when the observed routing could not be determined', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [], // no ledger, no standalone recovery ⇒ routingVerdict null
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+      scenarioRouting: 'story',
+    });
+    assert.equal(sc.routingVerdict, null);
+    assert.equal(sc.routingMismatch, false);
+  });
+
+  it('is always false for the control arm regardless of the declared contract', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'control' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+      scenarioRouting: 'story',
+    });
+    assert.equal(sc.routingMismatch, false);
+  });
+
+  it('validates against scorecard.schema.json with routingMismatch true and with it defaulted false', () => {
+    const validate = buildValidator();
+    const mismatched = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:00:00.000Z',
+          event: 'story.dispatch.start',
+        },
+      ],
+      planning: { plannedStoryCount: 1, deliveredStoryCount: 1 },
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+      scenarioRouting: 'story',
+    });
+    assert.equal(mismatched.routingMismatch, true);
+    assert.equal(validate(mismatched), true, JSON.stringify(validate.errors));
+
+    const clean = buildScorecard({
+      run: runStamp({ arm: 'control' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.equal(clean.routingMismatch, false);
+    assert.equal(validate(clean), true, JSON.stringify(validate.errors));
+  });
+});
+
 describe('buildScorecard — maintainability and security inputs', () => {
   it('threads maintainabilityInputs into dimensions.maintainability', () => {
     const sc = buildScorecard({

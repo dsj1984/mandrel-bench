@@ -120,17 +120,44 @@ function armBand(scorecards, accessor, method) {
 }
 
 /**
+ * Scenarios reported under the floor/calibration framing (Epic #66,
+ * Story #76) rather than the value-delta tables: instrumentation rungs that
+ * are deliberately too simple to show value (the overhead-floor estimate,
+ * the cheap end of the monotonicity curve, and the CI canary) — never a
+ * value rung in their own right. v1 ships one such rung.
+ */
+const FLOOR_CALIBRATION_SCENARIOS = new Set(['hello-world']);
+
+/** Above this fraction of a cell's mandrel-arm records marked
+ * `routingMismatch: true`, the mismatch is itself a scope-triage
+ * calibration finding (target-architecture §3.3), not noise the harness
+ * papers over.
+ */
+const MISMATCH_RATE_FLAG_THRESHOLD = 0.25;
+
+/**
  * Group a flat list of scorecards into difficulty-ordered scenario cells, each
  * carrying the Mandrel and control arms separately. Scenarios are ordered by
  * the difficulty ladder; an unknown scenario sorts last (and is still
  * rendered, so an out-of-ladder scenario is never silently dropped).
+ *
+ * Routing contract enforcement (Epic #66, Story #76): mandrel-arm records
+ * carrying `routingMismatch: true` (an OBSERVED routing that diverges from
+ * the scenario's DECLARED `routing` contract) are excluded from
+ * `mandrelRuns` — the pool the differential/noise-band computation reads —
+ * and instead surfaced via `mismatchedRuns` / `mismatchRate` / `mismatchFlag`
+ * so a reader sees the deficit rather than a silently thinned pool.
  *
  * @param {Array<object>} scorecards
  * @returns {Array<{
  *   scenario: string,
  *   difficulty: number,
  *   mandrelRuns: Array<object>,
- *   controlRuns: Array<object>
+ *   controlRuns: Array<object>,
+ *   mismatchedRuns: Array<object>,
+ *   mismatchRate: number,
+ *   mismatchFlag: boolean,
+ *   floorCalibration: boolean
  * }>}
  */
 export function groupCells(scorecards) {
@@ -142,20 +169,35 @@ export function groupCells(scorecards) {
     const scenario = sc?.scenario;
     if (typeof scenario !== 'string') continue;
     if (!byScenario.has(scenario)) {
-      byScenario.set(scenario, { mandrelRuns: [], controlRuns: [] });
+      byScenario.set(scenario, {
+        mandrelRuns: [],
+        controlRuns: [],
+        mismatchedRuns: [],
+      });
     }
     const cell = byScenario.get(scenario);
-    if (sc.arm === 'mandrel') cell.mandrelRuns.push(sc);
-    else if (sc.arm === 'control') cell.controlRuns.push(sc);
+    if (sc.arm === 'mandrel') {
+      if (sc.routingMismatch === true) cell.mismatchedRuns.push(sc);
+      else cell.mandrelRuns.push(sc);
+    } else if (sc.arm === 'control') {
+      cell.controlRuns.push(sc);
+    }
   }
 
   const cells = [];
   for (const [scenario, arms] of byScenario) {
+    const totalMandrel = arms.mandrelRuns.length + arms.mismatchedRuns.length;
+    const mismatchRate =
+      totalMandrel > 0 ? arms.mismatchedRuns.length / totalMandrel : 0;
     cells.push({
       scenario,
       difficulty: DIFFICULTY_BY_SCENARIO[scenario] ?? Number.POSITIVE_INFINITY,
       mandrelRuns: arms.mandrelRuns,
       controlRuns: arms.controlRuns,
+      mismatchedRuns: arms.mismatchedRuns,
+      mismatchRate,
+      mismatchFlag: mismatchRate > MISMATCH_RATE_FLAG_THRESHOLD,
+      floorCalibration: FLOOR_CALIBRATION_SCENARIOS.has(scenario),
     });
   }
   cells.sort((a, b) => {
@@ -331,14 +373,58 @@ function renderRoutingNote(mandrelRuns) {
   return `> **Mandrel routing: mixed** across runs (${verdicts.join(', ')}).`;
 }
 
+/**
+ * Render the per-cell routing-mismatch note (Epic #66, Story #76): surfaces
+ * the count + rate of mandrel-arm records excluded from the noise-band pool
+ * because their observed routing diverged from the scenario's declared
+ * contract. Returns '' when the cell has no mismatched records.
+ *
+ * @param {object} cell  A `groupCells` entry.
+ * @returns {string}
+ */
+function renderMismatchNote(cell) {
+  const n = cell.mismatchedRuns?.length ?? 0;
+  if (n === 0) return '';
+  const pct = fmt(cell.mismatchRate * 100, 1);
+  if (cell.mismatchFlag) {
+    return (
+      `> ⚠️ **Routing mismatch: ${pct}% of mandrel runs** (${n} record(s)) — ` +
+      'above the 25% scope-triage threshold. Excluded from the noise-band ' +
+      'pool below; this is itself a calibration finding, not noise.'
+    );
+  }
+  return `> **Routing mismatch: ${pct}% of mandrel runs** (${n} record(s)) — excluded from the noise-band pool below.`;
+}
+
+/**
+ * Render the floor/calibration framing note (Epic #66, Story #76) for a
+ * cell tagged `floorCalibration: true` — instrumentation rungs (hello-world)
+ * that are deliberately too simple to show value. Returns '' otherwise.
+ *
+ * @param {object} cell  A `groupCells` entry.
+ * @returns {string}
+ */
+function renderFloorCalibrationNote(cell) {
+  if (!cell.floorCalibration) return '';
+  return (
+    '> 🧭 **Floor/calibration rung** — instrumentation, not a value rung. ' +
+    'Distributions below are the overhead-floor + monotonicity-curve ' +
+    'calibration signal, not a value-delta claim.'
+  );
+}
+
 function renderScenarioSection(cell, diff, method) {
   const rows = dimensionRows(cell, diff, method);
   const routingNote = renderRoutingNote(cell.mandrelRuns);
+  const mismatchNote = renderMismatchNote(cell);
+  const floorNote = renderFloorCalibrationNote(cell);
   const header = [
     `### Scenario: \`${cell.scenario}\` (difficulty ${Number.isFinite(cell.difficulty) ? cell.difficulty : '?'})`,
     '',
     `n = ${cell.mandrelRuns.length} mandrel / ${cell.controlRuns.length} control · band = ${method} (\`center [low, high]\`)`,
+    ...(floorNote ? ['', floorNote] : []),
     ...(routingNote ? ['', routingNote] : []),
+    ...(mismatchNote ? ['', mismatchNote] : []),
     '',
     '| Dimension | Mandrel | Control | Δ (M−C) | Noise floor | Verdict |',
     '| --- | --- | --- | --- | --- | --- |',
