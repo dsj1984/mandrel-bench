@@ -265,6 +265,53 @@ safe to **archive** (or delete) it once you've confirmed a local run succeeds
 against the ephemeral per-cell lifecycle above — nothing in this repo
 references it anymore.
 
+### Benchmark CI (`workflow_dispatch`)
+
+The full cohort can also run in CI, unattended, from a single manual dispatch:
+**Actions → Benchmark → Run workflow**
+([`.github/workflows/benchmark.yml`](.github/workflows/benchmark.yml)). One
+invocation runs the whole pipeline — plan → canary → per-cell matrix →
+aggregate — and lands the results as a reviewable pull request. A complete
+cohort is a near-zero-cost no-op: the plan job spends only on the deficit.
+
+**Topology.** `plan` runs the top-up planner
+([`bench/driver/topup-planner.js`](bench/driver/topup-planner.js)) to compute
+the per-cell deficit and its cost allocation; `canary` runs the cheapest rung
+(`hello-world`) end-to-end **first** as a smoke test — a canary failure aborts
+the invocation before any expensive cell runs; the per-cell `matrix` fans out
+one job per deficit cell (max 6 in parallel), each exporting its
+`BENCH_MAX_COST_USD` share so the in-loop stop enforces the per-cell ceiling
+and uploading its scorecards + `.raw` provenance as artifacts; `aggregate`
+downloads every cell's artifacts, merges them into `results/` (append-only
+NDJSON) and renders the cohort report + `results.html` via the standalone
+[`bench/report/aggregate-cli.js`](bench/report/aggregate-cli.js) — with **no**
+run — then **opens a pull request**. No job pushes to `main` directly.
+
+**The results PR replaces the interactive STOP gates.** The local
+[`/benchmark`](#running) flow pauses for an operator to review the scorecard
+before committing; in CI there is no interactive pause — the aggregate job's
+pull request **is** the review gate. Inspect the rendered scorecard and the
+delta-vs-noise-band in the PR, then merge to publish (which also fires
+`publish-pages`).
+
+**Inputs** (all optional; blanks fall back to the pinned/declared defaults):
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `mandrel_version` | pinned dependency | Framework version under test for this cohort. |
+| `model` | bench default | Model id for the cohort stamp (e.g. `claude-opus-4-8`). |
+| `scenarios` | the 3-rung corpus | Comma-separated scenario ids to benchmark. |
+| `target_n` | each scenario's `targetN` | Uniform per-scenario run-count override. |
+| `max_cost_usd` | `150` | USD ceiling allocated across the deficit cells. |
+| `dry_run` | `false` | Plan only — print the deficit plan and skip every paid cell. |
+
+**Required Action secrets** (Settings → Secrets and variables → Actions):
+
+| Secret | Meaning |
+| --- | --- |
+| `ANTHROPIC_API_KEY` | the model credential the benchmarked sessions call with. |
+| `BENCH_GITHUB_TOKEN` | token with repo create/delete + contents + issues + pull-requests scopes — used both for the ephemeral per-cell sandboxes and to open the results PR. |
+
 ---
 
 ## See also
@@ -291,6 +338,9 @@ references it anymore.
 - **Releases:** [release-please](https://github.com/googleapis/release-please)
   versions + changelogs on `main` (tags `vX.Y.Z`); **not** published to npm.
 - **CI:** GitHub Actions — `lint` + `test` on every PR to `main`.
+- **Benchmark CI:** GitHub Actions — `benchmark` runs the full cohort pipeline
+  from a manual `workflow_dispatch` and opens a results PR (see
+  [Benchmark CI](#benchmark-ci-workflow_dispatch)).
 - **Pages:** GitHub Actions — `publish-pages` deploys `results/results.html` to
   GitHub Pages on every results-PR merge to `main` (see
   [Published dashboard](#published-dashboard)).
