@@ -149,6 +149,14 @@ tickets.
 **Why.** Feedback-loop *automation* is explicitly out of v1 scope; a human-read
 report is a complete feedback loop.
 
+**Superseded by [D-016](#d-016--feedback-findings-auto-filed-on-the-mandrel-repo-fingerprint-deduplicated-and-merge-gated-epic-85-decided-2026-07-09)
+(Epic #85).** Findings are now auto-filed on the mandrel repo,
+fingerprint-deduplicated and gated on results-PR merge. The always-embedded
+results-PR-body findings section is now the graceful-degradation *fallback*
+(when cross-repo filing is unavailable), not the whole loop — but the D-009
+surfacing behaviour is retained as that fallback, so this entry stays a live
+historical record of it.
+
 ---
 
 ## D-010 — Cross-scenario metrics are derivatives, not a sixth dimension
@@ -517,3 +525,48 @@ by the `benchmark.yml` aggregate job) lands the freshly-rendered dashboard on
   additional surface, not the source of truth.
 
 **Status.** Delivered (Epic #84 Phase 3).
+
+## D-016 — Feedback findings auto-filed on the mandrel repo, fingerprint-deduplicated and merge-gated (Epic #85, decided 2026-07-09)
+
+**Decision.** Implements [`target-architecture.md`](target-architecture.md) §7
+(and listed in §11). The report's "Recommended improvements" section stops being
+a dead end (supersedes [D-009](#d-009--recommended-improvements-are-surfaced-never-auto-filed)):
+a `bench/feedback/` stage runs after aggregation and turns a results corpus into
+deterministic, evidence-carrying **findings** that are auto-filed as issues on
+`dsj1984/mandrel`.
+
+- **Four signal-gated finding classes** (`bench/feedback/derive.js`), each
+  deriving ZERO findings when its signal is absent (no placeholder records):
+  regression (a metric outside the noise band vs the *previous comparable
+  cohort* — same model + benchmark version, prior framework version), standing
+  cost (overhead floor, above-noise overhead ratio, difficulty-monotonicity
+  violations), trap differential (a planted defect class the mandrel arm did not
+  keep clean), and pipeline calibration (routing-mismatch rate, unmet autonomy
+  guardrail, standalone-telemetry-absent).
+- **Stable fingerprint** (`class + scenario + subject`, `bench/feedback/
+  fingerprint.js`) embedded as an HTML-comment marker in the issue body. The
+  fingerprint EXCLUDES the cohort triple, so the same finding under a later
+  cohort collides onto one fingerprint. The filer (`bench/feedback/file.js`)
+  LISTS the repo's open `bench-feedback` issues and matches the marker
+  CLIENT-SIDE (never GitHub issue search, which does not index HTML-comment
+  text): **hit → append a dated cohort comment**; **miss → open a new issue**
+  (labels `bench-feedback` + `meta::framework-gap`); an already-recorded
+  (fingerprint × cohort) is a **no-op**, so a re-run writes nothing.
+- **Merge-gated.** The benchmark aggregate job derives the findings, commits the
+  envelope JSON with the cohort results, and opens a results PR that EMBEDS the
+  findings section; only MERGING that PR (a push to `main` under the results
+  tree) fires the filer (`.github/workflows/feedback-file.yml`). It never runs
+  on `pull_request`, so an unreviewed cohort can never write to the mandrel
+  repo. Dedup-by-fingerprint plus merge-gating is the anti-spam design.
+- **Graceful degradation (retains D-009).** The findings are ALWAYS embedded in
+  the results-PR body, and the cross-repo filer degrades LOUDLY + exits 0 when
+  its `FEEDBACK_GITHUB_TOKEN` is absent or underscoped — so a misconfigured
+  secret never fails a merge; the loop simply falls back to the D-009
+  surfacing behaviour. The filer binds explicitly to `FEEDBACK_GITHUB_TOKEN`
+  and never the destructive sandbox PAT.
+
+**Status.** Delivered (Epic #85). The Phase-4 audit-remediation pass pinned the
+aggregate job's derive step to the run-under-test cohort triple (so the loop
+survives once `main` holds more than one cohort), single-sourced the
+routing-mismatch threshold, and wrapped the filer's LIST call in the same
+graceful-degradation guard as its writes.

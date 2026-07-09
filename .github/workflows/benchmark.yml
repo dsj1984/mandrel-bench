@@ -80,6 +80,14 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       has_deficit: ${{ steps.plan.outputs.has_deficit }}
+      # The run-under-test cohort triple, resolved by the top-up planner and
+      # surfaced here so the aggregate job's derive step can PIN the target
+      # cohort (H1). Without these pins derive-cli auto-selects only when the
+      # whole results tree holds exactly one cohort — which fails ambiguous
+      # once main accumulates a second cohort (the benchmark's steady state).
+      model: ${{ steps.plan.outputs.model }}
+      framework_version: ${{ steps.plan.outputs.framework_version }}
+      benchmark_version: ${{ steps.plan.outputs.benchmark_version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -121,6 +129,13 @@ jobs:
             const out = process.env.GITHUB_OUTPUT;
             appendFileSync(out, `matrix=${JSON.stringify(matrix)}\n`);
             appendFileSync(out, `has_deficit=${matrix.include.length > 0}\n`);
+            // Surface the resolved run-under-test cohort triple so the aggregate
+            // derive step can pin it (H1). planTopup returns the resolved
+            // { model, frameworkVersion, benchmarkVersion } on plan.cohort.
+            const cohort = plan.cohort ?? {};
+            appendFileSync(out, `model=${cohort.model ?? ""}\n`);
+            appendFileSync(out, `framework_version=${cohort.frameworkVersion ?? ""}\n`);
+            appendFileSync(out, `benchmark_version=${cohort.benchmarkVersion ?? ""}\n`);
           '
 
   # ---------------------------------------------------------------------------
@@ -238,6 +253,54 @@ jobs:
       - name: Merge + render results tree
         run: node bench/report/aggregate-cli.js --artifacts-dir artifacts --results-dir results
 
+      # Derive the Phase-4 feedback findings for the merged cohort (Epic #85).
+      # This COMMITS the finding-envelope JSON into the results tree (picked up
+      # by the add-paths below) and captures the Markdown findings section, which
+      # we embed in the PR body — so the findings are always reviewed with the
+      # cohort and the loop degrades to D-009 behaviour if cross-repo filing is
+      # unavailable. Merging this PR lands the envelope on main and fires the
+      # merge-gated filer (.github/workflows/feedback-file.yml); filing NEVER
+      # happens here (no unreviewed write). Tolerant: an empty / ambiguous tree
+      # yields an empty findings section rather than failing the aggregate job.
+      - name: Derive feedback findings
+        id: findings
+        env:
+          BENCH_RUN_ID: ${{ github.run_id }}
+          # PIN the target cohort to the run-under-test triple (H1). Passed
+          # through env (never interpolated into the run: body) to keep the
+          # shell-injection surface closed. An empty pin means "don't filter on
+          # this field" in derive-cli (a null pin) — harmless, but in a normal
+          # run the planner resolves all three, so the derive step selects the
+          # exact cohort even when main holds several.
+          BENCH_COHORT_MODEL: ${{ needs.plan.outputs.model }}
+          BENCH_COHORT_FRAMEWORK_VERSION: ${{ needs.plan.outputs.framework_version }}
+          BENCH_COHORT_BENCHMARK_VERSION: ${{ needs.plan.outputs.benchmark_version }}
+        run: |
+          set -euo pipefail
+          # Build the derive argv from the (validated) BENCH_* env vars, adding a
+          # cohort pin only when the planner resolved a non-empty value.
+          DERIVE_ARGS=(--results-dir results --stamp "$BENCH_RUN_ID" --pr-body-out findings-pr-body.md)
+          if [ -n "$BENCH_COHORT_MODEL" ]; then DERIVE_ARGS+=(--model "$BENCH_COHORT_MODEL"); fi
+          if [ -n "$BENCH_COHORT_FRAMEWORK_VERSION" ]; then DERIVE_ARGS+=(--framework-version "$BENCH_COHORT_FRAMEWORK_VERSION"); fi
+          if [ -n "$BENCH_COHORT_BENCHMARK_VERSION" ]; then DERIVE_ARGS+=(--benchmark-version "$BENCH_COHORT_BENCHMARK_VERSION"); fi
+          if node bench/feedback/derive-cli.js "${DERIVE_ARGS[@]}"; then
+            :
+          else
+            echo "## Benchmark findings" > findings-pr-body.md
+            echo "" >> findings-pr-body.md
+            echo "No findings section derived (empty or ambiguous results tree)." >> findings-pr-body.md
+          fi
+          # Randomize the heredoc delimiter so a findings body can never inject
+          # a premature terminator into GITHUB_OUTPUT (Actions output-injection
+          # hardening, M6). The body is enumerated tokens today, but a random
+          # delimiter closes the class regardless of what the derive step emits.
+          DELIM="FINDINGS_EOF_$(openssl rand -hex 8)"
+          {
+            echo "markdown<<$DELIM"
+            cat findings-pr-body.md
+            echo "$DELIM"
+          } >> "$GITHUB_OUTPUT"
+
       # Open a pull request with the merged results. This job NEVER pushes to
       # main — the PR is the review gate. create-pull-request pushes to a
       # dedicated results branch and opens the PR against the default branch.
@@ -257,5 +320,10 @@ jobs:
 
             Review this PR in place of the interactive STOP gate: inspect the
             rendered scorecard + delta-vs-noise-band, then merge to publish.
+            Merging lands the finding envelope on main and fires the merge-gated
+            feedback filer (.github/workflows/feedback-file.yml); nothing is
+            filed on the mandrel repo until you merge.
+
+            ${{ steps.findings.outputs.markdown }}
           add-paths: |
             results/**

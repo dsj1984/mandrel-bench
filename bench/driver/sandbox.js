@@ -76,6 +76,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { sanitizeGitHubTokenEnv } from './token-env.js';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
@@ -621,43 +623,12 @@ export function seedFromTemplate(
   return { repoFullName, baselineSha: sha, repoUrl };
 }
 
-/**
- * Strip whitespace from the GitHub token environment variables so a malformed
- * ambient token can't break a `gh` call. A token with a trailing `\r` (e.g. a
- * `.env` saved with CRLF line endings) makes `gh` fail with
- * `net/http: invalid header field value for "Authorization"`, which silently
- * fails the per-run sandbox reset and lets a run clone an un-reset `main`.
- * GitHub tokens never contain whitespace, so stripping it is always safe.
- *
- * `BENCH_GITHUB_TOKEN` (the harness's own credential — README / `.env.example`
- * / docs/architecture.md §7) is the credential that is supposed to authorize
- * this whole lifecycle. When it is present in `env`, it WINS: its
- * (whitespace-stripped) value is written into `GH_TOKEN`, taking precedence
- * over whatever ambient `GH_TOKEN`/`GITHUB_TOKEN` the operator's shell or `gh
- * auth login` session happens to carry. Without this, `gh` silently falls
- * back to that ambient session, which may be a broader-scoped credential than
- * the operator intended for this harness (Epic #65 audit remediation).
- *
- * Returns a shallow copy; unset / empty tokens are left untouched so a clean
- * `gh` keyring auth still applies when `BENCH_GITHUB_TOKEN` is not set.
- *
- * @param {NodeJS.ProcessEnv} [env=process.env]
- * @returns {NodeJS.ProcessEnv}
- */
-export function sanitizeGitHubTokenEnv(env = process.env) {
-  const out = { ...env };
-  for (const key of ['GH_TOKEN', 'GITHUB_TOKEN']) {
-    const v = out[key];
-    if (typeof v === 'string' && v.length > 0) {
-      out[key] = v.replace(/\s/g, '');
-    }
-  }
-  const benchToken = out.BENCH_GITHUB_TOKEN;
-  if (typeof benchToken === 'string' && benchToken.length > 0) {
-    out.GH_TOKEN = benchToken.replace(/\s/g, '');
-  }
-  return out;
-}
+// The GitHub-token env sanitizer moved to the neutral leaf
+// `bench/driver/token-env.js` (M10) so the feedback filer's load graph no longer
+// depends on this whole sandbox module. The sandbox lifecycle keeps its
+// BENCH_GITHUB_TOKEN-wins preference unchanged; it is re-exported here so this
+// module's public surface (and every importer / test) is unchanged.
+export { sanitizeGitHubTokenEnv };
 
 /**
  * Retry a synchronous, potentially-flaky operation once (default) before
