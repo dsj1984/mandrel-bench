@@ -247,7 +247,7 @@ test('resetSandboxBaseline: resolves the baseline sha then force-PATCHes main', 
     return '';
   };
   const res = resetSandboxBaseline(
-    { owner: 'dsj1984', repo: 'mandrel-bench-sandbox' },
+    { owner: 'dsj1984', repo: 'bench-sbx-c1-hw-mandrel-a1b2' },
     { ghFn, logger: { info() {}, warn() {} } },
   );
 
@@ -256,14 +256,14 @@ test('resetSandboxBaseline: resolves the baseline sha then force-PATCHes main', 
   // 1. Resolve the baseline ref's sha.
   assert.deepEqual(ghCalls[0], [
     'api',
-    'repos/dsj1984/mandrel-bench-sandbox/git/ref/heads/bench-baseline',
+    'repos/dsj1984/bench-sbx-c1-hw-mandrel-a1b2/git/ref/heads/bench-baseline',
   ]);
   // 2. Force-update main to that sha.
   assert.deepEqual(ghCalls[1], [
     'api',
     '-X',
     'PATCH',
-    'repos/dsj1984/mandrel-bench-sandbox/git/refs/heads/main',
+    'repos/dsj1984/bench-sbx-c1-hw-mandrel-a1b2/git/refs/heads/main',
     '-f',
     'sha=deadbeef123',
     '-F',
@@ -474,7 +474,7 @@ test('createEphemeralRepo: refuses a name outside the reserved bench-sbx- prefix
   assert.throws(
     () =>
       createEphemeralRepo(
-        { owner: 'dsj1984', name: 'mandrel-bench-sandbox' },
+        { owner: 'dsj1984', name: 'some-other-repo' },
         { ghFn: () => '' },
       ),
     /reserved bench-sbx- prefix/,
@@ -510,7 +510,7 @@ test('destroyEphemeralRepo: refuses a repo name outside the reserved bench-sbx- 
   assert.throws(
     () =>
       destroyEphemeralRepo(
-        { repoFullName: 'dsj1984/mandrel-bench-sandbox' },
+        { repoFullName: 'dsj1984/some-other-repo' },
         { ghFn: () => '' },
       ),
     /reserved bench-sbx- prefix/,

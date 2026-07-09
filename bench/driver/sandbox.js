@@ -10,9 +10,10 @@
  * optional per-scenario overlay), used for the cell's N serial runs, and
  * destroyed at teardown — a `create → seed → run(N) → destroy` lifecycle
  * (docs/target-architecture.md §5, decision delta D-013). This replaces the
- * former standing `mandrel-bench-sandbox` repo, whose `main` was force-reset
- * around every cell and whose content was unversioned — a shared mutable
- * substrate that blocked parallel cells and drifted silently.
+ * former standing external sandbox repo (retired — see docs/decisions.md
+ * D-013), whose `main` was force-reset around every cell and whose content
+ * was unversioned — a shared mutable substrate that blocked parallel cells
+ * and drifted silently.
  *
  * Lifecycle primitives:
  *   - `sandboxRepoName(opts)` — pure repo-name generator, always prefixed

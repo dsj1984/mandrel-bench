@@ -29,8 +29,8 @@ import {
 } from '../../../bench/driver/overlay.js';
 
 const SOURCE = '/repo';
-const WS = '/tmp/ephemeral-root/mandrel-bench-sandbox-abc';
-const SANDBOX = { owner: 'dsj1984', repo: 'mandrel-bench-sandbox' };
+const WS = '/tmp/ephemeral-root/bench-sbx-test-ws-abc';
+const SANDBOX = { owner: 'dsj1984', repo: 'bench-sbx-test-ws' };
 
 const AGENTRC_SRC = JSON.stringify({
   $schema: './.agents/schemas/agentrc.schema.json',
@@ -79,7 +79,7 @@ function fakes(opts = {}) {
 test('rewriteAgentrc: repoints github and drops projectNumber, preserves the rest', () => {
   const cfg = rewriteAgentrc(AGENTRC_SRC, SANDBOX);
   assert.equal(cfg.github.owner, 'dsj1984');
-  assert.equal(cfg.github.repo, 'mandrel-bench-sandbox');
+  assert.equal(cfg.github.repo, 'bench-sbx-test-ws');
   assert.equal(cfg.github.projectNumber, undefined);
   assert.equal(cfg.delivery.ci.skipForStoryPushes, true);
   assert.equal(cfg.project.baseBranch, 'main');
@@ -252,7 +252,7 @@ test('overlay (mandrel): copies the framework tree + node_modules and writes con
 
   // .agentrc.json rewritten to the sandbox repo.
   const agentrc = JSON.parse(writes[path.join(WS, '.agentrc.json')]);
-  assert.equal(agentrc.github.repo, 'mandrel-bench-sandbox');
+  assert.equal(agentrc.github.repo, 'bench-sbx-test-ws');
   assert.equal(agentrc.github.projectNumber, undefined);
 });
 
