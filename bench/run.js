@@ -944,7 +944,15 @@ export async function runOneRun(opts, deps = {}) {
  * @param {object} opts
  * @param {string[]} [opts.scenarios=['hello-world']]
  * @param {Array<'mandrel'|'control'>} [opts.arms=['mandrel','control']]
- * @param {number} [opts.n=1]
+ * @param {number} [opts.n]   Explicit operator override for the run count,
+ *   applied uniformly to EVERY scenario in this batch. When omitted (the
+ *   default), each scenario's own `scenario.targetN` (its declared per-rung
+ *   sizing contract — `scenario.json`'s `targetN`, e.g. 4 for hello-world, 8
+ *   for story-scope/epic-scope) is used instead, falling back to 1 for a
+ *   scenario that declares none (Epic #66 audit remediation, H1 — `targetN`
+ *   was previously declared in every scenario contract but never read by the
+ *   runtime, so a multi-scenario batch with no explicit override silently
+ *   applied one global N to every rung regardless of its declared contract).
  * @param {string} [opts.model]
  * @param {{ repoUrl: string, owner: string, repo: string, baselineRef?: string }} opts.sandbox
  *   Sandbox repo coordinates. `baselineRef` (default `'bench-baseline'`) is the
@@ -968,7 +976,7 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
   const {
     scenarios = ['hello-world'],
     arms = ['mandrel', 'control'],
-    n = 1,
+    n: nOverride,
     model = DEFAULT_BENCH_MODEL,
     sandbox,
     resultsDir = path.join(repoRoot(), 'results'),
@@ -1030,6 +1038,18 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
       deps.loadDeps,
     );
     if (epicIds[scenarioId] != null) scenario.epicId = epicIds[scenarioId];
+    // Per-scenario run count (H1): an explicit operator override
+    // (`opts.n`/`BENCH_N`) applies uniformly to every scenario; absent that,
+    // each scenario's own declared `targetN` sizing contract governs, so a
+    // mixed-scenario batch gets the right cell count per rung without the
+    // operator having to split invocations manually.
+    const n =
+      typeof nOverride === 'number' && Number.isFinite(nOverride)
+        ? nOverride
+        : typeof scenario.targetN === 'number' &&
+            Number.isFinite(scenario.targetN)
+          ? scenario.targetN
+          : 1;
     for (let runIndex = 1; runIndex <= n; runIndex += 1) {
       for (const arm of arms) {
         const cell = cellKey({ scenario: scenarioId, arm, runIndex });
@@ -1481,7 +1501,11 @@ export async function main(env = process.env, deps = {}) {
   const arms = (env.BENCH_ARMS ?? 'mandrel,control')
     .split(',')
     .map((s) => s.trim());
-  const n = Number(env.BENCH_N ?? '1');
+  // H1: an explicit BENCH_N is an operator override applied uniformly to
+  // every scenario; when unset, leave `n` undefined so
+  // `runFirstBenchmark`/`runCell` resolve each scenario's own declared
+  // `targetN` sizing contract instead of silently defaulting to 1.
+  const n = env.BENCH_N != null ? Number(env.BENCH_N) : undefined;
   const maxRuns =
     env.BENCH_MAX_RUNS != null ? Number(env.BENCH_MAX_RUNS) : null;
   const maxCostUsd =

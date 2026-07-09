@@ -1396,6 +1396,119 @@ test('runFirstBenchmark: maxCostUsd ceiling stops after the cell that crosses it
   assert.equal(record.checkpointed.length, 2);
 });
 
+test('runFirstBenchmark: with no explicit n, resolves per-scenario run count from each scenario.targetN (Epic #66 audit remediation, H1)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  // Two scenarios with different declared targetN — mirrors the real corpus's
+  // hello-world (targetN 4) vs story-scope/epic-scope (targetN 8) split. The
+  // fake loader keys off the scenario.json path loadScenario() constructs
+  // (`.../scenarios/<id>/scenario.json`) so each scenario resolves its OWN
+  // fixture rather than the single shared FAKE_SCENARIO.
+  deps.loadDeps = {
+    readFileImpl: (p) => {
+      if (p.includes(`${path.sep}scenario-a${path.sep}`)) {
+        return JSON.stringify({
+          ...FAKE_SCENARIO,
+          id: 'scenario-a',
+          targetN: 4,
+        });
+      }
+      if (p.includes(`${path.sep}scenario-b${path.sep}`)) {
+        return JSON.stringify({
+          ...FAKE_SCENARIO,
+          id: 'scenario-b',
+          targetN: 8,
+        });
+      }
+      throw new Error(`unexpected scenario.json read: ${p}`);
+    },
+    importImpl: async () => ({
+      evaluate: async () => ({
+        scenario: 'fake',
+        passed: true,
+        criteria: [{ met: true }, { met: true }],
+      }),
+    }),
+  };
+
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['scenario-a', 'scenario-b'],
+      arms: ['mandrel'],
+      // No `n` — must fall back to each scenario's own targetN.
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  const byScenario = (id) => result.scorecards.filter((s) => s.scenario === id);
+  assert.equal(byScenario('scenario-a').length, 4);
+  assert.equal(byScenario('scenario-b').length, 8);
+  assert.equal(result.scorecards.length, 12);
+});
+
+test("runFirstBenchmark: an explicit n overrides every scenario's targetN uniformly", async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  deps.loadDeps = {
+    readFileImpl: (p) => {
+      if (p.includes(`${path.sep}scenario-a${path.sep}`)) {
+        return JSON.stringify({
+          ...FAKE_SCENARIO,
+          id: 'scenario-a',
+          targetN: 4,
+        });
+      }
+      if (p.includes(`${path.sep}scenario-b${path.sep}`)) {
+        return JSON.stringify({
+          ...FAKE_SCENARIO,
+          id: 'scenario-b',
+          targetN: 8,
+        });
+      }
+      throw new Error(`unexpected scenario.json read: ${p}`);
+    },
+    importImpl: async () => ({
+      evaluate: async () => ({
+        scenario: 'fake',
+        passed: true,
+        criteria: [{ met: true }, { met: true }],
+      }),
+    }),
+  };
+
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['scenario-a', 'scenario-b'],
+      arms: ['mandrel'],
+      n: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  const byScenario = (id) => result.scorecards.filter((s) => s.scenario === id);
+  assert.equal(byScenario('scenario-a').length, 1);
+  assert.equal(byScenario('scenario-b').length, 1);
+});
+
+test('runFirstBenchmark: a scenario with no declared targetN falls back to 1', async () => {
+  const record = freshRecord();
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel'],
+      // FAKE_SCENARIO carries no targetN, and no explicit n is supplied.
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    benchDeps(record),
+  );
+  assert.equal(result.scorecards.length, 1);
+});
+
 test('runFirstBenchmark: a resumed batch renders the report over the FULL store, not just this run', async () => {
   const storePath = path.join(
     '/results',
