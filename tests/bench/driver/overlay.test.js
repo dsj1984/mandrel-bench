@@ -1,12 +1,16 @@
 // tests/bench/driver/overlay.test.js
 /**
- * Unit tests for bench/driver/overlay.js — Story #3.
+ * Unit tests for bench/driver/overlay.js — Story #3; gate un-stubbing
+ * generalized in Epic #66, Story #74.
  *
  * Verifies the framework-under-test overlay:
  *   - the mandrel arm copies the framework tree + node_modules into the clone,
- *   - a clean minimal package.json is written into the clone,
+ *   - a package.json with REAL lint/typecheck/test gates is written into the
+ *     clone for EVERY scenario (arm-agnostic — Story #74 inverted the former
+ *     auth-trap-only special case),
  *   - .agentrc.json is rewritten to target the sandbox repo (projectNumber dropped),
- *   - the control arm is NOT overlaid (bare baseline),
+ *   - the control arm is NOT overlaid (bare baseline) but writeGatePackageJson
+ *     writes the SAME gate package.json directly into its workspace,
  *   - missing source paths are skipped, not fatal.
  *
  * Every filesystem effect is INJECTED — no real 144 MB copy, no real disk.
@@ -24,8 +28,7 @@ import {
   overlayFrameworkUnderTest,
   REWRITTEN_OVERLAY_ARTIFACTS,
   rewriteAgentrc,
-  TRAP_NODE_CHECK_SWEEP,
-  TRAP_SCENARIO_ID,
+  writeGatePackageJson,
 } from '../../../bench/driver/overlay.js';
 
 const SOURCE = '/repo';
@@ -118,80 +121,50 @@ test('rewriteAgentrc: targets the coordinates carried on the EPHEMERAL sandbox h
   assert.notEqual(cfg.github.repo, cfg2.github.repo);
 });
 
-test('buildTargetPackageJson: clean minimal ESM consumer with no-op gate scripts', () => {
+test('buildTargetPackageJson: clean minimal ESM consumer with REAL un-stubbed gate scripts (Story #74 — arm- and scenario-agnostic)', () => {
   const pkg = buildTargetPackageJson();
   assert.equal(pkg.type, 'module');
   assert.equal(pkg.private, true);
   assert.equal(pkg.dependencies, undefined);
-  // No-op gate scripts so close-validation's hardcoded `npm run typecheck` /
-  // `npm run lint` / `npm test` succeed against the clobbered package.json
-  // (the overlay overwrites package.json; Quality is scored by the frozen
-  // oracle, not these scripts, so the no-ops are correct, not gaming).
-  assert.deepEqual(pkg.scripts, {
-    typecheck: 'node --version',
-    lint: 'node --version',
-    test: 'node --version',
-  });
-});
-
-test('buildTargetPackageJson: no-op shim is unchanged for non-trap scenarios', () => {
-  // Story #57 Out of Scope: un-stubbing must be scoped to the one trap
-  // scenario; every other scenario keeps the no-op shim.
-  for (const scenarioId of [
-    undefined,
-    'hello-world',
-    'crud-db',
-    'project-api',
-  ]) {
-    const pkg = buildTargetPackageJson({ scenarioId });
-    assert.deepEqual(
-      pkg.scripts,
-      {
-        typecheck: 'node --version',
-        lint: 'node --version',
-        test: 'node --version',
-      },
-      `expected the no-op shim for scenario ${String(scenarioId)}`,
-    );
-  }
-});
-
-test('buildTargetPackageJson: REAL gates fire only for the auth-trap scenario (Story #57)', () => {
-  const pkg = buildTargetPackageJson({ scenarioId: TRAP_SCENARIO_ID });
-  assert.equal(pkg.type, 'module');
-  // The trap scenario un-stubs the gates so Mandrel's close-validation
-  // enforcement actually fires: typecheck is a real per-file node --check
-  // sweep, test runs node --test, neither is the node --version no-op.
+  // Every scenario now gets real gates so Mandrel's close-validation
+  // enforcement genuinely fires on the mandrel arm, and the control arm's
+  // delivered tree is measured against the identical gate contract.
   assert.notEqual(pkg.scripts.typecheck, 'node --version');
-  assert.equal(pkg.scripts.typecheck, TRAP_NODE_CHECK_SWEEP);
   assert.match(pkg.scripts.typecheck, /^node -e "/);
   assert.match(pkg.scripts.typecheck, /--check/);
   assert.equal(pkg.scripts.test, 'node --test');
-  // Lint is a real static gate too (node --check sweep when no Biome config).
   assert.notEqual(pkg.scripts.lint, 'node --version');
   assert.match(pkg.scripts.lint, /biome|--check/);
 });
 
-test('buildTargetPackageJson: the trap node --check sweep is a syntactically valid program', () => {
+test('buildTargetPackageJson: is arm/scenario-agnostic — takes no options and is stable across calls', () => {
+  const a = buildTargetPackageJson();
+  const b = buildTargetPackageJson();
+  assert.deepEqual(a, b);
+});
+
+test('buildTargetPackageJson: the node --check sweep is a syntactically valid program', () => {
   // The gate is shipped as an inline `node -e "<program>"`. Recover the program
   // text and prove it parses, so a clean delivery does not fail the gate on a
   // harness typo rather than on the delivered code.
-  const program = TRAP_NODE_CHECK_SWEEP.replace(/^node -e "/, '')
+  const pkg = buildTargetPackageJson();
+  const program = pkg.scripts.typecheck
+    .replace(/^node -e "/, '')
     .replace(/"$/, '')
     .replace(/\\"/g, '"');
   assert.doesNotThrow(() => new Function(program));
 });
 
-test('overlay (mandrel, trap scenario): writes the un-stubbed gates into the clone', () => {
+test('the old Story #57 single-scenario special-case exports are gone', async () => {
+  const mod = await import('../../../bench/driver/overlay.js');
+  assert.equal('TRAP_SCENARIO_ID' in mod, false);
+  assert.equal('TRAP_NODE_CHECK_SWEEP' in mod, false);
+});
+
+test('overlay (mandrel): writes the un-stubbed gates into the clone for every scenario', () => {
   const { deps, writes } = fakes();
   overlayFrameworkUnderTest(
-    {
-      workspacePath: WS,
-      arm: 'mandrel',
-      sandbox: SANDBOX,
-      sourceRoot: SOURCE,
-      scenarioId: TRAP_SCENARIO_ID,
-    },
+    { workspacePath: WS, arm: 'mandrel', sandbox: SANDBOX, sourceRoot: SOURCE },
     deps,
   );
   const pkg = JSON.parse(writes[path.join(WS, 'package.json')]);
@@ -200,24 +173,17 @@ test('overlay (mandrel, trap scenario): writes the un-stubbed gates into the clo
   assert.match(pkg.scripts.typecheck, /--check/);
 });
 
-test('overlay (mandrel, non-trap scenario): keeps the no-op shim in the clone', () => {
+test('writeGatePackageJson (control): writes the SAME gate package.json directly, with no overlay', () => {
   const { deps, writes } = fakes();
-  overlayFrameworkUnderTest(
-    {
-      workspacePath: WS,
-      arm: 'mandrel',
-      sandbox: SANDBOX,
-      sourceRoot: SOURCE,
-      scenarioId: 'hello-world',
-    },
-    deps,
-  );
+  const res = writeGatePackageJson({ workspacePath: WS }, deps);
+  assert.equal(res.workspacePath, WS);
   const pkg = JSON.parse(writes[path.join(WS, 'package.json')]);
-  assert.deepEqual(pkg.scripts, {
-    typecheck: 'node --version',
-    lint: 'node --version',
-    test: 'node --version',
-  });
+  assert.deepEqual(pkg, buildTargetPackageJson());
+  assert.equal(res.pkg.scripts.test, 'node --test');
+});
+
+test('writeGatePackageJson: rejects a missing workspacePath', () => {
+  assert.throws(() => writeGatePackageJson({}), /non-empty workspacePath/);
 });
 
 test('overlay (mandrel): copies the framework tree + node_modules and writes config', () => {
@@ -239,16 +205,12 @@ test('overlay (mandrel): copies the framework tree + node_modules and writes con
     assert.equal(call.opts.verbatimSymlinks, true);
   }
 
-  // Clean minimal package.json written into the clone, carrying the no-op
-  // gate scripts so close-validation passes against the clobbered file.
+  // Clean minimal package.json written into the clone, carrying the REAL
+  // un-stubbed gate scripts so close-validation enforcement genuinely fires.
   const pkg = JSON.parse(writes[path.join(WS, 'package.json')]);
   assert.equal(pkg.name, 'mandrel-bench-target');
   assert.equal(pkg.type, 'module');
-  assert.deepEqual(pkg.scripts, {
-    typecheck: 'node --version',
-    lint: 'node --version',
-    test: 'node --version',
-  });
+  assert.deepEqual(pkg.scripts, buildTargetPackageJson().scripts);
 
   // .agentrc.json rewritten to the sandbox repo.
   const agentrc = JSON.parse(writes[path.join(WS, '.agentrc.json')]);

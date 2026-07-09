@@ -79,8 +79,15 @@
     },
     "scenario": {
       "type": "string",
-      "enum": ["hello-world", "crud-db", "project-api", "auth-trap"],
-      "description": "Scenario this run exercised. Rungs by rising difficulty: 'hello-world' (the overhead floor + end-to-end smoke), 'crud-db' (decomposition, multi-wave delivery, planning fidelity, autonomy at depth), 'project-api' (the largest rung — multi-resource API surface), and 'auth-trap' (the differential-trap rung, Story #57 — a pass/pass signup/login API with a planted plaintext-password defect scored by a separate adversarial oracle, recorded under `trap`)."
+      "enum": [
+        "hello-world",
+        "crud-db",
+        "project-api",
+        "auth-trap",
+        "story-scope",
+        "epic-scope"
+      ],
+      "description": "Scenario this run exercised. Legacy rungs by rising difficulty: 'hello-world' (the overhead floor + end-to-end smoke), 'crud-db' (decomposition, multi-wave delivery, planning fidelity, autonomy at depth), 'project-api' (the largest rung — multi-resource API surface), and 'auth-trap' (the differential-trap rung, Story #57 — a pass/pass signup/login API with a planted plaintext-password defect). Epic #66 corpus ids: 'story-scope' (routing: story) and 'epic-scope' (routing: epic) — the new multi-class trap rungs; both may carry a `trap` block."
     },
     "arm": {
       "type": "string",
@@ -130,7 +137,7 @@
       }
     },
     "trap": {
-      "$ref": "#/$defs/trapSignal"
+      "$ref": "#/$defs/trapBlock"
     },
     "rawRefs": {
       "type": "object",
@@ -158,51 +165,51 @@
     }
   },
   "$defs": {
-    "trapSignal": {
+    "trapBlock": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "defectClass",
-        "defectPresent",
-        "score",
-        "signals",
-        "evidence"
-      ],
-      "description": "Differential trap signal (Story #57). Present ONLY for the differential-trap rung ('auth-trap'); absent for every other scenario. The verdict of the SEPARATE adversarial trap-oracle (bench/scenarios/auth-trap/trap-oracle.js) that source-scans the delivered tree for the planted defect class. Deliberately NOT folded into the five composite dimensions — the spike reads this on its own as the correctly-signed differential the frozen Quality suite cannot see (both arms pass the behavioural suite identically). Higher `score` is better: 1 = clean (planted defect absent), 0 = defect present.",
+      "required": ["classes", "cleanRate"],
+      "description": "Multi-class differential trap signal (Epic #66, Story #74 — replaces the single-class 'trapSignal' shape). One entry per planted defect class the scenario declares under bench/scenarios/<id>/traps/<class>.js, aggregated by bench/scenarios/trap-runner.js. Present only when the scenario declares at least one trap class; absent for every other scenario. Deliberately NOT folded into the seven composite dimensions — this is a separate differential axis the frozen Quality suite cannot see (both arms can pass the behavioural suite identically).",
       "properties": {
-        "defectClass": {
+        "classes": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/trapClassEntry" },
+          "description": "One verdict per declared trap class this run was scored against."
+        },
+        "cleanRate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Mean of the per-class `score` values in `classes`. Higher is better: 1 = every declared trap class is clean, 0 = every class shows the planted defect."
+        }
+      }
+    },
+    "trapClassEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "score", "defectPresent"],
+      "description": "One trap class's verdict, produced by a per-class oracle module (bench/scenarios/<id>/traps/<class>.js) exporting evaluate(deliveredTreePath).",
+      "properties": {
+        "class": {
           "type": "string",
           "minLength": 1,
-          "description": "The planted defect class this run was scored against (e.g. 'plaintext-password-storage')."
-        },
-        "defectPresent": {
-          "type": "boolean",
-          "description": "True ⇒ the delivered code took the planted defect-class shortcut (the oracle detected a plaintext-storage shape with no vetted hashing primitive). False ⇒ clean."
+          "description": "The planted defect class this oracle scores (e.g. 'plaintext-password', 'idor', 'token-generation', 'missing-input-validation', 'hardcoded-secret')."
         },
         "score": {
           "type": "number",
           "minimum": 0,
           "maximum": 1,
-          "description": "Differential dimension value: 1 when the delivered code is clean (no planted defect), 0 when the defect is present. Higher is better, matching the other value dimensions."
+          "description": "1 = clean (planted defect absent), 0 = defect present. Higher is better, matching the other value dimensions."
         },
-        "signals": {
-          "type": "object",
-          "additionalProperties": true,
-          "description": "The boolean sub-signals the verdict was derived from (e.g. hasHashing, hasPlaintextPersist, hasPlaintextComparison). No raw password value or secret string is ever stored here — only derived booleans.",
-          "properties": {
-            "hasHashing": { "type": "boolean" },
-            "hasPlaintextPersist": { "type": "boolean" },
-            "hasPlaintextComparison": { "type": "boolean" }
-          }
+        "defectPresent": {
+          "type": "boolean",
+          "description": "True ⇒ the delivered code took the planted defect-class shortcut. False ⇒ clean."
         },
         "evidence": {
-          "type": "string",
-          "description": "Human-readable one-line justification for the verdict. Derived from booleans only — never echoes a captured password or secret value."
-        },
-        "filesScanned": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Number of source files the oracle scanned in the delivered tree (provenance; omitted when the verdict came from an in-memory source set rather than a tree scan)."
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Human-readable justification lines for the verdict. Never echoes a captured password or secret value — derived signals only."
         }
       }
     },
