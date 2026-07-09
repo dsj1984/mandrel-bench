@@ -19,11 +19,15 @@ import test from 'node:test';
 
 import {
   assertInsideRoot,
+  createEphemeralRepo,
   defaultGhInvoke,
+  destroyEphemeralRepo,
   provisionSandbox,
   resetSandboxBaseline,
   SANDBOX_DIR_PREFIX,
+  sandboxRepoName,
   sanitizeGitHubTokenEnv,
+  seedFromTemplate,
   teardownSandbox,
   withSandbox,
 } from '../../../bench/driver/sandbox.js';
@@ -185,6 +189,34 @@ test('provisionSandbox: a failed clone cleans up the partial workspace and rethr
   assert.equal(rmCalls[0].path, created);
 });
 
+test('provisionSandbox: carries repoFullName/baselineSha and sets ephemeral: true when supplied (Story #71)', () => {
+  const { deps, created } = fakes();
+  const handle = provisionSandbox(
+    {
+      repoUrl: 'https://github.com/acme/bench-sbx-c1-hw-mandrel-a1b2.git',
+      ephemeralRoot: ROOT,
+      repoFullName: 'acme/bench-sbx-c1-hw-mandrel-a1b2',
+      baselineSha: 'deadbeef',
+    },
+    deps,
+  );
+  assert.equal(handle.workspacePath, created);
+  assert.equal(handle.repoFullName, 'acme/bench-sbx-c1-hw-mandrel-a1b2');
+  assert.equal(handle.baselineSha, 'deadbeef');
+  assert.equal(handle.ephemeral, true);
+});
+
+test('provisionSandbox: ephemeral defaults to false and repoFullName/baselineSha to null on the legacy standing-repo path', () => {
+  const { deps } = fakes();
+  const handle = provisionSandbox(
+    { repoUrl: 'https://github.com/acme/sandbox.git', ephemeralRoot: ROOT },
+    deps,
+  );
+  assert.equal(handle.ephemeral, false);
+  assert.equal(handle.repoFullName, null);
+  assert.equal(handle.baselineSha, null);
+});
+
 test('provisionSandbox: rejects empty repoUrl and bad arm', () => {
   const { deps } = fakes();
   assert.throws(
@@ -253,6 +285,48 @@ test('resetSandboxBaseline: honors a custom baselineRef', () => {
   assert.equal(ghCalls[1].includes('sha=cafe01'), true);
 });
 
+test('resetSandboxBaseline: with a supplied sha, force-resets straight to it — skips the branch-resolve API call (Story #71)', () => {
+  const ghCalls = [];
+  const ghFn = (args) => {
+    ghCalls.push(args);
+    return '';
+  };
+  const res = resetSandboxBaseline(
+    { owner: 'dsj1984', repo: 'bench-sbx-c1-hw-mandrel-a1b2', sha: 'cafef00d' },
+    { ghFn, logger: { info() {}, warn() {} } },
+  );
+  assert.deepEqual(res, { reset: true, sha: 'cafef00d' });
+  // Exactly ONE call: the force-PATCH. No branch-resolve GET.
+  assert.equal(ghCalls.length, 1);
+  assert.deepEqual(ghCalls[0], [
+    'api',
+    '-X',
+    'PATCH',
+    'repos/dsj1984/bench-sbx-c1-hw-mandrel-a1b2/git/refs/heads/main',
+    '-f',
+    'sha=cafef00d',
+    '-F',
+    'force=true',
+  ]);
+});
+
+test('resetSandboxBaseline: an empty sha falls back to resolving baselineRef', () => {
+  const ghCalls = [];
+  const ghFn = (args) => {
+    ghCalls.push(args);
+    if (args.some((a) => a.endsWith('git/ref/heads/bench-baseline'))) {
+      return JSON.stringify({ object: { sha: 'resolved-sha' } });
+    }
+    return '';
+  };
+  const res = resetSandboxBaseline(
+    { owner: 'o', repo: 'r', sha: '' },
+    { ghFn },
+  );
+  assert.equal(res.sha, 'resolved-sha');
+  assert.equal(ghCalls.length, 2);
+});
+
 test('resetSandboxBaseline: rejects a missing owner/repo with a TypeError', () => {
   assert.throws(
     () => resetSandboxBaseline({ repo: 'r' }, { ghFn: () => '' }),
@@ -316,6 +390,266 @@ test('defaultGhInvoke: passes a token-sanitized env to the gh child', () => {
     if (prev === undefined) delete process.env.GITHUB_TOKEN;
     else process.env.GITHUB_TOKEN = prev;
   }
+});
+
+// ---------------------------------------------------------------------------
+// sandboxRepoName — pure repo-name generator (Story #71)
+// ---------------------------------------------------------------------------
+
+test('sandboxRepoName: always bench-sbx- prefixed', () => {
+  const name = sandboxRepoName({
+    cohort: '1.75.0',
+    scenario: 'hello-world',
+    arm: 'mandrel',
+    nonce: 'a1b2c3',
+  });
+  assert.ok(name.startsWith(SANDBOX_DIR_PREFIX));
+  assert.equal(name, 'bench-sbx-1-75-0-hello-world-mandrel-a1b2c3');
+});
+
+test('sandboxRepoName: slugifies non-alphanumeric characters', () => {
+  const name = sandboxRepoName({
+    cohort: 'v1.75.0!',
+    scenario: 'crud_db',
+    arm: 'control',
+    nonce: 'xyz',
+  });
+  assert.doesNotMatch(name, /[^a-z0-9-]/);
+});
+
+test('sandboxRepoName: clamps to <= 100 chars, truncating the middle segment, never the prefix or nonce', () => {
+  const nonce = 'a1b2c3d4';
+  const name = sandboxRepoName({
+    cohort: 'x'.repeat(80),
+    scenario: 'y'.repeat(80),
+    arm: 'mandrel',
+    nonce,
+  });
+  assert.ok(name.length <= 100, `expected <= 100 chars, got ${name.length}`);
+  assert.ok(
+    name.startsWith(SANDBOX_DIR_PREFIX),
+    'prefix must survive clamping',
+  );
+  assert.ok(
+    name.endsWith(nonce),
+    'nonce must survive clamping, never truncated',
+  );
+});
+
+test('sandboxRepoName: requires a non-empty nonce', () => {
+  assert.throws(
+    () => sandboxRepoName({ cohort: 'c', scenario: 's', arm: 'mandrel' }),
+    /non-empty nonce/,
+  );
+  assert.throws(() => sandboxRepoName({ nonce: '' }), /non-empty nonce/);
+});
+
+test('sandboxRepoName: omits empty cohort/scenario/arm segments cleanly', () => {
+  const name = sandboxRepoName({ nonce: 'onlynonce' });
+  assert.equal(name, 'bench-sbx-onlynonce');
+});
+
+// ---------------------------------------------------------------------------
+// createEphemeralRepo / destroyEphemeralRepo — the remote repo lifecycle
+// ---------------------------------------------------------------------------
+
+test('createEphemeralRepo: gh repo create <owner>/<name> --private via the injected ghFn', () => {
+  const ghCalls = [];
+  const res = createEphemeralRepo(
+    { owner: 'dsj1984', name: 'bench-sbx-c1-hw-mandrel-a1b2' },
+    { ghFn: (args) => ghCalls.push(args), logger: { info() {}, warn() {} } },
+  );
+  assert.deepEqual(res, {
+    repoFullName: 'dsj1984/bench-sbx-c1-hw-mandrel-a1b2',
+  });
+  assert.deepEqual(ghCalls[0], [
+    'repo',
+    'create',
+    'dsj1984/bench-sbx-c1-hw-mandrel-a1b2',
+    '--private',
+  ]);
+});
+
+test('createEphemeralRepo: refuses a name outside the reserved bench-sbx- prefix', () => {
+  assert.throws(
+    () =>
+      createEphemeralRepo(
+        { owner: 'dsj1984', name: 'mandrel-bench-sandbox' },
+        { ghFn: () => '' },
+      ),
+    /reserved bench-sbx- prefix/,
+  );
+});
+
+test('createEphemeralRepo: requires a non-empty owner', () => {
+  assert.throws(
+    () => createEphemeralRepo({ name: 'bench-sbx-x' }, { ghFn: () => '' }),
+    /non-empty owner/,
+  );
+});
+
+test('destroyEphemeralRepo: gh repo delete --yes via the injected ghFn', () => {
+  const ghCalls = [];
+  const res = destroyEphemeralRepo(
+    { repoFullName: 'dsj1984/bench-sbx-c1-hw-mandrel-a1b2' },
+    { ghFn: (args) => ghCalls.push(args), logger: { info() {}, warn() {} } },
+  );
+  assert.deepEqual(res, {
+    deleted: true,
+    repoFullName: 'dsj1984/bench-sbx-c1-hw-mandrel-a1b2',
+  });
+  assert.deepEqual(ghCalls[0], [
+    'repo',
+    'delete',
+    'dsj1984/bench-sbx-c1-hw-mandrel-a1b2',
+    '--yes',
+  ]);
+});
+
+test('destroyEphemeralRepo: refuses a repo name outside the reserved bench-sbx- prefix', () => {
+  assert.throws(
+    () =>
+      destroyEphemeralRepo(
+        { repoFullName: 'dsj1984/mandrel-bench-sandbox' },
+        { ghFn: () => '' },
+      ),
+    /reserved bench-sbx- prefix/,
+  );
+});
+
+test('destroyEphemeralRepo: best-effort on a gh failure — logs a warning and returns deleted:false rather than throwing', () => {
+  const warnings = [];
+  const res = destroyEphemeralRepo(
+    { repoFullName: 'dsj1984/bench-sbx-c1-hw-mandrel-a1b2' },
+    {
+      ghFn: () => {
+        throw new Error('gh: repo not found');
+      },
+      logger: { info() {}, warn: (m) => warnings.push(m) },
+    },
+  );
+  assert.equal(res.deleted, false);
+  assert.equal(res.repoFullName, 'dsj1984/bench-sbx-c1-hw-mandrel-a1b2');
+  assert.match(res.error, /repo not found/);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /best-effort/);
+});
+
+// ---------------------------------------------------------------------------
+// seedFromTemplate — materialize + commit + push the baseline
+// ---------------------------------------------------------------------------
+
+test('seedFromTemplate: materializes the template, commits, pushes, and resolves the baseline sha', () => {
+  const execCalls = [];
+  const materializeCalls = [];
+  const res = seedFromTemplate(
+    {
+      repoFullName: 'dsj1984/bench-sbx-c1-hw-mandrel-a1b2',
+      workspacePath: '/ws/seed',
+      templateRoot: '/repo/bench/sandbox-template',
+    },
+    {
+      execFileFn: (cmd, args) => {
+        execCalls.push({ cmd, args });
+        if (args[0] === 'rev-parse') return 'abc123sha\n';
+        return '';
+      },
+      materializeFn: (opts) => {
+        materializeCalls.push(opts);
+        return { ...opts };
+      },
+      logger: { info() {}, warn() {} },
+    },
+  );
+
+  assert.deepEqual(res, {
+    repoFullName: 'dsj1984/bench-sbx-c1-hw-mandrel-a1b2',
+    baselineSha: 'abc123sha',
+    repoUrl: 'https://github.com/dsj1984/bench-sbx-c1-hw-mandrel-a1b2.git',
+  });
+  assert.equal(materializeCalls.length, 1);
+  assert.equal(materializeCalls[0].targetDir, '/ws/seed');
+  assert.equal(
+    materializeCalls[0].templateRoot,
+    '/repo/bench/sandbox-template',
+  );
+
+  const cmds = execCalls.map((c) => c.args[0]);
+  assert.deepEqual(cmds, [
+    'init',
+    'add',
+    'commit',
+    'remote',
+    'push',
+    'rev-parse',
+  ]);
+  for (const c of execCalls) assert.equal(c.cmd, 'git');
+});
+
+test('seedFromTemplate: requires a non-empty repoFullName and workspacePath', () => {
+  assert.throws(
+    () => seedFromTemplate({ workspacePath: '/ws' }, {}),
+    /non-empty repoFullName/,
+  );
+  assert.throws(
+    () => seedFromTemplate({ repoFullName: 'o/r' }, {}),
+    /non-empty workspacePath/,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Full lifecycle ordering: create → seed → run(s) → destroy (Story #71)
+// ---------------------------------------------------------------------------
+
+test('lifecycle ordering: create → seed → run → destroy, via one injected ghInvoke fake', () => {
+  const order = [];
+  const ghFn = (args) => {
+    if (args[0] === 'repo' && args[1] === 'create') order.push('create');
+    if (args[0] === 'repo' && args[1] === 'delete') order.push('destroy');
+    return '';
+  };
+  const execFileFn = (cmd, args) => {
+    if (cmd === 'git' && args[0] === 'clone') {
+      order.push('run');
+      return '';
+    }
+    if (cmd === 'git' && args[0] === 'rev-parse') return 'seedsha\n';
+    return '';
+  };
+  const materializeFn = () => {
+    order.push('seed');
+    return {};
+  };
+
+  const created = createEphemeralRepo(
+    { owner: 'dsj1984', name: 'bench-sbx-c1-hw-mandrel-a1b2' },
+    { ghFn },
+  );
+  const seeded = seedFromTemplate(
+    { repoFullName: created.repoFullName, workspacePath: '/ws/seed' },
+    { execFileFn, materializeFn },
+  );
+
+  const runHandle = provisionSandbox(
+    {
+      repoUrl: seeded.repoUrl,
+      ephemeralRoot: ROOT,
+      repoFullName: seeded.repoFullName,
+      baselineSha: seeded.baselineSha,
+    },
+    {
+      execFileFn,
+      mkdtempFn: () => path.join(ROOT, `${SANDBOX_DIR_PREFIX}run1`),
+      existsFn: () => true,
+      rmFn: () => {},
+    },
+  );
+  assert.equal(runHandle.ephemeral, true);
+  assert.equal(runHandle.baselineSha, 'seedsha');
+
+  destroyEphemeralRepo({ repoFullName: created.repoFullName }, { ghFn });
+
+  assert.deepEqual(order, ['create', 'seed', 'run', 'destroy']);
 });
 
 // ---------------------------------------------------------------------------
