@@ -82,6 +82,11 @@ describe('SCALAR_DIMENSIONS — dimension registry', () => {
     assert.equal(entry.accessor(sc), 0.9);
     assert.equal(entry.accessor({}), null);
   });
+
+  it('excludes autonomy — reclassified as a mandrel-arm guardrail, not a delta (Epic #66, Story #77/#79)', () => {
+    const names = SCALAR_DIMENSIONS.map((d) => d.name);
+    assert.ok(!names.includes('autonomy'));
+  });
 });
 
 describe('computeDifferential — real-delta rule', () => {
@@ -170,10 +175,10 @@ describe('computeDifferential — real-delta rule', () => {
       mandrelRuns: [card(), card(), card()],
       controlRuns: [card(), card()],
       method: 'ci',
-      scenario: 'crud-db',
+      scenario: 'story-scope',
     });
     assert.equal(diff.method, 'ci');
-    assert.equal(diff.scenario, 'crud-db');
+    assert.equal(diff.scenario, 'story-scope');
     assert.deepEqual(diff.n, { mandrel: 3, control: 2 });
   });
 });
@@ -184,8 +189,8 @@ describe('difficultyMonotonicity — calibration guardrail', () => {
     card({ totalTokens: 180000, tokenRatio: 4.2 }),
     card({ totalTokens: 184000, tokenRatio: 4.0 }),
   ];
-  // crud-db (hard): more expensive + lower overhead ratio.
-  const crudMandrel = [
+  // story-scope (hard): more expensive + lower overhead ratio.
+  const storyMandrel = [
     card({ totalTokens: 520000, tokenRatio: 2.1 }),
     card({ totalTokens: 540000, tokenRatio: 2.0 }),
   ];
@@ -194,7 +199,7 @@ describe('difficultyMonotonicity — calibration guardrail', () => {
     const result = difficultyMonotonicity({
       cells: [
         { scenario: 'hello-world', difficulty: 1, mandrelRuns: helloMandrel },
-        { scenario: 'crud-db', difficulty: 2, mandrelRuns: crudMandrel },
+        { scenario: 'story-scope', difficulty: 2, mandrelRuns: storyMandrel },
       ],
     });
     assert.equal(result.monotonicityHolds, true);
@@ -205,21 +210,21 @@ describe('difficultyMonotonicity — calibration guardrail', () => {
     // Ordered easy → hard regardless of input order.
     assert.deepEqual(
       result.ordered.map((o) => o.scenario),
-      ['hello-world', 'crud-db'],
+      ['hello-world', 'story-scope'],
     );
   });
 
   it('sorts by difficulty even when cells are supplied hard-first', () => {
     const result = difficultyMonotonicity({
       cells: [
-        { scenario: 'crud-db', difficulty: 2, mandrelRuns: crudMandrel },
+        { scenario: 'story-scope', difficulty: 2, mandrelRuns: storyMandrel },
         { scenario: 'hello-world', difficulty: 1, mandrelRuns: helloMandrel },
       ],
     });
     assert.equal(result.monotonicityHolds, true);
     assert.deepEqual(result.pairs[0], {
       from: 'hello-world',
-      to: 'crud-db',
+      to: 'story-scope',
       efficiencyRises: true,
       overheadFalls: true,
       holds: true,
@@ -228,12 +233,12 @@ describe('difficultyMonotonicity — calibration guardrail', () => {
   });
 
   it('flags a violation when efficiency does NOT rise', () => {
-    // crud-db cheaper than hello-world ⇒ efficiency non-monotonic.
-    const cheapCrud = [card({ totalTokens: 100000, tokenRatio: 2.0 })];
+    // story-scope cheaper than hello-world ⇒ efficiency non-monotonic.
+    const cheapStory = [card({ totalTokens: 100000, tokenRatio: 2.0 })];
     const result = difficultyMonotonicity({
       cells: [
         { scenario: 'hello-world', difficulty: 1, mandrelRuns: helloMandrel },
-        { scenario: 'crud-db', difficulty: 2, mandrelRuns: cheapCrud },
+        { scenario: 'story-scope', difficulty: 2, mandrelRuns: cheapStory },
       ],
     });
     assert.equal(result.monotonicityHolds, false);
@@ -243,12 +248,12 @@ describe('difficultyMonotonicity — calibration guardrail', () => {
   });
 
   it('flags a violation when overhead ratio does NOT fall', () => {
-    // crud-db ratio HIGHER than hello-world ⇒ overhead non-monotonic.
-    const highRatioCrud = [card({ totalTokens: 520000, tokenRatio: 5.0 })];
+    // story-scope ratio HIGHER than hello-world ⇒ overhead non-monotonic.
+    const highRatioStory = [card({ totalTokens: 520000, tokenRatio: 5.0 })];
     const result = difficultyMonotonicity({
       cells: [
         { scenario: 'hello-world', difficulty: 1, mandrelRuns: helloMandrel },
-        { scenario: 'crud-db', difficulty: 2, mandrelRuns: highRatioCrud },
+        { scenario: 'story-scope', difficulty: 2, mandrelRuns: highRatioStory },
       ],
     });
     assert.equal(result.monotonicityHolds, false);
@@ -319,7 +324,7 @@ describe('scoreCorpus — top-level convenience', () => {
         controlRuns: [card({ totalTokens: 40000, tokenRatio: 0, quality: 1 })],
       },
       {
-        scenario: 'crud-db',
+        scenario: 'story-scope',
         difficulty: 2,
         mandrelRuns: [
           card({ totalTokens: 520000, tokenRatio: 2.0, quality: 1 }),
@@ -340,7 +345,7 @@ describe('scoreCorpus — top-level convenience', () => {
     const result = scoreCorpus({
       cells: [
         {
-          scenario: 'crud-db',
+          scenario: 'story-scope',
           difficulty: 2,
           mandrelRuns: [card()],
           controlRuns: [card()],

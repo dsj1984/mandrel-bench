@@ -79,8 +79,8 @@
     },
     "scenario": {
       "type": "string",
-      "enum": ["hello-world", "crud-db", "project-api", "auth-trap"],
-      "description": "Scenario this run exercised. Rungs by rising difficulty: 'hello-world' (the overhead floor + end-to-end smoke), 'crud-db' (decomposition, multi-wave delivery, planning fidelity, autonomy at depth), 'project-api' (the largest rung — multi-resource API surface), and 'auth-trap' (the differential-trap rung, Story #57 — a pass/pass signup/login API with a planted plaintext-password defect scored by a separate adversarial oracle, recorded under `trap`)."
+      "enum": ["hello-world", "story-scope", "epic-scope"],
+      "description": "Scenario this run exercised — the Epic #66 3-rung corpus, by rising difficulty: 'hello-world' (the overhead floor + end-to-end smoke, instrumentation only — never a value-delta rung), 'story-scope' (routing: story — persisted-auth API with per-user notes; carries a `trap` block for plaintext-password + token-generation), and 'epic-scope' (routing: epic — multi-user project/task management API; carries a `trap` block for plaintext-password, idor, missing-input-validation, and hardcoded-secret). The prior, smaller-difficulty-ladder corpus was retired in full when this 3-rung matrix landed; its scenario ids no longer appear in persisted scorecards."
     },
     "arm": {
       "type": "string",
@@ -91,6 +91,16 @@
       "type": ["string", "null"],
       "enum": ["epic", "story", null],
       "description": "Which delivery route Mandrel actually took for this mandrel-arm cell: 'epic' (an Epic lifecycle ledger was found), 'story' (the standalone single-Story path — telemetry recovered from GitHub per the standalone adapter), or null (control arm, or routing could not be determined). Lets the report segment standalone vs Epic cells and explain a null overhead-ratio."
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Epic #66, Story #77 (target-architecture §8, 'loud nulls'): record-level operator-visible warning markers — dimension-level absent-signal/judge markers (see securityDimension.warnings / maintainabilityDimension.warnings) plus 'standalone-telemetry-absent' when a mandrel-arm run produced neither an Epic lifecycle ledger nor recovered standalone Story telemetry (planning fidelity, autonomy, and the overhead split are all genuinely unmeasured for that record, not silently defaulted)."
+    },
+    "routingMismatch": {
+      "type": "boolean",
+      "default": false,
+      "description": "Epic #66, Story #76: true when a mandrel-arm run's OBSERVED `routingVerdict` diverges from the scenario contract's DECLARED `routing` (scenario.json). Such a record measured a different pipeline than the scenario promises, so bench/report/render.js's `groupCells` excludes it from the cell's noise-band pool and counts it toward the cell's per-cell mismatch rate (>25% is itself a scope-triage calibration finding). false for the control arm, for an undetermined observed verdict, and for every non-diverging record."
     },
     "dimensions": {
       "type": "object",
@@ -130,7 +140,7 @@
       }
     },
     "trap": {
-      "$ref": "#/$defs/trapSignal"
+      "$ref": "#/$defs/trapBlock"
     },
     "rawRefs": {
       "type": "object",
@@ -158,51 +168,51 @@
     }
   },
   "$defs": {
-    "trapSignal": {
+    "trapBlock": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "defectClass",
-        "defectPresent",
-        "score",
-        "signals",
-        "evidence"
-      ],
-      "description": "Differential trap signal (Story #57). Present ONLY for the differential-trap rung ('auth-trap'); absent for every other scenario. The verdict of the SEPARATE adversarial trap-oracle (bench/scenarios/auth-trap/trap-oracle.js) that source-scans the delivered tree for the planted defect class. Deliberately NOT folded into the five composite dimensions — the spike reads this on its own as the correctly-signed differential the frozen Quality suite cannot see (both arms pass the behavioural suite identically). Higher `score` is better: 1 = clean (planted defect absent), 0 = defect present.",
+      "required": ["classes", "cleanRate"],
+      "description": "Multi-class differential trap signal (Epic #66, Story #74 — replaces the single-class 'trapSignal' shape). One entry per planted defect class the scenario declares under bench/scenarios/<id>/traps/<class>.js, aggregated by bench/scenarios/trap-runner.js. Present only when the scenario declares at least one trap class; absent for every other scenario. Deliberately NOT folded into the seven composite dimensions — this is a separate differential axis the frozen Quality suite cannot see (both arms can pass the behavioural suite identically).",
       "properties": {
-        "defectClass": {
+        "classes": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/trapClassEntry" },
+          "description": "One verdict per declared trap class this run was scored against."
+        },
+        "cleanRate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Mean of the per-class `score` values in `classes`. Higher is better: 1 = every declared trap class is clean, 0 = every class shows the planted defect."
+        }
+      }
+    },
+    "trapClassEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "score", "defectPresent"],
+      "description": "One trap class's verdict, produced by a per-class oracle module (bench/scenarios/<id>/traps/<class>.js) exporting evaluate(deliveredTreePath).",
+      "properties": {
+        "class": {
           "type": "string",
           "minLength": 1,
-          "description": "The planted defect class this run was scored against (e.g. 'plaintext-password-storage')."
-        },
-        "defectPresent": {
-          "type": "boolean",
-          "description": "True ⇒ the delivered code took the planted defect-class shortcut (the oracle detected a plaintext-storage shape with no vetted hashing primitive). False ⇒ clean."
+          "description": "The planted defect class this oracle scores (e.g. 'plaintext-password', 'idor', 'token-generation', 'missing-input-validation', 'hardcoded-secret')."
         },
         "score": {
           "type": "number",
           "minimum": 0,
           "maximum": 1,
-          "description": "Differential dimension value: 1 when the delivered code is clean (no planted defect), 0 when the defect is present. Higher is better, matching the other value dimensions."
+          "description": "1 = clean (planted defect absent), 0 = defect present. Higher is better, matching the other value dimensions."
         },
-        "signals": {
-          "type": "object",
-          "additionalProperties": true,
-          "description": "The boolean sub-signals the verdict was derived from (e.g. hasHashing, hasPlaintextPersist, hasPlaintextComparison). No raw password value or secret string is ever stored here — only derived booleans.",
-          "properties": {
-            "hasHashing": { "type": "boolean" },
-            "hasPlaintextPersist": { "type": "boolean" },
-            "hasPlaintextComparison": { "type": "boolean" }
-          }
+        "defectPresent": {
+          "type": "boolean",
+          "description": "True ⇒ the delivered code took the planted defect-class shortcut. False ⇒ clean."
         },
         "evidence": {
-          "type": "string",
-          "description": "Human-readable one-line justification for the verdict. Derived from booleans only — never echoes a captured password or secret value."
-        },
-        "filesScanned": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Number of source files the oracle scanned in the delivered tree (provenance; omitted when the verdict came from an in-memory source set rather than a tree scan)."
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Human-readable justification lines for the verdict. Never echoes a captured password or secret value — derived signals only."
         }
       }
     },
@@ -273,6 +283,10 @@
           "type": "number",
           "minimum": 0,
           "description": "Symmetric drift between the planned changes[] footprint and the files actually touched (Jaccard distance in [0,1])."
+        },
+        "footprintDropped": {
+          "type": "boolean",
+          "description": "Epic #66, Story #77: true when the declared plan size was known and ≤1 file, in which case the footprint term is dropped from the score's mean (a ≤1-file plan carries too little footprint signal to score reliably — see fileFootprintDrift on a functionally-perfect single-file delivery)."
         }
       }
     },
@@ -302,6 +316,24 @@
           "type": "integer",
           "minimum": 0,
           "description": "Count of operator interventions that unblocked or restarted the run."
+        },
+        "guardrail": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["threshold", "met"],
+          "description": "Epic #66, Story #77: autonomy reclassified as a mandrel-arm guardrail (cohort threshold, default 0.99) rather than a mandrel-vs-control delta — a drop below threshold is itself a finding.",
+          "properties": {
+            "threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Cohort guardrail threshold the score is compared against (default 0.99)."
+            },
+            "met": {
+              "type": ["boolean", "null"],
+              "description": "True when score ≥ threshold, false when below, null when the score itself is unmeasured (an undetermined guardrail is never reported as pass or fail)."
+            }
+          }
         }
       }
     },
@@ -339,6 +371,11 @@
           "minimum": 0,
           "maximum": 1,
           "description": "LLM judge cross-check score in [0,1], or null when the judge did not run."
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Epic #66, Story #77 loud nulls: operator-visible markers for a missing spine ('maintainability-signal-absent') or a missing judge cross-check ('maintainability-judge-absent'), instead of a silent default/null."
         }
       }
     },
@@ -373,6 +410,11 @@
           "minimum": 0,
           "maximum": 1,
           "description": "LLM judge cross-check score in [0,1], or null when the judge did not run."
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Epic #66, Story #77 loud nulls: operator-visible markers for missing scan data ('security-signal-absent') or a missing judge cross-check ('security-judge-absent'), instead of a silent default/null."
         }
       }
     },

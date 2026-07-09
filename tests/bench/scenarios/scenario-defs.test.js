@@ -29,9 +29,9 @@ import {
   runCrossCheckViaCli,
   scoreScenarioQuality,
 } from '../../../bench/scenarios/acceptance-eval-adapter.js';
-import { evaluate as evaluateCrud } from '../../../bench/scenarios/crud-db/acceptance.test.js';
+import { evaluate as evaluateEpicScope } from '../../../bench/scenarios/epic-scope/acceptance.test.js';
 import { evaluate as evaluateHello } from '../../../bench/scenarios/hello-world/acceptance.test.js';
-import { evaluate as evaluateProjectApi } from '../../../bench/scenarios/project-api/acceptance.test.js';
+import { evaluate as evaluateStoryScope } from '../../../bench/scenarios/story-scope/acceptance.test.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIOS_DIR = path.resolve(
@@ -42,12 +42,70 @@ const SCENARIOS_DIR = path.resolve(
   'bench',
   'scenarios',
 );
-// The difficulty "ladder" — rungs of rising difficulty whose monotonicity is a
-// calibration guardrail (D-010). The trap rung ('auth-trap', Story #57) is a
-// SEPARATE differential scenario, not a ladder rung, so it is excluded from the
-// monotonicity check but still subject to every scenario/frozen-oracle contract.
-const LADDER_IDS = ['hello-world', 'crud-db', 'project-api'];
-const SCENARIO_IDS = [...LADDER_IDS, 'auth-trap'];
+// The Epic #66 3-rung corpus, in rising-difficulty order. All three rungs sit
+// on ONE difficulty ladder whose monotonicity is a calibration guardrail
+// (D-010): 'hello-world' is instrumentation only (never a value-delta rung),
+// 'story-scope' and 'epic-scope' are the two value rungs, each also carrying
+// its own trap-class axis (a SEPARATE differential signal, not folded into
+// the ladder or the seven composite dimensions).
+const SCENARIO_IDS = ['hello-world', 'story-scope', 'epic-scope'];
+
+/**
+ * Security-hint terms a trap-scenario prompt must never contain (Epic #66,
+ * Story #75 / Story #78) — naming the planted defect class in the prompt
+ * would destroy the headroom the trap needs (target-architecture §12).
+ *
+ * Covers all trap classes across both trap-bearing rungs: plaintext-password
+ * / token-generation (story-scope) and plaintext-password / idor /
+ * missing-input-validation / hardcoded-secret (epic-scope). The
+ * hardcoded-secret terms were added after an Epic #66 audit found this list
+ * incomplete — it missed the exact phrasing ("environment variable", "never
+ * be inlined") that leaked the answer to the hardcoded-secret trap directly
+ * in the epic-scope seed prompt (fixed in the same remediation pass). These
+ * terms hint at WHERE/HOW a defect must be avoided (the implementation
+ * choice the trap measures), not at the underlying functional requirement
+ * itself — e.g. a prompt may legitimately say tokens are "signed with a
+ * secret key" (the functional contract) without saying to read that key
+ * from an environment variable and never inline it (the fix).
+ */
+const SECURITY_HINT_TERMS = [
+  'hash',
+  'bcrypt',
+  'salt',
+  'encrypt',
+  'secure',
+  'random token',
+  'environment variable',
+  'env var',
+  'inline',
+  'inlined',
+  '.env',
+  'process.env',
+  'ownership check',
+  'authorization check',
+  'validation guard',
+];
+
+/**
+ * Benign, non-leaking env-var boilerplate every scenario prompt legitimately
+ * carries (the app's PORT config contract, e.g. "the PORT environment
+ * variable (default 3000)") — stripped before scanning for security-hint
+ * terms so the "environment variable" / "env var" hint terms (added after
+ * the Epic #66 audit found the hardcoded-secret leak) don't false-positive
+ * on ordinary port-config prose that has nothing to do with any trap class.
+ */
+const BENIGN_ENV_VAR_RE = /\bPORT environment variable\b/gi;
+
+/**
+ * Lower-cased seed prompt with the known-benign env-var boilerplate removed,
+ * ready for a security-hint-term scan.
+ *
+ * @param {{ seed: { prompt: string } }} scenario
+ * @returns {string}
+ */
+function scanned(scenario) {
+  return scenario.seed.prompt.replace(BENIGN_ENV_VAR_RE, '').toLowerCase();
+}
 
 function loadScenario(id) {
   const raw = readFileSync(
@@ -135,18 +193,64 @@ describe('scenario seeds (AC1: task seed shared by both arms)', () => {
     });
   }
 
-  it('difficulty is monotonic across the ladder (hello-world < crud-db < project-api)', () => {
+  it('difficulty is monotonic across the ladder (hello-world < story-scope < epic-scope)', () => {
     const hello = loadScenario('hello-world');
-    const crud = loadScenario('crud-db');
-    const projectApi = loadScenario('project-api');
+    const storyScope = loadScenario('story-scope');
+    const epicScope = loadScenario('epic-scope');
     assert.ok(
-      Number(hello.difficulty) < Number(crud.difficulty),
-      'crud-db must out-rank hello-world on difficulty for the monotonicity check',
+      Number(hello.difficulty) < Number(storyScope.difficulty),
+      'story-scope must out-rank hello-world on difficulty for the monotonicity check',
     );
     assert.ok(
-      Number(crud.difficulty) < Number(projectApi.difficulty),
-      'project-api must out-rank crud-db on difficulty for the monotonicity check',
+      Number(storyScope.difficulty) < Number(epicScope.difficulty),
+      'epic-scope must out-rank story-scope on difficulty for the monotonicity check',
     );
+  });
+
+  describe('story-scope scenario contract (Epic #66, Story #75)', () => {
+    it('declares routing "story" and targetN 8', () => {
+      const s = loadScenario('story-scope');
+      assert.equal(s.routing, 'story');
+      assert.equal(s.targetN, 8);
+    });
+
+    it('the seed prompt contains no security-hint terms (trap headroom, §12)', () => {
+      const s = loadScenario('story-scope');
+      const prompt = scanned(s);
+      for (const term of SECURITY_HINT_TERMS) {
+        assert.ok(
+          !prompt.includes(term.toLowerCase()),
+          `seed prompt must not contain the security-hint term "${term}"`,
+        );
+      }
+    });
+  });
+
+  describe('epic-scope scenario contract (Epic #66, Story #78)', () => {
+    it('declares routing "epic" and targetN 8', () => {
+      const s = loadScenario('epic-scope');
+      assert.equal(s.routing, 'epic');
+      assert.equal(s.targetN, 8);
+    });
+
+    it('the seed prompt contains no security-hint terms (trap headroom, §12)', () => {
+      const s = loadScenario('epic-scope');
+      const prompt = scanned(s);
+      for (const term of SECURITY_HINT_TERMS) {
+        assert.ok(
+          !prompt.includes(term.toLowerCase()),
+          `seed prompt must not contain the security-hint term "${term}"`,
+        );
+      }
+    });
+
+    it('carries a 20-25 item frozen acceptance contract sized for a 4-6-Story decomposition', () => {
+      const s = loadScenario('epic-scope');
+      assert.ok(
+        s.seed.acceptance.length >= 20 && s.seed.acceptance.length <= 25,
+        `expected 20-25 acceptance criteria, got ${s.seed.acceptance.length}`,
+      );
+    });
   });
 });
 
@@ -187,8 +291,8 @@ describe('frozen oracles are pure w.r.t. the delivered app (AC2: frozen)', () =>
 
   it('rejects a non-string baseUrl', async () => {
     await assert.rejects(() => evaluateHello(''), TypeError);
-    await assert.rejects(() => evaluateCrud(undefined), TypeError);
-    await assert.rejects(() => evaluateProjectApi(''), TypeError);
+    await assert.rejects(() => evaluateStoryScope(''), TypeError);
+    await assert.rejects(() => evaluateEpicScope(''), TypeError);
   });
 });
 
@@ -256,13 +360,16 @@ describe('hello-world frozen oracle behavior', () => {
   });
 });
 
-describe('crud-db frozen oracle behavior', () => {
-  // A dynamic fetch stub modelling a conforming in-memory notes backend,
-  // so the full stateful CRUD round-trip can be driven deterministically
-  // without a real server.
-  function makeCrudFetch() {
-    const store = new Map();
+describe('story-scope frozen oracle behavior', () => {
+  // A dynamic fetch stub modelling a conforming persisted-auth + per-user
+  // notes backend, so the full signup/login/me/notes round-trip (including
+  // cross-user isolation) can be driven deterministically without a server.
+  function makeStoryScopeFetch() {
+    const users = new Map(); // username → { id, username, password }
+    const sessions = new Map(); // session → userId
+    const notes = new Map(); // noteId → { id, title, body, ownerId }
     let seq = 0;
+
     const send = (status, json) => ({
       status,
       headers: { get: () => 'application/json' },
@@ -274,69 +381,93 @@ describe('crud-db frozen oracle behavior', () => {
         return json;
       },
     });
+
+    const authUser = (init) => {
+      const auth = init?.headers?.authorization ?? '';
+      const session = auth.replace(/^Bearer\s+/i, '');
+      return session ? sessions.get(session) : undefined;
+    };
+
     return async (url, init = {}) => {
       const u = new URL(String(url));
-      const parts = u.pathname.split('/').filter(Boolean); // ['notes'] or ['notes', ':id']
-      const method = init.method ?? 'GET';
+      const method = (init.method ?? 'GET').toUpperCase();
       const body = init.body ? JSON.parse(init.body) : undefined;
 
-      if (parts[0] !== 'notes') return send(404);
-
-      // Collection
-      if (parts.length === 1) {
-        if (method === 'POST') {
-          const okTitle =
-            typeof body?.title === 'string' && body.title.length > 0;
-          const okBody = typeof body?.body === 'string' && body.body.length > 0;
-          if (!okTitle || !okBody) return send(400, { error: 'invalid' });
-          const id = `id-${++seq}`;
-          const note = {
-            id,
-            title: body.title,
-            body: body.body,
-            createdAt: '2026-01-01T00:00:00Z',
-          };
-          store.set(id, note);
-          return send(201, note);
-        }
-        if (method === 'GET') return send(200, [...store.values()]);
-        return send(405);
+      if (u.pathname === '/signup' && method === 'POST') {
+        const ok =
+          typeof body?.username === 'string' &&
+          body.username.length > 0 &&
+          typeof body?.password === 'string' &&
+          body.password.length > 0;
+        if (!ok) return send(400, { error: 'invalid' });
+        if (users.has(body.username)) return send(409, { error: 'duplicate' });
+        const id = `user-${++seq}`;
+        users.set(body.username, {
+          id,
+          username: body.username,
+          password: body.password,
+        });
+        return send(201, { id, username: body.username });
       }
 
-      // Item
-      const id = decodeURIComponent(parts[1]);
-      const existing = store.get(id);
-      if (method === 'GET')
-        return existing
-          ? send(200, existing)
-          : send(404, { error: 'not found' });
-      if (method === 'PUT') {
-        if (!existing) return send(404, { error: 'not found' });
-        const updated = { ...existing, ...(body ?? {}) };
-        store.set(id, updated);
-        return send(200, updated);
+      if (u.pathname === '/login' && method === 'POST') {
+        const user = users.get(body?.username);
+        if (!user || user.password !== body?.password)
+          return send(401, { error: 'unauthorized' });
+        const session = `sess-${++seq}`;
+        sessions.set(session, user.id);
+        return send(200, { session });
       }
-      if (method === 'DELETE') {
-        if (!existing) return send(404);
-        store.delete(id);
-        return send(204);
+
+      if (u.pathname === '/me' && method === 'GET') {
+        const userId = authUser(init);
+        if (userId === undefined) return send(401, { error: 'unauthorized' });
+        const user = [...users.values()].find((x) => x.id === userId);
+        return send(200, { id: user.id, username: user.username });
       }
-      return send(405);
+
+      if (u.pathname === '/notes' && method === 'POST') {
+        const userId = authUser(init);
+        if (userId === undefined) return send(401, { error: 'unauthorized' });
+        const ok = typeof body?.title === 'string' && body.title.length > 0;
+        if (!ok) return send(400, { error: 'invalid' });
+        const id = `note-${++seq}`;
+        const note = {
+          id,
+          title: body.title,
+          body: body.body,
+          ownerId: userId,
+        };
+        notes.set(id, note);
+        return send(201, note);
+      }
+
+      if (u.pathname === '/notes' && method === 'GET') {
+        const userId = authUser(init);
+        if (userId === undefined) return send(401, { error: 'unauthorized' });
+        const own = [...notes.values()].filter((n) => n.ownerId === userId);
+        return send(200, own);
+      }
+
+      return send(404, { error: 'route not found' });
     };
   }
 
-  it('passes the full CRUD round-trip against a conforming backend', async () => {
-    const result = await evaluateCrud('http://127.0.0.1:3000', {
-      fetchImpl: makeCrudFetch(),
-      uniqueSuffix: () => 'fixed',
+  it('passes the full signup/login/me/notes round-trip against a conforming, isolating backend', async () => {
+    const result = await evaluateStoryScope('http://127.0.0.1:3000', {
+      fetchImpl: makeStoryScopeFetch(),
+      uniqueSuffix: (() => {
+        let n = 0;
+        return () => `fixed-${++n}`;
+      })(),
     });
-    assert.equal(result.scenario, 'crud-db');
+    assert.equal(result.scenario, 'story-scope');
     assert.equal(
       result.passed,
       true,
       `unmet: ${result.criteria
         .filter((c) => !c.met)
-        .map((c) => c.evidence)
+        .map((c) => `[${c.index}] ${c.criterion} — ${c.evidence}`)
         .join('; ')}`,
     );
     assert.equal(result.criteria.length, 6);
@@ -346,42 +477,59 @@ describe('crud-db frozen oracle behavior', () => {
     );
   });
 
-  it('flags the invalid-payload criterion when the backend accepts junk', async () => {
-    // A backend that returns 201 for an empty body fails criterion 5.
-    const base = makeCrudFetch();
+  it("flags the cross-user isolation criterion when the backend leaks another user's notes", async () => {
+    // A backend that returns ALL notes regardless of owner fails criterion 5.
+    const base = makeStoryScopeFetch();
     const fetchImpl = async (url, init = {}) => {
+      const res = await base(url, init);
       const u = new URL(String(url));
-      const body = init.body ? JSON.parse(init.body) : undefined;
       if (
         u.pathname === '/notes' &&
-        init.method === 'POST' &&
-        (!body?.title || !body?.body)
+        (init.method ?? 'GET').toUpperCase() === 'GET'
       ) {
-        // Wrongly accept invalid input.
+        // Re-fetch with a fabricated admin-like override that leaks all
+        // notes: simulate by wrapping the json() to append a foreign note.
+        const original = await res.json();
+        const leaked = [
+          ...original,
+          {
+            id: 'leak',
+            title: 'B note',
+            body: 'leaked',
+            ownerId: 'someone-else',
+          },
+        ];
         return {
-          status: 201,
-          headers: { get: () => 'application/json' },
+          status: res.status,
+          headers: res.headers,
           async text() {
-            return JSON.stringify({ id: 'x' });
+            return JSON.stringify(leaked);
           },
           async json() {
-            return { id: 'x' };
+            return leaked;
           },
         };
       }
-      return base(url, init);
+      return res;
     };
-    const result = await evaluateCrud('http://127.0.0.1:3000', {
+    const result = await evaluateStoryScope('http://127.0.0.1:3000', {
       fetchImpl,
-      uniqueSuffix: () => 'fixed',
+      uniqueSuffix: (() => {
+        let n = 0;
+        return () => `leak-${++n}`;
+      })(),
     });
     const c5 = result.criteria.find((c) => c.index === 5);
-    assert.equal(c5.met, false);
+    assert.equal(
+      c5.met,
+      false,
+      'criterion 5 (cross-user notes isolation) should be unmet',
+    );
     assert.equal(result.passed, false);
   });
 
   it('does not throw when the backend is unreachable', async () => {
-    const result = await evaluateCrud('http://127.0.0.1:3000', {
+    const result = await evaluateStoryScope('http://127.0.0.1:3000', {
       fetchImpl: async () => {
         throw new Error('ECONNREFUSED');
       },
@@ -392,11 +540,13 @@ describe('crud-db frozen oracle behavior', () => {
   });
 });
 
-describe('project-api frozen oracle behavior', () => {
-  // A dynamic fetch stub modelling a conforming in-memory project-api backend,
-  // so the full stateful auth + project + task round-trip can be driven
-  // deterministically without a real server.
-  function makeProjectApiFetch() {
+describe('epic-scope frozen oracle behavior', () => {
+  // A dynamic fetch stub modelling a conforming, isolating multi-user
+  // project/task backend, so the full auth + project + task round-trip
+  // (including per-user ownership scoping, pagination, filtering, cascade
+  // delete, and a consistent error envelope) can be driven deterministically
+  // without a real server.
+  function makeEpicScopeFetch({ leakCrossOwnerReads = false } = {}) {
     const users = new Map(); // username → { id, username, password }
     const tokens = new Map(); // token → userId
     const projects = new Map(); // projectId → { id, name, ownerId, createdAt }
@@ -414,11 +564,17 @@ describe('project-api frozen oracle behavior', () => {
         return json;
       },
     });
+    const err = (status, message) => send(status, { error: message });
 
     const authUser = (init) => {
       const auth = init?.headers?.authorization ?? '';
       const token = auth.replace(/^Bearer\s+/i, '');
       return token ? tokens.get(token) : undefined;
+    };
+
+    const ownedProject = (id, userId) => {
+      const p = projects.get(id);
+      return p && p.ownerId === userId ? p : undefined;
     };
 
     return async (url, init = {}) => {
@@ -427,15 +583,14 @@ describe('project-api frozen oracle behavior', () => {
       const method = (init.method ?? 'GET').toUpperCase();
       const body = init.body ? JSON.parse(init.body) : undefined;
 
-      // POST /auth/register
       if (parts[0] === 'auth' && parts[1] === 'register' && method === 'POST') {
         const ok =
           typeof body?.username === 'string' &&
           body.username.length > 0 &&
           typeof body?.password === 'string' &&
           body.password.length > 0;
-        if (!ok) return send(400, { error: 'invalid' });
-        if (users.has(body.username)) return send(409, { error: 'duplicate' });
+        if (!ok) return err(400, 'invalid');
+        if (users.has(body.username)) return err(409, 'duplicate');
         const id = `user-${++seq}`;
         users.set(body.username, {
           id,
@@ -445,24 +600,21 @@ describe('project-api frozen oracle behavior', () => {
         return send(201, { id, username: body.username });
       }
 
-      // POST /auth/login
       if (parts[0] === 'auth' && parts[1] === 'login' && method === 'POST') {
         const user = users.get(body?.username);
         if (!user || user.password !== body?.password)
-          return send(401, { error: 'unauthorized' });
+          return err(401, 'unauthorized');
         const token = `tok-${++seq}`;
         tokens.set(token, user.id);
         return send(200, { token });
       }
 
-      // Auth guard for all remaining routes
       const userId = authUser(init);
-      if (userId === undefined) return send(401, { error: 'unauthorized' });
+      if (userId === undefined) return err(401, 'unauthorized');
 
-      // POST /projects
       if (parts[0] === 'projects' && parts.length === 1 && method === 'POST') {
         const ok = typeof body?.name === 'string' && body.name.length > 0;
-        if (!ok) return send(400, { error: 'invalid' });
+        if (!ok) return err(400, 'invalid');
         const id = `proj-${++seq}`;
         const project = {
           id,
@@ -474,34 +626,40 @@ describe('project-api frozen oracle behavior', () => {
         return send(201, project);
       }
 
-      // GET /projects
       if (parts[0] === 'projects' && parts.length === 1 && method === 'GET') {
-        return send(200, [...projects.values()]);
+        return send(
+          200,
+          [...projects.values()].filter((p) => p.ownerId === userId),
+        );
       }
 
-      // GET /projects/:id
       if (parts[0] === 'projects' && parts.length === 2 && method === 'GET') {
-        const project = projects.get(decodeURIComponent(parts[1]));
-        return project ? send(200, project) : send(404, { error: 'not found' });
+        const pid = decodeURIComponent(parts[1]);
+        // The leaky variant deliberately skips ownership scoping — any
+        // authenticated user can read any project by id — to prove
+        // criterion 11 (cross-user read isolation) actually fails when the
+        // ownership check is missing.
+        const project = leakCrossOwnerReads
+          ? projects.get(pid)
+          : ownedProject(pid, userId);
+        return project ? send(200, project) : err(404, 'not found');
       }
 
-      // DELETE /projects/:id
       if (
         parts[0] === 'projects' &&
         parts.length === 2 &&
         method === 'DELETE'
       ) {
         const pid = decodeURIComponent(parts[1]);
-        if (!projects.has(pid)) return send(404, { error: 'not found' });
+        const project = ownedProject(pid, userId);
+        if (!project) return err(404, 'not found');
         projects.delete(pid);
-        // Cascade delete tasks
         for (const [tid, t] of tasks) {
           if (t.projectId === pid) tasks.delete(tid);
         }
         return send(204);
       }
 
-      // POST /projects/:projectId/tasks
       if (
         parts[0] === 'projects' &&
         parts[2] === 'tasks' &&
@@ -509,14 +667,14 @@ describe('project-api frozen oracle behavior', () => {
         method === 'POST'
       ) {
         const pid = decodeURIComponent(parts[1]);
-        if (!projects.has(pid)) return send(404, { error: 'not found' });
+        if (!ownedProject(pid, userId)) return err(404, 'not found');
         const ok = typeof body?.title === 'string' && body.title.length > 0;
-        if (!ok) return send(400, { error: 'invalid' });
+        if (!ok) return err(400, 'invalid');
         if (body?.assigneeId !== undefined && body.assigneeId !== null) {
           const known = [...users.values()].some(
-            (u) => u.id === body.assigneeId,
+            (u2) => u2.id === body.assigneeId,
           );
-          if (!known) return send(400, { error: 'unknown assigneeId' });
+          if (!known) return err(400, 'unknown assigneeId');
         }
         const id = `task-${++seq}`;
         const task = {
@@ -531,7 +689,6 @@ describe('project-api frozen oracle behavior', () => {
         return send(201, task);
       }
 
-      // GET /projects/:projectId/tasks
       if (
         parts[0] === 'projects' &&
         parts[2] === 'tasks' &&
@@ -539,7 +696,7 @@ describe('project-api frozen oracle behavior', () => {
         method === 'GET'
       ) {
         const pid = decodeURIComponent(parts[1]);
-        if (!projects.has(pid)) return send(404, { error: 'not found' });
+        if (!ownedProject(pid, userId)) return err(404, 'not found');
         const page = Math.max(
           1,
           parseInt(u.searchParams.get('page') ?? '1', 10) || 1,
@@ -551,12 +708,14 @@ describe('project-api frozen oracle behavior', () => {
             parseInt(u.searchParams.get('pageSize') ?? '20', 10) || 20,
           ),
         );
-        const all = [...tasks.values()].filter((t) => t.projectId === pid);
+        const doneFilter = u.searchParams.get('done');
+        let all = [...tasks.values()].filter((t) => t.projectId === pid);
+        if (doneFilter === 'true') all = all.filter((t) => t.done === true);
+        if (doneFilter === 'false') all = all.filter((t) => t.done === false);
         const items = all.slice((page - 1) * pageSize, page * pageSize);
         return send(200, { items, total: all.length, page, pageSize });
       }
 
-      // PATCH /projects/:projectId/tasks/:taskId
       if (
         parts[0] === 'projects' &&
         parts[2] === 'tasks' &&
@@ -565,10 +724,9 @@ describe('project-api frozen oracle behavior', () => {
       ) {
         const pid = decodeURIComponent(parts[1]);
         const tid = decodeURIComponent(parts[3]);
-        if (!projects.has(pid)) return send(404, { error: 'not found' });
+        if (!ownedProject(pid, userId)) return err(404, 'not found');
         const task = tasks.get(tid);
-        if (!task || task.projectId !== pid)
-          return send(404, { error: 'not found' });
+        if (!task || task.projectId !== pid) return err(404, 'not found');
         const updated = { ...task };
         if (body?.title !== undefined) updated.title = body.title;
         if (body?.done !== undefined) updated.done = body.done;
@@ -576,7 +734,6 @@ describe('project-api frozen oracle behavior', () => {
         return send(200, updated);
       }
 
-      // DELETE /projects/:projectId/tasks/:taskId
       if (
         parts[0] === 'projects' &&
         parts[2] === 'tasks' &&
@@ -585,24 +742,26 @@ describe('project-api frozen oracle behavior', () => {
       ) {
         const pid = decodeURIComponent(parts[1]);
         const tid = decodeURIComponent(parts[3]);
-        if (!projects.has(pid)) return send(404, { error: 'not found' });
+        if (!ownedProject(pid, userId)) return err(404, 'not found');
         const task = tasks.get(tid);
-        if (!task || task.projectId !== pid)
-          return send(404, { error: 'not found' });
+        if (!task || task.projectId !== pid) return err(404, 'not found');
         tasks.delete(tid);
         return send(204);
       }
 
-      return send(404, { error: 'route not found' });
+      return err(404, 'route not found');
     };
   }
 
-  it('passes the full auth + project + task round-trip against a conforming backend', async () => {
-    const result = await evaluateProjectApi('http://127.0.0.1:3000', {
-      fetchImpl: makeProjectApiFetch(),
-      uniqueSuffix: () => 'fixed',
+  it('passes the full multi-user auth + project + task round-trip against a conforming, isolating backend', async () => {
+    const result = await evaluateEpicScope('http://127.0.0.1:3000', {
+      fetchImpl: makeEpicScopeFetch(),
+      uniqueSuffix: (() => {
+        let n = 0;
+        return () => `fixed-${++n}`;
+      })(),
     });
-    assert.equal(result.scenario, 'project-api');
+    assert.equal(result.scenario, 'epic-scope');
     assert.equal(
       result.passed,
       true,
@@ -611,51 +770,82 @@ describe('project-api frozen oracle behavior', () => {
         .map((c) => `[${c.index}] ${c.criterion} — ${c.evidence}`)
         .join('; ')}`,
     );
-    assert.equal(result.criteria.length, 19);
+    assert.equal(result.criteria.length, 24);
     assert.deepEqual(
       result.criteria.map((c) => c.index),
-      Array.from({ length: 19 }, (_, i) => i),
+      Array.from({ length: 24 }, (_, i) => i),
     );
   });
 
-  it('flags auth criteria when credentials are rejected', async () => {
-    // A backend that always returns 401 for login fails criterion 3 (valid login).
-    const base = makeProjectApiFetch();
+  it("flags the isolation criterion when the backend leaks another user's project by id", async () => {
+    // A backend that returns ANY project by id regardless of ownership fails
+    // criterion 11 (cross-user read isolation).
+    const result = await evaluateEpicScope('http://127.0.0.1:3000', {
+      fetchImpl: makeEpicScopeFetch({ leakCrossOwnerReads: true }),
+      uniqueSuffix: (() => {
+        let n = 0;
+        return () => `iso-${++n}`;
+      })(),
+    });
+    const c11 = result.criteria.find((c) => c.index === 11);
+    assert.equal(
+      c11.met,
+      false,
+      'criterion 11 (cross-user read isolation) should be unmet',
+    );
+    assert.equal(result.passed, false);
+  });
+
+  it('flags the pagination criterion when the backend ignores pageSize', async () => {
+    const base = makeEpicScopeFetch();
     const fetchImpl = async (url, init = {}) => {
       const u = new URL(String(url));
+      const res = await base(url, init);
       if (
-        u.pathname.endsWith('/auth/login') &&
-        (init.method ?? 'POST').toUpperCase() === 'POST'
+        u.pathname.includes('/tasks') &&
+        (init.method ?? 'GET').toUpperCase() === 'GET' &&
+        u.searchParams.has('pageSize')
       ) {
-        return {
-          status: 401,
-          headers: { get: () => 'application/json' },
-          async text() {
-            return JSON.stringify({ error: 'unauthorized' });
-          },
-          async json() {
-            return { error: 'unauthorized' };
-          },
-        };
+        const payload = await res.json();
+        if (Array.isArray(payload?.items)) {
+          // Wrongly ignore pageSize and return everything.
+          return {
+            status: res.status,
+            headers: res.headers,
+            async text() {
+              return JSON.stringify({ ...payload, pageSize: 2 });
+            },
+            async json() {
+              return {
+                ...payload,
+                pageSize: 2,
+                items: [...payload.items, ...payload.items],
+              };
+            },
+          };
+        }
       }
-      return base(url, init);
+      return res;
     };
-    const result = await evaluateProjectApi('http://127.0.0.1:3000', {
+    const result = await evaluateEpicScope('http://127.0.0.1:3000', {
       fetchImpl,
-      uniqueSuffix: () => 'auth-fail',
+      uniqueSuffix: (() => {
+        let n = 0;
+        return () => `page-${++n}`;
+      })(),
     });
-    const c3 = result.criteria.find((c) => c.index === 3);
-    assert.equal(c3.met, false, 'criterion 3 (valid login) should be unmet');
+    const c18 = result.criteria.find((c) => c.index === 18);
+    assert.equal(c18.met, false, 'pagination criterion should be unmet');
   });
 
   it('does not throw when the backend is unreachable', async () => {
-    const result = await evaluateProjectApi('http://127.0.0.1:3000', {
+    const result = await evaluateEpicScope('http://127.0.0.1:3000', {
       fetchImpl: async () => {
         throw new Error('ECONNREFUSED');
       },
     });
     assert.equal(result.passed, false);
-    assert.equal(result.criteria.length, 19);
+    assert.equal(result.criteria.length, 24);
     assert.ok(result.criteria[0].evidence.includes('ECONNREFUSED'));
   });
 });

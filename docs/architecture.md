@@ -12,7 +12,7 @@ framework**, not part of it. It pins a *published* `mandrel` version
 (`dependencies.mandrel` in `package.json` — the version under test),
 materializes it via `mandrel sync`, then drives Mandrel's own
 `/plan`→`/deliver` pipeline (and a bare-model control) over a scenario corpus,
-scores each run across five dimensions, and tracks the framework's **value-add
+scores each run across seven dimensions, and tracks the framework's **value-add
 over the bare-model baseline** across versions and models.
 
 The dependency is **one-directional**: `mandrel-bench` depends on `mandrel`;
@@ -46,7 +46,7 @@ provision → run → collect → score → report → teardown
    telemetry (`temp/epic-<id>/lifecycle.ndjson` + per-Story `signals.ndjson`,
    written by `/deliver`) plus the `claude -p` cost envelope into a single
    per-run record conforming to `bench/schemas/scorecard.schema.json`.
-4. **score** (`bench/score/`) — `dimensions.js` computes the five dimensions
+4. **score** (`bench/score/`) — `dimensions.js` computes the seven dimensions
    per the `bench/metrics/README.md` formulas; `differential.js` computes the
    Mandrel-vs-control delta (with the real-delta rule from
    `bench/metrics/variance.js`) plus the two cross-scenario derived metrics.
@@ -75,20 +75,48 @@ envelope, so the overhead comparison is apples-to-apples by construction.
 
 ## 4. Dimensions & derived metrics
 
-Five per-run dimensions, split value vs. cost (full formulas in
+Seven per-run dimensions, split value vs. cost (full formulas in
 `bench/metrics/README.md`):
 
 | Side | Dimension | Signal |
 | --- | --- | --- |
 | Value | Quality | frozen acceptance suite + `acceptance-eval` cross-check |
-| Value | Planning fidelity | decomposition accuracy, re-plan, plan-vs-actual drift |
-| Value | Autonomy | HITL stops, `agent::blocked`, manual rescues |
+| Value | Planning fidelity | decomposition accuracy, re-plan, plan-vs-actual drift (proportional to declared plan size — Epic #66, Story #77) |
+| Value | Maintainability | static-analysis spine + LLM judge cross-check |
+| Value | Security | static-scanner spine + LLM judge cross-check |
 | Cost | Efficiency | wall-clock, tokens, dispatches |
 | Cost | Overhead ratio | ceremony ÷ codegen (tokens & time) |
 
-**Variance is the reporting method**, not a sixth dimension: every score is a
-distribution across N runs with a computed **noise-band**; a delta is "real"
-only when it clears the band.
+**Autonomy is reported separately, as a guardrail (Epic #66, Story #77).**
+It is no longer one of the Mandrel-vs-control delta rows: the bare control
+arm's "autonomy" is a defined baseline (1.0, zero interventions by
+construction), not a measurement, so diffing it against Mandrel's measured
+score was never a meaningful comparison. Instead every record carries
+`dimensions.autonomy.guardrail = { threshold, met }` — a pass/fail verdict
+against a fixed cohort threshold (default 0.99) — rendered in its own report
+section; a drop below threshold is itself a finding.
+
+**Variance is the reporting method**, not an eighth dimension: every score is
+a distribution across N runs with a computed **noise-band**; a delta is
+"real" only when it clears the band.
+
+**The trap axis is a separate differential signal (Epic #66, Story #74),
+never folded into the seven dimensions above.** The `story-scope` and
+`epic-scope` rungs each declare one or more adversarial trap classes — planted
+defects a dedicated oracle module source-scans the delivered tree for,
+independent of the frozen behavioural suite both arms can pass identically.
+Reported on the scorecard as `trap: { classes[], cleanRate }` and rendered as
+its own section (per-class scores + `cleanRate`, mean/spread/min per arm) in
+both the Markdown report and the dashboard. See `bench/metrics/README.md`
+§ "Trap axis" and [`data-dictionary.md`](data-dictionary.md) for the field
+shape.
+
+**Routing contract enforcement (Epic #66, Story #76).** Each scenario
+declares a `routing` contract (`"story"` or `"epic"`); a mandrel-arm record
+whose OBSERVED `routingVerdict` diverges from that contract is marked
+`routingMismatch: true` and excluded from the cell's noise-band pool, with
+the per-cell mismatch rate surfaced explicitly (>25% is itself a scope-triage
+calibration finding).
 
 **Cross-scenario derived metrics** (relationships, not per-run scores): the
 **difficulty-monotonicity** check (Efficiency ↑ / Overhead ratio ↓ across the
@@ -112,15 +140,35 @@ near-zero work).
 
 `bench/scenarios/` holds the corpus. Each scenario ships:
 
-- a `scenario.json` task seed shared by both arms,
+- a `scenario.json` task seed shared by both arms — declaring `difficulty`,
+  `rung`, `routing` (`"story"` | `"epic"` — the delivery route the harness
+  expects Mandrel to take), and `targetN`,
 - a **frozen** `acceptance.test.js` oracle — a pure `evaluate(baseUrl)` that
   probes only user-visible behavior and imports nothing from the delivered app,
 - wiring through `bench/scenarios/acceptance-eval-adapter.js`, which lifts the
   frozen result into a schema-valid verdict and runs the materialized
-  `acceptance-eval` cross-check.
+  `acceptance-eval` cross-check,
+- for `story-scope` and `epic-scope`: one or more `traps/<class>.js` oracle
+  modules, each exporting `evaluate(deliveredTreePath)`, plus a discrimination
+  unit test over hand-crafted clean/vulnerable sample trees
+  (`tests/bench/scenarios/<id>/`). Oracles live only in this repo — never
+  overlaid into the sandbox (the #58 git-exclude discipline) — and scenario
+  prompts stay terse with no trap hints, so the headroom the trap needs is
+  never destroyed by an accidental spoiler.
 
-v1 corpus: `hello-world` (the overhead floor + smoke) and `crud-db` (exercises
-decomposition, multi-wave delivery, planning fidelity, autonomy at depth).
+**The Epic #66 3-rung matrix** (retired the prior `crud-db`/`project-api`
+ladder and the single-oracle spike scenario it grew alongside, Story #79):
+
+| Scenario | Difficulty | Routing | Role |
+| --- | --- | --- | --- |
+| `hello-world` | 1 | story | Instrumentation only — overhead floor + pipeline smoke. Never a value-delta rung; reported under the floor/calibration framing. |
+| `story-scope` | 3 | story | The story-routed value rung — persisted-auth API with per-user notes; traps `plaintext-password` + `token-generation`. |
+| `epic-scope` | 5 | epic | The epic-routed value rung — multi-user project/task management API sized to decompose into 4–6 Stories; traps `plaintext-password`, `idor`, `missing-input-validation`, `hardcoded-secret`. |
+
+**Every scenario's sandbox gets real, un-stubbed lint/typecheck/test gates**
+for both arms (`bench/driver/overlay.js` `buildTargetPackageJson`) — the
+former single-scenario special case was generalized (Story #74) so a clean
+`/deliver` only auto-merges after the gates genuinely pass.
 
 ## 7. Security
 

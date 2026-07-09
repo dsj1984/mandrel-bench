@@ -15,13 +15,18 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  autonomyGuardrailFindings,
+  autonomyGuardrailRows,
   buildReportModel,
   deriveCohort,
   dimensionRows,
   groupCells,
   recommendImprovements,
+  renderFloorCalibrationNote,
+  renderMismatchNote,
   renderReport,
   renderScalingView,
+  trapAxisRows,
 } from '../../../bench/report/render.js';
 import { scoreCorpus } from '../../../bench/score/differential.js';
 
@@ -37,10 +42,13 @@ function card({
   scenario = 'hello-world',
   arm = 'mandrel',
   routingVerdict = null,
+  routingMismatch = false,
   runId = `${scenario}-${arm}-r1`,
   quality = 1,
   planningFidelity = 0.9,
   autonomy = 1,
+  autonomyGuardrailMet = true,
+  autonomyGuardrailThreshold = 0.99,
   maintainability = 0.9,
   security = 1,
   tokenRatio = 4,
@@ -51,8 +59,9 @@ function card({
   model = MODEL,
   frameworkVersion = FW,
   env = ENV,
+  trap = null,
 } = {}) {
-  return {
+  const sc = {
     schemaVersion: 1,
     runId,
     timestamp: '2026-06-16T19:42:11.000Z',
@@ -62,6 +71,7 @@ function card({
     scenario,
     arm,
     routingVerdict,
+    routingMismatch,
     dimensions: {
       quality: { score: quality, frozenSuitePassRate: quality },
       planningFidelity: { score: arm === 'control' ? null : planningFidelity },
@@ -70,6 +80,10 @@ function card({
         hitlStops: 0,
         blockedEvents: 0,
         manualRescues: 0,
+        guardrail: {
+          threshold: autonomyGuardrailThreshold,
+          met: autonomyGuardrailMet,
+        },
       },
       maintainability: { score: maintainability },
       security: { score: security },
@@ -77,6 +91,8 @@ function card({
       efficiency: { wallClockMs, totalTokens, dispatches, costUsd },
     },
   };
+  if (trap) sc.trap = trap;
+  return sc;
 }
 
 /**
@@ -111,13 +127,13 @@ function healthyCorpus() {
       }),
     );
   }
-  // crud-db: higher tokens, lower overhead ratio (amortized).
+  // story-scope: higher tokens, lower overhead ratio (amortized).
   for (let i = 0; i < 4; i += 1) {
     cards.push(
       card({
-        scenario: 'crud-db',
+        scenario: 'story-scope',
         arm: 'mandrel',
-        runId: `crud-m-${i}`,
+        runId: `story-m-${i}`,
         quality: 0.95 - i * 0.005,
         tokenRatio: 1.5,
         totalTokens: 900000 + i * 5000,
@@ -126,9 +142,9 @@ function healthyCorpus() {
     );
     cards.push(
       card({
-        scenario: 'crud-db',
+        scenario: 'story-scope',
         arm: 'control',
-        runId: `crud-c-${i}`,
+        runId: `story-c-${i}`,
         quality: 0.4 + i * 0.005,
         tokenRatio: 0.1,
         totalTokens: 300000 + i * 2000,
@@ -144,25 +160,108 @@ describe('groupCells', () => {
     const cells = groupCells(healthyCorpus());
     assert.equal(cells.length, 2);
     assert.equal(cells[0].scenario, 'hello-world'); // difficulty 1 first
-    assert.equal(cells[1].scenario, 'crud-db'); // difficulty 2 second
+    assert.equal(cells[1].scenario, 'story-scope'); // difficulty 2 second
     assert.equal(cells[0].mandrelRuns.length, 4);
     assert.equal(cells[0].controlRuns.length, 4);
   });
 
   it('sorts an unknown scenario last without dropping it', () => {
     const cells = groupCells([
-      card({ scenario: 'crud-db', runId: 'a' }),
+      card({ scenario: 'story-scope', runId: 'a' }),
       card({ scenario: 'mystery', runId: 'b' }),
       card({ scenario: 'hello-world', runId: 'c' }),
     ]);
     assert.deepEqual(
       cells.map((c) => c.scenario),
-      ['hello-world', 'crud-db', 'mystery'],
+      ['hello-world', 'story-scope', 'mystery'],
     );
   });
 
   it('throws on a non-array input', () => {
     assert.throws(() => groupCells(null), TypeError);
+  });
+
+  it('tags hello-world cells with the floor/calibration framing marker, and no other scenario', () => {
+    const cells = groupCells([
+      card({ scenario: 'hello-world', runId: 'hw-1' }),
+      card({ scenario: 'story-scope', runId: 'story-1' }),
+    ]);
+    const hw = cells.find((c) => c.scenario === 'hello-world');
+    const story = cells.find((c) => c.scenario === 'story-scope');
+    assert.equal(hw.floorCalibration, true);
+    assert.equal(story.floorCalibration, false);
+  });
+
+  describe('routing-mismatch exclusion (Epic #66, Story #76)', () => {
+    it('excludes routingMismatch:true mandrel records from the pool and reports the mismatch rate', () => {
+      const cells = groupCells([
+        card({ scenario: 'story-scope', arm: 'mandrel', runId: 'm-1' }),
+        card({ scenario: 'story-scope', arm: 'mandrel', runId: 'm-2' }),
+        card({
+          scenario: 'story-scope',
+          arm: 'mandrel',
+          runId: 'm-3',
+          routingMismatch: true,
+        }),
+        card({ scenario: 'story-scope', arm: 'control', runId: 'c-1' }),
+      ]);
+      const cell = cells.find((c) => c.scenario === 'story-scope');
+      assert.equal(cell.mandrelRuns.length, 2);
+      assert.deepEqual(
+        cell.mandrelRuns.map((sc) => sc.runId),
+        ['m-1', 'm-2'],
+      );
+      assert.equal(cell.mismatchedRuns.length, 1);
+      assert.equal(cell.mismatchedRuns[0].runId, 'm-3');
+      assert.ok(Math.abs(cell.mismatchRate - 1 / 3) < 1e-9);
+    });
+
+    it('flags a cell whose mismatch rate exceeds the 25% scope-triage threshold', () => {
+      const cells = groupCells([
+        card({ scenario: 'story-scope', arm: 'mandrel', runId: 'm-1' }),
+        card({
+          scenario: 'story-scope',
+          arm: 'mandrel',
+          runId: 'm-2',
+          routingMismatch: true,
+        }),
+        card({
+          scenario: 'story-scope',
+          arm: 'mandrel',
+          runId: 'm-3',
+          routingMismatch: true,
+        }),
+      ]);
+      const cell = cells.find((c) => c.scenario === 'story-scope');
+      assert.ok(cell.mismatchRate > 0.25);
+      assert.equal(cell.mismatchFlag, true);
+    });
+
+    it('does not flag a cell whose mismatch rate is at or below the 25% threshold', () => {
+      const cells = groupCells([
+        card({ scenario: 'story-scope', arm: 'mandrel', runId: 'm-1' }),
+        card({ scenario: 'story-scope', arm: 'mandrel', runId: 'm-2' }),
+        card({ scenario: 'story-scope', arm: 'mandrel', runId: 'm-3' }),
+        card({
+          scenario: 'story-scope',
+          arm: 'mandrel',
+          runId: 'm-4',
+          routingMismatch: true,
+        }),
+      ]);
+      const cell = cells.find((c) => c.scenario === 'story-scope');
+      assert.equal(cell.mismatchRate, 0.25);
+      assert.equal(cell.mismatchFlag, false);
+    });
+
+    it('reports a zero mismatch rate for a cell with no mandrel records at all', () => {
+      const cells = groupCells([
+        card({ scenario: 'story-scope', arm: 'control', runId: 'c-1' }),
+      ]);
+      const cell = cells.find((c) => c.scenario === 'story-scope');
+      assert.equal(cell.mismatchRate, 0);
+      assert.equal(cell.mismatchFlag, false);
+    });
   });
 });
 
@@ -196,8 +295,9 @@ describe('dimensionRows — distributions per arm + delta verdict', () => {
       })),
     });
     const rows = dimensionRows(cells[0], corpus.perScenario[0], 'iqr');
-    // 6 scalar dimensions + 4 efficiency components = 10 rows.
-    assert.equal(rows.length, 10);
+    // 5 scalar dimensions (autonomy is a guardrail, not a delta — Epic #66,
+    // Story #77/#79) + 4 efficiency components = 9 rows.
+    assert.equal(rows.length, 9);
     const quality = rows.find((r) => r.metric === 'quality');
     // Both arms have a band (a distribution), not a single number.
     assert.ok(
@@ -262,7 +362,7 @@ describe('renderScalingView — per-difficulty ladder', () => {
     assert.match(md, /Overhead ratio \(control\)/);
     // Both rungs present.
     assert.match(md, /hello-world/);
-    assert.match(md, /crud-db/);
+    assert.match(md, /story-scope/);
   });
 
   it('reports monotonicity holding on a healthy corpus', () => {
@@ -280,7 +380,7 @@ describe('renderScalingView — per-difficulty ladder', () => {
   });
 
   it('surfaces a monotonicity violation as an explicit calibration warning', () => {
-    // Invert the ladder: hello-world MORE expensive than crud-db ⇒ efficiency
+    // Invert the ladder: hello-world MORE expensive than story-scope ⇒ efficiency
     // does not rise ⇒ violation.
     const broken = [];
     for (let i = 0; i < 4; i += 1) {
@@ -295,9 +395,9 @@ describe('renderScalingView — per-difficulty ladder', () => {
       );
       broken.push(
         card({
-          scenario: 'crud-db',
+          scenario: 'story-scope',
           arm: 'mandrel',
-          runId: `crud-m-${i}`,
+          runId: `story-m-${i}`,
           totalTokens: 180000, // LOWER than hello-world → violation
           tokenRatio: 4.0, // HIGHER than hello-world → violation
         }),
@@ -380,23 +480,23 @@ describe('recommendImprovements — actionable, evidence-linked findings', () =>
   });
 
   it('flags a real value-dimension regression where control beats mandrel', () => {
-    // crud-db: control quality clearly HIGHER than mandrel (a regression the
+    // story-scope: control quality clearly HIGHER than mandrel (a regression the
     // scaffolding should not cause).
     const cards = [];
     for (let i = 0; i < 4; i += 1) {
       cards.push(
         card({
-          scenario: 'crud-db',
+          scenario: 'story-scope',
           arm: 'mandrel',
-          runId: `crud-m-${i}`,
+          runId: `story-m-${i}`,
           quality: 0.4 + i * 0.005,
         }),
       );
       cards.push(
         card({
-          scenario: 'crud-db',
+          scenario: 'story-scope',
           arm: 'control',
-          runId: `crud-c-${i}`,
+          runId: `story-c-${i}`,
           quality: 0.9 - i * 0.005,
         }),
       );
@@ -411,7 +511,7 @@ describe('recommendImprovements — actionable, evidence-linked findings', () =>
     });
     const findings = recommendImprovements(corpus);
     const regression = findings.find((f) =>
-      f.id.startsWith('regression-crud-db-quality'),
+      f.id.startsWith('regression-story-scope-quality'),
     );
     assert.ok(regression, 'expected a quality regression finding');
     assert.equal(regression.severity, 'medium');
@@ -451,16 +551,61 @@ describe('renderReport — full Markdown', () => {
   it('surfaces the standalone routing verdict so n/a value dims are explained (Story #48)', () => {
     const scorecards = [
       card({
-        scenario: 'crud-db',
+        scenario: 'story-scope',
         arm: 'mandrel',
         routingVerdict: 'story',
         runId: 'm1',
       }),
-      card({ scenario: 'crud-db', arm: 'control', runId: 'c1' }),
+      card({ scenario: 'story-scope', arm: 'control', runId: 'c1' }),
     ];
     const md = renderReport({ scorecards, method: 'iqr' });
     assert.match(md, /Mandrel routing: standalone Story/);
     assert.match(md, /overhead-ratio is \*\*n\/a\*\*/);
+  });
+
+  it('surfaces the routing-mismatch note and excludes the mismatched record from the rendered n (Epic #66, Story #76)', () => {
+    const scorecards = [
+      card({ scenario: 'story-scope', arm: 'mandrel', runId: 'm1' }),
+      card({
+        scenario: 'story-scope',
+        arm: 'mandrel',
+        runId: 'm2',
+        routingMismatch: true,
+      }),
+      card({ scenario: 'story-scope', arm: 'control', runId: 'c1' }),
+    ];
+    const md = renderReport({ scorecards, method: 'iqr' });
+    assert.match(md, /Routing mismatch: 50% of mandrel runs/);
+    assert.match(md, /n = 1 mandrel \/ 1 control/);
+  });
+
+  it('flags a scenario section when the mismatch rate exceeds 25% (Epic #66, Story #76)', () => {
+    const scorecards = [
+      card({ scenario: 'story-scope', arm: 'mandrel', runId: 'm1' }),
+      card({
+        scenario: 'story-scope',
+        arm: 'mandrel',
+        runId: 'm2',
+        routingMismatch: true,
+      }),
+      card({
+        scenario: 'story-scope',
+        arm: 'mandrel',
+        runId: 'm3',
+        routingMismatch: true,
+      }),
+    ];
+    const md = renderReport({ scorecards, method: 'iqr' });
+    assert.match(md, /above the 25% scope-triage threshold/);
+  });
+
+  it('marks the hello-world section with the floor/calibration framing note (Epic #66, Story #76)', () => {
+    const md = renderReport({ scorecards: healthyCorpus(), method: 'iqr' });
+    const hwIndex = md.indexOf('Scenario: `hello-world`');
+    const storyIndex = md.indexOf('Scenario: `story-scope`');
+    const hwSection = md.slice(hwIndex, storyIndex);
+    assert.match(hwSection, /Floor\/calibration rung/);
+    assert.doesNotMatch(md.slice(storyIndex), /Floor\/calibration rung/);
   });
 
   it('surfaces the mixed-cohort warning in the header', () => {
@@ -485,5 +630,152 @@ describe('buildReportModel — structured form', () => {
     assert.ok(Array.isArray(model.recommendations));
     assert.ok(model.overheadFloor); // hello-world present → floor computed
     assert.equal(model.monotonicity.monotonicityHolds, true);
+  });
+
+  it('carries the trap-axis rows and the autonomy-guardrail rows (Epic #66, Story #79)', () => {
+    const model = buildReportModel({ scorecards: healthyCorpus() });
+    for (const s of model.scenarios) {
+      assert.ok(Array.isArray(s.trap));
+    }
+    assert.ok(Array.isArray(model.autonomyGuardrail));
+  });
+});
+
+describe('trapAxisRows — differential trap axis (Epic #66, Story #79)', () => {
+  const trapMandrel = card({
+    scenario: 'story-scope',
+    arm: 'mandrel',
+    runId: 'trap-m-1',
+    trap: {
+      classes: [
+        { class: 'plaintext-password', score: 1, defectPresent: false },
+      ],
+      cleanRate: 1,
+    },
+  });
+  const trapControl = card({
+    scenario: 'story-scope',
+    arm: 'control',
+    runId: 'trap-c-1',
+    trap: {
+      classes: [{ class: 'plaintext-password', score: 0, defectPresent: true }],
+      cleanRate: 0,
+    },
+  });
+
+  it('returns [] for a cell with no trap data', () => {
+    const cells = groupCells([card({ scenario: 'hello-world' })]);
+    assert.deepEqual(trapAxisRows(cells[0], 'iqr'), []);
+  });
+
+  it('summarizes each declared class plus a cleanRate row as mean/spread/min per arm', () => {
+    const cells = groupCells([trapMandrel, trapControl]);
+    const rows = trapAxisRows(cells[0], 'iqr');
+    const classRow = rows.find((r) => r.label === 'plaintext-password');
+    assert.ok(classRow);
+    assert.equal(classRow.mandrel.mean, 1);
+    assert.equal(classRow.mandrel.min, 1);
+    assert.equal(classRow.control.mean, 0);
+    assert.equal(classRow.control.min, 0);
+    const cleanRateRow = rows.find((r) => r.metric === 'trap.cleanRate');
+    assert.ok(cleanRateRow);
+    assert.equal(cleanRateRow.mandrel.mean, 1);
+    assert.equal(cleanRateRow.control.mean, 0);
+  });
+
+  it('renders the trap axis in its own section, separate from the seven dimensions', () => {
+    const md = renderReport({
+      scorecards: [trapMandrel, trapControl],
+      method: 'iqr',
+    });
+    assert.match(md, /Trap axis \(differential/);
+    assert.match(md, /plaintext-password/);
+  });
+});
+
+describe('autonomy guardrail — mandrel-arm pass/fail, never a delta (Epic #66, Story #77/#79)', () => {
+  it('reports met/dropped/unmeasured counts per scenario', () => {
+    const cells = groupCells([
+      card({
+        scenario: 'hello-world',
+        arm: 'mandrel',
+        runId: 'm1',
+        autonomyGuardrailMet: true,
+      }),
+      card({
+        scenario: 'hello-world',
+        arm: 'mandrel',
+        runId: 'm2',
+        autonomyGuardrailMet: false,
+      }),
+    ]);
+    const rows = autonomyGuardrailRows(cells);
+    const row = rows.find((r) => r.scenario === 'hello-world');
+    assert.equal(row.n, 2);
+    assert.equal(row.met, 1);
+    assert.equal(row.dropped, 1);
+    assert.equal(row.threshold, 0.99);
+  });
+
+  it('surfaces a finding when a scenario has a dropped run', () => {
+    const cells = groupCells([
+      card({
+        scenario: 'hello-world',
+        arm: 'mandrel',
+        runId: 'm1',
+        autonomyGuardrailMet: false,
+      }),
+    ]);
+    const findings = autonomyGuardrailFindings(cells);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].id, 'autonomy-guardrail-drop-hello-world');
+  });
+
+  it('does not appear as a Mandrel-vs-control delta row in the dimension table', () => {
+    const md = renderReport({ scorecards: healthyCorpus(), method: 'iqr' });
+    assert.match(md, /## Autonomy guardrail \(mandrel arm\)/);
+    assert.doesNotMatch(md, /\| Autonomy \|/);
+  });
+});
+
+describe('renderMismatchNote — direct coverage (Epic #66 audit remediation, M4-M10)', () => {
+  it('returns "" when the cell has no mismatched records', () => {
+    assert.equal(renderMismatchNote({ mismatchedRuns: [] }), '');
+    assert.equal(renderMismatchNote({}), '');
+  });
+
+  it('renders the plain note when below the 25% scope-triage threshold', () => {
+    const note = renderMismatchNote({
+      mismatchedRuns: [{ runId: 'm-1' }],
+      mismatchRate: 0.2,
+      mismatchFlag: false,
+    });
+    assert.match(note, /Routing mismatch: 20% of mandrel runs/);
+    assert.match(note, /\(1 record\(s\)\)/);
+    assert.doesNotMatch(note, /⚠️/);
+  });
+
+  it('renders the warning-emoji branch when mismatchFlag is true (above threshold)', () => {
+    const note = renderMismatchNote({
+      mismatchedRuns: [{ runId: 'm-1' }, { runId: 'm-2' }, { runId: 'm-3' }],
+      mismatchRate: 1 / 3,
+      mismatchFlag: true,
+    });
+    assert.match(note, /⚠️ \*\*Routing mismatch: 33\.3% of mandrel runs\*\*/);
+    assert.match(note, /\(3 record\(s\)\)/);
+    assert.match(note, /above the 25% scope-triage threshold/);
+  });
+});
+
+describe('renderFloorCalibrationNote — direct coverage (Epic #66 audit remediation, M4-M10)', () => {
+  it('returns "" for a cell not tagged floorCalibration', () => {
+    assert.equal(renderFloorCalibrationNote({ floorCalibration: false }), '');
+    assert.equal(renderFloorCalibrationNote({}), '');
+  });
+
+  it('renders the floor/calibration framing note when floorCalibration is true', () => {
+    const note = renderFloorCalibrationNote({ floorCalibration: true });
+    assert.match(note, /🧭 \*\*Floor\/calibration rung\*\*/);
+    assert.match(note, /instrumentation, not a value rung/);
   });
 });

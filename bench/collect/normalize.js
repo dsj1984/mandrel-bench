@@ -230,13 +230,6 @@ export function deriveAutonomyCounters({ lifecycle, signals = [] }) {
  * }}
  */
 export function deriveTokenSplit({ lifecycle, totalTokens, wallClockMs }) {
-  const total =
-    typeof totalTokens === 'number' && totalTokens >= 0
-      ? Math.trunc(totalTokens)
-      : 0;
-  const wall =
-    typeof wallClockMs === 'number' && wallClockMs > 0 ? wallClockMs : 0;
-
   // Sum the matched dispatch windows. Match start→end per storyId; a start
   // with no matching end contributes no codegen time.
   const openStartMsByStory = new Map();
@@ -254,19 +247,61 @@ export function deriveTokenSplit({ lifecycle, totalTokens, wallClockMs }) {
       }
     }
   }
+  return deriveTokenSplitFromCodegenMs({ codegenMs, totalTokens, wallClockMs });
+}
+
+/**
+ * Shared proportional-attribution core behind `deriveTokenSplit`: given a
+ * raw codegen-window duration (however it was derived — matched Epic-ledger
+ * dispatch windows, or a standalone Story's createdAt→closedAt span, Epic
+ * #66 Story #77), attribute the session's total tokens across
+ * ceremony/codegen buckets in proportion to wall-clock share.
+ *
+ *   ceremonyMs = wallClockMs − codegenMs               (clamped ≥ 0)
+ *   codegenTokens  = round(totalTokens · codegenMs / wallClockMs)
+ *   ceremonyTokens = totalTokens − codegenTokens        (buckets always sum to total)
+ *
+ * @param {object} args
+ * @param {number} args.codegenMs      Raw (unclamped) codegen-window duration.
+ * @param {number} args.totalTokens    Session total tokens (from envelope).
+ * @param {number} args.wallClockMs    Derived run wall-clock.
+ * @returns {{
+ *   ceremonyTokens: number,
+ *   codegenTokens: number,
+ *   ceremonyMs: number,
+ *   codegenMs: number
+ * }}
+ */
+export function deriveTokenSplitFromCodegenMs({
+  codegenMs,
+  totalTokens,
+  wallClockMs,
+}) {
+  const total =
+    typeof totalTokens === 'number' && totalTokens >= 0
+      ? Math.trunc(totalTokens)
+      : 0;
+  const wall =
+    typeof wallClockMs === 'number' && wallClockMs > 0 ? wallClockMs : 0;
+
+  let codegen =
+    typeof codegenMs === 'number' && Number.isFinite(codegenMs)
+      ? Math.max(0, codegenMs)
+      : 0;
   // Codegen time can never exceed the run's wall-clock (overlapping parallel
-  // dispatches could otherwise sum past it); clamp so the proportion is valid.
-  if (wall > 0 && codegenMs > wall) codegenMs = wall;
-  const ceremonyMs = wall > 0 ? Math.max(0, wall - codegenMs) : 0;
+  // dispatches, or a standalone Story window that outran the session clock,
+  // could otherwise sum past it); clamp so the proportion is valid.
+  if (wall > 0 && codegen > wall) codegen = wall;
+  const ceremonyMs = wall > 0 ? Math.max(0, wall - codegen) : 0;
 
   let codegenTokens = 0;
   if (total > 0 && wall > 0) {
-    codegenTokens = Math.round((total * codegenMs) / wall);
+    codegenTokens = Math.round((total * codegen) / wall);
     if (codegenTokens > total) codegenTokens = total;
   }
   const ceremonyTokens = total - codegenTokens;
 
-  return { ceremonyTokens, codegenTokens, ceremonyMs, codegenMs };
+  return { ceremonyTokens, codegenTokens, ceremonyMs, codegenMs: codegen };
 }
 
 /**
@@ -356,6 +391,159 @@ function nonNeg(v) {
 }
 
 /**
+ * Resolve WHICH telemetry source a run's value dimensions (planning fidelity,
+ * autonomy) are measured from, and the routing-contract verdict that follows
+ * from it (Epic #66 audit remediation, H3 — extracted out of `buildScorecard`
+ * so the ledger/standalone routing decision has one home).
+ *
+ * A mandrel-arm run's Epic lifecycle ledger is the canonical source when
+ * present; when it is absent (e.g. a trivial scope Mandrel routed through the
+ * standalone single-Story path, which emits no Epic-scoped ledger), the
+ * recovered standalone GitHub telemetry stands in instead. The control arm
+ * has neither source. See `buildScorecard`'s own doc comment for the full
+ * standalone-fallback rationale (Story #48) and the routing-contract
+ * rationale (Story #76).
+ *
+ * @param {object} args
+ * @param {{ arm: 'mandrel'|'control' }} args.run
+ * @param {Array<object>} args.emitted        Emitted lifecycle records.
+ * @param {object|null} args.standalone       Standalone-path telemetry, or null.
+ * @param {string|null} args.scenarioRouting  The scenario contract's declared
+ *   routing (`'story'|'epic'`), or null when undeclared.
+ * @param {object} args.planning              The raw plan-vs-actual inputs
+ *   (used verbatim when the ledger, not standalone telemetry, is the source).
+ * @returns {{
+ *   ledgerObserved: boolean,
+ *   standaloneObserved: boolean,
+ *   valueObserved: boolean,
+ *   routingVerdict: 'epic'|'story'|null,
+ *   routingMismatch: boolean,
+ *   planningInput: object
+ * }}
+ */
+function resolveTelemetrySource({
+  run,
+  emitted,
+  standalone,
+  scenarioRouting,
+  planning,
+}) {
+  // Did this run produce a discoverable lifecycle ledger? The mandrel arm's
+  // value dimensions (planning fidelity, autonomy) and its token split are
+  // derived from that ledger; when it is absent, those signals are
+  // UNMEASURED and must score `null` rather than a misleading default. The
+  // control arm never has a ledger.
+  const ledgerObserved = emitted.length > 0;
+  // Standalone fallback (Story #48): when the mandrel arm produced no Epic
+  // ledger but the run recovered the standalone Story's GitHub telemetry,
+  // those signals stand in for the ledger so planning-fidelity + autonomy are
+  // MEASURED rather than null. The control arm has neither source.
+  const standaloneObserved =
+    !ledgerObserved && standalone != null && run.arm === 'mandrel';
+  const valueObserved = ledgerObserved || standaloneObserved;
+  // The routing Mandrel actually took for this cell — `epic` (ledger found),
+  // `story` (standalone telemetry), or null (control / undetermined).
+  const routingVerdict = ledgerObserved
+    ? 'epic'
+    : standaloneObserved
+      ? (standalone.routingVerdict ?? 'story')
+      : null;
+  // Routing contract enforcement (Epic #66, Story #76): a mandrel-arm record
+  // whose OBSERVED routing diverges from the scenario's DECLARED contract
+  // measured a different pipeline than the one the contract promises, so it
+  // is excluded from the cell's noise-band pool downstream. Both the
+  // contract and the observed verdict must be known for a comparison to be
+  // meaningful — an undetermined verdict (no ledger, no standalone recovery)
+  // is never itself treated as a divergence.
+  const routingMismatch =
+    run.arm === 'mandrel' &&
+    typeof scenarioRouting === 'string' &&
+    routingVerdict != null &&
+    routingVerdict !== scenarioRouting;
+  const planningInput = standaloneObserved ? standalone.planning : planning;
+
+  return {
+    ledgerObserved,
+    standaloneObserved,
+    valueObserved,
+    routingVerdict,
+    routingMismatch,
+    planningInput,
+  };
+}
+
+/**
+ * Resolve the ceremony/codegen token split for a run (Epic #66 audit
+ * remediation, H3 — extracted out of `buildScorecard`'s nested ternary).
+ * Three arm/telemetry shapes, in priority order:
+ *
+ *   1. control arm         — no Mandrel pipeline, so no ceremony: the whole
+ *      session is shippable codegen (README: "control arm sits near the
+ *      floor"). Attributing it via dispatch windows (which it lacks) would
+ *      wrongly bucket the entire run as ceremony.
+ *   2. standalone phase-split available — the standalone adapter's
+ *      createdAt→closedAt span (Epic #66, Story #77) stands in for the Epic
+ *      ledger's matched dispatch windows, giving a story-routed run with
+ *      recovered telemetry a REAL ceremony/codegen split.
+ *   3. lifecycle-ledger dispatch windows — the default mandrel-arm path.
+ *
+ * @param {object} args
+ * @param {'mandrel'|'control'} args.arm
+ * @param {boolean} args.standaloneObserved
+ * @param {object|null} args.standalone
+ * @param {Array<object>} args.emitted     Emitted lifecycle records.
+ * @param {{ totalTokens: number }} args.usage
+ * @param {number} args.wallClockMs
+ * @returns {{
+ *   ceremonyTokens: number,
+ *   codegenTokens: number,
+ *   ceremonyMs: number,
+ *   codegenMs: number
+ * }}
+ */
+function resolveTokenSplit({
+  arm,
+  standaloneObserved,
+  standalone,
+  emitted,
+  usage,
+  wallClockMs,
+}) {
+  if (arm === 'control') {
+    return {
+      ceremonyTokens: 0,
+      codegenTokens: usage.totalTokens,
+      ceremonyMs: 0,
+      codegenMs: wallClockMs,
+    };
+  }
+
+  // Only engages when the adapter could actually parse both timestamps
+  // (`phases.codegenMs` is a number); otherwise falls through to the
+  // empty-lifecycle `deriveTokenSplit` path (codegenMs 0 ⇒ tokenRatio null),
+  // whose absence is what `telemetryAbsent` turns into a loud warning.
+  const standalonePhaseSplitAvailable =
+    standaloneObserved &&
+    standalone?.phases &&
+    typeof standalone.phases.codegenMs === 'number' &&
+    Number.isFinite(standalone.phases.codegenMs);
+
+  if (standalonePhaseSplitAvailable) {
+    return deriveTokenSplitFromCodegenMs({
+      codegenMs: standalone.phases.codegenMs,
+      totalTokens: usage.totalTokens,
+      wallClockMs,
+    });
+  }
+
+  return deriveTokenSplit({
+    lifecycle: emitted,
+    totalTokens: usage.totalTokens,
+    wallClockMs,
+  });
+}
+
+/**
  * Build one per-run scorecard record from already-parsed in-memory inputs.
  * This is the pure core — no filesystem access — so it is fully unit-testable.
  *
@@ -366,7 +554,7 @@ function nonNeg(v) {
  * @param {{ id: string, displayName?: string }} args.run.model
  * @param {string} args.run.frameworkVersion
  * @param {{ node: string, os: string, host?: string }} args.run.env
- * @param {'hello-world'|'crud-db'} args.run.scenario
+ * @param {'hello-world'|'story-scope'|'epic-scope'} args.run.scenario
  * @param {'mandrel'|'control'} args.run.arm
  * @param {Array<object>} args.lifecycle   Parsed lifecycle NDJSON records.
  * @param {Array<object>} [args.signals]   Flattened per-Story signal records.
@@ -386,19 +574,36 @@ function nonNeg(v) {
  *   `{ objectiveSecurityScore?, securityJudgeScore?,
  *      criticalFindings?, highFindings?, secretsDetected? }`.
  *   When absent the dimension scores 0 (conservative default).
- * @param {object} [args.trap]             Adversarial trap-oracle verdict for
- *   the differential-trap rung (Story #57):
- *   `{ defectClass, defectPresent, score, signals, evidence, filesScanned? }`.
- *   Present only for the trap scenario; null/absent for every other scenario.
- *   Recorded under `scorecard.trap` as a SEPARATE differential signal — never
- *   folded into the five composite dimensions.
+ * @param {object} [args.trap]             Multi-class trap-runner verdict
+ *   (Epic #66, Story #74 — replaces the single-oracle Story #57 shape):
+ *   `{ classes: [{ class, score, defectPresent, evidence? }], cleanRate }`,
+ *   the aggregate `bench/scenarios/trap-runner.js` produces. Present only
+ *   when the scenario declares at least one trap class (non-empty
+ *   `classes[]`); null/absent (or an empty `classes[]`) for every other
+ *   scenario. Recorded under `scorecard.trap` as a SEPARATE differential
+ *   signal — never folded into the seven composite dimensions.
  * @param {object} [args.rawRefs]          Provenance breadcrumbs for `rawRefs`.
- * @param {object} [args.standalone]       Standalone-path telemetry (Story #48),
- *   present only when the mandrel arm produced no Epic ledger but the run
- *   recovered the standalone Story's GitHub telemetry:
- *   `{ planning: {...}, autonomy: {...}, routingVerdict: 'story' }`. When
+ * @param {object} [args.standalone]       Standalone-path telemetry (Story #48;
+ *   phase-split added Epic #66 Story #77), present only when the mandrel arm
+ *   produced no Epic ledger but the run recovered the standalone Story's
+ *   GitHub telemetry: `{ planning: {...}, autonomy: {...}, routingVerdict:
+ *   'story', phases?: { createdAt, closedAt, prMergedAt, codegenMs } }`. When
  *   present it stands in for the absent ledger so planning-fidelity + autonomy
- *   are measured. Null/absent ⇒ unchanged null behaviour.
+ *   are measured. When `phases.codegenMs` is also a finite number, it drives a
+ *   real ceremony/codegen overhead split (via `deriveTokenSplitFromCodegenMs`)
+ *   instead of the permanent null the pre-#77 scope left in place. Null/absent
+ *   ⇒ unchanged null behaviour (surfaced as the `standalone-telemetry-absent`
+ *   entry in the record's `warnings[]` when the mandrel arm has no ledger and
+ *   no recovered standalone telemetry at all).
+ * @param {string|null} [args.scenarioRouting]  The scenario contract's
+ *   declared routing (`scenario.json`'s `routing: 'story' | 'epic'`, Epic #66
+ *   Story #76). Compared against the OBSERVED `routingVerdict`: a mandrel-arm
+ *   record whose observed routing diverges from the contract is marked
+ *   `routingMismatch: true` (it measured a different pipeline than the
+ *   scenario declares — excluded from noise-band pooling downstream by
+ *   `bench/report/render.js` `groupCells`). Null/absent (no contract
+ *   declared, or the observed verdict could not be determined) ⇒ `false` —
+ *   an undetermined comparison is never treated as a divergence.
  * @returns {object} A scorecard record conforming to scorecard.schema.json.
  */
 export function buildScorecard({
@@ -413,6 +618,7 @@ export function buildScorecard({
   trap = null,
   rawRefs,
   standalone = null,
+  scenarioRouting = null,
 }) {
   if (!run || typeof run !== 'object') {
     throw new TypeError('buildScorecard: run identity is required');
@@ -441,30 +647,20 @@ export function buildScorecard({
   }
 
   const emitted = emittedRecords(lifecycle);
-  // Did this run produce a discoverable lifecycle ledger? The mandrel arm's
-  // value dimensions (planning fidelity, autonomy) and its token split are
-  // derived from that ledger; when it is absent (e.g. a trivial scope that
-  // Mandrel routed through the standalone single-Story path, which emits no
-  // Epic-scoped ledger), those signals are UNMEASURED and must score `null`
-  // rather than a misleading default. The control arm never has a ledger.
-  const ledgerObserved = emitted.length > 0;
-  // Standalone fallback (Story #48): when the mandrel arm produced no Epic
-  // ledger but the run recovered the standalone Story's GitHub telemetry, those
-  // signals stand in for the ledger so planning-fidelity + autonomy are MEASURED
-  // rather than null. The overhead token-split stays unmeasured (no phase
-  // boundaries — left to fall through to a null tokenRatio). The control arm has
-  // neither source and is unaffected.
-  const standaloneObserved =
-    !ledgerObserved && standalone != null && run.arm === 'mandrel';
-  const valueObserved = ledgerObserved || standaloneObserved;
-  // The routing Mandrel actually took for this cell — `epic` (ledger found),
-  // `story` (standalone telemetry), or null (control / undetermined).
-  const routingVerdict = ledgerObserved
-    ? 'epic'
-    : standaloneObserved
-      ? (standalone.routingVerdict ?? 'story')
-      : null;
-  const planningInput = standaloneObserved ? standalone.planning : planning;
+  const {
+    ledgerObserved,
+    standaloneObserved,
+    valueObserved,
+    routingVerdict,
+    routingMismatch,
+    planningInput,
+  } = resolveTelemetrySource({
+    run,
+    emitted,
+    standalone,
+    scenarioRouting,
+    planning,
+  });
 
   // ---- Lifecycle-derived raw sub-signals -------------------------------
   // Wall-clock comes from the lifecycle span when present; the control arm
@@ -478,23 +674,44 @@ export function buildScorecard({
     ? standalone.autonomy
     : deriveAutonomyCounters({ lifecycle: emitted, signals });
   const usage = extractUsage(envelope);
-  // The bare control arm runs no Mandrel pipeline, so it has no ceremony — its
-  // whole session is shippable codegen (README: "control arm sits near the
-  // floor"). Attributing it via dispatch windows (which it lacks) would wrongly
-  // bucket the entire run as ceremony, so the control split is all-codegen.
-  const split =
-    run.arm === 'control'
-      ? {
-          ceremonyTokens: 0,
-          codegenTokens: usage.totalTokens,
-          ceremonyMs: 0,
-          codegenMs: wallClockMs,
-        }
-      : deriveTokenSplit({
-          lifecycle: emitted,
-          totalTokens: usage.totalTokens,
-          wallClockMs,
-        });
+  // Overhead token-split (Epic #66, Story #77, target-architecture §8):
+  // resolved by `resolveTokenSplit` — control (all-codegen), standalone
+  // phase-split (Story #77's createdAt→closedAt span standing in for the
+  // Epic ledger's matched dispatch windows), or the default lifecycle-ledger
+  // dispatch-window attribution. See that function's doc comment for the
+  // full per-branch rationale.
+  const split = resolveTokenSplit({
+    arm: run.arm,
+    standaloneObserved,
+    standalone,
+    emitted,
+    usage,
+    wallClockMs,
+  });
+  // Loud null (§8): the mandrel arm produced NEITHER an Epic ledger NOR
+  // recovered standalone telemetry, so planning-fidelity, autonomy, and the
+  // overhead split are all genuinely unmeasured — not silently defaulted.
+  const telemetryAbsent = run.arm === 'mandrel' && !valueObserved;
+  // Loud null (§8, Epic #66 audit remediation M3): the Epic-ledger routing
+  // path (`planningInputs(lifecycle)` in bench/run.js) derives only
+  // `{ plannedStoryCount, deliveredStoryCount, rePlanCount }` — it never
+  // threads `plannedFileCount`/`plannedPaths`/`actualPaths`, so
+  // `computePlanningFidelity` has no plan-size signal for this cell and
+  // silently defaults `fileFootprintDrift` to 0 (`footprintAccuracy: 1`)
+  // rather than measuring or dropping the term. That is exactly the
+  // "unmeasured defaults to a misleadingly perfect score" shape §8 exists to
+  // avoid, but wiring real plan-vs-actual path sets through the Epic
+  // decomposition is a larger change than this remediation pass budgeted
+  // for. Until that lands, surface the gap explicitly via a warning marker
+  // instead of leaving it silent — an operator reading `footprintAccuracy: 1`
+  // on an Epic-routed cell should be able to see it was never measured.
+  const footprintUnmeasuredEpicRouted =
+    run.arm === 'mandrel' &&
+    ledgerObserved &&
+    typeof planningInput.fileFootprintDrift !== 'number' &&
+    !Array.isArray(planningInput.plannedPaths) &&
+    !Array.isArray(planningInput.actualPaths) &&
+    typeof planningInput.plannedFileCount !== 'number';
 
   // ---- Dimension math (delegated to the scorer) ------------------------
   const dimensions = computeDimensions({
@@ -555,6 +772,19 @@ export function buildScorecard({
     },
   });
 
+  // Loud nulls (§8): surface the dimension-level warning codes (security /
+  // maintainability signal-or-judge absent) plus the record-level telemetry
+  // gap at the top of the scorecard, so an operator scanning persisted
+  // records sees an explicit marker instead of having to notice a `null`.
+  const warnings = [
+    ...(dimensions.security.warnings ?? []),
+    ...(dimensions.maintainability.warnings ?? []),
+    ...(telemetryAbsent ? ['standalone-telemetry-absent'] : []),
+    ...(footprintUnmeasuredEpicRouted
+      ? ['planning-footprint-unmeasured-epic-routed']
+      : []),
+  ];
+
   const scorecard = {
     schemaVersion: SCORECARD_SCHEMA_VERSION,
     runId: run.runId,
@@ -577,23 +807,33 @@ export function buildScorecard({
     scenario: run.scenario,
     arm: run.arm,
     routingVerdict,
+    routingMismatch,
     dimensions,
+    warnings,
   };
 
-  // Differential trap signal (Story #57). Present only for the trap rung; the
-  // SEPARATE adversarial oracle's verdict, NOT folded into the five composite
-  // dimensions — it is the differential signal the spike reads on its own. A
-  // `null`/absent trap (every non-trap scenario, or an oracle that failed)
-  // leaves the block off the scorecard entirely, so the schema keeps it
-  // optional and no false delta is introduced.
-  if (trap && typeof trap === 'object') {
+  // Multi-class differential trap signal (Epic #66, Story #74). Present only
+  // when the scenario declares at least one trap class; the SEPARATE
+  // per-class trap-runner verdict, NOT folded into the seven composite
+  // dimensions — it is a differential axis reported on its own. A
+  // `null`/absent trap, or one with an empty `classes[]` (every non-trap
+  // scenario, or a runner that failed), leaves the block off the scorecard
+  // entirely, so the schema keeps it optional and no false delta is
+  // introduced.
+  if (
+    trap &&
+    typeof trap === 'object' &&
+    Array.isArray(trap.classes) &&
+    trap.classes.length > 0
+  ) {
     scorecard.trap = {
-      defectClass: trap.defectClass,
-      defectPresent: Boolean(trap.defectPresent),
-      score: trap.score,
-      signals: trap.signals,
-      evidence: trap.evidence,
-      ...(trap.filesScanned != null ? { filesScanned: trap.filesScanned } : {}),
+      classes: trap.classes.map((entry) => ({
+        class: entry.class,
+        score: entry.score,
+        defectPresent: Boolean(entry.defectPresent),
+        ...(Array.isArray(entry.evidence) ? { evidence: entry.evidence } : {}),
+      })),
+      cleanRate: trap.cleanRate,
     };
   }
 

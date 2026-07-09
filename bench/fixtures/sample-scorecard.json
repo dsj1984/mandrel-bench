@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "runId": "hello-world-mandrel-2026-06-16-r03",
+  "runId": "story-scope-mandrel-2026-06-16-r03",
   "timestamp": "2026-06-16T19:42:11.000Z",
   "model": {
     "id": "claude-opus-4-8[1m]",
@@ -12,8 +12,10 @@
     "os": "darwin",
     "host": "bench-runner-01"
   },
-  "scenario": "hello-world",
+  "scenario": "story-scope",
   "arm": "mandrel",
+  "routingVerdict": "story",
+  "routingMismatch": false,
   "dimensions": {
     "quality": {
       "score": 1,
@@ -33,7 +35,11 @@
       "score": 1,
       "hitlStops": 0,
       "blockedEvents": 0,
-      "manualRescues": 0
+      "manualRescues": 0,
+      "guardrail": {
+        "threshold": 0.99,
+        "met": true
+      }
     },
     "maintainability": {
       "score": 0.91,
@@ -64,13 +70,34 @@
       "codegenTokens": 35520
     }
   },
+  "trap": {
+    "classes": [
+      {
+        "class": "plaintext-password",
+        "score": 1,
+        "defectPresent": false,
+        "evidence": [
+          "clean: a vetted password-hashing primitive (bcrypt/scrypt/argon2/pbkdf2) is used"
+        ]
+      },
+      {
+        "class": "token-generation",
+        "score": 1,
+        "defectPresent": false,
+        "evidence": [
+          "clean: a cryptographically strong random source (crypto.randomUUID/randomBytes/getRandomValues, uuid, or nanoid) is used"
+        ]
+      }
+    ],
+    "cleanRate": 1
+  },
   "rawRefs": {
     "lifecycleNdjson": "temp/epic-9001/lifecycle.ndjson",
     "signalsNdjson": [
       "temp/epic-9001/story-9101/signals.ndjson",
       "temp/epic-9001/story-9102/signals.ndjson"
     ],
-    "costEnvelope": "temp/bench/hello-world-mandrel-2026-06-16-r03/cost-envelope.json",
-    "acceptanceEvalVerdict": "temp/bench/hello-world-mandrel-2026-06-16-r03/acceptance-eval-verdict.json"
+    "costEnvelope": "temp/bench/story-scope-mandrel-2026-06-16-r03/cost-envelope.json",
+    "acceptanceEvalVerdict": "temp/bench/story-scope-mandrel-2026-06-16-r03/acceptance-eval-verdict.json"
   }
 }

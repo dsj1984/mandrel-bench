@@ -145,6 +145,19 @@ autonomy.score = 1 / (1 + interventions)                                  ∈ (0
 - `blockedEvents` — `agent::blocked` transitions in `lifecycle.ndjson`.
 - `manualRescues` — operator interventions that unblocked or restarted the run.
 
+**Reclassified as a guardrail (Epic #66, Story #77).** The formula above is
+unchanged, but autonomy is no longer reported as a Mandrel-vs-control DELTA
+(`SCALAR_DIMENSIONS` in `bench/score/differential.js` excludes it). The bare
+control arm's "autonomy" is a defined baseline (1.0, zero interventions by
+construction — it authors no plan and hits no HITL gate), not a measurement,
+so diffing it against Mandrel's measured score was never a meaningful
+comparison. Instead the record carries `dimensions.autonomy.guardrail =
+{ threshold, met }`: a pass/fail verdict against a fixed cohort threshold
+(default 0.99). A drop below threshold is itself a finding, surfaced in its
+own report section (`renderAutonomyGuardrailSection`,
+`autonomyGuardrailFindings`) rather than folded into the per-dimension delta
+table.
+
 ### 4. Maintainability — _how readable and low-complexity is the output?_ (value side)
 
 Added in Epic #32. Same two-oracle shape as Quality: an objective spine
@@ -335,10 +348,11 @@ scoring slice.
 
 These two relationships are computed by **comparing scenarios** and reported as
 calibration guardrails plus framework findings — they are **not** scored
-per-run dimensions and never appear on a single scorecard. With v1's two
-scenarios (`hello-world`, `crud-db`) they yield a monotonicity check and a
-floor estimate; the full scaling curve needs ≥ 3 ladder rungs and rides the
-deferred ladder.
+per-run dimensions and never appear on a single scorecard. The Epic #66
+3-rung matrix (`hello-world`, `story-scope`, `epic-scope`) is the full ladder:
+three rungs is exactly the minimum the difficulty-monotonicity check (D-010)
+needs, so both the monotonicity check and the floor estimate run on every
+cohort.
 
 ### A. Difficulty monotonicity (calibration guardrail)
 
@@ -346,10 +360,11 @@ As scenario difficulty rises along the ladder, two things **must** hold for the
 Mandrel arm:
 
 - **Efficiency rises** — absolute cost / time / dispatches increase
-  (`hello-world` < `crud-db`). Harder work costs more in absolute terms.
+  (`hello-world` < `story-scope` < `epic-scope`). Harder work costs more in
+  absolute terms.
 - **Overhead ratio falls** — ceremony amortizes over more shippable output as
   the task grows, so `overheadRatio.tokenRatio` _decreases_ down the ladder
-  (`hello-world` > `crud-db`).
+  (`hello-world` > `story-scope` > `epic-scope`).
 
 Formally, over the difficulty-ordered scenario list `s₁ … s_k` (easy → hard),
 comparing the band centers:
@@ -386,31 +401,93 @@ overheadFloorUsd    = center(efficiency.costUsd,     hello-world, mandrel)
   section (e.g. _"hello-world overhead ratio is 4.2× with no quality gain →
   consider a ceremony-lite path for trivial scopes"_).
 - It is a **floor**, not the full curve: characterizing whether ceremony is a
-  flat fixed cost or scales with task size needs at least three ladder rungs
-  (deferred beyond v1).
+  flat fixed cost or scales with task size needs at least three ladder rungs —
+  satisfied by the Epic #66 matrix below.
 
 ---
 
-## Scenario ladder and difficulty rungs
+## Scenario ladder and difficulty rungs (Epic #66 3-rung matrix, D-015)
 
 The harness runs dimensions across a difficulty-ordered scenario ladder. Each
-rung is a scenario tagged with a `difficulty` integer and a `rung` label:
+rung is a scenario tagged with a `difficulty` integer, a `rung` label, a
+`routing` contract (`"story"` or `"epic"` — the delivery route the scenario
+is expected to take), and a `targetN`:
 
-| Rung label | Difficulty | Scenario         | Purpose                                                         |
-| ---------- | ---------- | ---------------- | --------------------------------------------------------------- |
-| `smoke`    | 1          | `hello-world`    | Overhead floor + pipeline smoke test; Quality saturates at 1.0. |
-| `depth`    | 2          | `crud-db`        | Multi-wave CRUD; exercises decomposition and planning fidelity. |
-| `breadth`  | 3          | `project-api`    | Epic-scale multi-resource API with auth, relations, pagination; genuine decomposition surface for all seven dimensions. |
+| Rung label   | Difficulty | Scenario       | Routing | targetN | Purpose                                                         |
+| ------------ | ---------- | -------------- | ------- | ------- | ---------------------------------------------------------------- |
+| `floor`      | 1          | `hello-world`  | story   | 4       | Instrumentation only — overhead floor + pipeline smoke test. **Never a value-delta rung**; reported under the floor/calibration framing (Epic #66, Story #76). |
+| `story-scope`| 3          | `story-scope`  | story   | 8       | Persisted-auth API with per-user notes — the story-routed value rung; traps `plaintext-password` + `token-generation`. |
+| `epic-scope` | 5          | `epic-scope`   | epic    | 8       | Multi-user project/task management API sized to decompose into 4–6 Stories — the epic-routed value rung; traps `plaintext-password`, `idor`, `missing-input-validation`, `hardcoded-secret`. |
 
-The **difficulty-3 breadth rung** (`project-api`) was added in Epic #32 to
-give Maintainability and Security room to diverge between arms. On auth-bearing,
-multi-resource work the bare control most visibly misses Mandrel's
-`security-baseline.md` and `engineer`/`refactorer` persona baselines, making
-the frontier thesis observable on the dashboard.
+The prior two-scenario ladder (plus the single-defect spike scenario it grew
+alongside) was retired in full when this matrix landed (Epic #66, Story #79):
+`story-scope` absorbs that spike's frozen suite + plaintext-password oracle
+as its foundation, and `epic-scope` evolves the retired largest-difficulty
+rung's multi-resource API surface. The prior `results/` corpus was deleted
+rather than migrated — the schema changed (`trap`, `routingMismatch`) in a
+way that needs no back-compat shim (operator-authorized fresh longitudinal
+start, 2026-07-09).
 
-The difficulty-monotonicity check (D-010) requires ≥ 3 rungs; the three rungs
-above satisfy that condition. A fourth rung (real-Epic replay) is deferred
-beyond v1.
+**Routing contract enforcement (Story #76).** Each scenario's `routing`
+declares the delivery route the harness EXPECTS the mandrel arm to take. The
+OBSERVED `routingVerdict` (from the lifecycle ledger or the standalone-Story
+telemetry adapter) is compared against it at collect time; a divergent record
+is marked `routingMismatch: true` and excluded from the cell's noise-band pool
+(`bench/report/render.js` `groupCells`), with the per-cell mismatch rate
+surfaced explicitly — a rate above 25% is itself a scope-triage calibration
+finding, not noise the harness papers over.
+
+The difficulty-monotonicity check (D-010) requires ≥ 3 rungs; this matrix
+satisfies that condition exactly, with no deferred fourth rung.
+
+---
+
+## Trap axis — differential, adversarial signal (Epic #66, Story #74/#79)
+
+Separate from the seven composite dimensions above, `story-scope` and
+`epic-scope` each declare one or more **trap classes** — planted defects a
+dedicated oracle module (`bench/scenarios/<id>/traps/<class>.js`) source-scans
+the delivered tree for. The frozen acceptance suite is deliberately BLIND to
+every trap class: both arms can pass the exact same behavioural suite while
+one silently ships the vulnerable shortcut, which is precisely the signal the
+seven dimensions (Quality in particular) cannot see.
+
+Each declared oracle runs against BOTH arms' delivered trees identically and
+emits `{ class, score: 0|1, defectPresent, evidence[] }`; the aggregate lands
+on the scorecard as:
+
+```json
+"trap": {
+  "classes": [ { "class": "plaintext-password", "score": 1, "defectPresent": false } ],
+  "cleanRate": 0.5
+}
+```
+
+- `score` — 1 = clean (defect absent), 0 = defect present. Higher is better,
+  matching the polarity of every other value-side dimension.
+- `cleanRate` — the mean of the run's per-class scores.
+- Present only when the scenario declares at least one trap class; absent
+  (no `trap` key at all) for a non-trap scenario, so the schema keeps it
+  optional and no false delta is introduced.
+
+**Never folded into the seven dimensions.** The trap axis is reported as its
+OWN section — per-class scores and `cleanRate` as distributions with mean,
+spread, and worst-case (min) per arm (`bench/report/render.js`
+`renderTrapAxisSection`, `bench/report/html.js`'s trap-axis panel) — never
+mixed into the Quality/Security tables above. Folding it in would let a
+planted-defect regression hide behind an unrelated composite gain, exactly
+the Goodhart failure mode § "Design principles" rules out for the seven
+dimensions; the trap axis gets the same protection by staying structurally
+separate.
+
+- Trap-class oracles and their defect descriptions live ONLY in this repo
+  (`bench/scenarios/**`), never overlaid into the sandbox — the #58
+  git-exclude overlay discipline is the enforced boundary. Scenario prompts
+  stay terse with no trap hints, so the headroom the trap needs is never
+  destroyed by an accidental spoiler in the seed text.
+- Every declared oracle ships a discrimination unit test over hand-crafted
+  clean/vulnerable sample trees (`tests/bench/scenarios/<id>/`), proving the
+  oracle actually discriminates rather than trivially passing everything.
 
 ---
 

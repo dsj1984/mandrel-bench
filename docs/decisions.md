@@ -349,3 +349,120 @@ in the repo name; the per-cell repo-name test in
 `tests/bench/run.test.js` now exercise the corrected behavior. The design
 described above (and in §5.2) was always the intended target; only the
 implementation was behind it.
+
+---
+
+## D-015 — The corpus is a 3-rung matrix (`hello-world`, `story-scope`, `epic-scope`); the old scenarios and the legacy results corpus retire in full (Epic #66, decided 2026-07-09)
+
+**Decision.** Amends D-006, executes the D-012 follow-up. Retire the
+`crud-db`/`project-api` difficulty ladder and the single-defect `auth-trap`
+spike scenario in favor of exactly three rungs, each declaring `difficulty`,
+`rung`, `routing` (`"story"` | `"epic"`), and `targetN`:
+
+| Scenario | Difficulty | Routing | Role |
+| --- | --- | --- | --- |
+| `hello-world` | 1 | story | Instrumentation — the overhead floor + pipeline smoke, never a value-delta rung; reported under the floor/calibration framing (`targetN` 4). |
+| `story-scope` | 3 | story | The story-routed value rung — persisted-auth API with per-user notes; traps `plaintext-password` + `token-generation` (`targetN` 8). |
+| `epic-scope` | 5 | epic | The epic-routed value rung — multi-user project/task management API sized to decompose into 4–6 Stories; traps `plaintext-password`, `idor`, `missing-input-validation`, `hardcoded-secret` (`targetN` 8). |
+
+**The follow-up D-012 gated.** D-012's `auth-trap` spike found the pattern
+did discriminate (its `plaintext-password` oracle + discrimination test
+validated the apparatus), which is the "signal found" branch of D-012's
+explicit gate — the authorized trigger for generalizing the pattern to
+additional defect classes and rungs, executed here. `story-scope` absorbs
+the spike's frozen suite and `plaintext-password` oracle as its foundation
+rather than the matrix growing a fourth, dedicated trap-only rung.
+
+**Every scenario's sandbox gets real, un-stubbed gates (Story #74).** The
+`auth-trap`-only special case in `bench/driver/overlay.js`
+`buildTargetPackageJson` inverts: every scenario now receives real
+lint/typecheck/test scripts, identically for both arms, so a clean
+`/deliver` only auto-merges after the gates genuinely pass — not after
+`node --version` exits 0.
+
+**The trap axis is first-class, never folded into the seven dimensions.**
+`bench/schemas/scorecard.schema.json`, `bench/collect/normalize.js`, and the
+report/dashboard (`bench/report/render.js`, `bench/report/html.js`) all
+carry a `trap: { classes[], cleanRate }` block, present only for scenarios
+that declare trap classes, rendered as its own section (per-class scores +
+`cleanRate`, mean/spread/min per arm) separate from the seven composite
+dimensions — the exact separation D-012 already established, generalized
+from one class to five across two rungs. See
+[`data-dictionary.md`](data-dictionary.md) for the field shape.
+
+**Routing contract enforcement (Story #76).** The old ladder's `crud-db`
+mixed story- and epic-routed runs into one statistical cell — a pooling
+hazard the D-010 monotonicity check never accounted for. Every scenario now
+declares its expected `routing`; a mandrel-arm record whose OBSERVED
+`routingVerdict` diverges is marked `routingMismatch: true`, excluded from
+the cell's noise-band pool, and counted toward a >25% mismatch-rate finding.
+
+**Retirement, not migration.** `bench/scenarios/crud-db/`,
+`bench/scenarios/project-api/`, `bench/scenarios/auth-trap/`, and their
+tests were deleted outright (Story #79) — the trap-oracle port from the
+retired spike scenario happened first, so no reusable logic was lost. The
+legacy `results/` corpus (1.70.0/1.72.0/1.75.0 scorecards + `.raw/`) was
+also deleted rather than migrated: the schema change (`trap`,
+`routingMismatch`) needed no back-compat shim, and prior results carry no
+continuity obligation across this cutover (operator pre-authorization,
+2026-07-09) — comparisons restart cleanly on the new matrix.
+
+**Status.** Migration Phase 2 (see [`target-architecture.md`](target-architecture.md)
+§10) — delivered (Stories #74/#75/#76/#78/#79). Running the first cohort on
+the new matrix is explicitly **not** part of this decision's delivery — it
+is a cost-bearing, operator-gated `/benchmark` invocation, a Non-Goal of
+both the Epic and Story #79.
+
+---
+
+## D-018 — §8 measurement fixes: autonomy is a guardrail, planning-fidelity footprint is proportional, overhead-ratio gets a real phase-split (Epic #66, Story #77, decided 2026-07-09)
+
+**Decision.** Amends target-architecture.md §8. Three independent instrument
+fixes, landed together because they share one review:
+
+1. **Autonomy reclassified as a mandrel-arm guardrail, not a
+   mandrel-vs-control delta.** The bare control arm's "autonomy" (1.0, zero
+   interventions) is a **defined baseline**, not a measurement — it authors
+   no plan and hits no HITL gate by construction, so diffing it against
+   Mandrel's measured score was never a meaningful comparison.
+   `bench/score/dimensions.js`'s `computeAutonomy` now attaches a
+   `guardrail: { threshold, met }` verdict (default cohort threshold 0.99)
+   to every record; `bench/score/differential.js`'s `SCALAR_DIMENSIONS`
+   excludes `autonomy` from the Mandrel-vs-control delta table entirely. The
+   report and dashboard render the guardrail as its own pass/fail section
+   (`renderAutonomyGuardrailSection` / the dashboard's guardrail panel); a
+   drop below threshold is itself a finding
+   (`autonomyGuardrailFindings`), not a silently-averaged delta row.
+2. **Planning-fidelity footprint accuracy is proportional to declared plan
+   size, and dropped from the mean for ≤1-file plans.** The prior formula
+   scored a *functionally perfect* single-file `hello-world` delivery 0.67
+   — `fileFootprintDrift`'s Jaccard distance treats one incidental miss on
+   a 1-file plan identically to a large miss on a 10-file plan.
+   `bench/score/dimensions.js`'s `computePlanningFidelity` now scales the
+   footprint term's weight by the declared plan size and drops it from the
+   dimension mean entirely when the plan declares ≤1 file — a plan that
+   small carries too little footprint signal to score reliably.
+3. **Overhead ratio gets a real phase-split for story-routed runs.** The
+   prior implementation left `overheadRatio.tokenRatio` permanently `null`
+   for every mandrel-arm run that routed through the standalone single-Story
+   path (no Epic lifecycle ledger ⇒ no matched dispatch windows to derive a
+   ceremony/codegen split from) — exactly the cell the story-routed rungs
+   exercise most. The standalone-telemetry adapter now derives a real
+   `codegenMs` from the recovered Story's `createdAt`→`closedAt` span, and
+   `bench/collect/normalize.js` feeds it through the same proportional
+   time-based attribution the Epic-ledger path already used
+   (`deriveTokenSplitFromCodegenMs`). `null` now means telemetry was
+   genuinely absent, not merely unmeasurable on that routing path — and
+   that absence is itself a loud `warnings[]` entry
+   (`standalone-telemetry-absent`), not a silent gap.
+
+**Why landed together.** All three are the "§8 measurement fixes" Epic #66's
+Tech Spec scoped as one slice, independent of the scenario-matrix build
+(D-015) and shippable on its own — none of the three depends on the other
+two, and bundling them kept the review to one pass over
+`bench/score/dimensions.js` and its normalize/report/dashboard consumers.
+
+**Status.** Migration Phase 2 (see [`target-architecture.md`](target-architecture.md)
+§10) — delivered (Story #77; the report/dashboard rendering of the
+guardrail and the code/test/docs sweep of the retired autonomy delta row
+landed in Story #79).

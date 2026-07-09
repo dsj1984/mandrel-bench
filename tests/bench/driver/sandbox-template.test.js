@@ -80,7 +80,7 @@ test('materializeSandboxTemplate: layers the per-scenario seed dir on top when p
 
 test('materializeSandboxTemplate: a scenario with no seed dir is not an error — layer is skipped', () => {
   const cpCalls = [];
-  const scenarioDir = '/repo/bench/scenarios/crud-db/sandbox';
+  const scenarioDir = '/repo/bench/scenarios/story-scope/sandbox';
   const res = materializeSandboxTemplate(
     {
       templateRoot: '/repo/bench/sandbox-template',

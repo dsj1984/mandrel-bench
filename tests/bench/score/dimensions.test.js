@@ -15,6 +15,7 @@ import { describe, it } from 'node:test';
 
 import {
   computeAutonomy,
+  computeAutonomyGuardrail,
   computeDimensions,
   computeEfficiency,
   computeMaintainability,
@@ -22,6 +23,7 @@ import {
   computePlanningFidelity,
   computeQuality,
   computeSecurity,
+  DEFAULT_AUTONOMY_GUARDRAIL_THRESHOLD,
   fileFootprintDrift,
   MAINTAINABILITY_WEIGHTS,
   QUALITY_WEIGHTS,
@@ -178,6 +180,98 @@ describe('computePlanningFidelity', () => {
     });
     assert.equal(pf.score, null);
   });
+
+  describe('footprint proportionality (§8)', () => {
+    it('scores a perfect delivery whose plan declares ≤1 file as 1.0 (footprint dropped)', () => {
+      // A single-file plan whose declared path doesn't literally match the
+      // one file actually touched (a natural naming guess) previously
+      // clobbered a perfect delivery to (1 + 1 + 0) / 3 ≈ 0.667.
+      const pf = computePlanningFidelity({
+        arm: 'mandrel',
+        rePlanCount: 0,
+        plannedStoryCount: 1,
+        deliveredStoryCount: 1,
+        plannedPaths: ['index.js'],
+        actualPaths: ['server.js'], // disjoint ⇒ drift 1, but plan is 1 file
+      });
+      approx(pf.score, 1);
+      assert.equal(pf.footprintDropped, true);
+    });
+
+    it('drops the footprint term for a 0-file declared plan (plannedPaths absent, actualPaths tracked)', () => {
+      // The standalone-path shape: no plannedPaths at all, only actualPaths
+      // from the merged PR's file list. Previously this always computed
+      // drift 1.0 (P empty ⇒ maximal Jaccard distance) regardless of quality.
+      const pf = computePlanningFidelity({
+        arm: 'mandrel',
+        rePlanCount: 0,
+        plannedStoryCount: 1,
+        deliveredStoryCount: 1,
+        actualPaths: ['src/server.js', 'src/store.js'],
+      });
+      approx(pf.score, 1);
+      assert.equal(pf.footprintDropped, true);
+      approx(pf.fileFootprintDrift, 1); // still reported, just excluded from the mean
+    });
+
+    it('drops the footprint term for an explicit plannedFileCount ≤ 1', () => {
+      const pf = computePlanningFidelity({
+        arm: 'mandrel',
+        rePlanCount: 0,
+        plannedStoryCount: 1,
+        deliveredStoryCount: 1,
+        plannedFileCount: 1,
+        fileFootprintDrift: 0.9,
+      });
+      approx(pf.score, 1);
+      assert.equal(pf.footprintDropped, true);
+    });
+
+    it('keeps the footprint term in the mean once the declared plan exceeds 1 file', () => {
+      const pf = computePlanningFidelity({
+        arm: 'mandrel',
+        rePlanCount: 0,
+        plannedStoryCount: 1,
+        deliveredStoryCount: 1,
+        plannedPaths: ['a.js', 'b.js'],
+        actualPaths: ['a.js', 'b.js'],
+      });
+      approx(pf.score, 1);
+      assert.equal(pf.footprintDropped, false);
+    });
+
+    it('a large plan with one incidental miss is penalized far less than a small one', () => {
+      const bigPlan = computePlanningFidelity({
+        arm: 'mandrel',
+        plannedPaths: Array.from({ length: 10 }, (_, i) => `f${i}.js`),
+        actualPaths: [
+          ...Array.from({ length: 9 }, (_, i) => `f${i}.js`),
+          'extra.js',
+        ],
+      });
+      const smallPlan = computePlanningFidelity({
+        arm: 'mandrel',
+        plannedPaths: ['a.js', 'b.js'],
+        actualPaths: ['a.js', 'extra.js'],
+      });
+      assert.ok(bigPlan.score > smallPlan.score);
+    });
+
+    it('does not drop the footprint term when plan size is unknown (bare scalar drift, no path arrays)', () => {
+      // Back-compat: a caller that only ever reports the scalar drift (no
+      // plannedPaths/actualPaths/plannedFileCount) carries no plan-size
+      // signal, so the original 3-way average is preserved.
+      const pf = computePlanningFidelity({
+        arm: 'mandrel',
+        rePlanCount: 0,
+        plannedStoryCount: 1,
+        deliveredStoryCount: 1,
+        fileFootprintDrift: 1,
+      });
+      assert.equal(pf.footprintDropped, false);
+      approx(pf.score, (1 + 1 + 0) / 3);
+    });
+  });
 });
 
 describe('computeAutonomy', () => {
@@ -221,6 +315,66 @@ describe('computeAutonomy', () => {
       observed: false,
     });
     assert.equal(a.score, null);
+  });
+
+  describe('autonomy guardrail (§8)', () => {
+    it('formula is unchanged: still 1/(1+interventions)', () => {
+      const a = computeAutonomy({
+        hitlStops: 1,
+        blockedEvents: 0,
+        manualRescues: 0,
+      });
+      approx(a.score, 0.5);
+    });
+
+    it('carries a guardrail verdict with the default 0.99 threshold', () => {
+      const a = computeAutonomy({
+        hitlStops: 0,
+        blockedEvents: 0,
+        manualRescues: 0,
+      });
+      assert.equal(a.guardrail.threshold, DEFAULT_AUTONOMY_GUARDRAIL_THRESHOLD);
+      assert.equal(a.guardrail.met, true);
+    });
+
+    it('fails the guardrail when the score drops below threshold', () => {
+      const a = computeAutonomy({
+        hitlStops: 1,
+        blockedEvents: 0,
+        manualRescues: 0,
+      });
+      assert.equal(a.guardrail.met, false);
+    });
+
+    it('honours a custom cohort threshold', () => {
+      const a = computeAutonomy({
+        hitlStops: 1,
+        blockedEvents: 0,
+        manualRescues: 0,
+        guardrailThreshold: 0.4,
+      });
+      // score 0.5 ≥ 0.4
+      assert.equal(a.guardrail.met, true);
+      assert.equal(a.guardrail.threshold, 0.4);
+    });
+
+    it('reports guardrail.met null when the score itself is unmeasured', () => {
+      const a = computeAutonomy({
+        hitlStops: 0,
+        blockedEvents: 0,
+        manualRescues: 0,
+        observed: false,
+      });
+      assert.equal(a.score, null);
+      assert.equal(a.guardrail.met, null);
+    });
+
+    it('computeAutonomyGuardrail is directly usable against a bare score', () => {
+      assert.equal(computeAutonomyGuardrail(1).met, true);
+      assert.equal(computeAutonomyGuardrail(0.98).met, false);
+      assert.equal(computeAutonomyGuardrail(null).met, null);
+      assert.equal(computeAutonomyGuardrail(0.5, 0.4).met, true);
+    });
   });
 });
 
@@ -282,6 +436,36 @@ describe('computeMaintainability', () => {
     assert.equal(m.lintWarnings, 3);
     approx(m.score, 0.9);
   });
+
+  describe('loud nulls (§8)', () => {
+    it('warns maintainability-signal-absent when neither spine nor sub-signals are supplied', () => {
+      const m = computeMaintainability({});
+      assert.ok(m.warnings.includes('maintainability-signal-absent'));
+    });
+
+    it('does not warn maintainability-signal-absent when a spine is supplied', () => {
+      const m = computeMaintainability({ objectiveMaintainabilityScore: 0.5 });
+      assert.ok(!m.warnings.includes('maintainability-signal-absent'));
+    });
+
+    it('does not warn maintainability-signal-absent when only sub-signals are supplied', () => {
+      const m = computeMaintainability({ complexityScore: 0.5 });
+      assert.ok(!m.warnings.includes('maintainability-signal-absent'));
+    });
+
+    it('warns maintainability-judge-absent when the judge did not run', () => {
+      const m = computeMaintainability({ objectiveMaintainabilityScore: 0.5 });
+      assert.ok(m.warnings.includes('maintainability-judge-absent'));
+    });
+
+    it('does not warn maintainability-judge-absent when the judge ran', () => {
+      const m = computeMaintainability({
+        objectiveMaintainabilityScore: 0.5,
+        maintainabilityJudgeScore: 0.5,
+      });
+      assert.ok(!m.warnings.includes('maintainability-judge-absent'));
+    });
+  });
 });
 
 describe('computeSecurity', () => {
@@ -330,6 +514,31 @@ describe('computeSecurity', () => {
     assert.equal(s.criticalFindings, 2);
     assert.equal(s.highFindings, 5);
     assert.equal(s.secretsDetected, true);
+  });
+
+  describe('loud nulls (§8)', () => {
+    it('warns security-signal-absent when no scan data was supplied', () => {
+      const s = computeSecurity({});
+      assert.ok(s.warnings.includes('security-signal-absent'));
+    });
+
+    it('does not warn security-signal-absent when a scan score was supplied', () => {
+      const s = computeSecurity({ objectiveSecurityScore: 0 });
+      assert.ok(!s.warnings.includes('security-signal-absent'));
+    });
+
+    it('warns security-judge-absent when the judge did not run', () => {
+      const s = computeSecurity({ objectiveSecurityScore: 0.8 });
+      assert.ok(s.warnings.includes('security-judge-absent'));
+    });
+
+    it('does not warn security-judge-absent when the judge ran', () => {
+      const s = computeSecurity({
+        objectiveSecurityScore: 0.8,
+        securityJudgeScore: 0.9,
+      });
+      assert.ok(!s.warnings.includes('security-judge-absent'));
+    });
   });
 });
 

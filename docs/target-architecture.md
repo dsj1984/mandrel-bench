@@ -522,13 +522,13 @@ The delta at a glance, mapped to the migration phase that closes each gap
 | Area | Current | Target | Phase |
 | --- | --- | --- | --- |
 | Sandbox substrate | ✅ **Delivered** (Stories #71/#72/#73, D-013). Ephemeral per-cell repos (`bench-sbx-<cohort>-<scenario>-<arm>-<nonce>`) from in-repo `bench/sandbox-template/`; `bench-sbx-` prefix + TTL janitor sweep; standing `mandrel-bench-sandbox` repo retired and every code/test/README reference swept | Ephemeral per-cell repos from in-repo `bench/sandbox-template/`; janitor sweep; standing repo retired | 1 |
-| Scenario corpus | 4 scenarios: `hello-world`, `crud-db`, `project-api`, `auth-trap` (spike) | 3 rungs: `hello-world` (instrumentation), `story-scope`, `epic-scope`; old rungs 2–4 absorbed and retired | 2 |
-| Quality gates | Stubbed to `node --version` everywhere except auth-trap | Un-stubbed lint/typecheck/test on every rung, both arms | 2 |
-| Trap scoring | Single defect class on one spike scenario; probe never run | Multi-class traps on rungs 2–3 with per-class oracles; trap axis first-class in schema, report, dashboard | 2 |
-| Routing comparability | `routingVerdict` recorded; mixed story/epic runs pool into one band (crud-db hazard) | Routing contract per scenario; mismatches excluded from bands and counted as findings | 2 |
-| Planning fidelity | `fileFootprintDrift` punishes small plans (perfect hello-world delivery scores 0.67) | Footprint proportional to plan size; dropped for ≤ 1-file plans | 2 |
-| Autonomy | Reported as a mandrel-vs-control delta (control trivially 1.0) | Guardrail: mandrel-arm threshold, drops become findings | 2 |
-| Overhead ratio | `null` for story-routed runs (no lifecycle phase-split) | Phase-split derived from standalone-Story telemetry; `null` only when telemetry absent | 2 |
+| Scenario corpus | ✅ **Delivered** (Stories #74/#75/#78/#79, D-015). 3 rungs: `hello-world` (instrumentation), `story-scope`, `epic-scope`; `crud-db`/`project-api`/`auth-trap` retired from the working tree | 3 rungs: `hello-world` (instrumentation), `story-scope`, `epic-scope`; old rungs 2–4 absorbed and retired | 2 |
+| Quality gates | ✅ **Delivered** (Story #74). Un-stubbed lint/typecheck/test scripts on every scenario's sandbox `package.json`, identical for both arms — the former single-scenario special case was inverted, not extended | Un-stubbed lint/typecheck/test on every rung, both arms | 2 |
+| Trap scoring | ✅ **Delivered** (Stories #74/#75/#78, D-015). Per-class oracle modules on `story-scope` (2 classes) and `epic-scope` (4 classes), each with a discrimination unit test; `trap` block first-class in the schema, the Markdown report, and `results.html` | Multi-class traps on rungs 2–3 with per-class oracles; trap axis first-class in schema, report, dashboard | 2 |
+| Routing comparability | ✅ **Delivered** (Story #76). `routing` contract on every scenario; a mandrel-arm record whose observed `routingVerdict` diverges is marked `routingMismatch: true`, excluded from the cell's noise-band pool, and counted toward a >25% mismatch-rate finding | Routing contract per scenario; mismatches excluded from bands and counted as findings | 2 |
+| Planning fidelity | ✅ **Delivered** (Story #77, D-018). Footprint accuracy proportional to declared plan size; dropped from the dimension mean for ≤1-file plans | Footprint proportional to plan size; dropped for ≤ 1-file plans | 2 |
+| Autonomy | ✅ **Delivered** (Story #77/#79, D-018). Reported as a mandrel-arm guardrail (`dimensions.autonomy.guardrail = { threshold, met }`, default 0.99) in its own report/dashboard section; excluded from the Mandrel-vs-control delta table (`SCALAR_DIMENSIONS`) | Guardrail: mandrel-arm threshold, drops become findings | 2 |
+| Overhead ratio | ✅ **Delivered** (Story #77, D-018). Phase-split derived from the standalone-Story telemetry adapter's `createdAt`→`closedAt` span when the mandrel arm routed through the standalone path; `null` only when telemetry is genuinely absent (itself a loud `warnings[]` entry) | Phase-split derived from standalone-Story telemetry; `null` only when telemetry absent | 2 |
 | Cohort identity | `(model, mandrelVersion)`; benchmark version untracked | Triple `(model, mandrelVersion, benchmarkVersion)`; pooling filters on all three | 3 |
 | Run automation | Local-only (`npm run bench` / `/benchmark`); CI lints and unit-tests the harness | `workflow_dispatch` CI with top-up planner, parallel per-cell matrix, results PR | 3 |
 | HITL | Interactive STOP gates inside `/benchmark` | Results-PR review is the gate in CI; interactive gates remain for local runs | 3 |
@@ -574,14 +574,38 @@ Epic-sized unit for `/plan`:
      correction note). The design in §5.2/§5.5 was always the intended
      target; the "Delivered" marks above now reflect a genuinely matching
      implementation.
-2. **Phase 2 — Scenario matrix + measurement fixes.** Build `story-scope`
-   and `epic-scope` (absorbing auth-trap/crud-db/project-api), generalize
-   un-stubbed gates, multi-class trap oracles + discrimination tests,
-   routing contracts, trap axis in schema/report/dashboard, planning-fidelity
-   and overhead-ratio fixes from §8. Retire the old scenarios. *Exit: one
-   full local cohort on the new matrix (this is also the first
-   benchmark-version cohort, so no longitudinal continuity is broken —
-   comparisons restart cleanly under the triple key).*
+2. **Phase 2 — Scenario matrix + measurement fixes.** ✅ **Delivered**
+   (Stories #74–#79; D-015, D-018). `story-scope` and `epic-scope` built
+   (absorbing the retired `auth-trap`/`crud-db`/`project-api` scenarios),
+   un-stubbed gates generalized to every scenario, multi-class trap oracles +
+   discrimination tests landed, routing contracts enforced in pooling, the
+   trap axis rendered as a first-class report/dashboard section, and the §8
+   measurement fixes (planning-fidelity proportionality, autonomy guardrail,
+   overhead-ratio phase-split, loud nulls) landed. The old scenarios and the
+   legacy `results/` corpus were retired from the working tree (Story #79).
+
+   **Implementation deltas vs. the original plan:**
+   - **The exit criterion below was narrowed by explicit operator decision.**
+     The original exit bar ("one full local cohort on the new matrix") is
+     NOT met by this delivery — running the first cohort is a cost-bearing,
+     operator-gated `/benchmark` invocation, explicitly carved out as a
+     Non-Goal of both the Epic and Story #79. What ships here is the code,
+     schema, report/dashboard rendering, and docs; the first live cohort run
+     is a follow-up the operator triggers separately.
+   - **"Restarts cleanly under the triple key" was aspirational, not
+     accurate.** The `(model, mandrelVersion, benchmarkVersion)` triple
+     cohort key (D-014) is Phase 3 scope, not delivered here. Comparisons
+     restart cleanly for a simpler reason: the legacy `results/` corpus
+     (1.70.0/1.72.0/1.75.0 scorecards + `.raw/`) was deleted outright rather
+     than migrated, on an explicit pre-authorization from the operator
+     (2026-07-09) that prior results carry no continuity obligation across
+     this cutover — the schema change (`trap`, `routingMismatch`) needed no
+     back-compat shim as a result.
+   - **Trap classes attach directly to the two value rungs**, not to a
+     separate spike scenario as the pre-Epic-#66 corpus did — `story-scope`
+     absorbed the retired single-defect spike's frozen suite and
+     `plaintext-password` oracle as its foundation rather than the matrix
+     growing a fourth, dedicated trap-only rung.
 3. **Phase 3 — CI automation.** The `workflow_dispatch` workflow, top-up
    planner, matrix topology, artifact aggregation, results-PR flow,
    `benchmarkVersion` in schema + cohort filtering, GitHub Pages publish on

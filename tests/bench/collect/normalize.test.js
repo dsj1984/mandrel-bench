@@ -27,6 +27,7 @@ import {
   deriveAutonomyCounters,
   deriveDispatchCount,
   deriveTokenSplit,
+  deriveTokenSplitFromCodegenMs,
   deriveWallClockMs,
   extractDurationMs,
   extractUsage,
@@ -266,6 +267,102 @@ describe('deriveTokenSplit', () => {
   });
 });
 
+describe('deriveTokenSplitFromCodegenMs — direct edge-case coverage (Epic #66 audit remediation, M4-M10)', () => {
+  it('attributes tokens proportionally for a plain in-range codegenMs', () => {
+    const split = deriveTokenSplitFromCodegenMs({
+      codegenMs: 50000,
+      totalTokens: 1000,
+      wallClockMs: 200000,
+    });
+    assert.equal(split.codegenMs, 50000);
+    assert.equal(split.ceremonyMs, 150000);
+    assert.equal(split.codegenTokens, 250);
+    assert.equal(split.ceremonyTokens, 750);
+  });
+
+  it('treats a negative codegenMs as 0 (all ceremony)', () => {
+    const split = deriveTokenSplitFromCodegenMs({
+      codegenMs: -5000,
+      totalTokens: 400,
+      wallClockMs: 100000,
+    });
+    assert.equal(split.codegenMs, 0);
+    assert.equal(split.ceremonyMs, 100000);
+    assert.equal(split.codegenTokens, 0);
+    assert.equal(split.ceremonyTokens, 400);
+  });
+
+  it('treats a non-finite codegenMs (NaN/Infinity) as 0', () => {
+    const nanSplit = deriveTokenSplitFromCodegenMs({
+      codegenMs: Number.NaN,
+      totalTokens: 400,
+      wallClockMs: 100000,
+    });
+    assert.equal(nanSplit.codegenMs, 0);
+    assert.equal(nanSplit.codegenTokens, 0);
+
+    const infSplit = deriveTokenSplitFromCodegenMs({
+      codegenMs: Number.POSITIVE_INFINITY,
+      totalTokens: 400,
+      wallClockMs: 100000,
+    });
+    // Infinity is non-finite, so it also falls back to 0 raw codegen — NOT
+    // clamped-to-wall, since the finiteness guard runs before the clamp.
+    assert.equal(infSplit.codegenMs, 0);
+    assert.equal(infSplit.codegenTokens, 0);
+  });
+
+  it('clamps a codegenMs exceeding wallClockMs down to wallClockMs (all codegen)', () => {
+    const split = deriveTokenSplitFromCodegenMs({
+      codegenMs: 999999,
+      totalTokens: 600,
+      wallClockMs: 100000,
+    });
+    assert.equal(split.codegenMs, 100000);
+    assert.equal(split.ceremonyMs, 0);
+    assert.equal(split.codegenTokens, 600);
+    assert.equal(split.ceremonyTokens, 0);
+  });
+
+  it('attributes everything to ceremony when wallClockMs <= 0', () => {
+    const zeroWall = deriveTokenSplitFromCodegenMs({
+      codegenMs: 5000,
+      totalTokens: 300,
+      wallClockMs: 0,
+    });
+    assert.equal(zeroWall.codegenTokens, 0);
+    assert.equal(zeroWall.ceremonyTokens, 300);
+    assert.equal(zeroWall.ceremonyMs, 0);
+
+    const negWall = deriveTokenSplitFromCodegenMs({
+      codegenMs: 5000,
+      totalTokens: 300,
+      wallClockMs: -1000,
+    });
+    assert.equal(negWall.codegenTokens, 0);
+    assert.equal(negWall.ceremonyTokens, 300);
+    assert.equal(negWall.ceremonyMs, 0);
+  });
+
+  it('both buckets are 0 when totalTokens is 0 or negative', () => {
+    const zeroTokens = deriveTokenSplitFromCodegenMs({
+      codegenMs: 5000,
+      totalTokens: 0,
+      wallClockMs: 100000,
+    });
+    assert.equal(zeroTokens.codegenTokens, 0);
+    assert.equal(zeroTokens.ceremonyTokens, 0);
+
+    const negTokens = deriveTokenSplitFromCodegenMs({
+      codegenMs: 5000,
+      totalTokens: -100,
+      wallClockMs: 100000,
+    });
+    assert.equal(negTokens.codegenTokens, 0);
+    assert.equal(negTokens.ceremonyTokens, 0);
+  });
+});
+
 describe('extractUsage', () => {
   it('reads the normalized envelope shape', () => {
     const u = extractUsage(normalizedEnvelope());
@@ -346,7 +443,7 @@ describe('buildScorecard — control arm efficiency/overhead', () => {
 describe('buildScorecard — standalone fallback (Story #48)', () => {
   it('measures planning + autonomy from standalone telemetry when no ledger exists', () => {
     const sc = buildScorecard({
-      run: runStamp({ arm: 'mandrel', scenario: 'crud-db' }),
+      run: runStamp({ arm: 'mandrel', scenario: 'story-scope' }),
       lifecycle: [], // standalone path → no Epic ledger
       envelope: normalizedEnvelope(),
       quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
@@ -423,6 +520,333 @@ describe('buildScorecard — standalone fallback (Story #48)', () => {
       quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
     });
     assert.equal(sc.routingVerdict, 'epic');
+  });
+});
+
+describe('buildScorecard — standalone overhead phase-split (Epic #66, Story #77)', () => {
+  it('yields a non-null ceremony/codegen split for a story-routed run with phase telemetry', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel', scenario: 'story-scope' }),
+      lifecycle: [], // standalone path → no Epic ledger
+      envelope: normalizedEnvelope({ durationMs: 40 * 60 * 1000 }), // 40min session
+      quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
+      standalone: {
+        planning: {
+          plannedStoryCount: 1,
+          deliveredStoryCount: 1,
+          rePlanCount: 0,
+        },
+        autonomy: { hitlStops: 0, blockedEvents: 0, manualRescues: 0 },
+        routingVerdict: 'story',
+        phases: {
+          createdAt: '2026-06-16T19:00:00Z',
+          closedAt: '2026-06-16T19:38:00Z', // 38min of the 40min session
+          prMergedAt: '2026-06-16T19:38:33Z',
+          codegenMs: 38 * 60 * 1000,
+        },
+      },
+    });
+    assert.notEqual(sc.dimensions.overheadRatio.tokenRatio, null);
+    assert.equal(sc.dimensions.overheadRatio.codegenTokens > 0, true);
+    // ceremony + codegen tokens sum to the session total.
+    assert.equal(
+      sc.dimensions.overheadRatio.ceremonyTokens +
+        sc.dimensions.overheadRatio.codegenTokens,
+      184320,
+    );
+    assert.ok(!sc.warnings.includes('standalone-telemetry-absent'));
+  });
+
+  it('falls back to a null tokenRatio when phases.codegenMs could not be derived', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel', scenario: 'story-scope' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope({ durationMs: 40 * 60 * 1000 }),
+      quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
+      standalone: {
+        planning: {
+          plannedStoryCount: 1,
+          deliveredStoryCount: 1,
+          rePlanCount: 0,
+        },
+        autonomy: { hitlStops: 0, blockedEvents: 0, manualRescues: 0 },
+        routingVerdict: 'story',
+        phases: {
+          createdAt: null,
+          closedAt: null,
+          prMergedAt: null,
+          codegenMs: null,
+        },
+      },
+    });
+    assert.equal(sc.dimensions.overheadRatio.tokenRatio, null);
+  });
+
+  it('marks a loud warning when the mandrel arm has no ledger and no recovered standalone telemetry', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.equal(sc.dimensions.overheadRatio.tokenRatio, null);
+    assert.ok(sc.warnings.includes('standalone-telemetry-absent'));
+  });
+
+  it('never marks the telemetry-absent warning for the control arm', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'control' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.ok(!sc.warnings.includes('standalone-telemetry-absent'));
+  });
+
+  it('never marks the telemetry-absent warning when an Epic ledger was found', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:00:00.000Z',
+          event: 'story.dispatch.start',
+        },
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:30:00.000Z',
+          event: 'story.dispatch.end',
+        },
+      ],
+      planning: { plannedStoryCount: 1, deliveredStoryCount: 1 },
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.ok(!sc.warnings.includes('standalone-telemetry-absent'));
+  });
+
+  it('validates a schema-valid record carrying a non-empty warnings array', () => {
+    const validate = buildValidator();
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.ok(sc.warnings.length > 0);
+    const ok = validate(sc);
+    assert.ok(
+      ok,
+      `record failed schema validation: ${JSON.stringify(validate.errors, null, 2)}`,
+    );
+  });
+});
+
+describe('buildScorecard — planning-footprint-unmeasured-epic-routed warning (Epic #66 audit remediation, M3)', () => {
+  it('fires when the mandrel arm is Epic-ledger-routed but the planning input carries no footprint signal', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:00:00.000Z',
+          event: 'story.dispatch.start',
+        },
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:30:00.000Z',
+          event: 'story.dispatch.end',
+        },
+      ],
+      // No fileFootprintDrift / plannedPaths / actualPaths / plannedFileCount:
+      // the Epic-ledger routing path in bench/run.js never threads a
+      // plan-size signal, so footprint accuracy is genuinely unmeasured here.
+      planning: { plannedStoryCount: 1, deliveredStoryCount: 1 },
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.ok(
+      sc.warnings.includes('planning-footprint-unmeasured-epic-routed'),
+    );
+  });
+
+  it('stays absent when the Epic-ledger-routed run carries a real footprint signal', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:00:00.000Z',
+          event: 'story.dispatch.start',
+        },
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:30:00.000Z',
+          event: 'story.dispatch.end',
+        },
+      ],
+      planning: {
+        plannedStoryCount: 1,
+        deliveredStoryCount: 1,
+        fileFootprintDrift: 0.2,
+      },
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.ok(
+      !sc.warnings.includes('planning-footprint-unmeasured-epic-routed'),
+    );
+  });
+
+  it('never fires for a non-Epic-routed (standalone story) run, even with no footprint signal', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel', scenario: 'story-scope' }),
+      lifecycle: [], // no Epic ledger → standalone path
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+      standalone: {
+        planning: {
+          plannedStoryCount: 1,
+          deliveredStoryCount: 1,
+          // Deliberately no footprint signal either — the warning is scoped
+          // to the Epic-ledger path, so it must stay absent here regardless.
+        },
+        autonomy: { hitlStops: 0, blockedEvents: 0, manualRescues: 0 },
+        routingVerdict: 'story',
+      },
+    });
+    assert.ok(
+      !sc.warnings.includes('planning-footprint-unmeasured-epic-routed'),
+    );
+  });
+});
+
+describe('buildScorecard — autonomy guardrail surfaced on the record (Epic #66, Story #77)', () => {
+  it('carries guardrail.met on dimensions.autonomy', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'control' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.equal(sc.dimensions.autonomy.score, 1);
+    assert.equal(sc.dimensions.autonomy.guardrail.met, true);
+    assert.equal(sc.dimensions.autonomy.guardrail.threshold, 0.99);
+  });
+});
+
+describe('buildScorecard — routing contract enforcement (Epic #66, Story #76)', () => {
+  it('marks routingMismatch: true when the observed epic routing diverges from a declared story contract', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:00:00.000Z',
+          event: 'story.dispatch.start',
+        },
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:30:00.000Z',
+          event: 'story.dispatch.end',
+        },
+      ],
+      planning: { plannedStoryCount: 1, deliveredStoryCount: 1 },
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+      scenarioRouting: 'story',
+    });
+    assert.equal(sc.routingVerdict, 'epic');
+    assert.equal(sc.routingMismatch, true);
+  });
+
+  it('carries routingMismatch: false when the observed routing matches the declared contract', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel', scenario: 'story-scope' }),
+      lifecycle: [], // standalone path → no Epic ledger
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
+      standalone: {
+        planning: {
+          plannedStoryCount: 1,
+          deliveredStoryCount: 1,
+          rePlanCount: 0,
+        },
+        autonomy: { hitlStops: 0, blockedEvents: 0, manualRescues: 0 },
+        routingVerdict: 'story',
+      },
+      scenarioRouting: 'story',
+    });
+    assert.equal(sc.routingVerdict, 'story');
+    assert.equal(sc.routingMismatch, false);
+  });
+
+  it('defaults routingMismatch to false when no scenario contract is declared', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:00:00.000Z',
+          event: 'story.dispatch.start',
+        },
+      ],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.equal(sc.routingMismatch, false);
+  });
+
+  it('defaults routingMismatch to false when the observed routing could not be determined', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [], // no ledger, no standalone recovery ⇒ routingVerdict null
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+      scenarioRouting: 'story',
+    });
+    assert.equal(sc.routingVerdict, null);
+    assert.equal(sc.routingMismatch, false);
+  });
+
+  it('is always false for the control arm regardless of the declared contract', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'control' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+      scenarioRouting: 'story',
+    });
+    assert.equal(sc.routingMismatch, false);
+  });
+
+  it('validates against scorecard.schema.json with routingMismatch true and with it defaulted false', () => {
+    const validate = buildValidator();
+    const mismatched = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:00:00.000Z',
+          event: 'story.dispatch.start',
+        },
+      ],
+      planning: { plannedStoryCount: 1, deliveredStoryCount: 1 },
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+      scenarioRouting: 'story',
+    });
+    assert.equal(mismatched.routingMismatch, true);
+    assert.equal(validate(mismatched), true, JSON.stringify(validate.errors));
+
+    const clean = buildScorecard({
+      run: runStamp({ arm: 'control' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.equal(clean.routingMismatch, false);
+    assert.equal(validate(clean), true, JSON.stringify(validate.errors));
   });
 });
 
@@ -522,57 +946,58 @@ describe('buildScorecard — maintainability and security inputs', () => {
   });
 });
 
-describe('buildScorecard — differential trap signal (Story #57)', () => {
+describe('buildScorecard — multi-class differential trap signal (Epic #66, Story #74)', () => {
   const trapVerdict = (overrides = {}) => ({
-    defectClass: 'plaintext-password-storage',
-    defectPresent: false,
-    score: 1,
-    signals: {
-      hasHashing: true,
-      hasPlaintextPersist: false,
-      hasPlaintextComparison: false,
-    },
-    evidence: 'clean: a vetted password-hashing primitive is used',
-    filesScanned: 4,
+    classes: [
+      { class: 'plaintext-password', score: 1, defectPresent: false },
+      {
+        class: 'idor',
+        score: 1,
+        defectPresent: false,
+        evidence: ['no cross-user resource access detected'],
+      },
+    ],
+    cleanRate: 1,
     ...overrides,
   });
 
-  it('attaches a clean trap verdict under scorecard.trap (NOT folded into dimensions)', () => {
+  it('attaches a clean multi-class trap verdict under scorecard.trap (NOT folded into dimensions)', () => {
     const sc = buildScorecard({
-      run: runStamp({ scenario: 'auth-trap' }),
+      run: runStamp({ scenario: 'epic-scope' }),
       lifecycle: [],
       envelope: normalizedEnvelope(),
       quality: { frozenSuitePassed: 6, frozenSuiteTotal: 6 },
       trap: trapVerdict(),
     });
     assert.ok(sc.trap, 'expected a trap block on the scorecard');
-    assert.equal(sc.trap.defectPresent, false);
-    assert.equal(sc.trap.score, 1);
-    assert.equal(sc.trap.defectClass, 'plaintext-password-storage');
-    assert.equal(sc.trap.filesScanned, 4);
+    assert.equal(sc.trap.cleanRate, 1);
+    assert.equal(sc.trap.classes.length, 2);
+    assert.equal(sc.trap.classes[0].class, 'plaintext-password');
+    assert.equal(sc.trap.classes[0].defectPresent, false);
+    assert.deepEqual(sc.trap.classes[1].evidence, [
+      'no cross-user resource access detected',
+    ]);
     // The trap signal is SEPARATE — it must not appear inside dimensions.
     assert.equal(sc.dimensions.trap, undefined);
   });
 
-  it('attaches a defect-present trap verdict (score 0)', () => {
+  it('attaches a mixed clean/defect-present verdict with cleanRate as the mean of per-class scores', () => {
     const sc = buildScorecard({
-      run: runStamp({ scenario: 'auth-trap', arm: 'control' }),
+      run: runStamp({ scenario: 'story-scope', arm: 'control' }),
       lifecycle: [],
       envelope: normalizedEnvelope(),
       quality: { frozenSuitePassed: 6, frozenSuiteTotal: 6 },
       trap: trapVerdict({
-        defectPresent: true,
-        score: 0,
-        signals: {
-          hasHashing: false,
-          hasPlaintextPersist: true,
-          hasPlaintextComparison: true,
-        },
-        evidence: 'planted defect DETECTED',
+        classes: [
+          { class: 'plaintext-password', score: 0, defectPresent: true },
+          { class: 'token-generation', score: 1, defectPresent: false },
+        ],
+        cleanRate: 0.5,
       }),
     });
-    assert.equal(sc.trap.defectPresent, true);
-    assert.equal(sc.trap.score, 0);
+    assert.equal(sc.trap.classes[0].defectPresent, true);
+    assert.equal(sc.trap.classes[0].score, 0);
+    assert.equal(sc.trap.cleanRate, 0.5);
   });
 
   it('omits the trap block entirely for non-trap scenarios (trap null/absent)', () => {
@@ -586,9 +1011,20 @@ describe('buildScorecard — differential trap signal (Story #57)', () => {
     assert.equal('trap' in sc, false);
   });
 
+  it('omits the trap block when the runner verdict has an empty classes[] (no trap classes declared)', () => {
+    const sc = buildScorecard({
+      run: runStamp({ scenario: 'hello-world' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 3, frozenSuiteTotal: 3 },
+      trap: { classes: [], cleanRate: null },
+    });
+    assert.equal('trap' in sc, false);
+  });
+
   it('a scorecard carrying a trap block validates against the schema', () => {
     const sc = buildScorecard({
-      run: runStamp({ scenario: 'auth-trap' }),
+      run: runStamp({ scenario: 'epic-scope' }),
       lifecycle: [],
       envelope: normalizedEnvelope(),
       quality: {

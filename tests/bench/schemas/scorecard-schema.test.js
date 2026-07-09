@@ -176,6 +176,130 @@ describe('scorecard schema — rejects malformed records', () => {
   });
 });
 
+describe('scorecard schema — new Epic #66 corpus scenario ids', () => {
+  const validate = buildValidator();
+
+  it('accepts a record for the story-scope scenario', () => {
+    const rec = clone(fixture);
+    rec.runId = 'story-scope-mandrel-2026-07-09-r01';
+    rec.scenario = 'story-scope';
+    assert.ok(
+      validate(rec),
+      `story-scope record failed: ${JSON.stringify(validate.errors, null, 2)}`,
+    );
+  });
+
+  it('accepts a record for the epic-scope scenario', () => {
+    const rec = clone(fixture);
+    rec.runId = 'epic-scope-mandrel-2026-07-09-r01';
+    rec.scenario = 'epic-scope';
+    assert.ok(
+      validate(rec),
+      `epic-scope record failed: ${JSON.stringify(validate.errors, null, 2)}`,
+    );
+  });
+});
+
+describe('scorecard schema — multi-class trap block (Epic #66, Story #74)', () => {
+  const validate = buildValidator();
+
+  const trapRecord = (trap) => {
+    const rec = clone(fixture);
+    rec.runId = 'story-scope-mandrel-2026-07-09-r02';
+    rec.scenario = 'story-scope';
+    rec.trap = trap;
+    return rec;
+  };
+
+  it('accepts { trap: { classes: [{class, score, defectPresent}], cleanRate } }', () => {
+    const rec = trapRecord({
+      classes: [
+        { class: 'plaintext-password', score: 1, defectPresent: false },
+        { class: 'token-generation', score: 0, defectPresent: true },
+      ],
+      cleanRate: 0.5,
+    });
+    const ok = validate(rec);
+    assert.ok(
+      ok,
+      `trap block failed validation: ${JSON.stringify(validate.errors, null, 2)}`,
+    );
+  });
+
+  it('accepts an optional per-class evidence array', () => {
+    const rec = trapRecord({
+      classes: [
+        {
+          class: 'idor',
+          score: 1,
+          defectPresent: false,
+          evidence: ['no cross-user resource access detected'],
+        },
+      ],
+      cleanRate: 1,
+    });
+    assert.ok(validate(rec), JSON.stringify(validate.errors, null, 2));
+  });
+
+  it('rejects a trap block missing cleanRate', () => {
+    const rec = trapRecord({
+      classes: [
+        { class: 'plaintext-password', score: 1, defectPresent: false },
+      ],
+    });
+    assert.equal(validate(rec), false);
+  });
+
+  it('rejects a trap block missing classes', () => {
+    const rec = trapRecord({ cleanRate: 1 });
+    assert.equal(validate(rec), false);
+  });
+
+  it('rejects a trap class entry missing a required field', () => {
+    const rec = trapRecord({
+      classes: [{ class: 'plaintext-password', score: 1 }],
+      cleanRate: 1,
+    });
+    assert.equal(validate(rec), false);
+  });
+
+  it('rejects an out-of-range per-class score', () => {
+    const rec = trapRecord({
+      classes: [
+        { class: 'plaintext-password', score: 1.5, defectPresent: false },
+      ],
+      cleanRate: 1,
+    });
+    assert.equal(validate(rec), false);
+  });
+
+  it('rejects an unknown property on a trap class entry (additionalProperties: false)', () => {
+    const rec = trapRecord({
+      classes: [
+        {
+          class: 'plaintext-password',
+          score: 1,
+          defectPresent: false,
+          surprise: 'nope',
+        },
+      ],
+      cleanRate: 1,
+    });
+    assert.equal(validate(rec), false);
+  });
+
+  it('rejects the old single-class trapSignal shape (defectClass/signals) as a trap block', () => {
+    const rec = trapRecord({
+      defectClass: 'plaintext-password-storage',
+      defectPresent: false,
+      score: 1,
+      signals: { hasHashing: true },
+      evidence: 'clean',
+    });
+    assert.equal(validate(rec), false);
+  });
+});
+
 describe('scorecard schema — control-arm nullable dimensions', () => {
   const validate = buildValidator();
 

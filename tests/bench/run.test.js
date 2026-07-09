@@ -26,6 +26,7 @@ import {
   cellKey,
   derivedSecurityInputs,
   discoverLedger,
+  loadScenario,
   main,
   planningInputs,
   qualityInputs,
@@ -313,7 +314,7 @@ test('derivedSecurityInputs: secret penalty saturates at 5+ hits (never negative
 });
 
 // ---------------------------------------------------------------------------
-// Re-scoring the 1.75.0 project-api cohort → non-inverted security delta
+// Re-scoring the 1.75.0 largest-rung cohort (the retired epic-scale scenario) → non-inverted security delta
 // (Story #55, acceptance #4). The deliverable source trees for that cohort are
 // not persisted in the checked-in `.raw/` artifacts (only the lifecycle ledger,
 // signals, and cost envelope are), so we re-score from the documented per-run
@@ -328,7 +329,7 @@ test('derivedSecurityInputs: secret penalty saturates at 5+ hits (never negative
 // non-inverted (≥ control) mean security score.
 // ---------------------------------------------------------------------------
 
-test('re-scoring 1.75.0 project-api sub-signals yields a non-inverted security delta', () => {
+test('re-scoring 1.75.0 largest-rung sub-signals yields a non-inverted security delta', () => {
   // Per-run secret-scan counts from the cohort (issue #55 evidence). With the
   // test-fixture exclusion landed (Story #55 prong a), the bulk of these counts
   // were fixture credentials; the residual *delivered* secret count is modelled
@@ -339,7 +340,7 @@ test('re-scoring 1.75.0 project-api sub-signals yields a non-inverted security d
   const mandrelDeliveredSecrets = [0, 0, 0, 0, 0, 0, 0, 0]; // fixtures excluded
   const controlDeliveredSecrets = [0, 0, 0, 0, 0, 0, 0, 0];
 
-  // Both arms deliver the same MUST posture for project-api (auth scenario):
+  // Both arms deliver the same MUST posture for the largest-rung auth scenario:
   // model a representative present-posture so the comparison isolates the secret
   // dimension.
   const must = {
@@ -476,6 +477,13 @@ function benchDeps(record) {
       record.overlays.push(o.arm);
       return { overlaid: true, arm: o.arm, copied: [] };
     },
+    // control-arm gate package.json seam (Story #74) — the counterpart to
+    // overlayFn for the mandrel arm; keeps the control provisioning path off
+    // real disk in tests.
+    writeGatePackageJsonFn: (o) => {
+      record.gatePackageJsonWrites?.push(o.workspacePath);
+      return { workspacePath: o.workspacePath, pkg: {} };
+    },
     // session seam
     runSessionFn: (o) => {
       record.sessions.push({
@@ -581,6 +589,7 @@ function freshRecord(overrides = {}) {
     teardowns: [],
     resets: [],
     overlays: [],
+    gatePackageJsonWrites: [],
     sessions: [],
     git: [],
     writes: [],
@@ -766,6 +775,112 @@ test('runFirstBenchmark: recovers standalone telemetry when the mandrel arm prod
   assert.equal(mandrel.dimensions.overheadRatio.tokenRatio, null);
 });
 
+test('runOneRun: marks routingMismatch true when observed standalone routing diverges from the scenario\'s declared "epic" contract (Epic #66, Story #76)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  deps.ghJson = (args) => {
+    const key = `${args[0]} ${args[1]}`;
+    if (key === 'issue list') {
+      return [{ number: 99, createdAt: '2026-06-16T20:30:00.000Z' }];
+    }
+    if (key === 'issue view') {
+      return {
+        number: 99,
+        state: 'CLOSED',
+        labels: [{ name: 'type::story' }, { name: 'agent::done' }],
+        comments: [
+          {
+            body: '<!-- ap:structured-comment type="story-init" -->\n"standalone": true',
+          },
+        ],
+      };
+    }
+    if (key === 'pr list') {
+      return [
+        {
+          number: 100,
+          mergedAt: '2026-06-16T20:50:00.000Z',
+          files: [{ path: 'src/server.js' }],
+        },
+      ];
+    }
+    return [];
+  };
+
+  const { evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario: { ...FAKE_SCENARIO, routing: 'epic' },
+      evaluate,
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
+        owner: 'dsj1984',
+        repo: 'legacy-sandbox-repo',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.equal(scorecard.routingVerdict, 'story');
+  assert.equal(scorecard.routingMismatch, true);
+});
+
+test('runOneRun: carries routingMismatch false when observed routing matches the declared contract (Epic #66, Story #76)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  deps.ghJson = (args) => {
+    const key = `${args[0]} ${args[1]}`;
+    if (key === 'issue list') {
+      return [{ number: 99, createdAt: '2026-06-16T20:30:00.000Z' }];
+    }
+    if (key === 'issue view') {
+      return {
+        number: 99,
+        state: 'CLOSED',
+        labels: [{ name: 'type::story' }, { name: 'agent::done' }],
+        comments: [
+          {
+            body: '<!-- ap:structured-comment type="story-init" -->\n"standalone": true',
+          },
+        ],
+      };
+    }
+    if (key === 'pr list') {
+      return [
+        {
+          number: 100,
+          mergedAt: '2026-06-16T20:50:00.000Z',
+          files: [{ path: 'src/server.js' }],
+        },
+      ];
+    }
+    return [];
+  };
+
+  const { evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario: { ...FAKE_SCENARIO, routing: 'story' },
+      evaluate,
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
+        owner: 'dsj1984',
+        repo: 'legacy-sandbox-repo',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.equal(scorecard.routingVerdict, 'story');
+  assert.equal(scorecard.routingMismatch, false);
+});
+
 test('runFirstBenchmark: requires sandbox coordinates', async () => {
   await assert.rejects(
     runFirstBenchmark({ sandbox: { repoUrl: 'x' } }, {}),
@@ -900,19 +1015,200 @@ async function loadScenarioFake() {
 }
 
 // ---------------------------------------------------------------------------
+// Epic #66, Story #74 — trap-runner substrate wired into loadScenario /
+// runOneRun (replaces the single-oracle scenario.trapOracle field).
+// ---------------------------------------------------------------------------
+
+test('loadScenario: resolves the scenario directory (no more single-oracle trapOracle field)', async () => {
+  const { scenario, evaluate, scenarioDir } = await loadScenario(
+    'story-scope',
+    {
+      readFileImpl: () => JSON.stringify(FAKE_SCENARIO),
+      importImpl: async () => ({
+        evaluate: async () => ({ passed: true }),
+      }),
+    },
+  );
+  assert.equal(scenario.id, FAKE_SCENARIO.id);
+  assert.equal(typeof evaluate, 'function');
+  assert.ok(scenarioDir.endsWith(path.join('scenarios', 'story-scope')));
+  // The old single-oracle field is no longer part of the returned envelope.
+  assert.equal('trapEvaluate' in { scenario, evaluate, scenarioDir }, false);
+});
+
+test('runOneRun: discovers and executes trap oracles via the runner and passes the multi-class verdict to buildScorecard', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  const seenTrapRunnerArgs = [];
+  deps.runTrapOraclesFn = async (o) => {
+    seenTrapRunnerArgs.push(o);
+    return {
+      classes: [
+        { class: 'plaintext-password', score: 1, defectPresent: false },
+        { class: 'idor', score: 0, defectPresent: true },
+      ],
+      cleanRate: 0.5,
+    };
+  };
+
+  const { scenario, evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario,
+      evaluate,
+      scenarioDir: '/repo/bench/scenarios/story-scope',
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'https://github.com/dsj1984/bench-sbx-abc.git',
+        owner: 'dsj1984',
+        repo: 'bench-sbx-abc',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.equal(seenTrapRunnerArgs.length, 1);
+  assert.equal(
+    seenTrapRunnerArgs[0].scenarioDir,
+    '/repo/bench/scenarios/story-scope',
+  );
+  assert.equal(seenTrapRunnerArgs[0].deliveredTreePath, '/ws-mandrel');
+
+  assert.deepEqual(scorecard.trap, {
+    classes: [
+      { class: 'plaintext-password', score: 1, defectPresent: false },
+      { class: 'idor', score: 0, defectPresent: true },
+    ],
+    cleanRate: 0.5,
+  });
+});
+
+test('runOneRun: no scenarioDir ⇒ no trap-runner call, no trap block on the scorecard', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  let called = false;
+  deps.runTrapOraclesFn = async () => {
+    called = true;
+    return { classes: [], cleanRate: null };
+  };
+
+  const { scenario, evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario,
+      evaluate,
+      // scenarioDir omitted
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'https://github.com/dsj1984/bench-sbx-abc.git',
+        owner: 'dsj1984',
+        repo: 'bench-sbx-abc',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.equal(called, false);
+  assert.equal('trap' in scorecard, false);
+});
+
+test('runOneRun: an empty classes[] verdict (no declared trap classes) leaves the scorecard without a trap block', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  deps.runTrapOraclesFn = async () => ({ classes: [], cleanRate: null });
+
+  const { scenario, evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario,
+      evaluate,
+      scenarioDir: '/repo/bench/scenarios/hello-world',
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'https://github.com/dsj1984/bench-sbx-abc.git',
+        owner: 'dsj1984',
+        repo: 'bench-sbx-abc',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.equal('trap' in scorecard, false);
+});
+
+test('runOneRun: a trap-runner failure is best-effort — the run still completes with no trap block', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  deps.runTrapOraclesFn = async () => {
+    throw new Error('boom');
+  };
+
+  const { scenario, evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario,
+      evaluate,
+      scenarioDir: '/repo/bench/scenarios/story-scope',
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'https://github.com/dsj1984/bench-sbx-abc.git',
+        owner: 'dsj1984',
+        repo: 'bench-sbx-abc',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.equal('trap' in scorecard, false);
+});
+
+test('runOneRun (control arm): writes the gate package.json directly, without the mandrel overlay', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+
+  const { scenario, evaluate } = await loadScenarioFake();
+  await runOneRun(
+    {
+      scenario,
+      evaluate,
+      arm: 'control',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'https://github.com/dsj1984/bench-sbx-abc.git',
+        owner: 'dsj1984',
+        repo: 'bench-sbx-abc',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.deepEqual(record.overlays, []);
+  assert.deepEqual(record.gatePackageJsonWrites, ['/ws-control']);
+});
+
+// ---------------------------------------------------------------------------
 // Story #22 — checkpoint + ceiling pure helpers
 // ---------------------------------------------------------------------------
 
 test('cellKey: stable, separator-isolated identity for a (scenario × arm × run) cell', () => {
-  const a = cellKey({ scenario: 'crud-db', arm: 'mandrel', runIndex: 3 });
+  const a = cellKey({ scenario: 'story-scope', arm: 'mandrel', runIndex: 3 });
   assert.equal(
     a,
-    cellKey({ scenario: 'crud-db', arm: 'mandrel', runIndex: 3 }),
+    cellKey({ scenario: 'story-scope', arm: 'mandrel', runIndex: 3 }),
   );
   // No collision across the three fields (a hostile id can't forge another key).
   assert.notEqual(
-    cellKey({ scenario: 'crud', arm: 'db-mandrel', runIndex: 3 }),
-    cellKey({ scenario: 'crud-db', arm: 'mandrel', runIndex: 3 }),
+    cellKey({ scenario: 'story', arm: 'db-mandrel', runIndex: 3 }),
+    cellKey({ scenario: 'story-scope', arm: 'mandrel', runIndex: 3 }),
   );
 });
 
@@ -958,7 +1254,7 @@ test('appendCheckpoint: appends one NDJSON cell record, creating the dir', () =>
 // ---------------------------------------------------------------------------
 
 test('scenarioEnvSuffix: uppercases and folds non-alnum runs to single _', () => {
-  assert.equal(scenarioEnvSuffix('crud-db'), 'CRUD_DB');
+  assert.equal(scenarioEnvSuffix('story-scope'), 'STORY_SCOPE');
   assert.equal(scenarioEnvSuffix('hello-world'), 'HELLO_WORLD');
   assert.equal(scenarioEnvSuffix('a.b/c'), 'A_B_C');
 });
@@ -969,29 +1265,29 @@ test('resolveEpicIds: single-scenario BENCH_EPIC_ID back-compat → scenarios[0]
 });
 
 test('resolveEpicIds: per-scenario vars drive each rung from its own Epic', () => {
-  const ids = resolveEpicIds(['hello-world', 'crud-db'], {
+  const ids = resolveEpicIds(['hello-world', 'story-scope'], {
     BENCH_EPIC_ID_HELLO_WORLD: '99',
-    BENCH_EPIC_ID_CRUD_DB: '100',
+    BENCH_EPIC_ID_STORY_SCOPE: '100',
   });
-  assert.deepEqual(ids, { 'hello-world': 99, 'crud-db': 100 });
+  assert.deepEqual(ids, { 'hello-world': 99, 'story-scope': 100 });
 });
 
 test('resolveEpicIds: JSON-map form + per-var override precedence', () => {
-  const ids = resolveEpicIds(['hello-world', 'crud-db'], {
-    BENCH_EPIC_IDS: JSON.stringify({ 'hello-world': 99, 'crud-db': 100 }),
+  const ids = resolveEpicIds(['hello-world', 'story-scope'], {
+    BENCH_EPIC_IDS: JSON.stringify({ 'hello-world': 99, 'story-scope': 100 }),
     // per-scenario var overrides the JSON map for the same scenario
-    BENCH_EPIC_ID_CRUD_DB: '200',
+    BENCH_EPIC_ID_STORY_SCOPE: '200',
   });
-  assert.deepEqual(ids, { 'hello-world': 99, 'crud-db': 200 });
+  assert.deepEqual(ids, { 'hello-world': 99, 'story-scope': 200 });
 });
 
 test('resolveEpicIds: malformed JSON map is ignored, non-numeric ids dropped', () => {
-  const ids = resolveEpicIds(['hello-world', 'crud-db'], {
+  const ids = resolveEpicIds(['hello-world', 'story-scope'], {
     BENCH_EPIC_IDS: '{ not json',
     BENCH_EPIC_ID_HELLO_WORLD: 'not-a-number',
-    BENCH_EPIC_ID_CRUD_DB: '100',
+    BENCH_EPIC_ID_STORY_SCOPE: '100',
   });
-  assert.deepEqual(ids, { 'crud-db': 100 });
+  assert.deepEqual(ids, { 'story-scope': 100 });
 });
 
 test('CHECKPOINT_FILENAME is the default checkpoint name beside the results root', () => {
@@ -1098,6 +1394,119 @@ test('runFirstBenchmark: maxCostUsd ceiling stops after the cell that crosses it
   // The persisted + checkpointed counts match the completed cells exactly.
   assert.equal(record.appended.length, 2);
   assert.equal(record.checkpointed.length, 2);
+});
+
+test('runFirstBenchmark: with no explicit n, resolves per-scenario run count from each scenario.targetN (Epic #66 audit remediation, H1)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  // Two scenarios with different declared targetN — mirrors the real corpus's
+  // hello-world (targetN 4) vs story-scope/epic-scope (targetN 8) split. The
+  // fake loader keys off the scenario.json path loadScenario() constructs
+  // (`.../scenarios/<id>/scenario.json`) so each scenario resolves its OWN
+  // fixture rather than the single shared FAKE_SCENARIO.
+  deps.loadDeps = {
+    readFileImpl: (p) => {
+      if (p.includes(`${path.sep}scenario-a${path.sep}`)) {
+        return JSON.stringify({
+          ...FAKE_SCENARIO,
+          id: 'scenario-a',
+          targetN: 4,
+        });
+      }
+      if (p.includes(`${path.sep}scenario-b${path.sep}`)) {
+        return JSON.stringify({
+          ...FAKE_SCENARIO,
+          id: 'scenario-b',
+          targetN: 8,
+        });
+      }
+      throw new Error(`unexpected scenario.json read: ${p}`);
+    },
+    importImpl: async () => ({
+      evaluate: async () => ({
+        scenario: 'fake',
+        passed: true,
+        criteria: [{ met: true }, { met: true }],
+      }),
+    }),
+  };
+
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['scenario-a', 'scenario-b'],
+      arms: ['mandrel'],
+      // No `n` — must fall back to each scenario's own targetN.
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  const byScenario = (id) => result.scorecards.filter((s) => s.scenario === id);
+  assert.equal(byScenario('scenario-a').length, 4);
+  assert.equal(byScenario('scenario-b').length, 8);
+  assert.equal(result.scorecards.length, 12);
+});
+
+test("runFirstBenchmark: an explicit n overrides every scenario's targetN uniformly", async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  deps.loadDeps = {
+    readFileImpl: (p) => {
+      if (p.includes(`${path.sep}scenario-a${path.sep}`)) {
+        return JSON.stringify({
+          ...FAKE_SCENARIO,
+          id: 'scenario-a',
+          targetN: 4,
+        });
+      }
+      if (p.includes(`${path.sep}scenario-b${path.sep}`)) {
+        return JSON.stringify({
+          ...FAKE_SCENARIO,
+          id: 'scenario-b',
+          targetN: 8,
+        });
+      }
+      throw new Error(`unexpected scenario.json read: ${p}`);
+    },
+    importImpl: async () => ({
+      evaluate: async () => ({
+        scenario: 'fake',
+        passed: true,
+        criteria: [{ met: true }, { met: true }],
+      }),
+    }),
+  };
+
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['scenario-a', 'scenario-b'],
+      arms: ['mandrel'],
+      n: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  const byScenario = (id) => result.scorecards.filter((s) => s.scenario === id);
+  assert.equal(byScenario('scenario-a').length, 1);
+  assert.equal(byScenario('scenario-b').length, 1);
+});
+
+test('runFirstBenchmark: a scenario with no declared targetN falls back to 1', async () => {
+  const record = freshRecord();
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel'],
+      // FAKE_SCENARIO carries no targetN, and no explicit n is supplied.
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    benchDeps(record),
+  );
+  assert.equal(result.scorecards.length, 1);
 });
 
 test('runFirstBenchmark: a resumed batch renders the report over the FULL store, not just this run', async () => {

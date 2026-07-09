@@ -56,8 +56,8 @@ so neither runs silently:
 - `--scope smoke|full` — coarse scope preset (default `smoke`):
   - `smoke` → `BENCH_SCENARIOS=hello-world`, `BENCH_N=1`, both arms. A fast
     risk-first sanity pass.
-  - `full` → all scenarios (`hello-world,crud-db,project-api`) at the cohort `N`,
-    both arms.
+  - `full` → all scenarios (`hello-world,story-scope,epic-scope`) at the cohort
+    `N`, both arms.
 - `--scenarios <csv>` — override the scenario set (maps to `BENCH_SCENARIOS`).
 - `--n <N>` — override runs-per-cell (maps to `BENCH_N`).
 - `--no-pr` — stop after the commit (pass through to `/git-deliver --no-push`-style

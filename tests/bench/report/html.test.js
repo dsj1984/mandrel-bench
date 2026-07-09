@@ -235,4 +235,84 @@ describe('renderDashboard', () => {
       /must be an array/,
     );
   });
+
+  it('renders the autonomy-guardrail panel, marked deltaExempt (Epic #66, Story #77/#79)', () => {
+    const html = renderDashboard({ scorecards: [card(), CONTROL] });
+    assert.match(html, /Autonomy guardrail \(mandrel arm\)/);
+    assert.match(html, /"deltaExempt":true/);
+  });
+
+  it('renders a trap-axis panel, empty when no scenario declares a trap class', () => {
+    const html = renderDashboard({ scorecards: [card(), CONTROL] });
+    assert.match(html, /Trap axis \(differential/);
+    assert.match(html, /No scenario in this corpus declares a trap class/);
+  });
+
+  it('renders per-class trap distributions when a scorecard carries a trap block', () => {
+    const trapCard = card({
+      runId: 'trap-1',
+      trap: {
+        classes: [
+          { class: 'plaintext-password', score: 1, defectPresent: false },
+        ],
+        cleanRate: 1,
+      },
+    });
+    const html = renderDashboard({ scorecards: [trapCard] });
+    assert.match(html, /plaintext-password/);
+    assert.doesNotMatch(
+      html,
+      /No scenario in this corpus declares a trap class/,
+    );
+  });
+
+  it('renders populated <td> values in both the guardrail and trap-axis tables (Epic #66 audit remediation, M4-M10)', () => {
+    const trapCard = card({
+      runId: 'trap-1',
+      trap: {
+        classes: [
+          { class: 'plaintext-password', score: 1, defectPresent: false },
+        ],
+        cleanRate: 1,
+      },
+    });
+    const html = renderDashboard({ scorecards: [trapCard, CONTROL] });
+
+    // Autonomy-guardrail table: a real row for the hello-world scenario, not
+    // just the "no data" empty-state div.
+    assert.doesNotMatch(html, /No mandrel-arm runs to evaluate/);
+    const guardrailTable = html.match(
+      /<h2>Autonomy guardrail[\s\S]*?<table>([\s\S]*?)<\/table>/,
+    );
+    assert.ok(guardrailTable, 'guardrail table must render');
+    assert.match(guardrailTable[1], /<td>hello-world<\/td>/);
+    // n / met / dropped / unmeasured / threshold columns are populated cells,
+    // not blank <td></td>.
+    assert.doesNotMatch(guardrailTable[1], /<td><\/td>/);
+
+    // Trap-axis table: a real per-class row with the mean/spread/min/n stat
+    // string, not the empty-state div.
+    const trapTable = html.match(
+      /<h2>Trap axis[\s\S]*?<table>([\s\S]*?)<\/table>/,
+    );
+    assert.ok(trapTable, 'trap-axis table must render');
+    assert.match(trapTable[1], /<td>plaintext-password<\/td>/);
+    assert.match(trapTable[1], /<td>1 \(spread 0, min 1, n=1\)<\/td>/);
+    assert.doesNotMatch(trapTable[1], /<td><\/td>/);
+  });
+});
+
+describe('buildDashboardModel — guardrail + trap axis (Epic #66, Story #79)', () => {
+  it('computes the autonomy-guardrail rows from the mandrel arm', () => {
+    const model = buildDashboardModel([card(), CONTROL]);
+    assert.ok(Array.isArray(model.guardrail));
+    const row = model.guardrail.find((r) => r.scenario === 'hello-world');
+    assert.ok(row);
+    assert.equal(row.n, 1);
+  });
+
+  it('computes an empty trapAxis when no scorecard carries a trap block', () => {
+    const model = buildDashboardModel([card(), CONTROL]);
+    assert.deepEqual(model.trapAxis, []);
+  });
 });

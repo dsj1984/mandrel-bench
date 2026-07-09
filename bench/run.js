@@ -9,7 +9,8 @@
  * one pipeline per run —
  *
  *   provision (sandbox.js)
- *     → overlay the framework-under-test (overlay.js, mandrel arm only)
+ *     → overlay the framework-under-test (overlay.js, mandrel arm only) or
+ *        write the gate package.json directly (control arm, Story #74)
  *     → run a headless `claude -p` session (run-session.js)
  *     → materialize the delivered code + discover the lifecycle ledger
  *     → start the delivered app and score Quality (app-runner.js + the
@@ -47,7 +48,10 @@ import { buildScorecard, parseNdjson } from './collect/normalize.js';
 import { withRunningApp as defaultWithRunningApp } from './driver/app-runner.js';
 import { defaultCliLogger, runIfMain } from './driver/cli-shell.js';
 import { DEFAULT_TTL_HOURS, sweepLeakedRepos } from './driver/janitor.js';
-import { overlayFrameworkUnderTest } from './driver/overlay.js';
+import {
+  overlayFrameworkUnderTest,
+  writeGatePackageJson,
+} from './driver/overlay.js';
 import {
   DEFAULT_BENCH_MODEL,
   DEFAULT_SESSION_TIMEOUT_MS,
@@ -78,6 +82,7 @@ import {
   defaultGhJson,
   discoverStandaloneStory,
 } from './scenarios/standalone-telemetry-adapter.js';
+import { runTrapOracles as defaultRunTrapOracles } from './scenarios/trap-runner.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -500,19 +505,20 @@ export function appendCheckpoint({ checkpointPath, cell }, deps = {}) {
 // ---------------------------------------------------------------------------
 
 /**
- * Load a scenario definition, its frozen oracle's `evaluate` export, and — when
- * the scenario declares a `trapOracle` (the differential-trap rung, Story #57)
- * — that oracle's `evaluateTree` export. The trap oracle is the SEPARATE
- * adversarial face: the frozen suite scores behavioural Quality both arms can
- * pass, while `evaluateTree` source-scans the delivered tree for the planted
- * defect. Scenarios without a `trapOracle` return `trapEvaluate: null` and are
- * scored exactly as before.
+ * Load a scenario definition, its frozen oracle's `evaluate` export, and the
+ * scenario's directory (so the caller can run its declared trap oracles via
+ * `bench/scenarios/trap-runner.js`, Epic #66 Story #74 — replacing the former
+ * single-oracle `scenario.trapOracle` field). The trap oracles are the
+ * SEPARATE adversarial face: the frozen suite scores behavioural Quality both
+ * arms can pass, while the per-class trap-runner source-scans the delivered
+ * tree for planted defects. A scenario with no `traps/` directory is scored
+ * exactly as before (the runner yields an empty `classes[]`).
  *
  * @param {string} scenarioId
  * @param {object} [deps]
  * @param {(p: string, enc: string) => string} [deps.readFileImpl]
  * @param {(spec: string) => Promise<object>} [deps.importImpl]
- * @returns {Promise<{ scenario: object, evaluate: Function, trapEvaluate: Function|null }>}
+ * @returns {Promise<{ scenario: object, evaluate: Function, scenarioDir: string }>}
  */
 export async function loadScenario(scenarioId, deps = {}) {
   const read = deps.readFileImpl ?? readFileSync;
@@ -521,12 +527,7 @@ export async function loadScenario(scenarioId, deps = {}) {
   const scenario = JSON.parse(read(path.join(dir, 'scenario.json'), 'utf8'));
   const suiteRel = scenario.acceptanceSuite ?? './acceptance.test.js';
   const mod = await importImpl(path.join(dir, suiteRel));
-  let trapEvaluate = null;
-  if (scenario.trapOracle) {
-    const trapMod = await importImpl(path.join(dir, scenario.trapOracle));
-    trapEvaluate = trapMod.evaluateTree ?? null;
-  }
-  return { scenario, evaluate: mod.evaluate, trapEvaluate };
+  return { scenario, evaluate: mod.evaluate, scenarioDir: dir };
 }
 
 /**
@@ -540,7 +541,9 @@ export async function runOneRun(opts, deps = {}) {
   const {
     scenario, // the scenario.json object
     evaluate, // the frozen oracle
-    trapEvaluate = null, // the adversarial trap oracle's evaluateTree (Story #57); null for non-trap scenarios
+    scenarioDir = null, // absolute path to bench/scenarios/<id> (Story #74);
+    // threaded into the trap-runner so both arms' delivered trees are scanned
+    // for every declared trap class. null ⇒ no trap scan (e.g. legacy fakes).
     arm,
     runIndex,
     model = DEFAULT_BENCH_MODEL,
@@ -561,6 +564,8 @@ export async function runOneRun(opts, deps = {}) {
   const teardown = deps.teardownFn ?? teardownSandbox;
   const resetSandbox = deps.resetSandboxFn ?? resetSandboxBaseline;
   const overlay = deps.overlayFn ?? overlayFrameworkUnderTest;
+  const writeGatePkgJson = deps.writeGatePackageJsonFn ?? writeGatePackageJson;
+  const runTrapOraclesFn = deps.runTrapOraclesFn ?? defaultRunTrapOracles;
   const runSessionFn = deps.runSessionFn ?? defaultRunSession;
   const withRunningAppFn = deps.withRunningAppFn ?? defaultWithRunningApp;
   const scoreQualityFn =
@@ -635,9 +640,17 @@ export async function runOneRun(opts, deps = {}) {
           workspacePath: handle.workspacePath,
           arm,
           sandbox: { owner: sandbox.owner, repo: sandbox.repo },
-          scenarioId: scenario.id,
           sourceRoot,
         },
+        deps.overlayDeps,
+      );
+    } else {
+      // Control provisioning path (Story #74): no framework tree to overlay,
+      // but the control arm still needs the SAME real gate package.json as
+      // the mandrel arm so gate-based signals are measured identically for
+      // both arms (buildTargetPackageJson is now arm-agnostic).
+      writeGatePkgJson(
+        { workspacePath: handle.workspacePath },
         deps.overlayDeps,
       );
     }
@@ -824,28 +837,26 @@ export async function runOneRun(opts, deps = {}) {
       );
     }
 
-    // Differential trap signal (Story #57). When the scenario declares a trap
-    // oracle, source-scan the delivered tree for the planted defect. This is
-    // SEPARATE from the frozen Quality suite: it is the differential dimension
-    // the spike exists to measure (did the arm take the planted shortcut?).
-    // Both arms are scanned identically so the comparison is fair. Best-effort:
-    // an oracle error leaves the trap block off the scorecard rather than
-    // aborting the run — a missing trap signal is conservative (no false delta).
+    // Multi-class differential trap signal (Epic #66, Story #74 — replaces
+    // the single-oracle Story #57 mechanic). When the scenario declares one
+    // or more trap classes under traps/<class>.js, the runner source-scans
+    // the delivered tree for each planted defect and aggregates the
+    // per-class verdicts. This is SEPARATE from the frozen Quality suite: it
+    // is the differential axis a behavioural suite cannot see. Both arms are
+    // scanned identically so the comparison is fair. Best-effort: a runner
+    // error leaves the trap block off the scorecard rather than aborting the
+    // run — a missing trap signal is conservative (no false delta).
     let trap = null;
-    if (typeof trapEvaluate === 'function') {
+    if (typeof scenarioDir === 'string' && scenarioDir.length > 0) {
       try {
-        const verdict = trapEvaluate(handle.workspacePath);
-        trap = {
-          defectClass: verdict.defectClass,
-          defectPresent: verdict.defectPresent,
-          score: verdict.score,
-          signals: verdict.signals,
-          evidence: verdict.evidence,
-          filesScanned: verdict.filesScanned ?? null,
-        };
+        const verdict = await runTrapOraclesFn(
+          { scenarioDir, deliveredTreePath: handle.workspacePath },
+          deps.trapRunnerDeps,
+        );
+        if (verdict.classes.length > 0) trap = verdict;
       } catch (err) {
         logger?.warn?.(
-          `[run] trap oracle failed (no trap signal recorded): ${err?.message ?? err}`,
+          `[run] trap-runner failed (no trap signal recorded): ${err?.message ?? err}`,
         );
       }
     }
@@ -899,6 +910,8 @@ export async function runOneRun(opts, deps = {}) {
       trap,
       rawRefs,
       standalone,
+      scenarioRouting:
+        typeof scenario?.routing === 'string' ? scenario.routing : null,
     });
     return scorecard;
   } finally {
@@ -931,7 +944,15 @@ export async function runOneRun(opts, deps = {}) {
  * @param {object} opts
  * @param {string[]} [opts.scenarios=['hello-world']]
  * @param {Array<'mandrel'|'control'>} [opts.arms=['mandrel','control']]
- * @param {number} [opts.n=1]
+ * @param {number} [opts.n]   Explicit operator override for the run count,
+ *   applied uniformly to EVERY scenario in this batch. When omitted (the
+ *   default), each scenario's own `scenario.targetN` (its declared per-rung
+ *   sizing contract — `scenario.json`'s `targetN`, e.g. 4 for hello-world, 8
+ *   for story-scope/epic-scope) is used instead, falling back to 1 for a
+ *   scenario that declares none (Epic #66 audit remediation, H1 — `targetN`
+ *   was previously declared in every scenario contract but never read by the
+ *   runtime, so a multi-scenario batch with no explicit override silently
+ *   applied one global N to every rung regardless of its declared contract).
  * @param {string} [opts.model]
  * @param {{ repoUrl: string, owner: string, repo: string, baselineRef?: string }} opts.sandbox
  *   Sandbox repo coordinates. `baselineRef` (default `'bench-baseline'`) is the
@@ -955,7 +976,7 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
   const {
     scenarios = ['hello-world'],
     arms = ['mandrel', 'control'],
-    n = 1,
+    n: nOverride,
     model = DEFAULT_BENCH_MODEL,
     sandbox,
     resultsDir = path.join(repoRoot(), 'results'),
@@ -1012,11 +1033,23 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
   };
 
   outer: for (const scenarioId of scenarios) {
-    const { scenario, evaluate, trapEvaluate } = await loadScenario(
+    const { scenario, evaluate, scenarioDir } = await loadScenario(
       scenarioId,
       deps.loadDeps,
     );
     if (epicIds[scenarioId] != null) scenario.epicId = epicIds[scenarioId];
+    // Per-scenario run count (H1): an explicit operator override
+    // (`opts.n`/`BENCH_N`) applies uniformly to every scenario; absent that,
+    // each scenario's own declared `targetN` sizing contract governs, so a
+    // mixed-scenario batch gets the right cell count per rung without the
+    // operator having to split invocations manually.
+    const n =
+      typeof nOverride === 'number' && Number.isFinite(nOverride)
+        ? nOverride
+        : typeof scenario.targetN === 'number' &&
+            Number.isFinite(scenario.targetN)
+          ? scenario.targetN
+          : 1;
     for (let runIndex = 1; runIndex <= n; runIndex += 1) {
       for (const arm of arms) {
         const cell = cellKey({ scenario: scenarioId, arm, runIndex });
@@ -1034,7 +1067,7 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
           {
             scenario,
             evaluate,
-            trapEvaluate,
+            scenarioDir,
             arm,
             runIndex,
             model,
@@ -1111,7 +1144,7 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
 /**
  * Normalize a scenario id into the `BENCH_EPIC_ID_<SCENARIO>` env-var suffix:
  * uppercased, every run of non `[A-Z0-9]` characters folded to a single `_`.
- * So `crud-db` → `CRUD_DB`, read as `BENCH_EPIC_ID_CRUD_DB`. Pure.
+ * So `story-scope` → `STORY_SCOPE`, read as `BENCH_EPIC_ID_STORY_SCOPE`. Pure.
  *
  * @param {string} scenarioId
  * @returns {string}
@@ -1129,7 +1162,8 @@ export function scenarioEnvSuffix(scenarioId) {
  * precedence:
  *   1. `BENCH_EPIC_ID` — back-compat single-scenario id, applied to `scenarios[0]`.
  *   2. `BENCH_EPIC_IDS` — a JSON object map `{ "<scenario>": <id>, ... }`.
- *   3. `BENCH_EPIC_ID_<SCENARIO>` — one var per scenario (see `scenarioEnvSuffix`).
+ *   3. `BENCH_EPIC_ID_<SCENARIO>` — one var per scenario (see `scenarioEnvSuffix`),
+ *      e.g. `BENCH_EPIC_ID_STORY_SCOPE`.
  * Later sources override earlier ones for the same scenario. Only ids that parse
  * to a finite number are kept. Pure (reads from the supplied `env` bag).
  *
@@ -1148,7 +1182,7 @@ export function resolveEpicIds(scenarios, env = process.env) {
   if (env.BENCH_EPIC_ID != null && scenarios.length > 0) {
     setIf(scenarios[0], env.BENCH_EPIC_ID);
   }
-  // 2. JSON map: BENCH_EPIC_IDS = {"hello-world":99,"crud-db":100}.
+  // 2. JSON map: BENCH_EPIC_IDS = {"hello-world":99,"story-scope":100}.
   if (env.BENCH_EPIC_IDS) {
     try {
       const parsed = JSON.parse(env.BENCH_EPIC_IDS);
@@ -1467,7 +1501,11 @@ export async function main(env = process.env, deps = {}) {
   const arms = (env.BENCH_ARMS ?? 'mandrel,control')
     .split(',')
     .map((s) => s.trim());
-  const n = Number(env.BENCH_N ?? '1');
+  // H1: an explicit BENCH_N is an operator override applied uniformly to
+  // every scenario; when unset, leave `n` undefined so
+  // `runFirstBenchmark`/`runCell` resolve each scenario's own declared
+  // `targetN` sizing contract instead of silently defaulting to 1.
+  const n = env.BENCH_N != null ? Number(env.BENCH_N) : undefined;
   const maxRuns =
     env.BENCH_MAX_RUNS != null ? Number(env.BENCH_MAX_RUNS) : null;
   const maxCostUsd =
