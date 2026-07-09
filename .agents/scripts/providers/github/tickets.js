@@ -22,6 +22,7 @@
  */
 
 import { parseBlockedBy, parseBlocks } from '../../lib/dependency-parser.js';
+import { stampFrameworkVersion } from '../../lib/framework-version.js';
 import { Logger } from '../../lib/Logger.js';
 import { TYPE_LABELS } from '../../lib/label-constants.js';
 import { addIssueToBoard } from './board-add.js';
@@ -56,11 +57,20 @@ const SEARCH_PAGE_CAP = 10;
  * arrays on the Story body authored by the decomposer; there is no
  * server-side rendering of a four-section payload at create time.
  *
+ * Story #4382 — this is also where a Story body is stamped, once, with the
+ * running Mandrel framework version and authoring date (hidden `mandrel_version`
+ * / `authored_at` meta field + a visible `> 🏷️ Authored with Mandrel …`
+ * marker) via {@link stampFrameworkVersion}. The stamp is immutable: a body
+ * that already carries a version (e.g. a reconciler re-create) is preserved
+ * verbatim. The `stamp` override exists for deterministic tests; production
+ * callers omit it so the running version and today's date are used.
+ *
  * @param {{
  *   body: string,
  *   parentId: number,
  *   epicId?: number,
  *   dependencies?: number[],
+ *   stamp?: { version?: string, authoredAt?: string } | false,
  * }} opts
  * @returns {string}
  *
@@ -75,8 +85,15 @@ export function composeStoryBody({
   parentId,
   epicId,
   dependencies = [],
+  stamp,
 }) {
-  const head = typeof body === 'string' ? body : '';
+  const rawHead = typeof body === 'string' ? body : '';
+  // `stamp === false` → footer-only recomposition: the caller (the reconciler
+  // UPDATE/diff path) owns stamp preservation itself and must NOT introduce a
+  // fresh authoring stamp, which would churn or bump the version on every
+  // reconcile. Every other call is a create — stamp once (immutably).
+  const head =
+    stamp === false ? rawHead : stampFrameworkVersion(rawHead, stamp ?? {});
   const lines = ['---', `parent: #${parentId}`];
   if (epicId !== undefined && epicId !== null) {
     lines.push(`Epic: #${epicId}`);
@@ -112,7 +129,7 @@ export class TicketGateway {
     this._cache = cache ?? createInlineTicketCache();
     /**
      * Per-instance memo of `getTickets(epicId, filters)` results (Story
-     * #3988). The planning-state-manager fetches the same child list twice
+     * #3988). Planning-era healing fetched the same child list twice
      * per planning pass; without this memo each fetch re-pays the full
      * search/list round-trip. Invalidated on every write surface.
      * @type {Map<string, object[]>}
@@ -320,9 +337,11 @@ export class TicketGateway {
     });
 
     // Mirror the Epic create path (issues.js:160 → `labels: TYPE_LABELS.EPIC`):
-    // always inject TYPE_LABELS.STORY so a spec that omits the labels array
-    // cannot produce an unlabeled, undispatchable Story. Dedupe to avoid
-    // duplicates when the caller already carries the label.
+    // inject TYPE_LABELS.STORY so a spec that omits the labels array cannot
+    // produce an unlabeled, undispatchable Story. Dedupe to avoid duplicates
+    // when the caller already carries the label. (Story #4324 retired the
+    // `context::*` ticket classes, so every ticket created through this
+    // factory is a Story.)
     const callerLabels = ticketData.labels ?? [];
     const labels = callerLabels.includes(TYPE_LABELS.STORY)
       ? callerLabels

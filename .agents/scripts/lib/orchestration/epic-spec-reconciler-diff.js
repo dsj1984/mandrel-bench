@@ -80,6 +80,11 @@
  *     issue with an empty body.
  */
 
+import { composeStoryBody } from '../../providers/github/tickets.js';
+import {
+  extractFrameworkStamp,
+  stampFrameworkVersion,
+} from '../framework-version.js';
 import { assertPlanLabelAllowList } from './epic-spec-reconciler-discriminator.js';
 import {
   closeOp,
@@ -209,34 +214,6 @@ function stripFooter(body) {
 }
 
 /**
- * Render the canonical orchestrator footer (no leading newline). Format
- * matches the byte-stable shape that the cascade-reading consumers
- * (story-init, dispatcher, manifest, close-gate) parse line-anchored:
- *
- *   ---
- *   parent: #<parentId>
- *   [Epic: #<epicId>]            // only when epicId !== parentId
- *
- *   [blocked by #<dep>]          // one per dependency
- *
- * @param {{parentId: number, epicId?: number, dependencies?: number[]}} opts
- * @returns {string}
- */
-function renderFooter({ parentId, epicId, dependencies = [] }) {
-  const lines = ['---', `parent: #${parentId}`];
-  if (epicId !== undefined && epicId !== null && epicId !== parentId) {
-    lines.push(`Epic: #${epicId}`);
-  }
-  if (dependencies.length > 0) {
-    lines.push('');
-    for (const dep of dependencies) {
-      lines.push(`blocked by #${dep}`);
-    }
-  }
-  return lines.join('\n');
-}
-
-/**
  * Compose the canonical orchestrator footer onto a spec body for non-epic
  * entities. Resolves `parentSlug`/`dependsOn` slugs against the running
  * `state.mapping` so the rendered footer carries the live issue numbers.
@@ -246,19 +223,35 @@ function renderFooter({ parentId, epicId, dependencies = [] }) {
  * the YAML spec writes just the description, silently stripping
  * `parent: #N` / `Epic: #M` / `blocked by #X` and breaking the cascade.
  *
- * Story #3185 — the footer compose/strip logic is inlined here rather
- * than reused from the legacy Task-body renderer module. That renderer
- * was removed, so the diff engine carries its own footer shape. The shape
- * is byte-identical to the legacy renderer's `parent: #<n>` /
- * `Epic: #<m>` / `blocked by #<x>` output so cascade-readers continue
- * to parse it unchanged.
+ * Story #4300 — the footer rendering is single-sourced from
+ * `composeStoryBody` (`providers/github/tickets.js`), the same helper the
+ * CREATE path (`epic-spec-reconciler-apply.js` → `provider.createTicket`)
+ * uses. Story #3185 previously inlined a parallel `renderFooter` here to
+ * avoid depending on the (now-removed) legacy Task-body renderer; that
+ * inlined copy silently diverged from `composeStoryBody` by gating the
+ * `Epic: #<id>` line on `epicId !== parentId` — a 3-tier-era condition
+ * that is always false under the 2-tier hierarchy (a Story's parent IS
+ * the Epic), so force re-decompose (`/plan --force`, which routes through
+ * this UPDATE path) silently dropped `Epic: #<id>` from every refreshed
+ * Story body and broke `story-init.js`'s hierarchy resolution. Importing
+ * `composeStoryBody` directly makes that divergence structurally
+ * impossible going forward.
+ *
+ * Story #4382 — the create-time authoring stamp (`mandrel_version` /
+ * `authored_at` meta field + visible marker) is provenance, not spec-derived
+ * content, so this UPDATE path never mints or bumps it (which would also break
+ * this function's purity — the stamp uses a clock). Instead the stamp already
+ * present on the **live** GH body (`obsBody`) is preserved verbatim, and a
+ * legacy stamp-less body is left stamp-less (no backfill — see the Story's
+ * Out-of-Scope). Footer recomposition therefore runs in `stamp: false` mode.
  *
  * @param {{entity: string, parentSlug?: string|null, dependsOn?: string[]}} specEntity
  * @param {string} specBody
  * @param {{state?: StateInput}} ctx
+ * @param {string} [obsBody] - The live GH body, source of the preserved stamp.
  * @returns {string}
  */
-function composeBodyWithFooter(specEntity, specBody, ctx) {
+function composeBodyWithFooter(specEntity, specBody, ctx, obsBody = '') {
   const state = ctx?.state ?? {};
   const mapping = state.mapping ?? {};
   const parentSlug = specEntity.parentSlug ?? null;
@@ -284,8 +277,25 @@ function composeBodyWithFooter(specEntity, specBody, ctx) {
   // included) or emits a canonical-form body. With the strip, the
   // function is idempotent against its own output.
   const head = stripFooter(specBody);
-  const footer = renderFooter({ parentId, epicId, dependencies });
-  return `${head}\n\n${footer}`;
+  // Preserve the live body's create-time authoring stamp (Story #4382). When
+  // the spec head already carries it, `stampFrameworkVersion` is a no-op
+  // (immutable); when it doesn't, the stamp is restored from the live body so
+  // the recomposed form matches GH and no spurious body Update fires. A
+  // legacy body with no stamp stays stamp-less (no backfill).
+  const priorStamp = extractFrameworkStamp(obsBody);
+  const stampedHead = priorStamp
+    ? stampFrameworkVersion(head, {
+        version: priorStamp.version,
+        authoredAt: priorStamp.authoredAt,
+      })
+    : head;
+  return composeStoryBody({
+    body: stampedHead,
+    parentId,
+    epicId,
+    dependencies,
+    stamp: false,
+  });
 }
 
 /**
@@ -350,7 +360,7 @@ function fieldChanges(specEntity, obs, mapping, ctx = {}) {
       // Emit a body change only when the canonical form differs from
       // what is on GH today — and write the canonical form back, so the
       // footer cascade-readers depend on stays intact across resumes.
-      const after = composeBodyWithFooter(specEntity, specBody, ctx);
+      const after = composeBodyWithFooter(specEntity, specBody, ctx, obsBody);
       if (after !== obsBody) {
         changes.body = { before: obsBody, after };
       }

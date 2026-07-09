@@ -235,7 +235,7 @@ Each Agent call:
    child MUST drive the close → CI-watch → merge-confirm → `agent::done`
    sequence to a terminal state *within its own turn* and end **only** by
    returning the § 2c JSON object. The auto-merge wait is an
-   internally-blocking step (`gh pr checks --watch` blocks the turn), **not**
+   internally-blocking step (`pr-watch-with-update.js` blocks the turn), **not**
    a reason to suspend and hand back. A child that ends its turn with
    free-form prose and an unconfirmed merge (e.g. "I'll wait for the
    background watch task…") has violated the contract — the loop cannot
@@ -279,7 +279,7 @@ free-form prose:
 
 The status enum is **closed** — `done`, `blocked`, or `failed`. There is no
 "pending" / "waiting" status, because the close-phase auto-merge wait is
-**not** a returnable suspension: the child blocks on `gh pr checks --watch`
+**not** a returnable suspension: the child blocks on `pr-watch-with-update.js`
 *inside its own turn*, confirms the merge, flips `agent::done`, and only then
 returns `status: "done"`. A child that returns prose instead — parking on the
 CI wait with an unconfirmed merge — breaks the loop's ability to advance
@@ -318,10 +318,23 @@ Print a final run summary listing every delivered Story in completion order:
 All Stories delivered. PRs opened, auto-merge armed. CI will merge each
 PR when checks pass; each child then confirms the merge and flips its
 Story to `agent::done` (Story #3385 — until the merge confirms, a Story
-rests at `agent::closing` with its issue OPEN). Run
-`git-cleanup --fast-forward-main` after the last merge to bring local
-main up to date.
+rests at `agent::closing` with its issue OPEN).
 ```
+
+Then **fast-forward `main` yourself** — do not instruct the operator to run it
+after the last merge. The delivering flow owns bringing the local base branch
+up to whatever has merged so far:
+
+```bash
+node .agents/scripts/git-cleanup.js --fast-forward-main --execute --yes
+```
+
+This runs only the fast-forward-main phase (`git fetch origin main` →
+`git merge --ff-only`); it is idempotent and a no-op when `main` is already
+current, so it is safe to run even while some PRs are still queued in
+auto-merge. Report its one-line result in the summary. Merged Story branches
+themselves are reaped by the boot sweep at the next `/plan` / `/deliver` boot —
+see [`.agents/rules/git-conventions.md` § Local checkout hygiene](../../rules/git-conventions.md).
 
 When some Stories are blocked or failed, list them explicitly with the
 `blockerCommentId` or failure detail so the operator knows where to look.

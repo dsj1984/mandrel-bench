@@ -1,5 +1,6 @@
 import { LIMITS_DEFAULTS } from '../config/limits.js';
 import {
+  AUTHORING_ALTITUDE_GUIDANCE,
   DEFAULT_TASK_SIZING,
   DELIVERABLE_GRANULARITY_GUIDANCE,
 } from '../orchestration/ticket-validator-sizing.js';
@@ -35,8 +36,9 @@ import {
 export function renderDecomposerSystemPrompt({
   maxTickets = LIMITS_DEFAULTS.maxTickets,
   maxTokenBudget = LIMITS_DEFAULTS.maxTokenBudget,
+  epicId = null,
 } = {}) {
-  return render2TierPrompt({ maxTickets, maxTokenBudget });
+  return render2TierPrompt({ maxTickets, maxTokenBudget, epicId });
 }
 
 /**
@@ -45,19 +47,38 @@ export function renderDecomposerSystemPrompt({
  * on the Story body so the executing agent has everything it needs in one
  * ticket. Thematic grouping lives as prose in the Epic body / Tech Spec.
  */
-function render2TierPrompt({ maxTickets, maxTokenBudget }) {
+function render2TierPrompt({ maxTickets, maxTokenBudget, epicId = null }) {
   // Sizing thresholds are sourced from the single DEFAULT_TASK_SIZING constant
   // (ticket-validator-sizing.js) so the prompt and the validator cannot drift.
-  const { softFiles, hardFiles, maxAcceptance, softAcceptanceCount } =
-    DEFAULT_TASK_SIZING;
-  // Deliverable-granularity definition + single-consumer merge rule are
-  // sourced from the single DELIVERABLE_GRANULARITY_GUIDANCE constant
-  // (ticket-validator-sizing.js) so the prompt and the authoring SKILL
-  // cannot drift (Story #3777).
-  const { definition: granularityDefinition, singleConsumerRule } =
-    DELIVERABLE_GRANULARITY_GUIDANCE;
+  const { softFiles, hardFiles, softAcceptanceCount } = DEFAULT_TASK_SIZING;
+  // Deliverable-granularity definition + single-consumer merge rule + the
+  // soft envelope-floor heuristic are sourced from the single
+  // DELIVERABLE_GRANULARITY_GUIDANCE constant (ticket-validator-sizing.js) so
+  // the prompt and the authoring SKILL cannot drift (Story #3777; the
+  // envelope-floor sentence added by Story #4313).
+  const {
+    definition: granularityDefinition,
+    singleConsumerRule,
+    envelopeFloor,
+  } = DELIVERABLE_GRANULARITY_GUIDANCE;
+  // The binding-vs-advisory authoring altitude + the New-File Contract are
+  // sourced from the single AUTHORING_ALTITUDE_GUIDANCE constant
+  // (ticket-validator-sizing.js) so the prompt and the authoring SKILL cannot
+  // drift (Story #4272).
+  const {
+    altitude: authoringAltitude,
+    advisoryCaveat,
+    newFileContract,
+  } = AUTHORING_ALTITUDE_GUIDANCE;
+  // The namespaced AC-tag token the wave-0 BDD scaffold section below must
+  // require on every scaffolded scenario (Story #4301). When the Epic ID is
+  // known at render time, interpolate the concrete tag so the author has no
+  // placeholder to get wrong; otherwise fall back to the documented pattern.
+  const acTagExample = Number.isInteger(epicId)
+    ? `@epic-${epicId}-ac-1`
+    : '@epic-<id>-ac-N';
   return `You are an expert Senior Project Manager and Orchestrator.
-Your job is to take a Product Requirements Document (PRD) and a Technical Specification and decompose them into a flat list of Story tickets for an AI Agent to execute.
+Your job is to take an Epic (including its inline User Stories) and a Technical Specification and decompose them into a flat list of Story tickets for an AI Agent to execute.
 
 ### HIERARCHY RULES:
 1. **Stories**: Specific user-facing or architectural user stories (e.g., "Implement JWT Token Exchange").
@@ -86,7 +107,7 @@ You MUST respond ONLY with a valid JSON array of objects. No prose, no markdown 
   }
 ]
 
-**Slug format**: \`^[a-z0-9][a-z0-9-]*\$\` — hyphen-case only. Underscores are rejected by the validator.
+**Slug format**: \`^[a-z0-9][a-z0-9-]*$\` — hyphen-case only. Underscores are rejected by the validator.
 
 ### STORY BODY SCHEMA (REQUIRED FOR EVERY STORY):
 \`body\` MUST be a **string** — the serialized markdown produced by \`serialize()\` from \`lib/story-body/story-body.js\`. Do NOT emit \`body\` as a JSON object: an object body throws \`StoryBodyParseError\` in the reconciler (Story #3302) and is discarded by the GitHub provider, producing an empty issue body. Stories are consumed by non-interactive sub-agents that must self-verify from the Story ticket alone — so the ticket must carry everything an agent needs to execute and self-verify.
@@ -114,6 +135,10 @@ The serialized \`body\` string renders these markdown sections (in order):
     - {"path": "<read-only dependency path>", "assumption": "exists"}
     - ...
 
+    ## Non-Goals
+    - <a capability or change this Story explicitly does NOT deliver>
+    - ...
+
 #### STORY BODY RULES:
 
 - **goal** (in body string): One sentence stating WHY this story exists within the Epic.
@@ -122,6 +147,15 @@ The serialized \`body\` string renders these markdown sections (in order):
 - **verify** (top-level array on the ticket object): Each entry MUST name a testing tier in parentheses, drawn from \`unit\` / \`contract\` / \`e2e\` / \`validate\`. Example: \`npm run test -- src/x.test.ts (unit)\`, \`npm run validate (validate)\`. Stories with zero verify entries SHOULD fail validation; if a story is genuinely unverifiable in isolation (e.g., a copy edit auditor will eyeball), the literal entry \`manual:<reason>\` is allowed so the absence is intentional, not lazy. Manual entries without a reason are rejected.
 - **reason to exist** (REQUIRED, encoded as the \`reason_to_exist\` field of the \`<!-- meta: {...} -->\` comment appended to the serialized body string — NOT a top-level ticket field): One sentence stating the single coherent reason this Story exists, distinct from its broader \`## Goal\` prose. Every Story MUST carry a non-empty \`reason_to_exist\`; it is the machine-checkable form of the cohesion rule (**one Story = one coherent change with one reason to exist**) and the \`epic-plan-consolidate\` critic flags any Story whose body carries no non-empty reason to exist. Encode it as \`<!-- meta: {"reason_to_exist": "..."} -->\`.
 - **estimated_test_files** (optional, encoded in the \`<!-- meta: {...} -->\` comment appended to the serialized body string — NOT a top-level ticket field): Integer estimate of how many test files this Story creates or modifies. Omit when the number is not estimable. Informational only — it does not gate the decompose.
+- **non_goals** (OPTIONAL, in body string as the \`## Non-Goals\` section): A short list of capabilities or changes this Story explicitly does NOT deliver — an advisory negative-scope bound that fences the executing agent away from adjacent work. It is **advisory and NON-GATING**: the validator does not require, count, or reject on it, and an absent or empty section renders nothing. Use the EXACT single-word hyphenated heading spelling \`## Non-Goals\` (a space-separated heading like \`## Out of Scope\` is NOT recognized by the parser and will be dropped). Reach for it when a Story's negative boundary is non-obvious from its \`acceptance[]\` alone; omit it otherwise.
+
+#### AUTHORING ALTITUDE — BINDING ACCEPTANCE vs ADVISORY CHANGES:
+
+${authoringAltitude}
+
+${newFileContract}
+
+${advisoryCaveat}
 
 #### STORY SIZING — COHESION FIRST (the numeric ceiling is only a backstop):
 
@@ -130,6 +164,8 @@ The serialized \`body\` string renders these markdown sections (in order):
 The primary question is **cohesion, not count**: *is this one coherent change with one reason to exist?* File count cannot tell a trivial ${softFiles}-file rename from a hard 3-file parser+caller+config change — so lead with the change's reason, not its size.
 
 **Size against the real one-pass delivery envelope.** Each Story is delivered and self-verified by a single agent in one pass, whose context is capped by the delivery token budget \`maxTokenBudget = ${maxTokenBudget}\` tokens (the task-prompt hydration cap). Use that envelope — not the file count alone — as the leading sizing input: a Story is correctly sized when one agent can hold its full change, acceptance, and verification in a single pass within \`maxTokenBudget\`. The numeric file thresholds below are a coarse backstop on top of this envelope, not the primary signal.
+
+${envelopeFloor}
 
 - **One Story = one coherent change with one reason to exist.** If you cannot state that reason in a sentence, the Story is probably two Stories — or two Stories that should be one. State that sentence explicitly in the Story's \`reason_to_exist\` meta field (see STORY BODY RULES) so the consolidate critic can check it.
 - ${singleConsumerRule}
@@ -140,7 +176,22 @@ The primary question is **cohesion, not count**: *is this one coherent change wi
 
 - A Story touching more than **${softFiles} files** (\`softFiles\`) emits an advisory width finding — a nudge to check cohesion or declare \`wide\`.
 - A Story touching more than **${hardFiles} files** (\`hardFiles\`) is **rejected** unless it declares \`wide\` with a reason.
-- A Story with more than **${maxAcceptance} acceptance items** (\`maxAcceptance\`) is **rejected**; more than ${softAcceptanceCount} (\`softAcceptanceCount\`) emits an advisory warning.
+- Acceptance mass is **advisory only**: more than **${softAcceptanceCount} acceptance items** (\`softAcceptanceCount\`) emits an advisory warning. There is NO hard acceptance ceiling — a long binding contract is a signal to re-check cohesion, never a reason to fragment one coherent capability into dependent slices.
+
+#### DELIVERY-SCHEDULE SIMULATION — the story count must earn itself:
+
+Before emitting, simulate the delivery schedule your plan implies, and judge the plan by its schedule — not by how tidy the taxonomy looks:
+
+1. **Build the wave schedule.** A Story runs only after every \`depends_on\` completes, and two Stories that name the same file in \`changes[]\` cannot run in the same wave (the scheduler serializes file-overlapping Stories even when no \`depends_on\` edge links them).
+2. **Compute the parallelism yield**: story count ÷ critical-path length in waves. A yield near 1.0 means the plan is a serial chain — N Stories that deliver no faster than one Story while paying N delivery sessions (hydration, branch, PR, review, CI).
+3. **Every Story must earn its slot** by at least one of:
+   - **(a) parallelism** — it actually runs concurrently with a sibling in the schedule you just built ("logically independent" does not count; *schedule*-independent does);
+   - **(b) risk isolation** — it isolates a consumer-facing behavior change or high-risk cutover into its own reviewable, revertable unit;
+   - **(c) envelope pressure** — merged into its neighbor it would exceed the one-pass delivery envelope (\`maxTokenBudget\`).
+4. **A dependent link with none of those justifications merges into its consumer.** This generalizes the single-consumer merge rule from pairs to chains.
+5. **Hot-file rule.** When one file appears in the \`changes[]\` of more than a third of your Stories, the slicing axis cuts across a shared seam — merge the Stories that co-edit it, or re-slice along the seam so each Story owns its files.
+
+End each Story's \`reason_to_exist\` with its justification letter and one clause, e.g. "… (a: runs in wave 1 alongside <slug>)" or "(b: isolates the auto-merge default change)". A reason that names only a topic ("config work", "docs") with no justification is a merge signal.
 
 #### \`wide\` DECLARATION (optional — for legitimately broad changes):
 
@@ -163,7 +214,7 @@ Declaring \`wide\` with a non-empty reason **lifts the \`hardFiles\` rejection**
 
 #### BRAND / COPY / STYLE WORK:
 
-- Stories that touch user-visible copy, brand assets, or visual style MUST cite the relevant section of \`docs/style-guide.md\` in \`acceptance\` (e.g. \`"acceptance": ["Hero copy matches docs/style-guide.md §3 (voice & tone)"]\`). If \`docs/style-guide.md\` does not exist or has no relevant section, state that explicitly: \`"acceptance": ["docs/style-guide.md absent — copy reviewed against the inline brand brief in PRD §2"]\`. Silence on style sourcing is a smell.
+- Stories that touch user-visible copy, brand assets, or visual style MUST cite the relevant section of \`docs/style-guide.md\` in \`acceptance\` (e.g. \`"acceptance": ["Hero copy matches docs/style-guide.md §3 (voice & tone)"]\`). If \`docs/style-guide.md\` does not exist or has no relevant section, state that explicitly: \`"acceptance": ["docs/style-guide.md absent — copy reviewed against the inline brand brief in the Epic body"]\`. Silence on style sourcing is a smell.
 
 ### WAVE-0 BDD SCAFFOLD STORY (features-first; emit when the Acceptance Spec has \`new\`-disposition rows):
 The Acceptance Spec's AC table (columns \`AC ID | Outcome | Feature File | Scenario | Disposition\`) tags each row's \`Disposition\` with one of \`new | updated | unchanged\`. A \`new\` row names a \`.feature\` file + scenario that does NOT yet exist on \`main\`. The framework is features-first: implementing Stories reference those \`.feature\` paths in their \`verify[]\` lines, so the files MUST already exist when those Stories run — otherwise verification fails mid-delivery on a missing file. (These Gherkin \`.feature\` files are BDD artifacts, unrelated to any ticket tier.)
@@ -173,8 +224,9 @@ When the Acceptance Spec contains **one or more \`Disposition: new\` rows**, you
 - **goal**: contains the literal token \`bdd-scaffold\` (e.g. "bdd-scaffold: create the @skip-tagged feature files the implementation Stories verify against").
 - **depends_on**: EMPTY (\`[]\`) — it runs first, in wave 0.
 - **changes**: one entry per distinct \`.feature\` file named in a \`new\` row, each \`{ "path": "<feature file path>", "assumption": "creates" }\`.
-- **acceptance**: MUST assert (a) every new \`.feature\` file exists, and (b) every new scenario within them carries an \`@skip\` tag. Keep these observable (a grep/validate command exits 0, a file exists at a path).
-- **verify**: a grep/validate command (tier \`validate\`), NOT an e2e runner — verifying that a file exists with a tag needs no browser/playwright run. Example: \`grep -rL '@skip' tests/features/<area>/*.feature (validate)\` paired with an existence check.
+- **acceptance**: MUST assert (a) every new \`.feature\` file exists, (b) every new scenario within them carries an \`@skip\` tag, AND (c) every new scenario also carries its **namespaced per-Epic AC tag** \`${acTagExample}\` (one tag per AC ID the scenario satisfies — see below). Keep these observable (a grep/validate command exits 0, a file exists at a path).
+- **Namespaced AC tag is REQUIRED at scaffold time, not only at de-skip time.** Phase 7 finalize's \`acceptance-spec-reconciler.js\` matches AC IDs only against \`@epic-<id>-ac-*\` / \`@pending\` tags in \`tests/features/**\` — a bare \`@ac-N\` tag is deliberately ignored to prevent cross-Epic collision. A scaffolded scenario that carries \`@skip\` but omits \`@epic-<id>-ac-N\` reads as \`missing[]\` at finalize and aborts the close even after the implementation Story de-skips it, because the tag was never added. Tag each scenario with both \`@skip\` AND \`${acTagExample}\` (substituting the AC's own number) in this SAME wave-0 pass — do not defer the AC tag to the later de-skip edit.
+- **verify**: a grep/validate command (tier \`validate\`), NOT an e2e runner — verifying that a file exists with the required tags needs no browser/playwright run. Example: \`grep -rL '@skip' tests/features/<area>/*.feature (validate)\` paired with an existence check, AND a check that every new AC ID's namespaced tag (\`${acTagExample}\`) appears in the scaffolded files, e.g. \`grep -q '${acTagExample}' tests/features/<area>/<file>.feature (validate)\` for each new AC row.
 - Each implementation Story whose \`verify[]\` references one of these scaffolded \`.feature\` paths MUST \`depends_on\` the scaffold Story (so the scaffold lands in an earlier wave). Omitting the link trips the soft \`missing-bdd-scaffold\` validator finding.
 
 When the Acceptance Spec contains **zero \`new\`-disposition rows** (every row is \`updated\` or \`unchanged\`), do NOT emit a scaffold Story — there is nothing to create.

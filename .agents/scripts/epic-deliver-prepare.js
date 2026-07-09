@@ -32,13 +32,17 @@
  *   node .agents/scripts/epic-deliver-prepare.js --epic <epicId>
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
 import { parseArgs } from 'node:util';
 
+import { runBootSweep } from './boot-sweep.js';
 import { runAsCli } from './lib/cli-utils.js';
-import { getRunners, resolveConfig } from './lib/config-resolver.js';
+import { getPaths, getRunners, resolveConfig } from './lib/config-resolver.js';
 import { currentBranch as gitCurrentBranch } from './lib/git-branch-lifecycle.js';
 import { getEpicBranch, gitSpawn } from './lib/git-utils.js';
 import { Logger } from './lib/Logger.js';
+import { buildDocsDigest } from './lib/orchestration/docs-digest.js';
 import {
   resolveOperator,
   runPrepareGuards,
@@ -216,6 +220,49 @@ async function runPreflightGuardsForPrepare({
 }
 
 /**
+ * Route the Epic boot cleanup through the shared protected boot-sweep
+ * engine (Story #4373). Reaps merged, done `story-*` branches left over
+ * from prior runs — the protection partition skips any branch with
+ * unpushed work, a dirty worktree, or a still-open parent Story, so an
+ * in-flight Story is never touched. Fast-forward is off: the prepare may
+ * run on the Epic branch, and the fast-forward phase would otherwise
+ * check out the base branch.
+ *
+ * Best-effort — a sweep failure (lock contention, git/gh error) is
+ * swallowed and never blocks or fails the prepare. Skipped in the same
+ * injected-test shape the preflight guards use (a provider injected with
+ * no git seam) so unit tests never spawn real git/gh.
+ */
+async function runBootSweepForPrepare({
+  cwd,
+  config,
+  provider,
+  injectedProvider,
+  injectedGit,
+  injectedSweep,
+  skipPreflightGuards,
+}) {
+  const suppressed =
+    skipPreflightGuards || (Boolean(injectedProvider) && !injectedGit);
+  if (suppressed) return;
+  try {
+    await runBootSweep({
+      cwd,
+      include: ['story-*'],
+      fastForward: false,
+      injectedConfig: config,
+      injectedProvider: provider,
+      injectedSweep,
+      logger: Logger,
+    });
+  } catch (err) {
+    Logger.warn(
+      `[epic-deliver-prepare] ⚠️ boot sweep threw (prepare continues): ${err?.message ?? err}`,
+    );
+  }
+}
+
+/**
  * Resolve the Epic state, preferring the preflight cache (Story #3027) and
  * falling back to a fresh snapshot + wave-DAG pass on miss or baseSha
  * mismatch. Returns `{ state, cacheStatus }`. Story #4075 — extracted from
@@ -286,6 +333,40 @@ function evaluatePrepareConcurrencyGate({
   return gate;
 }
 
+/**
+ * Build the per-Epic docs digest and write it to
+ * `<tempRoot>/epic-<id>/docs-digest.md`, returning its repo-relative path.
+ * Story #4338 — the parent threads this path into every child prompt so
+ * delivery sub-agents read one compact outline instead of re-ingesting the
+ * full `project.docsContextFiles` set per Story.
+ *
+ * Keyed off the **un-defaulted** config (`config.raw`): when the operator has
+ * not configured `project.docsContextFiles`, this returns `null` (no file
+ * written) rather than digesting the resolver's built-in default set — the
+ * digest is an opt-in surface for projects that curate their docs context.
+ *
+ * @param {{ epicId: number, cwd?: string, config: object }} args
+ * @returns {Promise<string|null>} repo-relative digest path, or null when
+ *   `project.docsContextFiles` is empty/unset (or every file is missing).
+ */
+async function writeDocsDigest({ epicId, cwd, config }) {
+  const rawFiles = config?.raw?.project?.docsContextFiles;
+  const docsContextFiles = Array.isArray(rawFiles) ? rawFiles : [];
+  if (docsContextFiles.length === 0) return null;
+
+  const paths = getPaths(config);
+  const root = path.resolve(cwd ?? process.cwd());
+  const docsRoot = path.resolve(root, paths.docsRoot);
+  const digest = await buildDocsDigest({ docsContextFiles, docsRoot });
+  if (digest == null) return null;
+
+  const relPath = path.join(paths.tempRoot, `epic-${epicId}`, 'docs-digest.md');
+  const absPath = path.resolve(root, relPath);
+  await fs.promises.mkdir(path.dirname(absPath), { recursive: true });
+  await fs.promises.writeFile(absPath, digest, 'utf-8');
+  return relPath;
+}
+
 export async function runEpicDeliverPrepare({
   epicId,
   cwd,
@@ -296,6 +377,7 @@ export async function runEpicDeliverPrepare({
   steal = false,
   asOperator,
   injectedGit,
+  injectedSweep,
   leaseHeartbeatAt,
   leaseNow,
   skipPreflightGuards = false,
@@ -325,6 +407,16 @@ export async function runEpicDeliverPrepare({
     steal,
     leaseHeartbeatAt,
     leaseNow,
+    skipPreflightGuards,
+  });
+
+  await runBootSweepForPrepare({
+    cwd,
+    config,
+    provider,
+    injectedProvider,
+    injectedGit,
+    injectedSweep,
     skipPreflightGuards,
   });
 
@@ -374,6 +466,8 @@ export async function runEpicDeliverPrepare({
     });
   }
 
+  const docsDigestPath = await writeDocsDigest({ epicId, cwd, config });
+
   return {
     epicId,
     storyCount: openStories.length,
@@ -385,6 +479,7 @@ export async function runEpicDeliverPrepare({
       new Date().toISOString(),
     concurrencyHazardsBypassed: gate.bypassed,
     preflightCache: cacheStatus,
+    docsDigestPath,
   };
 }
 

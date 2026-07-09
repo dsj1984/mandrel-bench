@@ -80,6 +80,13 @@ Run from the **main checkout** (the worktree does not exist yet):
 node .agents/scripts/story-init.js --story <storyId>
 ```
 
+**No spec-ticket threading (Story #4324).** The Tech Spec lives as managed
+sections of the Epic body — there is no separate Tech-Spec issue, no
+`--tech-spec` flag, and no per-Story hierarchy trace to a spec ticket.
+Your hydrated prompt already embeds the Epic body (with the
+`## Acceptance Table` section stripped), which carries the folded Tech
+Spec sections; do not fetch a Tech Spec issue.
+
 > **Execution mode (sub-agents must read).** This command typically takes
 > 3–6 minutes when the worktree's per-tree install runs. Invoke it
 > **synchronously** with the Bash tool's maximum timeout
@@ -92,15 +99,15 @@ node .agents/scripts/story-init.js --story <storyId>
 > partial state, so the recovery is to re-run it synchronously, but
 > prevention is cheaper: just give Bash the 10-minute timeout and block.
 
-The script validates `type::story`, checks blockers, traces the
-Epic → PRD/Tech-Spec hierarchy, seeds `story-<id>` from the
+The script validates `type::story`, checks blockers, resolves the parent
+Epic id, seeds `story-<id>` from the
 Epic branch, and (when worktree isolation is on) runs `git worktree add`
 at `.worktrees/story-<id>/`. The Story flips to `agent::executing`. A
 `story-init` structured comment is upserted with the Story's inline
 `acceptance[]` and `verify[]` arrays from the body.
 
 Capture `workCwd`, `dependenciesInstalled` (tri-state), and
-`context.{prdId,techSpecId,acceptance,verify}`. Add `--dry-run` to check
+`context.parentId`. Add `--dry-run` to check
 status without git or ticket changes.
 
 ### Step 0.5 — `cd` into the workCwd
@@ -126,11 +133,15 @@ in-process (retrying the install command when
 `dependenciesInstalled === 'false'`, default `npm ci`) and rendered the
 initial snapshot (`phase: "init"`). There is no separate command to run.
 
-The Step 0 result envelope carries a `prepare.renderedBody` field — the
-markdown body for the initial Story-phase table. **Relay it verbatim to
-chat** so operators see the initial progress block before the first commit
-lands. Do the same after every transition in Step 1 / Step 3 (the body is
-the Story-level rollup the parent `/deliver` aggregator reads).
+Step 0's init run already upserted the initial `story-run-progress`
+snapshot (`phase: "init"`) as a structured comment on the Story — that
+comment, refreshed by `story-phase.js` at each transition, is the
+authoritative Story-level rollup the parent `/deliver` aggregator reads.
+You do **not** relay `prepare.renderedBody` verbatim to chat. Instead,
+relay **one line per phase transition** (e.g. `Story #<id>: init →
+implementing`), and do the same after every transition in Step 1 / Step 3.
+The snapshot CLI carries the full body; the chat line is a terse progress
+delta, not a body dump.
 
 ---
 
@@ -139,17 +150,35 @@ the Story-level rollup the parent `/deliver` aggregator reads).
 Run a single Story-implementation phase against the inline `acceptance[]`
 / `verify[]` arrays on the Story body.
 
-1. Flip the snapshot to the `implementing` phase:
+1. Flip the snapshot to the `implementing` phase. Pass `--epic <epicId>`
+   and `--branch story-<storyId>` from the Step 0 envelope so the render
+   skips the `readEpicIdFromStory` / `resolveStoryBranch` GitHub reads
+   (pass these same flags to **every** `story-phase.js` call below):
 
    ```bash
    node .agents/scripts/story-phase.js \
-     --story <storyId> --phase implementing
+     --story <storyId> --epic <epicId> --branch story-<storyId> \
+     --phase implementing
    ```
 
 2. Read the Story body's inline `acceptance[]` and `verify[]` arrays
    from the `story-init` structured comment (`context.acceptance`,
    `context.verify`). Treat the acceptance items as the contract and
    the verify items as the canonical at-keyboard checks.
+
+   **Docs context — read the digest, not the full set.** Do **not**
+   re-read every file in `project.docsContextFiles`. The parent prompt
+   passes a `docsDigestPath` (the per-Epic docs digest at
+   `temp/epic-<epicId>/docs-digest.md`, written by
+   `epic-deliver-prepare.js`). Read that digest — a compact per-file
+   outline (path, size, heading outline with line numbers, first
+   paragraph under each `##`) — to decide which docs bear on this Story,
+   then **pull the full file on demand** (jump to the section at the line
+   number the digest names) only when relevant. When `docsDigestPath` is
+   null (the project configured no `docsContextFiles`), there is no
+   digest and no per-Story docs mandate — read a full doc only if the
+   Story's own context points you at one. See
+   [`.agents/instructions.md` § 3](../../instructions.md).
 
 3. Implement the work as one or more commits on `story-<storyId>`.
    Author commits directly with the project's editor / `git commit`,
@@ -166,11 +195,14 @@ Run a single Story-implementation phase against the inline `acceptance[]`
    evidence** — they are no longer optional advisory pre-flight.
 
 5. Once the eval loop returns `proceed`, flip the snapshot to `closing`
-   and proceed to Step 3:
+   and proceed to Step 3 (Step 3 invokes close directly — it no longer
+   re-renders the `closing` snapshot, so this is the single `closing`
+   render):
 
    ```bash
    node .agents/scripts/story-phase.js \
-     --story <storyId> --phase closing
+     --story <storyId> --epic <epicId> --branch story-<storyId> \
+     --phase closing
    ```
 
 6. If blocked (including by the eval loop reaching its round cap with
@@ -180,7 +212,8 @@ Run a single Story-implementation phase against the inline `acceptance[]`
 
    ```bash
    node .agents/scripts/story-phase.js \
-     --story <storyId> --phase blocked
+     --story <storyId> --epic <epicId> --branch story-<storyId> \
+     --phase blocked
    ```
 
 ### Step 1a — Bounded acceptance self-eval loop (**required, not optional**)
@@ -194,6 +227,18 @@ The critic reads the Story's inline `acceptance[]` / `verify[]` arrays from the
 `story-init` comment (`context.acceptance` / `context.verify`).
 
 Epic-attached specifics for this path:
+
+- **Critic evidence-share** (Story #4250). When the critic runs a `verify[]`
+  command that is byte-identical to a close gate (`lint` / `typecheck`), it
+  records the pass into the Epic-keyed evidence keyspace via `--epic-id
+  <epicId>` so `story-close.js` short-circuits the gate at unchanged HEAD.
+  Run it in the **Story worktree** (`.worktrees/story-<storyId>`):
+
+  ```bash
+  node .agents/scripts/evidence-gate.js \
+    --epic-id <epicId> --scope-id <storyId> --gate lint \
+    --worktree .worktrees/story-<storyId> -- npm run lint
+  ```
 
 - **Gate invocation** (pass `--epic <epicId>` so the per-criterion signal lands
   on the Epic-scoped stream):
@@ -213,10 +258,14 @@ partially-implemented Story picks up from whatever commits are already
 on `story-<storyId>`; the agent inspects `git log` to decide what work
 remains.
 
-After each `story-phase.js` call, **relay the envelope's
-`renderedBody` to chat** as the Story's progress update. Skip chat
-relay only when running in a non-interactive sub-agent context where
-the parent will aggregate.
+After each `story-phase.js` call, relay **one line naming the phase
+transition** (e.g. `Story #<id>: implementing → closing`) as the Story's
+progress update — not the envelope's `renderedBody` verbatim. The
+`story-phase.js` CLI has already upserted the full body into the
+`story-run-progress` snapshot; that comment is the authoritative rollup
+the parent `/deliver` aggregator reads. Skip chat relay entirely when
+running in a non-interactive sub-agent context where the parent will
+aggregate.
 
 > Rebase pauses on conflicts → follow
 > [`_merge-conflict-template.md`](_merge-conflict-template.md).
@@ -235,16 +284,18 @@ fine as advisory pre-flight.)
 
 ## Step 3 — Close (`story-close.js`)
 
-Flip the snapshot to the closing phase, then invoke close. Pass the
-main-checkout path via `--cwd` so the merge and branch deletion run
-against the main repo (branches checked out in a worktree cannot be
+Step 1 item 5 already flipped the snapshot to the `closing` phase, so this
+step does **not** re-render it (the duplicate render was removed). Invoke
+close directly. Pass the parent Epic id via `--epic <epicId>` from the
+Step 0 envelope so close skips re-parsing the Epic hierarchy off the
+Story body (which also closes the malformed-`Epic:`-line failure mode).
+Pass the main-checkout path via `--cwd` so the merge and branch deletion
+run against the main repo (branches checked out in a worktree cannot be
 deleted from themselves):
 
 ```bash
-node .agents/scripts/story-phase.js \
-  --story <storyId> --phase closing
-
-node <main-repo>/.agents/scripts/story-close.js --story <storyId> --cwd <main-repo>
+node <main-repo>/.agents/scripts/story-close.js \
+  --story <storyId> --epic <epicId> --cwd <main-repo>
 ```
 
 In single-tree mode, `--cwd` defaults to `PROJECT_ROOT`. The script merges
@@ -261,7 +312,8 @@ After close, upsert a terminal snapshot:
 
 ```bash
 node .agents/scripts/story-phase.js \
-  --story <storyId> --phase done
+  --story <storyId> --epic <epicId> --branch story-<storyId> \
+  --phase done
 ```
 
 ---
@@ -308,8 +360,10 @@ regardless of the reap status.
 `story-phase.js` (typically the `phase: 'done'` snapshot at close,
 or the `phase: 'blocked'` snapshot on a blocker). The parent
 `/deliver` may inline a digest of this in its wave-level Notable
-section. When run interactively (no parent), omit it — the chat already
-has the latest body relayed during Step 1 / Step 3.
+section. When run interactively (no parent), omit it — the authoritative
+body lives in the `story-run-progress` snapshot the phase CLI upserted,
+and the chat already carries the per-transition progress lines from
+Step 1 / Step 3.
 
 ---
 
