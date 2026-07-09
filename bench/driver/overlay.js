@@ -397,10 +397,10 @@ export function overlayFrameworkUnderTest(opts = {}, deps = {}) {
   // uncluttered) carrying REAL lint/test/typecheck gates so Mandrel's
   // close-validation enforcement genuinely fires (Story #74 — generalized
   // from the former single-scenario special case; see buildTargetPackageJson).
-  writeFile(
-    path.join(workspacePath, 'package.json'),
-    `${JSON.stringify(buildTargetPackageJson(), null, 2)}\n`,
-  );
+  // Delegates to writeGatePackageJson (the control arm's counterpart) rather
+  // than re-inlining the serialize+write, so both arms share one write path
+  // (Epic #66 audit remediation, H4).
+  writeGatePackageJson({ workspacePath }, { writeFileFn: writeFile });
 
   // Rewrite .agentrc.json to target the sandbox repo.
   const agentrc = rewriteAgentrc(
