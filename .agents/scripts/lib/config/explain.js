@@ -126,10 +126,8 @@ const KEY_MEANINGS = Object.freeze({
     'How many recent commits the snapshot summarizes.',
   'planning.riskHeuristics':
     'Phrases that flag a Story as high-risk for HITL escalation.',
-  'planning.taskSizing.maxAcceptance':
-    'Hard ceiling on acceptance criteria per Story.',
   'planning.taskSizing.softAcceptanceCount':
-    'Acceptance-criteria count above which a Story is flagged as large.',
+    'Acceptance-criteria count above which a Story is flagged as large (advisory-only — there is no hard acceptance ceiling).',
   'planning.taskSizing.softFiles':
     'Touched-file count above which a Story is flagged as large.',
   'planning.taskSizing.hardFiles':
@@ -148,6 +146,16 @@ const KEY_MEANINGS = Object.freeze({
     'Time-to-live for the Epic lease before a stale claim is reclaimable.',
   'delivery.ci.skipForStoryPushes':
     'Whether Story-branch pushes carry a [skip ci] trailer.',
+  'delivery.ci.earlyPr':
+    'Whether /deliver opens the Epic PR early so CI warms during later waves.',
+  'delivery.ci.watch.pollIntervalMs':
+    'Poll cadence (ms) for the merge/CI watch loop.',
+  'delivery.ci.watch.maxPolls':
+    'Maximum number of poll probes before the CI watch gives up.',
+  'delivery.ci.watch.maxResumes':
+    'Maximum times the CI watch may resume after a transient stall.',
+  'delivery.ci.autoMerge':
+    'Merge posture: trust-ci merges on green checks; strict also requires a clean review gate.',
   'delivery.preflight.maxStories':
     'Pre-dispatch ceiling on estimated Story count (no cap when unset).',
   'delivery.preflight.maxWaves':
@@ -188,6 +196,10 @@ const KEY_MEANINGS = Object.freeze({
     'Maximum auto-fix attempts the code-review phase makes.',
   'delivery.codeReview.maxFixScopeFiles':
     'Maximum files an auto-fix may touch in one attempt.',
+  'delivery.codeReview.autoFixSeverity':
+    'Severity threshold for on-branch code-review remediation (medium fixes 🔴/🟠/🟡, high fixes 🔴/🟠 only; default medium).',
+  'delivery.epicAudit.autoFixSeverity':
+    'Severity threshold for on-branch epic-audit remediation (medium fixes 🔴/🟠/🟡, high fixes 🔴/🟠 only; default medium).',
   'delivery.refactorStage.enabled':
     'Whether a dedicated refactor stage runs during delivery.',
   'delivery.acceptanceEval.maxRounds':
@@ -232,7 +244,10 @@ const PREFIX_MEANINGS = Object.freeze([
     'planning.taskSizing',
     'Story-sizing threshold for the decompose validator.',
   ],
-  ['qa.signInSeam', 'QA harness sign-in seam configuration.'],
+  [
+    'qa.environments',
+    'QA harness deployment target (baseUrl, per-environment sign-in seam, allowWrites gate).',
+  ],
   ['qa.personas', 'QA harness persona / credential mapping.'],
 ]);
 

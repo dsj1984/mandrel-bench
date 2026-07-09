@@ -15,6 +15,7 @@
  *   acceptance:          string[],         // observable criteria
  *   verify:              string[],         // exact commands / tier annotation
  *   references:          PathEntry[],      // read-only paths (optional)
+ *   non_goals:           string[],         // negative-scope bullets (optional, advisory)
  *   wide:                { reason } | null,// declared-wide footprint (optional)
  *   reason_to_exist:     string | null,    // one-sentence cohesion reason (optional)
  *   depends_on:          string[],         // blocker story slugs or #ids
@@ -41,6 +42,10 @@
  * @module story-body
  */
 
+import {
+  AUTHORED_MARKER_LINE_RE,
+  authoredMarkerLine,
+} from '../framework-version.js';
 import { FILE_ASSUMPTION_VALUES } from '../orchestration/file-assumption-enum.js';
 
 // ---------------------------------------------------------------------------
@@ -69,10 +74,13 @@ import { FILE_ASSUMPTION_VALUES } from '../orchestration/file-assumption-enum.js
  * @property {string[]}      acceptance          - Observable acceptance criteria.
  * @property {string[]}      verify              - Exact commands with tier annotation.
  * @property {PathEntry[]}   references          - Read-only paths (may be empty).
+ * @property {string[]}      non_goals           - Negative-scope bullets (advisory; may be empty).
  * @property {{ reason: string }|null} wide      - Declared-wide footprint (reason), or null.
  * @property {string|null}   reason_to_exist     - One-sentence cohesion reason ("why this Story exists"), or null.
  * @property {string[]}      depends_on          - Blocking story slugs / issue refs.
  * @property {number|null}   estimated_test_files - Test surface count or null.
+ * @property {string|null}   mandrel_version     - Framework version stamped at authoring, or null.
+ * @property {string|null}   authored_at         - Authoring date (YYYY-MM-DD) stamped at authoring, or null.
  */
 
 /**
@@ -89,6 +97,7 @@ import { FILE_ASSUMPTION_VALUES } from '../orchestration/file-assumption-enum.js
  * @property {boolean} hasAcceptanceSection - Whether a `## Acceptance` section was found.
  * @property {boolean} hasVerifySection     - Whether a `## Verify` section was found.
  * @property {boolean} hasReferencesSection - Whether a `## References` section was found.
+ * @property {boolean} hasNonGoalsSection   - Whether a `## Non-Goals` section was found.
  * @property {boolean} isLegacyStringBody   - True when no structured sections were found.
  */
 
@@ -125,13 +134,16 @@ export class StoryBodyParseError extends Error {
 // Section heading map
 // ---------------------------------------------------------------------------
 
-// Heading text → body field name
+// Heading text → body field name. Keys are normalized: lower-cased with `-`
+// folded to `_` (see splitSections), so the hyphenated `## Non-Goals` heading
+// maps to the `non_goals` field.
 const HEADING_TO_FIELD = new Map([
   ['goal', 'goal'],
   ['changes', 'changes'],
   ['acceptance', 'acceptance'],
   ['verify', 'verify'],
   ['references', 'references'],
+  ['non_goals', 'non_goals'],
 ]);
 
 // ---------------------------------------------------------------------------
@@ -247,14 +259,21 @@ const META_BLOCK_RE = /<!--\s*meta:\s*(\{[\s\S]*?\})\s*-->/;
  * otherwise-valid Story body. A parse failure degrades to the absent-meta
  * defaults instead of throwing.
  *
+ * The `mandrel_version` / `authored_at` provenance stamp (written once at
+ * authoring time by the ticket-creation path) is recovered here too so a later
+ * `parse → serialize` preserves the originally-authored version verbatim
+ * rather than dropping or re-deriving it.
+ *
  * @param {string} markdown
- * @returns {{ wide: { reason: string }|null, reason_to_exist: string|null, estimated_test_files: number|null }}
+ * @returns {{ wide: { reason: string }|null, reason_to_exist: string|null, estimated_test_files: number|null, mandrel_version: string|null, authored_at: string|null }}
  */
 function extractMeta(markdown) {
   const result = {
     wide: null,
     reason_to_exist: null,
     estimated_test_files: null,
+    mandrel_version: null,
+    authored_at: null,
   };
   const match = markdown.match(META_BLOCK_RE);
   if (!match) return result;
@@ -272,6 +291,15 @@ function extractMeta(markdown) {
   result.reason_to_exist = normalizeReasonToExist(parsed.reason_to_exist);
   if (typeof parsed.estimated_test_files === 'number') {
     result.estimated_test_files = parsed.estimated_test_files;
+  }
+  if (
+    typeof parsed.mandrel_version === 'string' &&
+    parsed.mandrel_version.trim()
+  ) {
+    result.mandrel_version = parsed.mandrel_version.trim();
+  }
+  if (typeof parsed.authored_at === 'string' && parsed.authored_at.trim()) {
+    result.authored_at = parsed.authored_at.trim();
   }
   return result;
 }
@@ -346,15 +374,53 @@ function splitSections(markdown) {
     // Forms (Story #4227) render every field label as a level-3 heading
     // (`### Goal`), not the level-2 the canonical serializer emits, so the
     // parser accepts both levels. Any other heading depth is ignored.
-    const headingMatch = line.match(/^#{2,3}\s+(\w+)\s*$/i);
-    if (headingMatch) {
-      const name = headingMatch[1].toLowerCase();
+    //
+    // The token class is `[\w-]+` (not bare `\w+`) so a single hyphenated
+    // heading word — the canonical `## Non-Goals` negative-scope section —
+    // matches as one token. The captured name is normalized (lower-cased,
+    // `-` folded to `_`) before the HEADING_TO_FIELD lookup, so `Non-Goals`
+    // resolves to the `non_goals` field. Multi-word headings that contain a
+    // space (`## Out of Scope`, `## Agent Prompts`) still do NOT match this
+    // single-token shape — they fall through to the catch-all heading branch
+    // below, which closes the open section. The chosen canonical spelling is
+    // therefore the hyphenated single token `## Non-Goals`.
+    const fieldHeadingMatch = line.match(/^#{2,3}\s+([\w-]+)\s*$/i);
+    if (fieldHeadingMatch) {
+      const name = fieldHeadingMatch[1].toLowerCase().replace(/-/g, '_');
       if (HEADING_TO_FIELD.has(name)) {
         inPreamble = false;
         currentSection = name;
         if (!sections.has(currentSection)) sections.set(currentSection, []);
         continue;
       }
+      // A heading that matches the canonical `## Word` shape but is not a
+      // recognized field name (e.g. a trailing free-form `## Notes`) closes
+      // the currently-open section. Without this reset, the unknown heading
+      // and its bullets bleed into the previously-recognized section,
+      // silently corrupting `verify[]` / `acceptance[]`. We do NOT re-enter
+      // the preamble (`inPreamble` stays false), so a later recognized
+      // heading still registers normally; we only stop appending to the
+      // closed section. The heading line and its body are dropped from all
+      // sections. (Multi-word free-form headings like `## Out of Scope` —
+      // with internal spaces — do not match the `[\w-]+` single-token shape
+      // and reach this branch too. The hyphenated single-token canonical
+      // negative-scope heading is `## Non-Goals`, which IS recognized above.)
+      currentSection = null;
+      continue;
+    }
+
+    // Any other markdown heading (`## …` / `### …`, single- or multi-word)
+    // that is NOT a canonical field heading TERMINATES the current structured
+    // section. Trailing extended content a producer appends after the
+    // canonical block — `audit-to-stories`'s `## Agent Prompts` / `## Context`
+    // / `## Sequencing` blocks, for instance — must not bleed into the last
+    // structured section's bullet list (Story #4270). Without this, those
+    // lines were silently absorbed into `verify[]` / `acceptance[]`. The
+    // heading and everything under it is dropped from structured parsing
+    // (it is extended, non-canonical markdown).
+    if (!inPreamble && /^#{1,6}\s+\S/.test(line)) {
+      currentSection = null;
+      continue;
     }
 
     // The trailing `<!-- meta: {...} -->` block is machine metadata, not
@@ -362,6 +428,14 @@ function splitSections(markdown) {
     // followed by the meta block does not swallow the comment as a
     // references entry. `extractMeta` reads it separately from the raw body.
     if (META_BLOCK_RE.test(line)) {
+      continue;
+    }
+
+    // The visible `> 🏷️ Authored with Mandrel …` provenance marker is
+    // machine-managed metadata too (emitted alongside the meta block by the
+    // authoring path). Skip it so it never bleeds into the trailing structured
+    // section (e.g. `## Verify`); the value round-trips via the meta block.
+    if (AUTHORED_MARKER_LINE_RE.test(line)) {
       continue;
     }
 
@@ -407,10 +481,13 @@ function parseLegacyStringBody(input, preamble, footer) {
     acceptance: [],
     verify: [],
     references: [],
+    non_goals: [],
     wide: null,
     reason_to_exist: null,
     depends_on: extractBlockedBy(footer),
     estimated_test_files: null,
+    mandrel_version: null,
+    authored_at: null,
   };
   return {
     body,
@@ -421,6 +498,7 @@ function parseLegacyStringBody(input, preamble, footer) {
       hasAcceptanceSection: false,
       hasVerifySection: false,
       hasReferencesSection: false,
+      hasNonGoalsSection: false,
       isLegacyStringBody: true,
     },
   };
@@ -522,6 +600,7 @@ export function parse(input) {
   const hasAcceptanceSection = sections.has('acceptance');
   const hasVerifySection = sections.has('verify');
   const hasReferencesSection = sections.has('references');
+  const hasNonGoalsSection = sections.has('non_goals');
 
   // If no structured sections found, treat as legacy string body.
   const isLegacyStringBody =
@@ -545,6 +624,7 @@ export function parse(input) {
     sections.get('references') ?? [],
     warnings,
   );
+  const non_goals = parseTextListSection(sections.get('non_goals') ?? []);
   const dependsOn = extractBlockedBy(footer);
 
   // --- Recover wide / estimated_test_files from the meta block ---
@@ -554,6 +634,8 @@ export function parse(input) {
   const estimated_test_files = meta.estimated_test_files;
   const wide = meta.wide;
   const reason_to_exist = meta.reason_to_exist;
+  const mandrel_version = meta.mandrel_version;
+  const authored_at = meta.authored_at;
   if (estimated_test_files === null) {
     warnings.push(
       'test-surface-unestimated: estimated_test_files not present.',
@@ -566,10 +648,13 @@ export function parse(input) {
     acceptance,
     verify,
     references,
+    non_goals,
     wide,
     reason_to_exist,
     depends_on: dependsOn,
     estimated_test_files,
+    mandrel_version,
+    authored_at,
   };
 
   return {
@@ -581,6 +666,7 @@ export function parse(input) {
       hasAcceptanceSection,
       hasVerifySection,
       hasReferencesSection,
+      hasNonGoalsSection,
       isLegacyStringBody: false,
     },
   };
@@ -625,6 +711,11 @@ function parseStructuredObject(obj) {
     if (entry !== null) references.push(entry);
   }
 
+  // non_goals (advisory negative-scope bullets)
+  const non_goals = Array.isArray(obj.non_goals)
+    ? obj.non_goals.filter((n) => typeof n === 'string' && n.trim().length > 0)
+    : [];
+
   const wide = normalizeWide(obj.wide);
   const reason_to_exist = normalizeReasonToExist(obj.reason_to_exist);
 
@@ -644,16 +735,29 @@ function parseStructuredObject(obj) {
     );
   }
 
+  // Provenance stamp (preserved verbatim; never re-derived here).
+  const mandrel_version =
+    typeof obj.mandrel_version === 'string' && obj.mandrel_version.trim()
+      ? obj.mandrel_version.trim()
+      : null;
+  const authored_at =
+    typeof obj.authored_at === 'string' && obj.authored_at.trim()
+      ? obj.authored_at.trim()
+      : null;
+
   const body = {
     goal,
     changes,
     acceptance,
     verify,
     references,
+    non_goals,
     wide,
     reason_to_exist,
     depends_on,
     estimated_test_files,
+    mandrel_version,
+    authored_at,
   };
 
   return {
@@ -665,6 +769,7 @@ function parseStructuredObject(obj) {
       hasAcceptanceSection: 'acceptance' in obj,
       hasVerifySection: 'verify' in obj,
       hasReferencesSection: 'references' in obj,
+      hasNonGoalsSection: 'non_goals' in obj,
       isLegacyStringBody: false,
     },
   };
@@ -689,7 +794,7 @@ function serializePathEntry(entry) {
 /**
  * Descriptor table for the human-readable Story-body sections, in canonical
  * emit order (`## Goal`, `## Changes`, `## Acceptance`, `## Verify`,
- * `## References`). Each descriptor reads one body field and returns the
+ * `## References`, `## Non-Goals`). Each descriptor reads one body field and returns the
  * section's markdown block when the field is present and non-empty, or `null`
  * to omit the section.
  *
@@ -735,6 +840,18 @@ const SERIALIZE_SECTIONS = [
         ? `## References\n${references.map((r) => `- ${serializePathEntry(r)}`).join('\n')}`
         : null,
   },
+  {
+    // Advisory negative-scope bullets. Rendered as the hyphenated canonical
+    // `## Non-Goals` heading (the spelling the parser's widened
+    // `[\w-]+` field-heading regex recognizes). Render-when-non-empty: an
+    // empty or absent `non_goals` emits nothing, so every pre-existing body
+    // round-trips byte-identically.
+    field: 'non_goals',
+    render: (nonGoals) =>
+      Array.isArray(nonGoals) && nonGoals.length > 0
+        ? `## Non-Goals\n${nonGoals.map((n) => `- ${n}`).join('\n')}`
+        : null,
+  },
 ];
 
 /**
@@ -743,9 +860,11 @@ const SERIALIZE_SECTIONS = [
  * `estimated_test_files`). Returns the empty string when no meta field is
  * present so {@link serialize} appends nothing.
  *
- * Key insertion order (`wide` → `reason_to_exist` → `estimated_test_files`)
- * is load-bearing: it fixes the serialized JSON byte sequence the parser's
- * meta round-trip and the unit suite assert against.
+ * Key insertion order (`wide` → `reason_to_exist` → `estimated_test_files` →
+ * `mandrel_version` → `authored_at`) is load-bearing: it fixes the serialized
+ * JSON byte sequence the parser's meta round-trip and the unit suite assert
+ * against. The provenance stamp keys are appended **last** so every
+ * pre-existing (stamp-less) body serialises byte-identically to before.
  *
  * @param {StoryBody} body
  * @returns {string}
@@ -763,8 +882,34 @@ function serializeMetaBlock(body) {
   if (typeof body.estimated_test_files === 'number') {
     metaFields.estimated_test_files = body.estimated_test_files;
   }
+  if (typeof body.mandrel_version === 'string' && body.mandrel_version.trim()) {
+    metaFields.mandrel_version = body.mandrel_version.trim();
+  }
+  if (typeof body.authored_at === 'string' && body.authored_at.trim()) {
+    metaFields.authored_at = body.authored_at.trim();
+  }
   if (Object.keys(metaFields).length === 0) return '';
   return `\n\n<!-- meta: ${JSON.stringify(metaFields)} -->`;
+}
+
+/**
+ * Build the visible `> 🏷️ Authored with Mandrel v<version> · <date>` marker
+ * line when the body carries a complete provenance stamp
+ * (`mandrel_version` + `authored_at`). Emitted just above the meta block so it
+ * round-trips with the hidden field. Returns the empty string when either
+ * field is absent, so every pre-existing (stamp-less) body serialises
+ * byte-identically to before.
+ *
+ * @param {StoryBody} body
+ * @returns {string}
+ */
+function serializeAuthoredMarker(body) {
+  const version =
+    typeof body.mandrel_version === 'string' ? body.mandrel_version.trim() : '';
+  const authoredAt =
+    typeof body.authored_at === 'string' ? body.authored_at.trim() : '';
+  if (!version || !authoredAt) return '';
+  return `\n\n${authoredMarkerLine({ version, authoredAt })}`;
 }
 
 /**
@@ -793,8 +938,8 @@ function serializeFooter(body, opts) {
  * format written to GitHub issue bodies.
  *
  * The output matches the section order the spec-renderer uses:
- * `## Goal`, `## Changes`, `## Acceptance`, `## Verify`, `## References`
- * (omitted when empty).
+ * `## Goal`, `## Changes`, `## Acceptance`, `## Verify`, `## References`,
+ * `## Non-Goals` (each omitted when empty).
  *
  * `wide`, `reason_to_exist`, and `estimated_test_files` are emitted as a
  * fenced `<!-- meta -->` comment block so round-trips preserve them without
@@ -819,6 +964,7 @@ export function serialize(body, opts = {}) {
 
   return (
     sections.join('\n\n') +
+    serializeAuthoredMarker(body) +
     serializeMetaBlock(body) +
     serializeFooter(body, opts)
   );

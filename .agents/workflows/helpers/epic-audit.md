@@ -1,8 +1,10 @@
 ---
 description: >-
   Run smart change-set audits at Epic finalize. Consumes the epic-audit-prepare
-  envelope, dispatches each selected lens inline via runAuditSuite, and posts
-  an audit-results structured comment back onto the Epic ticket.
+  envelope, dispatches each selected lens (inline, or via a single
+  audit-orchestrator sub-agent that fans the lenses out as parallel level-2
+  agents) through runAuditSuite, and posts an audit-results structured comment
+  back onto the Epic ticket.
 ---
 
 # Epic Audit (helper)
@@ -44,12 +46,15 @@ change-set selection. Both lens sources fire through the **same**
 2. Resolve `[EPIC_BRANCH]` — `epic/<epicId>`.
 3. Resolve `[BASE_BRANCH]` from `baseBranch` in `.agentrc.json` (default:
    `main`).
-4. Fetch the Epic ticket and identify linked context tickets:
-   - **PRD** — the `context::prd` ticket linked in the Epic body.
-   - **Tech Spec** — the `context::tech-spec` ticket linked in the Epic
-     body.
-5. Read both the PRD and Tech Spec fully to understand the intended scope,
-   selected lenses, and acceptance criteria.
+4. Fetch the Epic ticket — the Epic body is the single planning
+   document:
+   - **Narrative sections** — Context / Goal / Scope / User Stories /
+     Acceptance Criteria.
+   - **Tech Spec** — the folded Tech Spec sections (opening with
+     `## Delivery Slicing`) inside the body's managed region.
+5. Read the Epic body fully (including its Tech Spec sections) to
+   understand the intended
+   scope, selected lenses, and acceptance criteria.
 
 ## Step 1 — Prepare (`epic-audit-prepare.js`)
 
@@ -194,6 +199,62 @@ After the runner returns:
    🟡 Medium / 🟢 Suggestion). Hold the aggregate for Step 3
    (auto-fix) and Step 4 (the `audit-results` structured comment).
 
+### Optional: delegate the roster walk to an audit-orchestrator sub-agent
+
+The Step 2 loop above walks the `selectedAudits` roster **serially in the
+host's own context**. When the roster carries more than one lens, `/deliver`
+Phase 4 MAY instead delegate the whole walk to a **single audit-orchestrator
+sub-agent** — one level-1 `Agent` call (`subagent_type: general-purpose`) — that:
+
+1. Receives the **already-selected** `selectedAudits` roster, the run's
+   `depth`, and the prepare envelope's substitution payload. It does **not**
+   re-run `selectAudits` and does **not** widen the roster — the roster is
+   fixed upstream by Step 1 (see the Constraints below).
+2. Fans the roster out as **parallel level-2 agents, one per lens** (nested
+   `Agent` dispatch — verified depth 2, announced max depth 5, per
+   [#2870](https://github.com/dsj1984/mandrel/issues/2870) and the
+   "Flat Story dispatch by design" note in
+   [`deliver-epic.md`](deliver-epic.md)). Each level-2 agent executes exactly
+   one lens's workflow procedure at the run's `depth`, isolated from the main
+   context.
+3. Collects the per-lens findings, **aggregates them by severity** (🔴 / 🟠 /
+   🟡 / 🟢), and returns **only the aggregated audit-results** to the host —
+   the per-lens reasoning transcripts stay in the level-2 leaves and never
+   enter the main context. The host resumes at Step 3 (remediation routing)
+   with the aggregate exactly as if it had walked the roster itself, and Step 4
+   posts the identical `audit-results` comment.
+
+This delegation is a **cross-lens parallelization of the roster walk only**. It
+is orthogonal to — and MUST NOT be conflated with — the *per-lens execution
+strategy*:
+
+- **The per-lens cost/precision gate is preserved.** Each level-2 lens agent
+  still runs its own lens at whatever strategy that lens's cost/precision gate
+  dictates (`docs/roadmap.md` § "The per-lens cost / precision gate"): an
+  orchestrated lens fans its own analysis dimensions out under
+  `runAuditOrchestration`, a sequential-only lens runs turn-by-turn. Fanning
+  the *roster* out in parallel changes **which context** runs a lens, never
+  **how** that lens runs internally, so no per-lens cost gate is bypassed or
+  altered.
+- **The "do not batch-convert the sequential-only lenses" rule is preserved.**
+  The seven sequential-only lenses (`audit-dependencies`, `audit-devops`,
+  `audit-sre`, `audit-privacy`, `audit-seo`, `audit-ux-ui`,
+  `audit-lighthouse`) stay sequential **inside** their level-2 agent.
+  Dispatching them as parallel level-2 agents is **not** a batch-conversion of
+  their internal execution — a sequential-only lens remains sequential-only
+  (`docs/roadmap.md` § "Remaining orchestration surface"). Generalizing any of
+  those lenses to orchestrated is still a separate, gated, lens-by-lens
+  decision that this roster fan-out neither performs nor pre-empts.
+
+Weigh the whole subtree's token cost before delegating
+([`.agents/instructions.md` § 4](../../instructions.md) — cost compounds with
+nesting depth): the level-1 orchestrator plus one level-2 agent per lens
+re-pays the always-loaded context at each level. For a single-lens roster the
+serial host walk is cheaper; the delegation pays off when several lenses fan
+out at once. Either path produces the identical Step 4 `audit-results` comment,
+so the delegation is a performance/context-isolation choice, never a change to
+what gets audited or reported.
+
 If a future Story lifts per-lens execution out of the host-LLM walk
 into the CLI itself, the runner will populate `findings[]` and this
 section will collapse to a "read the structured findings off the
@@ -202,9 +263,32 @@ envelope" bullet. Until then, the host LLM is the gate.
 ## Step 3 — Remediation Routing (host LLM, no automated loop)
 
 There is **no runtime auto-fix function** at this phase. The host LLM is
-the executor: it inspects the aggregated 🔴 / 🟠 findings from Step 2 and
-either applies a focused fix on the Epic branch or escalates the finding
-to the operator via the `audit-results` comment in Step 4.
+the executor: it inspects the aggregated findings from Step 2 and either
+applies a focused fix on the Epic branch or escalates the finding to the
+operator via the `audit-results` comment in Step 4.
+
+### Resolve the remediation threshold (Story #4399)
+
+Read `delivery.epicAudit.autoFixSeverity` from the resolved `.agentrc.json`
+(default **`medium`**; the resolver in
+[`config/runners.js`](../../scripts/lib/config/runners.js) supplies the
+default when the key is absent). The threshold governs **which severities
+route into on-branch remediation** — it never changes the halting rule
+(a surviving 🔴 still stops Phase 4 in Step 4) or the escalation classes:
+
+- **`medium`** (default) — route 🔴 Critical, 🟠 High, **and 🟡 Medium**
+  findings into remediation. 🟢 Suggestions still graduate to follow-up
+  issues (never auto-fixed).
+- **`high`** — route only 🔴 Critical and 🟠 High findings into
+  remediation, reproducing the pre-4399 behavior exactly. 🟡 Medium and
+  🟢 Suggestion findings graduate to follow-up issues untouched.
+
+This is a hard cutover per
+[`rules/git-conventions.md`](../../rules/git-conventions.md) § Contract
+Cutovers — there is no back-compat flag; `high` is opt-in to the old
+routing, `medium` is the shipped default.
+
+### 🔴 / 🟠 findings — per-finding ceremony (unchanged)
 
 For each 🔴 / 🟠 finding, the host LLM MUST decide between two paths:
 
@@ -226,7 +310,7 @@ For each 🔴 / 🟠 finding, the host LLM MUST decide between two paths:
      (path 2) and record the attempt context in Step 4.
 2. **Escalate to the operator via Step 4.** Required when the finding
    falls into any of the following classes:
-   - `spec-deviation` — the change diverges from the PRD/Tech Spec.
+   - `spec-deviation` — the change diverges from the Epic/Tech Spec.
    - `secrets` — credentials, tokens, or PII surfaced in the diff.
    - `test-deletion` — coverage was removed without an explicit
      decision in the spec.
@@ -236,10 +320,42 @@ For each 🔴 / 🟠 finding, the host LLM MUST decide between two paths:
      attempt (the equivalent of the prior loop's
      `validation-regression` / `thrash-detected` exits).
 
+### 🟡 Medium findings — batched per-lens ceremony (only when `autoFixSeverity: medium`)
+
+When the threshold is `medium`, remediate the fixable 🟡 Medium findings
+in a **batch keyed by owning lens** rather than the per-finding ceremony
+above — the per-finding rescan is disproportionate for the volume of
+Mediums a wide change set surfaces:
+
+1. Group the fixable Mediums by their owning lens. A Medium is fixable on
+   the same terms as a 🟠 (clean remediation, no escalation class); a
+   Medium that falls into any escalation class (`spec-deviation`,
+   `secrets`, `test-deletion`, `scope-exceeded`) routes to Step 4
+   untouched exactly like a 🟠.
+2. For each lens, call `assert-branch.js --expected [EPIC_BRANCH]`, stage
+   explicit paths only, and make **one focused conventional commit per
+   lens** carrying all that lens's Medium fixes
+   (`fix(<scope>): <description> (audit findings batch)`).
+3. The bounded-attempt semantics extend to the batch: each finding in the
+   batch gets **at most one** attempt, and a lens's batch commit that
+   would exceed `delivery.epicAudit.maxFixScopeFiles` routes that lens's
+   findings to escalation (`scope-exceeded`) instead of committing.
+4. After **all** lens batches are committed, run a **single** validation
+   pass (`npm run lint` plus the relevant `npm test` slice) and a
+   **single** rescan of the **overlapping lenses only** (re-invoke
+   `run-audit-suite.js` for the lenses whose findings were touched).
+   Confirm the batched findings are gone. If a batched finding survives
+   the rescan or validation regresses, route the surviving finding(s) to
+   escalation and record the attempt context in Step 4.
+
+Record every remediated finding (🟠 or 🟡) in the **"Fixed on-branch"**
+section of the `audit-results` comment (Step 4) so it does not graduate to
+a follow-up issue.
+
 Do not invent a programmatic retry budget. The host LLM applies *at most
-one* focused-fix attempt per finding before escalating; any further
-remediation is the operator's call after reading the `audit-results`
-comment.
+one* focused-fix attempt per finding (or per batched finding) before
+escalating; any further remediation is the operator's call after reading
+the `audit-results` comment.
 
 Escalated findings flow through to Step 4 unchanged with their
 escalation reason recorded — the audit pass does not delete them, it
@@ -271,18 +387,46 @@ The body MUST include:
 - a link to the per-lens artifact files under `<auditOutputDir>` so the
   operator (and downstream retro) can re-read the full prompt body.
 
+### The `## Fixed on-branch` section (Story #4399)
+
+Findings that Step 3 remediated on the Epic branch MUST be rendered under a
+dedicated **`## Fixed on-branch`** heading, **not** under their lens's
+open-findings group. This is the contract seam that keeps remediated
+findings from spawning ghost follow-up issues: the
+[`audit-results` graduator](../../scripts/lib/feedback-loop/audit-results-graduator.js)
+skips every entry inside this section (both because a fixed entry is
+rendered with a **✅ prefix** — so it carries no leading severity emoji the
+parser would match — and because the parser has an explicit
+Fixed-on-branch section guard).
+
+Render each fixed finding as a `✅`-prefixed line naming its original
+severity, the file path in backticks, and the remediating commit SHA, e.g.:
+
+```markdown
+## Fixed on-branch
+
+- ✅ 🟡 Medium (audit-clean-code): `.agents/scripts/foo.js` — dead branch removed (a1b2c3d)
+- ✅ 🟠 High (audit-security): `src/api/users.js` — ownership check added (d4e5f6a)
+```
+
+Open (escalated / unfixed) findings stay under their lens heading with
+their leading severity emoji so the graduator still files them.
+
 ### Severity gating
 
-- **Any 🔴 Critical Blocker** → STOP. Relay to the operator and let
-  `/deliver` Phase 4 record a manual intervention.
-- **Only 🟠/🟡/🟢** → log as non-blocking and return to `/deliver`
-  Phase 5 (code-review).
+The gate is unchanged by the threshold — it keys off the **surviving**
+(unfixed) findings after Step 3:
+
+- **Any surviving 🔴 Critical Blocker** → STOP. Relay to the operator and
+  let `/deliver` Phase 4 record a manual intervention.
+- **Only 🟠/🟡/🟢 surviving** → log as non-blocking and return to
+  `/deliver` Phase 5 (code-review).
 
 ## Constraints
 
 - **Always** diff against `[BASE_BRANCH]`, not against individual Story
   branches. The audit examines the cumulative effect of the entire Epic.
-- **Always** read the PRD and Tech Spec before walking lenses. Findings
+- **Always** read the Epic body and Tech Spec before walking lenses. Findings
   without spec context are noise.
 - **Always** cap focused fixes at one attempt per finding (Step 3). The
   host LLM is the executor; there is no shared retry/anti-thrash module

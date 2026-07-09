@@ -2,8 +2,8 @@
 description:
   Unified planning entry point. Routes a seed idea (via scope triage) or an
   existing Epic ID to the right planning path — the full Epic pipeline
-  (PRD, Tech Spec, Acceptance Spec, decomposition) or the standalone-Story
-  authoring path — and absorbs every planning flag.
+  (sectioned Epic body: Tech Spec + Acceptance Table, then decomposition)
+  or the standalone-Story authoring path — and absorbs every planning flag.
 ---
 
 # /plan [Epic ID] | --idea "<seed>" | --from-notes <path>
@@ -14,8 +14,8 @@ Router. `/plan` owns argument parsing and path selection only — all phase
 content lives in the two path helpers:
 
 - [`helpers/plan-epic.md`](helpers/plan-epic.md) — the full Epic planning
-  pipeline (PRD, Tech Spec, Acceptance Spec, work breakdown, healthcheck,
-  handoff).
+  pipeline (Tech Spec + Acceptance Table folded into the Epic body, work
+  breakdown, healthcheck, handoff).
 - [`helpers/plan-story.md`](helpers/plan-story.md) — the standalone-Story
   authoring path (context envelope → host-LLM draft → HITL → issue create).
 
@@ -93,10 +93,10 @@ without waiting for operator input:
    forces a review (`planningRisk.requiresReview === true`, or the operator
    also passed `--force-review`),
    [`helpers/plan-epic.md`](helpers/plan-epic.md) Phase 7 STOPs for operator
-   approval of the PRD / Tech Spec / Acceptance Spec before decomposition.
-   Under `--yes` this review auto-proceeds straight to Phase 8 — the three
-   context tickets stay **open** through delivery exactly as on the low-risk
-   auto-proceed path.
+   approval of the updated Epic body (its Tech Spec sections and
+   `## Acceptance Table`) before decomposition.
+   Under `--yes` this review auto-proceeds straight to Phase 8 exactly as
+   on the low-risk auto-proceed path.
 
 **Composition.** `--yes` is orthogonal to the other planning flags and
 composes cleanly:
@@ -123,6 +123,30 @@ consolidation/critic diffs (consolidated/critic output applied) — since they
 are operator-input waits, not validators. The two *named* HITL STOP gates the
 Story tracks (gate #1, gate #2) are the load-bearing pair; these additional
 waits are auto-proceeded for the same headless reason.
+
+## Boot sweep
+
+Before anything else — ahead of the first-run preflight — run the **protected
+boot sweep** so `/plan` opens against a tidy local checkout instead of one
+still carrying the merged refs of the last delivered Epic or Story:
+
+```bash
+node .agents/scripts/boot-sweep.js \
+  --include 'story-*' --include 'epic/*' \
+  --include 'feat/*' --include 'fix/*' --include 'chore/*'
+```
+
+This is the **safe subset** of the `/git-cleanup` phases: it fast-forwards the
+base branch (`main`), prunes stale remote-tracking refs, and reaps every local
+branch whose PR is **merged** and whose HEAD matches the merged `headRefOid`.
+It **never** touches the stash stack, and its `evaluateProtection` partition
+skips (never reaps) any candidate with unpushed work, a dirty worktree, or a
+still-open parent Story ticket — so it is safe to run unattended at the top of
+a planning session. The sweep is **silent on a no-op**: with nothing to reap
+and `main` already current it prints a single summary line
+(`[boot-sweep] reaped 0 local + 0 remote; protected 0.`) and moves on. Its exit
+code is always `0` — a failed sweep is swallowed and reported in the summary,
+never allowed to fail the planning run.
 
 ## First-run preflight
 
@@ -169,18 +193,22 @@ stubbed docs, or an unready doctor verdict).
 1. **Parse args.** Exactly one of `<epicId>`, `--idea`, `--from-notes`, or
    `--body` must be present; anything else is a usage error naming the four
    forms. A `--body` invocation routes to the story path (no triage).
-2. **First-run preflight.** Run the preflight above. Skip when all signals
+2. **Boot sweep.** Run the protected boot sweep above
+   (`node .agents/scripts/boot-sweep.js …`) to fast-forward `main`, prune
+   stale remotes, and reap merged-PR branches. Silent on a no-op; never fails
+   the run.
+3. **First-run preflight.** Run the preflight above. Skip when all signals
    are clear (healthy project).
-3. **Triage (idea path only).** Run the
+4. **Triage (idea path only).** Run the
    [`core/scope-triage`](../skills/core/scope-triage/SKILL.md) skill on the
    seed. Record the verdict in chat (one line).
-4. **Delegate.** Read the selected path helper **in full** and execute it
+5. **Delegate.** Read the selected path helper **in full** and execute it
    from its entry phase, forwarding the absorbed flags (including `--yes`).
    The helper's phase numbering, HITL gates, and scripts are unchanged — this
    router adds no phase content. When `--yes` is present, the two HITL STOP
    gates auto-proceed per [Headless / non-interactive mode](#headless--non-interactive-mode---yes)
    above; every deterministic gate still runs.
-5. **Internal returns.** When a path helper would historically have handed
+6. **Internal returns.** When a path helper would historically have handed
    off to the other planning command, switch helpers in-place and continue;
    surface the switch to the operator as a one-line note.
 

@@ -23,7 +23,6 @@
  *   6. Flip the Story to `agent::executing`.
  *
  * What this script does NOT do (and why):
- *   - Skips `traceHierarchy` — no Epic → no PRD/Tech-Spec.
  *   - Skips `validateBlockers` against the body's `Blocked by:` markers —
  *     pre-flight is still the operator's responsibility, but the Epic-scope
  *     blocker chain doesn't fit.
@@ -36,7 +35,6 @@
  * @see .agents/workflows/helpers/single-story-deliver.md
  */
 
-import { spawnSync as defaultSpawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { parseSprintArgs } from './lib/cli-args.js';
@@ -51,6 +49,7 @@ import {
   branchExistsLocally,
   branchExistsViaTrackingRef,
   classifyBranchSeed,
+  seedStoryBranchRef,
 } from './lib/git-branch-lifecycle.js';
 import { getStoryBranch, gitSpawn, gitSync } from './lib/git-utils.js';
 import { Logger } from './lib/Logger.js';
@@ -67,11 +66,17 @@ import {
   upsertStructuredComment,
 } from './lib/orchestration/ticketing.js';
 import { createProvider } from './lib/provider-factory.js';
+import { buildProtectionCtx } from './lib/single-story-sweep/protection-ctx.js';
 // `sweepMergedStoryBranches` is imported dynamically below — its transitive
 // graph reaches `picomatch` (via `git-cleanup.js`). Loading it statically
 // would crash module resolution before `assertDepsInstalled()` can emit a
 // friendly "run npm install" message.
 import { WorktreeManager } from './lib/worktree-manager.js';
+
+// `makeGhRunner` moved to the shared `single-story-sweep/protection-ctx.js`
+// module (Story #4373) so the three boot callers build an identical
+// protection ctx. Re-exported here to preserve its existing import path.
+export { makeGhRunner } from './lib/single-story-sweep/protection-ctx.js';
 
 /**
  * Fail fast with a clear, actionable message when project deps are missing.
@@ -96,50 +101,6 @@ function assertDepsInstalled(projectRoot) {
 }
 
 const progress = Logger.createProgress('single-story-init', { stderr: true });
-
-/**
- * Build the synchronous `gh` runner the single-story sweep uses for its
- * candidate-protection checks. Exported for testing.
- *
- * Story #2990: the sweep protection-ctx ghRunner stays on raw
- * `spawnSync('gh', …)` (not the `lib/gh-exec.js` async facade) because
- * `executeCleanup` invokes the protection checks inside a synchronous
- * candidate-filter loop. The runner contract is the legacy
- * `(args, opts) => stdout string` shape; converting it to async would
- * ripple into the single-story-sweep planner, which is intentionally out
- * of scope for the callers-only provider migration.
- *
- * Story #4073: the `spawnImpl` seam injects the `spawnSync` boundary so the
- * runner's success/error handling can be unit-tested without a live `gh`
- * binary. It defaults to `child_process.spawnSync` (mirroring the
- * `spawnImpl` seam in `lib/gh-exec.js` and the `runner` seam in
- * `lib/bootstrap/gh-preflight.js`), so the production CLI path is unchanged.
- * The synchronous `spawnSync` shape is preserved deliberately — the
- * candidate-filter loop in `executeCleanup` is synchronous, so converting
- * this to the async `lib/gh-exec.js` facade would ripple into the
- * single-story-sweep planner.
- *
- * @param {string} cwd Repo root used as the default spawn cwd.
- * @param {typeof defaultSpawnSync} [spawnImpl] Injectable spawn boundary —
- *   defaults to `child_process.spawnSync`. Tests pass a fake to assert the
- *   error/exit-code handling without spawning a real child process.
- * @returns {(args: string[], opts?: { cwd?: string }) => string}
- */
-export function makeGhRunner(cwd, spawnImpl = defaultSpawnSync) {
-  return (args, opts) => {
-    const result = spawnImpl('gh', args, {
-      cwd: opts?.cwd ?? cwd,
-      encoding: 'utf-8',
-      shell: false,
-    });
-    if (result.status !== 0) {
-      throw new Error(
-        `gh ${args.join(' ')} exit ${result.status}: ${result.stderr ?? ''}`,
-      );
-    }
-    return result.stdout ?? '';
-  };
-}
 
 /**
  * Validate that the fetched ticket is a standalone Story this script can
@@ -222,12 +183,7 @@ export async function reapMergedStoryBranches({
         info: (m) => progress('CLEANUP', m),
         warn: (m) => progress('CLEANUP', `⚠️ ${m}`),
       },
-      protectionCtx: {
-        repoRoot: cwd,
-        gitSpawn,
-        ghRunner: makeGhRunner(cwd),
-        getTicket: (id) => provider.getTicket(id),
-      },
+      protectionCtx: buildProtectionCtx({ cwd, provider }),
       lockPath,
       lockTimeoutMs,
     });
@@ -376,36 +332,28 @@ export async function materializeBaseBranch({
  * @param {Function} opts.progress
  */
 export function seedStoryBranch({ cwd, storyBranch, baseBranch, progress }) {
-  const seedAction = decideStoryBranchSeed({
-    localHas: branchExistsLocally(storyBranch, cwd),
-    remoteHas: branchExistsViaTrackingRef(storyBranch, cwd),
+  // Standalone path: no concurrent creator to race, so create failures are
+  // fatal (`swallowCreateRace: false`) and a failed fetch throws. The
+  // seed-action switch shell is single-homed in `seedStoryBranchRef`
+  // (Story #4255); this caller only supplies its `baseRef`, its git seams
+  // bound to `cwd`, and its own log/error vocabulary.
+  seedStoryBranchRef({
+    storyBranch,
+    baseRef: baseBranch,
+    swallowCreateRace: false,
+    spawn: (args) => gitSpawn(cwd, ...args),
+    existsLocally: (b) => branchExistsLocally(b, cwd),
+    existsRemotely: (b) => branchExistsViaTrackingRef(b, cwd),
+    progress,
+    messages: {
+      reuse: (b) => `Reusing existing local story branch: ${b}`,
+      fetch: (b) => `Fetching remote story branch: ${b}`,
+      create: (b, ref) => `Creating story branch ref: ${b} from ${ref}`,
+      createError: (b, _ref, stderr) =>
+        `Failed to create story branch ${b}: ${stderr || '(no stderr)'}`,
+      fetchError: (b, stderr) => `Failed to fetch story branch ${b}: ${stderr}`,
+    },
   });
-  if (seedAction === 'fetch') {
-    progress('GIT', `Fetching remote story branch: ${storyBranch}`);
-    const r = gitSpawn(cwd, 'fetch', 'origin', `${storyBranch}:${storyBranch}`);
-    if (r.status !== 0) {
-      throw new Error(
-        `Failed to fetch story branch ${storyBranch}: ${r.stderr || '(no stderr)'}`,
-      );
-    }
-    return;
-  }
-  if (seedAction === 'create') {
-    progress(
-      'GIT',
-      `Creating story branch ref: ${storyBranch} from ${baseBranch}`,
-    );
-    const r = gitSpawn(cwd, 'branch', storyBranch, baseBranch);
-    if (r.status !== 0) {
-      throw new Error(
-        `Failed to create story branch ${storyBranch}: ${r.stderr || '(no stderr)'}`,
-      );
-    }
-    return;
-  }
-  // seedAction === 'reuse' — the local ref already exists. Do NOT run
-  // `git branch` here; re-creating an existing ref throws. Reuse it.
-  progress('GIT', `Reusing existing local story branch: ${storyBranch}`);
 }
 
 /**

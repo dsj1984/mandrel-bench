@@ -108,8 +108,9 @@ top-level keys are validation errors.
 | `taskSizing` | No | `object` | — | Story-sizing thresholds consumed by ticket-validator-sizing.js. Operator overrides shallow-merge with DEFAULT_TASK_SIZING defaults. Story #3760 collapsed the per-profile matrix and the parallel testSurface axis into a flat set of knobs; the sizingProfile enum was replaced by an optional body-level `wide` declaration that lifts the hardFiles rejection. Story #3874 cut over to one uniform relaxed profile sized for capability slices a frontier model delivers and self-verifies in one pass. |
 | `taskSizing.softFiles` | No | `integer` | — | File-count soft-warn threshold above which a typical-Story width finding fires (default 15). |
 | `taskSizing.hardFiles` | No | `integer` | — | File-count hard ceiling: a Story exceeding it is rejected unless it declares `wide` with a reason (default 30). |
-| `taskSizing.maxAcceptance` | No | `integer` | — | Hard ceiling on acceptance[] item count (default 14). |
-| `taskSizing.softAcceptanceCount` | No | `integer` | — | Soft-warn threshold on acceptance[] item count (default 10). |
+| `taskSizing.softAcceptanceCount` | No | `integer` | — | Soft-warn threshold on acceptance[] item count (default 10). Acceptance mass is advisory-only — there is no hard acceptance ceiling. |
+| `taskSizing.mergeCandidateMaxFiles` | No | `integer` | — | Under-size threshold (Story #4312): a Story with at most this many declared changes[] files, at most mergeCandidateMaxAcceptance acceptance items, and at least one depends_on edge to a sibling trips the advisory `merge-candidate` soft finding (default 3). |
+| `taskSizing.mergeCandidateMaxAcceptance` | No | `integer` | — | Under-size threshold (Story #4312): the acceptance[] item ceiling of the `merge-candidate` soft finding heuristic (default 4). |
 | `failOnSharedEditors` | No | `boolean` | — | — |
 | `requireExplicitCrossStoryDeps` | No | `boolean` | — | — |
 | `failOnRegistryConflicts` | No | `boolean` | — | — |
@@ -138,7 +139,7 @@ top-level keys are validation errors.
 | `worktreeIsolation` | No | `object` | — | Nested configuration block. |
 | `worktreeIsolation.enabled` | No | `boolean` | — | — |
 | `worktreeIsolation.root` | No | `string` | — | — |
-| `worktreeIsolation.nodeModulesStrategy` | No | `"per-worktree"` \| `"symlink"` \| `"pnpm-store"` | — | — |
+| `worktreeIsolation.nodeModulesStrategy` | No | `"per-worktree"` \| `"clone"` \| `"symlink"` \| `"pnpm-store"` | — | — |
 | `worktreeIsolation.primeFromPath` | No | `string` \| `null` | — | — |
 | `worktreeIsolation.allowSymlinkOnWindows` | No | `boolean` | — | — |
 | `worktreeIsolation.reapOnSuccess` | No | `boolean` | — | — |
@@ -274,12 +275,14 @@ top-level keys are validation errors.
 | `epicAudit` | No | `object` | — | Nested configuration block. |
 | `epicAudit.maxFixAttempts` | No | `integer` | — | Maximum auto-fix retry attempts per finding in /deliver Phase 4 (epic-audit). 0 disables auto-fix. Default 3. |
 | `epicAudit.maxFixScopeFiles` | No | `integer` | — | Maximum file count a single auto-fix may modify before escalating to agent::blocked. Default 5. |
+| `epicAudit.autoFixSeverity` | No | `"high"` \| `"medium"` | `"medium"` | Severity threshold for on-branch remediation in /deliver Phase 4 (epic-audit). `medium` (default) routes 🔴/🟠/🟡 findings into the host-LLM remediation loop (Mediums batched per lens: one commit per lens, a single validation + overlapping-lens rescan at the end) while 🟢 suggestions still graduate to follow-up issues; `high` reproduces the pre-4399 Critical/High-only routing. Hard cutover — no back-compat flag. |
 | `codeReview` | No | `object` | — | Nested configuration block. |
 | `codeReview.provider` | No | `"native"` \| `"codex"` \| `"security-review"` | `"native"` | Legacy single-adapter selection. ReviewProvider that produces the Finding[] consumed by runCodeReview(). Story #2833 registered `native` (in-process maintainability/lint); Story #2830 added `codex` (invokes `/codex:review` plugin); Story #2871 added `security-review` (shells out to `claude --print /security-review`). When `providers` (chain shape) is set this field is ignored with a warning. Selecting an adapter whose probe fails hard-fails at factory construction unless declared `optional: true` in the chain. |
 | `codeReview.providers[]` | No | `array<object>` | — | Multi-provider chain (Story #2871). When set and non-empty, takes precedence over the legacy `provider` field. The orchestrator iterates inline entries in declaration order and merges their Finding[] before posting one structured comment; manual-prompt entries (e.g. ultrareview) contribute a trailing 'Manual review suggestions' section. Each item has: name, scopes, optional, manualPrompt, when. |
 | `codeReview.providerConfig` | No | `object` | — | Optional escape hatch for adapter-specific configuration. No documented keys in Epic #2815; reserved so future adapters can be configured without another schema migration. |
 | `codeReview.maxFixAttempts` | No | `integer` | — | Maximum auto-fix retry attempts per finding in /deliver Phase 5 (code-review). 0 disables auto-fix. Default 3. |
 | `codeReview.maxFixScopeFiles` | No | `integer` | — | Maximum file count a single auto-fix may modify before escalating to agent::blocked. Default 5. |
+| `codeReview.autoFixSeverity` | No | `"high"` \| `"medium"` | `"medium"` | Severity threshold for on-branch remediation in /deliver Phase 5 (code-review). `medium` (default) routes 🔴/🟠/🟡 findings into the host-LLM focused-fix routing (Mediums batched per lens: one commit per lens, a single validation + rescan at the end) while 🟢 suggestions still graduate to follow-up issues; `high` reproduces the pre-4399 Critical/High-only routing. Hard cutover — no back-compat flag. |
 | `retro` | No | `object` | — | Story #3042 (Epic #3019). Operator-tunable retro behaviour. Currently exposes `perfThresholds`, the gates the retro perf-signals classifier uses to decide which signals to surface in the `## Performance Signals` / `## Recommended Follow-Ons` retro sections. |
 | `retro.perfThresholds` | No | `object` | — | Gates for `classifyPerfSignals` (lib/orchestration/retro-perf-heuristics.js). Defaults are 0.6 / 0.4 / 2. |
 | `retro.perfThresholds.utilisation` | No | `number` | — | Per-wave utilisation threshold. Waves whose `utilisation` is strictly below this value emit a `low-utilisation` signal. Default 0.6. |
@@ -291,6 +294,12 @@ top-level keys are validation errors.
 | `acceptanceEval.maxRounds` | No | `integer` | — | Maximum number of redraft rounds before escalation. Default 2; clamped into [1, hard ceiling] by lib/config/acceptance-eval.js so the cap can never be disabled (maxRounds: 0 clamps up to 1). |
 | `ci` | No | `object` | — | Nested configuration block. |
 | `ci.skipForStoryPushes` | No | `boolean` | — | Story #2899 (Epic #2880, F13). When true (default), pre-push tooling appends a '[skip ci]' trailer to Story-branch commit subjects so intermediate pushes do not stampede the CI fleet. The Epic-branch merge commit produced by story-close.js never carries the marker, regardless of this flag. |
+| `ci.earlyPr` | No | `boolean` | — | Story #4356 (Epic #4355). When true (default), /deliver opens the Epic PR early — before every Story merges — so CI starts warming while later waves run. Set false to defer PR creation until the Epic branch is complete. |
+| `ci.watch` | No | `object` | — | Story #4356 (Epic #4355). Poll-loop tuning for the merge/CI watch. pollIntervalMs is the cadence between check probes; maxPolls caps total probes before the watcher gives up; maxResumes caps how many times the watcher may resume after a transient stall. |
+| `ci.watch.pollIntervalMs` | No | `integer` | — | — |
+| `ci.watch.maxPolls` | No | `integer` | — | — |
+| `ci.watch.maxResumes` | No | `integer` | — | — |
+| `ci.autoMerge` | No | `"trust-ci"` \| `"strict"` | — | Story #4356 (Epic #4355). Merge posture. 'trust-ci' (default) merges once required checks pass; 'strict' additionally requires a clean review gate. |
 | `preflight` | No | `object` | — | Story #2899 (Epic #2880, F13). Thresholds consumed by `.agents/scripts/epic-deliver-preflight.js`. When any value is exceeded the preflight envelope flags a breach and /deliver Phase 1 surfaces it via agent::blocked. |
 | `preflight.maxStories` | No | `integer` | — | — |
 | `preflight.maxWaves` | No | `integer` | — | — |
@@ -448,7 +457,8 @@ suppress a channel entirely, set its array to `[]`.
 ### `planning.context`
 
 Caps the size of `--emit-context` JSON payloads emitted during `/plan`
-so a runaway PRD / Tech Spec can't blow the planning agent's context budget.
+so a runaway Epic body (with its folded Tech Spec sections) can't blow the
+planning agent's context budget.
 
 | Field         | Required | Default  | Purpose                                                                                       |
 | ------------- | -------- | -------- | --------------------------------------------------------------------------------------------- |
@@ -526,7 +536,7 @@ checkout's HEAD.
 | ----------------------- | --------------- | ---------------- | ----------------------------------------------------------- |
 | `enabled`               | No              | `false`          | Master switch.                                              |
 | `root`                  | Conditional     | `.worktrees`     | Required when `enabled: true`. Worktree parent directory.    |
-| `nodeModulesStrategy`   | No              | `per-worktree`   | One of `per-worktree`, `symlink`, `pnpm-store`.              |
+| `nodeModulesStrategy`   | No              | `clone` (darwin/linux); `per-worktree` (Windows) | One of `per-worktree`, `clone`, `symlink`, `pnpm-store`. `clone` copy-on-write (reflink/clonefile) clones the donor's `node_modules` and skips the per-tree install on a byte-exact lockfile match, falling back to `per-worktree` on any failure. |
 | `primeFromPath`         | No              | `null`           | Optional source path used to prime `node_modules`.            |
 | `allowSymlinkOnWindows` | No              | `false`          | Permit symlink strategy on Windows (requires admin/dev mode). |
 | `reapOnSuccess`         | No              | `true`           | Reap the worktree after a successful Story close.            |
@@ -626,6 +636,12 @@ No tier-specific knobs beyond the common shape.
 | Field     | Required | Default | Purpose                                                                                  |
 | --------- | -------- | ------- | ---------------------------------------------------------------------------------------- |
 | `bundles` | No       | `[]`    | Array of `{ name, path, limit }` entries (e.g. `{ "name": "app", "path": "dist/app.js", "limit": "100kB" }`). |
+
+Unlike `crap` / `maintainability`, this gate has no `refreshTag` config
+field — there is no scorer to regenerate the baseline from source, so the
+one-shot refresh/acknowledge mechanism is an env var, not a config knob.
+See [`.agents/docs/quality-gates.md` § Bundle-size ratchet](quality-gates.md#bundle-size-ratchet--one-shot-refreshacknowledge-story-151)
+for `BUNDLE_SIZE_REFRESH=1` usage.
 
 #### `delivery.quality.formatAutofix`
 
@@ -791,6 +807,7 @@ the lint ratchet, and the CRAP/MI gates.
 | `baselines/lint.json`             | `lint-baseline.js`                   | `node .agents/scripts/lint-baseline.js capture`                       |
 | `baselines/crap.json`             | `update-crap-baseline.js`            | `npm run crap:update`                                                   |
 | `baselines/maintainability.json`  | `update-maintainability-baseline.js` | `npm run maintainability:update`                                        |
+| `baselines/bundle-size.json`      | consumer's own build/measure step    | Commit the build's measured sizes; for an intentional growth, run the check with `BUNDLE_SIZE_REFRESH=1` (see [Bundle-size ratchet](quality-gates.md#bundle-size-ratchet--one-shot-refreshacknowledge-story-151)) |
 
 These files are the contract. They are read by every gate (Story close, push
 hook, CI) and are regenerated only via tagged `baseline-refresh:` commits

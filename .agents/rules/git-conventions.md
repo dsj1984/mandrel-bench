@@ -107,6 +107,63 @@ rejected by `pre-push` hooks):
 4.  **Never bypass hooks**: Do not use `--no-verify`, `--no-gpg-sign`, or
     other hook-skipping flags unless the operator explicitly authorizes it.
     If a hook fails, investigate the underlying cause.
+    - **Known false-negative signature**: a `pre-push`/`pre-commit` failure
+      whose message is a _zero-match_ error (e.g. Biome's
+      `No files were processed in the specified paths`) rather than a
+      reported violation, combined with an agent CWD under a harness-managed
+      worktree path a consumer's lint config ignores (e.g.
+      `.claude/worktrees/<name>/` against a `files.includes` glob like
+      `"!**/.claude"`), is a **consumer-tooling gap**, not a real lint
+      failure. It does not authorize `--no-verify`. See
+      [`worktree-lifecycle.md` § Harness-worktree ⇄ consumer-lint-ignore interaction](../workflows/helpers/worktree-lifecycle.md#harness-worktree-consumer-lint-ignore-interaction-story-152)
+      for the recognition signature and the sanctioned consumer-side fix
+      (`--no-errors-on-unmatched` or equivalent) before escalating via
+      `agent::blocked`.
+
+## Local checkout hygiene
+
+**Invariant: the delivering flow owns tidying the local checkout — reaping its
+own merged refs and fast-forwarding the base branch. `/git-cleanup` is a
+recovery tool, not a routine chore.**
+
+Every flow that lands work — `/deliver` (Epic and standalone-Story paths),
+`/git-deliver` — is responsible for leaving the local checkout tidy without
+operator intervention:
+
+- **Fast-forwarding the base branch is owned by the flow.** The standalone
+  multi-Story path fast-forwards `main` itself in its summary phase (via
+  `git-cleanup.js --fast-forward-main --execute --yes`); the Epic path
+  fast-forwards `epic/<id>` / `main` on its merge-and-reap beat. No workflow
+  ends by telling the operator to "run `/git-cleanup` afterwards to catch up".
+- **Reaping merged local refs is owned by the flow's next boot.** `/plan` and
+  `/git-deliver` open with a **protected boot sweep**
+  (`boot-sweep.js`) that fast-forwards `main`, prunes stale remote-tracking
+  refs, and reaps every local branch whose PR is already merged — skipping any
+  candidate with unpushed work, a dirty worktree, or a still-open parent
+  ticket. A branch a flow leaves behind (e.g. a `/git-deliver` feature branch
+  whose PR merges out of band) is therefore reaped automatically at the next
+  workflow boot, not left for the operator to sweep by hand. `boot-sweep.js`
+  defaults its `--include` glob to `story-*` — a bare invocation only sweeps
+  Story branches; `/plan` and `/git-deliver` widen the scope to their own
+  branch namespaces (`epic/*`, `feat/*`, `fix/*`, `chore/*`, `docs/*`,
+  `refactor/*`) by passing `--include` explicitly at their boot call site.
+  A branch the planner detects only via the weaker content-equivalence
+  signal (`detectedBy: 'content-merged'`, Story #4395's
+  `git merge-tree --write-tree` probe — content already landed in the base
+  branch by another route, such as a squash-merged Epic PR, with no merged
+  PR or git ancestry of its own) is **never** reaped by the boot sweep: it
+  is report-only, surfaced under `contentMerged` in the result envelope and
+  a routing hint in the summary line (Story #4396), so the operator can
+  send it to `/git-cleanup` for a confirmed, eyeballed reap.
+- **`/git-cleanup` is recovery, not routine.** Run it by hand only to recover
+  an unusual state the automated hygiene does not cover — triaging stashes,
+  reaping across non-standard branch namespaces, or `--remote` pruning after a
+  force-push diverged a tip. It is **not** the expected way to keep `main`
+  current or to clear merged branches after a normal delivery; the delivering
+  flows already own that. If you find yourself reaching for `/git-cleanup`
+  after every routine `/deliver` or `/git-deliver` run, that is a signal the
+  owning flow's hygiene step regressed — fix the flow, do not codify the manual
+  sweep.
 
 ## Meta Labels (Retrospective Signal Routing)
 

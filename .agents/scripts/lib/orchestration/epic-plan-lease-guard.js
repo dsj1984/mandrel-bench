@@ -28,9 +28,10 @@
  *                                operator passed `--force` (a deliberate
  *                                re-decompose that closes the old tree).
  *
- * The PRD / Tech Spec find-or-create idempotency already lives in
- * `phases/plan-epic.js` (keyed on `epic.linkedIssues`); these guards add the
- * cross-run mutual exclusion and the child-duplication refusal around it.
+ * The spec-persist idempotency already lives in `phases/plan-epic.js`
+ * (keyed on the Epic body's managed planning sections); these guards add
+ * the cross-run mutual exclusion and the child-duplication refusal
+ * around it.
  */
 
 import { getGitHub } from '../config/github.js';
@@ -341,11 +342,18 @@ export async function assertNoOpenPlanChildren({
   const openChildren = (children ?? []).filter((t) => {
     const labels = Array.isArray(t.labels) ? t.labels : [];
     const isOpen = t.state === undefined || t.state === 'open';
-    // Any open typed plan ticket counts — `type::story` plus pre-v4
-    // `type::feature` leftovers. The prefix check is legacy-data
-    // detection, not compat support: the guard only refuses, it never
-    // processes the legacy tier. Context tickets (`context::*`) are
-    // untouched.
+    // Legacy context spec tickets (the pre-#4324 Tech Spec / Acceptance
+    // Spec artifacts) carry a `context::*` label. Historical Epics keep
+    // them (forward-only cutover, no backfill), so they are still
+    // excluded here: they are reference artifacts, not plan children.
+    const isContext = labels.some(
+      (l) => typeof l === 'string' && l.startsWith('context::'),
+    );
+    if (isContext) return false;
+    // Any remaining open typed plan ticket counts — `type::story` plus pre-v4
+    // `type::feature` leftovers. The prefix check is legacy-data detection,
+    // not compat support: the guard only refuses, it never processes the
+    // legacy tier.
     return (
       isOpen &&
       labels.some((l) => typeof l === 'string' && l.startsWith('type::'))

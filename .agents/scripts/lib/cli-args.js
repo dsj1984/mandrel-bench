@@ -86,6 +86,8 @@ export function parseSprintArgs(args = process.argv) {
       process.env.AGENT_WORKTREE_ROOT ||
       null,
     recutOf: parseTicketId(values['recut-of']),
+    // Story #4253: pre-resolved Epic linkage threaded by the /deliver
+    // fan-out so `story-init.js` can skip the per-Story `getEpic` round-trip.
     resume: values.resume ?? false,
     restart: values.restart ?? false,
     noEvidence: values['no-evidence'] ?? false,

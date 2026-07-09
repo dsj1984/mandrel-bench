@@ -24,9 +24,14 @@
  *   4. Otherwise, invoke `runFinalizeFn`. The production default
  *      (`composeBusOwnedFinalize`) chains
  *        a. `openOrLocatePr({ epicId, headBranch, baseBranch })`
- *        b. `closePlanningTickets({ epicId, provider })`
+ *        b. `markPrReady({ pr })` when `delivery.ci.earlyPr` is on
+ *           (Story #4359) — the wave-1 draft is flipped ready-for-review;
+ *           skipped when `earlyPr` is off (the PR was opened here, never a
+ *           draft).
  *        c. `postHandoffComment({ epicId, prNumber, prUrl, provider })`
- *      and returns `{ prNumber, prUrl, planningClose, handoff }`.
+ *      and returns `{ prNumber, prUrl, handoff }`. (Story #4324 retired
+ *      the `closePlanningTickets` sweep with the context-ticket classes —
+ *      there are no planning tickets to close.)
  *   5. Emit `pr.created` then `epic.finalize.end`.
  *
  * Why the Finalizer does NOT emit `epic.merge.ready` (Story #3367):
@@ -59,40 +64,54 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { getCiDelivery } from '../../../config/ci.js';
 import {
   graduateAuditResults as defaultGraduateAuditResults,
   isAutoFileEnabled as isAuditResultsAutoFileEnabled,
 } from '../../../feedback-loop/audit-results-graduator.js';
 import { graduateFindings as defaultGraduateFindings } from '../../../feedback-loop/code-review-graduator.js';
 import { parsePrNumberFromUrl } from '../../../github-url.js';
-import { closePlanningTickets as defaultClosePlanningTickets } from '../../finalize/close-planning-tickets.js';
-import { openOrLocatePr as defaultOpenOrLocatePr } from '../../finalize/open-or-locate-pr.js';
+import {
+  markPrReady as defaultMarkPrReady,
+  openOrLocatePr as defaultOpenOrLocatePr,
+} from '../../finalize/open-or-locate-pr.js';
 import { postHandoffComment as defaultPostHandoffComment } from '../../finalize/post-handoff-comment.js';
 
 /**
- * Build the production default `runFinalizeFn` that composes the three
+ * Build the production default `runFinalizeFn` that composes the
  * bus-owned finalize helpers. Exported as a factory so the listener can
  * inject the provider (which the default needs but tests inject by
  * supplying their own `runFinalizeFn` outright).
  *
- * Returns `{ prNumber, prUrl, planningClose, handoff }` on success, or
+ * Returns `{ prNumber, prUrl, handoff }` on success, or
  * `{ blocker: { reason, detail } }` when a step fails with an
  * unrecoverable error that should keep the Epic at `agent::blocked`.
  *
+ * Story #4359 (Epic #4355) — early-PR draft mode. When `earlyPr` is on
+ * (the default resolved via `getCiDelivery`), the Epic PR already exists
+ * as a draft (opened at wave 1). Finalize then **locates** it (the
+ * `openOrLocatePr` probe short-circuits to `created: false`) and flips it
+ * ready-for-review via `markPrReady` rather than opening the draft as a
+ * `--draft`. When `earlyPr` is off, finalize opens the PR here with no
+ * draft — the pre-Story close-time timing. In both modes the title/body
+ * contract is identical and `markPrReady` is a no-op on an already-ready
+ * PR, so replay stays idempotent.
+ *
  * @param {{
  *   provider?: object|null,
+ *   earlyPr?: boolean,
  *   openOrLocatePrFn?: typeof defaultOpenOrLocatePr,
- *   closePlanningTicketsFn?: typeof defaultClosePlanningTickets,
+ *   markPrReadyFn?: typeof defaultMarkPrReady,
  *   postHandoffCommentFn?: typeof defaultPostHandoffComment,
  * }} deps
  */
 export function composeBusOwnedFinalize(deps = {}) {
   const openOrLocatePrFn = deps.openOrLocatePrFn ?? defaultOpenOrLocatePr;
-  const closePlanningTicketsFn =
-    deps.closePlanningTicketsFn ?? defaultClosePlanningTickets;
+  const markPrReadyFn = deps.markPrReadyFn ?? defaultMarkPrReady;
   const postHandoffCommentFn =
     deps.postHandoffCommentFn ?? defaultPostHandoffComment;
   const provider = deps.provider ?? null;
+  const earlyPr = deps.earlyPr !== false;
 
   return async function runBusOwnedFinalize({ epicId, cwd } = {}) {
     if (!Number.isInteger(epicId) || epicId < 1) {
@@ -132,28 +151,28 @@ export function composeBusOwnedFinalize(deps = {}) {
       };
     }
 
-    // Planning-ticket close + handoff comment require a provider.
-    // The lifecycle-emit CLI may construct the Finalizer without one;
-    // in that case both steps short-circuit with a 'skipped' marker
-    // (the run itself still succeeds — the PR is open and the bus can
-    // arm auto-merge).
-    let planningClose = null;
-    if (provider) {
+    // Story #4359: when earlyPr is on, the located PR is the wave-1 draft —
+    // flip it ready-for-review. `gh pr ready` on an already-ready PR is a
+    // no-op, so a replay (or an earlyPr-off PR that was never a draft) is
+    // safe. A failure here is a hard blocker: leaving the PR a draft would
+    // silently park the merge gate.
+    if (earlyPr) {
       try {
-        planningClose = await closePlanningTicketsFn({
-          epicId,
-          provider,
-        });
+        await markPrReadyFn({ pr: openResult.url, cwd });
       } catch (err) {
         return {
           blocker: {
-            reason: 'close-planning-tickets-failed',
+            reason: 'mark-pr-ready-failed',
             detail: err?.message ?? String(err),
           },
         };
       }
     }
 
+    // The handoff comment requires a provider. The lifecycle-emit CLI
+    // may construct the Finalizer without one; in that case the step
+    // short-circuits (the run itself still succeeds — the PR is open and
+    // the bus can arm auto-merge).
     let handoff = null;
     if (provider) {
       try {
@@ -180,7 +199,6 @@ export function composeBusOwnedFinalize(deps = {}) {
       prNumber: openResult.prNumber,
       prUrl: openResult.url,
       created: openResult.created,
-      planningClose,
       handoff,
     };
   };
@@ -252,8 +270,8 @@ export class Finalizer {
    * @param {Function} [opts.ghPrListHeadFn] override of the
    *   idempotency probe.
    * @param {object} [opts.provider] Ticketing provider forwarded to
-   *   the default `runFinalizeFn` (for `closePlanningTickets` /
-   *   `postHandoffComment`) and to the graduators.
+   *   the default `runFinalizeFn` (for `postHandoffComment`) and to the
+   *   graduators.
    * @param {object} [opts.config] Resolved agent config; forwarded to
    *   the graduators.
    * @param {{owner:string,repo:string}} [opts.currentRepo]
@@ -278,16 +296,19 @@ export class Finalizer {
     this.cwd = opts.cwd ?? process.cwd();
     this.fullScope = opts.fullScope === true;
     this.provider = opts.provider ?? null;
+    // Story #4359: gate the finalize PR-open/ready branch on
+    // `delivery.ci.earlyPr` (default true) resolved via getCiDelivery.
+    // On → the wave-1 draft is located and marked ready; off → the PR is
+    // opened here at close time (pre-Story timing).
+    const earlyPr = getCiDelivery(opts.config ?? null).earlyPr;
     this.runFinalizeFn =
       opts.runFinalizeFn ??
-      composeBusOwnedFinalize({ provider: this.provider });
+      composeBusOwnedFinalize({ provider: this.provider, earlyPr });
     this.ghPrListHeadFn = opts.ghPrListHeadFn ?? ghPrListHead;
     // ultrareview bug_007: the existing-PR short-circuit must run the
-    // planning-ticket close and the handoff-comment upsert (both
-    // idempotent) so crash-recovery replays don't skip them. Stored as
-    // instance overrides so tests can swap them with no-op stubs.
-    this.closePlanningTicketsFn =
-      opts.closePlanningTicketsFn ?? defaultClosePlanningTickets;
+    // handoff-comment upsert (idempotent) so crash-recovery replays
+    // don't skip it. Stored as an instance override so tests can swap
+    // it with a no-op stub.
     this.postHandoffCommentFn =
       opts.postHandoffCommentFn ?? defaultPostHandoffComment;
     this.config = opts.config ?? null;
@@ -375,24 +396,11 @@ export class Finalizer {
         );
         const prNumber = parsePrNumberFromUrl(existingUrl);
         // ultrareview bug_007: even on the short-circuit path we MUST
-        // run the planning-ticket close and the handoff-comment upsert.
-        // Both helpers are idempotent — closePlanningTickets counts
-        // already-closed tickets under `alreadyClosed`, postHandoffComment
-        // edits an existing marker comment in place. Without these calls,
-        // a crash-recovery replay against an already-open PR leaves the
-        // three planning context tickets open and never posts the
-        // handoff comment, even though epic.merge.ready is still emitted.
-        try {
-          await this.closePlanningTicketsFn({
-            epicId: this.epicId,
-            provider: this.provider,
-            cwd: this.cwd,
-          });
-        } catch (err) {
-          this.logger.warn?.(
-            `[Finalizer] closePlanningTickets on short-circuit failed (swallowed; replay will retry): ${err?.message ?? err}`,
-          );
-        }
+        // run the handoff-comment upsert. The helper is idempotent —
+        // postHandoffComment edits an existing marker comment in place.
+        // Without this call, a crash-recovery replay against an
+        // already-open PR never posts the handoff comment, even though
+        // epic.merge.ready is still emitted.
         try {
           await this.postHandoffCommentFn({
             epicId: this.epicId,
@@ -425,8 +433,8 @@ export class Finalizer {
 
     // 3. Run the composed bus-owned finalize (or the test-injected
     //    `runFinalizeFn`). The default chains openOrLocatePr →
-    //    closePlanningTickets → postHandoffComment in order and
-    //    returns `{ prNumber, prUrl, planningClose, handoff }`.
+    //    postHandoffComment in order and returns
+    //    `{ prNumber, prUrl, handoff }`.
     let finalize;
     try {
       finalize = await this.runFinalizeFn({

@@ -339,15 +339,20 @@
           "minimum": 1,
           "description": "File-count hard ceiling: a Story exceeding it is rejected unless it declares `wide` with a reason (default 30)."
         },
-        "maxAcceptance": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Hard ceiling on acceptance[] item count (default 14)."
-        },
         "softAcceptanceCount": {
           "type": "integer",
           "minimum": 1,
-          "description": "Soft-warn threshold on acceptance[] item count (default 10)."
+          "description": "Soft-warn threshold on acceptance[] item count (default 10). Acceptance mass is advisory-only — there is no hard acceptance ceiling."
+        },
+        "mergeCandidateMaxFiles": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Under-size threshold (Story #4312): a Story with at most this many declared changes[] files, at most mergeCandidateMaxAcceptance acceptance items, and at least one depends_on edge to a sibling trips the advisory `merge-candidate` soft finding (default 3)."
+        },
+        "mergeCandidateMaxAcceptance": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Under-size threshold (Story #4312): the acceptance[] item ceiling of the `merge-candidate` soft finding heuristic (default 4)."
         }
       },
       "additionalProperties": false
@@ -537,6 +542,12 @@
           "type": "integer",
           "minimum": 1,
           "description": "Maximum file count a single auto-fix may modify before escalating to agent::blocked. Default 5."
+        },
+        "autoFixSeverity": {
+          "type": "string",
+          "enum": ["high", "medium"],
+          "default": "medium",
+          "description": "Severity threshold for on-branch remediation in /deliver Phase 4 (epic-audit). `medium` (default) routes 🔴/🟠/🟡 findings into the host-LLM remediation loop (Mediums batched per lens: one commit per lens, a single validation + overlapping-lens rescan at the end) while 🟢 suggestions still graduate to follow-up issues; `high` reproduces the pre-4399 Critical/High-only routing. Hard cutover — no back-compat flag."
         }
       },
       "additionalProperties": false
@@ -619,6 +630,12 @@
           "type": "integer",
           "minimum": 1,
           "description": "Maximum file count a single auto-fix may modify before escalating to agent::blocked. Default 5."
+        },
+        "autoFixSeverity": {
+          "type": "string",
+          "enum": ["high", "medium"],
+          "default": "medium",
+          "description": "Severity threshold for on-branch remediation in /deliver Phase 5 (code-review). `medium` (default) routes 🔴/🟠/🟡 findings into the host-LLM focused-fix routing (Mediums batched per lens: one commit per lens, a single validation + rescan at the end) while 🟢 suggestions still graduate to follow-up issues; `high` reproduces the pre-4399 Critical/High-only routing. Hard cutover — no back-compat flag."
         }
       },
       "additionalProperties": false
@@ -635,7 +652,7 @@
         },
         "nodeModulesStrategy": {
           "type": "string",
-          "enum": ["per-worktree", "symlink", "pnpm-store"]
+          "enum": ["per-worktree", "clone", "symlink", "pnpm-store"]
         },
         "primeFromPath": {
           "type": ["string", "null"],
@@ -1411,6 +1428,34 @@
             "skipForStoryPushes": {
               "type": "boolean",
               "description": "Story #2899 (Epic #2880, F13). When true (default), pre-push tooling appends a '[skip ci]' trailer to Story-branch commit subjects so intermediate pushes do not stampede the CI fleet. The Epic-branch merge commit produced by story-close.js never carries the marker, regardless of this flag."
+            },
+            "earlyPr": {
+              "type": "boolean",
+              "description": "Story #4356 (Epic #4355). When true (default), /deliver opens the Epic PR early — before every Story merges — so CI starts warming while later waves run. Set false to defer PR creation until the Epic branch is complete."
+            },
+            "watch": {
+              "type": "object",
+              "description": "Story #4356 (Epic #4355). Poll-loop tuning for the merge/CI watch. pollIntervalMs is the cadence between check probes; maxPolls caps total probes before the watcher gives up; maxResumes caps how many times the watcher may resume after a transient stall.",
+              "properties": {
+                "pollIntervalMs": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "maxPolls": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "maxResumes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            },
+            "autoMerge": {
+              "type": "string",
+              "enum": ["trust-ci", "strict"],
+              "description": "Story #4356 (Epic #4355). Merge posture. 'trust-ci' (default) merges once required checks pass; 'strict' additionally requires a clean review gate."
             }
           },
           "additionalProperties": false
@@ -1502,6 +1547,34 @@
         }
       ]
     },
+    "qaEnvironments": {
+      "description": "Deployment targets the QA harness can run against (Epic #4326). A map keyed by environment name (e.g. `local`, `staging`), each carrying its own `baseUrl`, its own per-environment sign-in seam (the same url-template/skill union as `qaSignInSeam`), and an optional `allowWrites` gate. resolveQaEnvironment selects one environment per invocation by name or by raw-URL origin match against `baseUrl`; `allowWrites` defaults to true only for the `local` environment. Replaces the retired top-level single `signInSeam`.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["baseUrl", "signInSeam"],
+        "additionalProperties": false,
+        "properties": {
+          "baseUrl": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/safeString"
+              },
+              {
+                "minLength": 1
+              }
+            ]
+          },
+          "signInSeam": {
+            "$ref": "#/$defs/qaSignInSeam"
+          },
+          "allowWrites": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
     "qaPersonas": {
       "description": "Personas the QA-harness sign-in seam accepts. Two accepted shapes: (1) a plain array of persona names \u2014 the honest shape for a `urlTemplate` dev-impersonation seam, where the persona name is the sole input the workflow consumes; (2) the object-map form keyed by persona name, where each entry carries per-persona auth material (`credentialRef` or `signInSkill`) consulted only under a `skill`/credential seam.",
       "oneOf": [
@@ -1565,7 +1638,7 @@
     },
     "qa": {
       "type": "object",
-      "description": "Agent-driven QA harness contract (Epic #3214). Optional top-level block. All filesystem-pointer fields (featureRoot, fixturesManifest, designTokens) carry safeString guards rejecting shell-injection metacharacters. signInSeam is a url-template/skill union; personas resolve to a stored credential reference or a sign-in skill, never an inline secret.",
+      "description": "Agent-driven QA harness contract (Epic #3214; environment-keyed by Epic #4326). Optional top-level block. All filesystem-pointer fields (featureRoot, fixturesManifest, designTokens) carry safeString guards rejecting shell-injection metacharacters. environments is a map of named deployment targets (each with a baseUrl, a per-environment url-template/skill sign-in seam, and an optional allowWrites gate); personas resolve to a stored credential reference or a sign-in skill, never an inline secret.",
       "additionalProperties": false,
       "properties": {
         "featureRoot": {
@@ -1588,8 +1661,8 @@
             }
           ]
         },
-        "signInSeam": {
-          "$ref": "#/$defs/qaSignInSeam"
+        "environments": {
+          "$ref": "#/$defs/qaEnvironments"
         },
         "personas": {
           "$ref": "#/$defs/qaPersonas"

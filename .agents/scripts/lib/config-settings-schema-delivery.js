@@ -105,7 +105,7 @@ const WORKTREE_ISOLATION_SCHEMA = {
     root: { type: 'string', minLength: 1 },
     nodeModulesStrategy: {
       type: 'string',
-      enum: ['per-worktree', 'symlink', 'pnpm-store'],
+      enum: ['per-worktree', 'clone', 'symlink', 'pnpm-store'],
     },
     primeFromPath: { type: ['string', 'null'], minLength: 1 },
     allowSymlinkOnWindows: { type: 'boolean' },
@@ -210,12 +210,19 @@ const MERGE_WATCH_SCHEMA = {
  * `agent::blocked` (default 5) — a deliberately narrow bound for
  * unattended auto-fixes, independent of the Story-sizing thresholds in
  * `ticket-validator-sizing.js`.
+ *
+ * `autoFixSeverity` (Story #4399) is the threshold that governs which
+ * findings the Phase 4 host-LLM remediation loop fixes on-branch: `medium`
+ * (the default) routes 🔴/🟠/🟡 into remediation while 🟢 still graduates;
+ * `high` reproduces the pre-4399 Critical/High-only routing. It is a hard
+ * cutover per `rules/git-conventions.md` — there is no back-compat flag.
  */
 const EPIC_AUDIT_SCHEMA = {
   type: 'object',
   properties: {
     maxFixAttempts: { type: 'integer', minimum: 0 },
     maxFixScopeFiles: { type: 'integer', minimum: 1 },
+    autoFixSeverity: { type: 'string', enum: ['high', 'medium'] },
   },
   additionalProperties: false,
 };
@@ -226,10 +233,31 @@ const EPIC_AUDIT_SCHEMA = {
 // commit subjects so intermediate pushes do not stampede the CI fleet.
 // The Epic-branch merge commit produced by story-close.js's merge
 // runner never carries the marker, regardless of this flag.
+//
+// Story #4356 (Epic #4355) — CI-aware delivery namespace. `earlyPr` gates
+// whether /deliver opens the Epic PR early (before every Story merges) so CI
+// starts warming while later waves run; defaults to `true` via getCiDelivery.
+// `watch.*` tunes the merge/CI watch poll loop (poll cadence, poll cap, and
+// how many times the watcher may resume after a transient stall).
+// `autoMerge` selects the merge posture: `"trust-ci"` (default) merges once
+// required checks pass, `"strict"` additionally requires a clean review gate.
+const CI_WATCH_SCHEMA = {
+  type: 'object',
+  properties: {
+    pollIntervalMs: { type: 'integer', minimum: 1 },
+    maxPolls: { type: 'integer', minimum: 1 },
+    maxResumes: { type: 'integer', minimum: 0 },
+  },
+  additionalProperties: false,
+};
+
 const CI_DELIVERY_SCHEMA = {
   type: 'object',
   properties: {
     skipForStoryPushes: { type: 'boolean' },
+    earlyPr: { type: 'boolean' },
+    watch: CI_WATCH_SCHEMA,
+    autoMerge: { type: 'string', enum: ['trust-ci', 'strict'] },
   },
   additionalProperties: false,
 };

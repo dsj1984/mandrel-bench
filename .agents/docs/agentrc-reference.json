@@ -92,7 +92,6 @@
     "taskSizing": {
       "softFiles": 15,
       "hardFiles": 30,
-      "maxAcceptance": 14,
       "softAcceptanceCount": 10
     }
   },
@@ -101,7 +100,14 @@
     "maxTokenBudget": 300000,
     "lease": { "ttlMs": 900000 },
     "ci": {
-      "skipForStoryPushes": true
+      "skipForStoryPushes": true,
+      "earlyPr": true,
+      "watch": {
+        "pollIntervalMs": 30000,
+        "maxPolls": 120,
+        "maxResumes": 3
+      },
+      "autoMerge": "trust-ci"
     },
     "preflight": {
       "maxStories": 50,
@@ -264,8 +270,16 @@
   "qa": {
     "featureRoot": "tests/features",
     "fixturesManifest": "tests/fixtures/personas.json",
-    "signInSeam": {
-      "skill": "stack/qa/sign-in"
+    "environments": {
+      "local": {
+        "baseUrl": "http://localhost:3000",
+        "signInSeam": { "urlTemplate": "/dev/sign-in-as/{persona}" }
+      },
+      "staging": {
+        "baseUrl": "https://staging.example.test",
+        "signInSeam": { "skill": "stack/qa/sign-in" },
+        "allowWrites": false
+      }
     },
     "personas": {
       "admin": { "credentialRef": "QA_ADMIN_CREDENTIAL" },
