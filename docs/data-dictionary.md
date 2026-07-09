@@ -166,3 +166,63 @@ Provenance breadcrumbs (workspace-relative paths) to the on-disk artifacts a
 scorecard was derived from — `lifecycleNdjson`, `signalsNdjson[]`,
 `costEnvelope`, `acceptanceEvalVerdict` — for traceability and re-scoring,
 even though the ephemeral workspace is torn down after each run.
+
+## Finding envelope (Epic #85, Story #91)
+
+The feedback slice ([`../bench/feedback/derive.js`](../bench/feedback/derive.js))
+derives DETERMINISTIC, evidence-carrying **findings** from a results corpus and
+writes them beside the cohort report as a machine-readable envelope
+(`reports/findings-<stamp>.json`) plus a Markdown section for the results-PR
+body. It is signal-gated: a finding class with no signal in the corpus derives
+ZERO findings — there are no placeholder or always-on findings.
+
+### Envelope shape
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `schemaVersion` | integer (`1`) | Finding-envelope schema version. |
+| `generatedAt` | string \| null | Injected ISO timestamp the envelope was produced at (null when not supplied — the derivation itself is clock-free). |
+| `cohort` | object | The target D-014 cohort triple: `{ model, frameworkVersion, benchmarkVersion }`. |
+| `previousComparableCohort` | object \| null | The baseline triple the regression class compared against (same `model` + `benchmarkVersion`, immediately-prior `frameworkVersion`), or null when no prior framework version is on record. |
+| `method` | `iqr` \| `ci` | Noise-band method used for every band-derived verdict. |
+| `counts` | object | Per-class finding counts keyed by the four class names. |
+| `findings` | object[] | The derived findings (see below), in stable class + scenario order. |
+
+### Finding shape
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `fingerprint` | string | Stable 16-hex-char identity (see below). |
+| `class` | string | One of `regression`, `standing-cost`, `trap-differential`, `pipeline-calibration`. |
+| `scenario` | string \| null | Scenario id, or null for a cross-scenario finding (e.g. difficulty monotonicity). |
+| `subject` | string | The specific dimension / metric / trap-defect-class / pipeline signal the finding is about (e.g. `quality`, `overhead-floor`, `plaintext-password`, `routing-mismatch`). |
+| `summary` | string | Human-readable one-line description. |
+| `cohort` | object | The cohort triple this finding was observed in (mirrors the envelope's `cohort`). |
+| `evidence` | object | Class-specific evidence, always including the noise-band terms behind the verdict (centers, `shift`/`delta`, `noiseFloor`, clean-rates, etc.). |
+| `links` | object | `{ report, scorecards }` — results-root-relative paths to the cohort report and the cohort scorecard store. |
+
+### The four finding classes
+
+| Class | Signal (gate) | Source |
+| --- | --- | --- |
+| `regression` | A metric that REGRESSED vs the previous comparable cohort (real-delta rule). | `bench/report/compare.js` over the self-resolved prior-`frameworkVersion` baseline. |
+| `standing-cost` | The fixed framework taxes: overhead floor (ceremony with no quality gain), a real above-noise overhead ratio, and difficulty-monotonicity violations. | `bench/score/differential.js`. |
+| `trap-differential` | A planted defect class the mandrel arm did not keep clean (per `trap.classes[]` mean clean-rate `< 1`); the control clean-rate travels as evidence. | The scorecard `trap` block. |
+| `pipeline-calibration` | `routingMismatch` rate `> 25%` per cell, an unmet autonomy `guardrail.met === false`, or a `standalone-telemetry-absent` warning. | `groupCells` + the `dimensions.autonomy.guardrail` / `warnings` fields. |
+
+### Fingerprint format
+
+The fingerprint is the truncated SHA-1 identity of a finding —
+`sha1(class ␟ scenario ␟ subject)` (the three identity fields joined by the
+`U+001F` unit-separator), rendered as the first **16 hex characters** (64 bits)
+of the digest. A null `scenario` collapses to an empty positional field.
+
+Crucially, the fingerprint **excludes the cohort triple**
+(`model` / `frameworkVersion` / `benchmarkVersion`). That is the whole point:
+the same finding observed under two different cohorts hashes to the SAME
+fingerprint, so recurring findings collide across cohorts into a time-series
+rather than reading as a fresh issue every run. The cohort triple still travels
+on the finding (and envelope), it is simply not part of the identity key.
+Derivation is deterministic, so deriving twice from one corpus yields
+byte-identical fingerprints. Contract:
+[`../bench/feedback/fingerprint.js`](../bench/feedback/fingerprint.js).
