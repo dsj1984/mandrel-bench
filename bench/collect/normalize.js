@@ -230,13 +230,6 @@ export function deriveAutonomyCounters({ lifecycle, signals = [] }) {
  * }}
  */
 export function deriveTokenSplit({ lifecycle, totalTokens, wallClockMs }) {
-  const total =
-    typeof totalTokens === 'number' && totalTokens >= 0
-      ? Math.trunc(totalTokens)
-      : 0;
-  const wall =
-    typeof wallClockMs === 'number' && wallClockMs > 0 ? wallClockMs : 0;
-
   // Sum the matched dispatch windows. Match start→end per storyId; a start
   // with no matching end contributes no codegen time.
   const openStartMsByStory = new Map();
@@ -254,19 +247,61 @@ export function deriveTokenSplit({ lifecycle, totalTokens, wallClockMs }) {
       }
     }
   }
+  return deriveTokenSplitFromCodegenMs({ codegenMs, totalTokens, wallClockMs });
+}
+
+/**
+ * Shared proportional-attribution core behind `deriveTokenSplit`: given a
+ * raw codegen-window duration (however it was derived — matched Epic-ledger
+ * dispatch windows, or a standalone Story's createdAt→closedAt span, Epic
+ * #66 Story #77), attribute the session's total tokens across
+ * ceremony/codegen buckets in proportion to wall-clock share.
+ *
+ *   ceremonyMs = wallClockMs − codegenMs               (clamped ≥ 0)
+ *   codegenTokens  = round(totalTokens · codegenMs / wallClockMs)
+ *   ceremonyTokens = totalTokens − codegenTokens        (buckets always sum to total)
+ *
+ * @param {object} args
+ * @param {number} args.codegenMs      Raw (unclamped) codegen-window duration.
+ * @param {number} args.totalTokens    Session total tokens (from envelope).
+ * @param {number} args.wallClockMs    Derived run wall-clock.
+ * @returns {{
+ *   ceremonyTokens: number,
+ *   codegenTokens: number,
+ *   ceremonyMs: number,
+ *   codegenMs: number
+ * }}
+ */
+export function deriveTokenSplitFromCodegenMs({
+  codegenMs,
+  totalTokens,
+  wallClockMs,
+}) {
+  const total =
+    typeof totalTokens === 'number' && totalTokens >= 0
+      ? Math.trunc(totalTokens)
+      : 0;
+  const wall =
+    typeof wallClockMs === 'number' && wallClockMs > 0 ? wallClockMs : 0;
+
+  let codegen =
+    typeof codegenMs === 'number' && Number.isFinite(codegenMs)
+      ? Math.max(0, codegenMs)
+      : 0;
   // Codegen time can never exceed the run's wall-clock (overlapping parallel
-  // dispatches could otherwise sum past it); clamp so the proportion is valid.
-  if (wall > 0 && codegenMs > wall) codegenMs = wall;
-  const ceremonyMs = wall > 0 ? Math.max(0, wall - codegenMs) : 0;
+  // dispatches, or a standalone Story window that outran the session clock,
+  // could otherwise sum past it); clamp so the proportion is valid.
+  if (wall > 0 && codegen > wall) codegen = wall;
+  const ceremonyMs = wall > 0 ? Math.max(0, wall - codegen) : 0;
 
   let codegenTokens = 0;
   if (total > 0 && wall > 0) {
-    codegenTokens = Math.round((total * codegenMs) / wall);
+    codegenTokens = Math.round((total * codegen) / wall);
     if (codegenTokens > total) codegenTokens = total;
   }
   const ceremonyTokens = total - codegenTokens;
 
-  return { ceremonyTokens, codegenTokens, ceremonyMs, codegenMs };
+  return { ceremonyTokens, codegenTokens, ceremonyMs, codegenMs: codegen };
 }
 
 /**
@@ -395,12 +430,18 @@ function nonNeg(v) {
  *   scenario. Recorded under `scorecard.trap` as a SEPARATE differential
  *   signal — never folded into the seven composite dimensions.
  * @param {object} [args.rawRefs]          Provenance breadcrumbs for `rawRefs`.
- * @param {object} [args.standalone]       Standalone-path telemetry (Story #48),
- *   present only when the mandrel arm produced no Epic ledger but the run
- *   recovered the standalone Story's GitHub telemetry:
- *   `{ planning: {...}, autonomy: {...}, routingVerdict: 'story' }`. When
+ * @param {object} [args.standalone]       Standalone-path telemetry (Story #48;
+ *   phase-split added Epic #66 Story #77), present only when the mandrel arm
+ *   produced no Epic ledger but the run recovered the standalone Story's
+ *   GitHub telemetry: `{ planning: {...}, autonomy: {...}, routingVerdict:
+ *   'story', phases?: { createdAt, closedAt, prMergedAt, codegenMs } }`. When
  *   present it stands in for the absent ledger so planning-fidelity + autonomy
- *   are measured. Null/absent ⇒ unchanged null behaviour.
+ *   are measured. When `phases.codegenMs` is also a finite number, it drives a
+ *   real ceremony/codegen overhead split (via `deriveTokenSplitFromCodegenMs`)
+ *   instead of the permanent null the pre-#77 scope left in place. Null/absent
+ *   ⇒ unchanged null behaviour (surfaced as the `standalone-telemetry-absent`
+ *   entry in the record's `warnings[]` when the mandrel arm has no ledger and
+ *   no recovered standalone telemetry at all).
  * @param {string|null} [args.scenarioRouting]  The scenario contract's
  *   declared routing (`scenario.json`'s `routing: 'story' | 'epic'`, Epic #66
  *   Story #76). Compared against the OBSERVED `routingVerdict`: a mandrel-arm
@@ -502,6 +543,20 @@ export function buildScorecard({
     ? standalone.autonomy
     : deriveAutonomyCounters({ lifecycle: emitted, signals });
   const usage = extractUsage(envelope);
+  // Standalone phase-split (Epic #66, Story #77, target-architecture §8): the
+  // standalone adapter's createdAt→closedAt span stands in for the Epic
+  // ledger's matched dispatch windows, so a story-routed run with recovered
+  // telemetry gets a REAL ceremony/codegen split instead of the permanent
+  // null the pre-#77 scope left in place. Only engages when the adapter
+  // could actually parse both timestamps (`phases.codegenMs` is a number);
+  // otherwise the standalone cell falls through to the empty-lifecycle
+  // `deriveTokenSplit` path below (codegenMs 0 ⇒ tokenRatio null), and that
+  // absence is what `telemetryAbsent` (below) turns into a loud warning.
+  const standalonePhaseSplitAvailable =
+    standaloneObserved &&
+    standalone.phases &&
+    typeof standalone.phases.codegenMs === 'number' &&
+    Number.isFinite(standalone.phases.codegenMs);
   // The bare control arm runs no Mandrel pipeline, so it has no ceremony — its
   // whole session is shippable codegen (README: "control arm sits near the
   // floor"). Attributing it via dispatch windows (which it lacks) would wrongly
@@ -514,11 +569,21 @@ export function buildScorecard({
           ceremonyMs: 0,
           codegenMs: wallClockMs,
         }
-      : deriveTokenSplit({
-          lifecycle: emitted,
-          totalTokens: usage.totalTokens,
-          wallClockMs,
-        });
+      : standalonePhaseSplitAvailable
+        ? deriveTokenSplitFromCodegenMs({
+            codegenMs: standalone.phases.codegenMs,
+            totalTokens: usage.totalTokens,
+            wallClockMs,
+          })
+        : deriveTokenSplit({
+            lifecycle: emitted,
+            totalTokens: usage.totalTokens,
+            wallClockMs,
+          });
+  // Loud null (§8): the mandrel arm produced NEITHER an Epic ledger NOR
+  // recovered standalone telemetry, so planning-fidelity, autonomy, and the
+  // overhead split are all genuinely unmeasured — not silently defaulted.
+  const telemetryAbsent = run.arm === 'mandrel' && !valueObserved;
 
   // ---- Dimension math (delegated to the scorer) ------------------------
   const dimensions = computeDimensions({
@@ -579,6 +644,16 @@ export function buildScorecard({
     },
   });
 
+  // Loud nulls (§8): surface the dimension-level warning codes (security /
+  // maintainability signal-or-judge absent) plus the record-level telemetry
+  // gap at the top of the scorecard, so an operator scanning persisted
+  // records sees an explicit marker instead of having to notice a `null`.
+  const warnings = [
+    ...(dimensions.security.warnings ?? []),
+    ...(dimensions.maintainability.warnings ?? []),
+    ...(telemetryAbsent ? ['standalone-telemetry-absent'] : []),
+  ];
+
   const scorecard = {
     schemaVersion: SCORECARD_SCHEMA_VERSION,
     runId: run.runId,
@@ -603,6 +678,7 @@ export function buildScorecard({
     routingVerdict,
     routingMismatch,
     dimensions,
+    warnings,
   };
 
   // Multi-class differential trap signal (Epic #66, Story #74). Present only
