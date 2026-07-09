@@ -107,10 +107,14 @@ export function defaultGhPort(args, { execFileFn = execFileSync } = {}) {
 }
 
 /**
- * Classify a thrown `gh` error as a cross-repo-write PERMISSION/scope failure —
- * the specific "the token cannot write issues on the target repo" degradation
- * the Story treats as non-fatal. Reads both the error message and any captured
- * `stderr` (`execFileSync` puts `gh`'s diagnostics there). Pure.
+ * Classify a thrown `gh` error as a cross-repo write that CANNOT proceed because
+ * the token lacks the scope (403 / permission) OR cannot authenticate at all
+ * (401 / unauthenticated / no `gh` auth) — the degradation the Story treats as
+ * non-fatal. An absent or underscoped FEEDBACK_GITHUB_TOKEN must degrade loudly
+ * and exit 0, never red-X every merge to main (the findings already live in the
+ * merged results-PR body — the D-009 fallback). Reads both the error message
+ * and any captured `stderr` (`execFileSync` puts `gh`'s diagnostics there).
+ * Pure.
  *
  * @param {unknown} err
  * @returns {boolean}
@@ -124,9 +128,27 @@ export function isScopeError(err) {
     parts.push(String(err ?? ''));
   }
   const text = parts.join('\n');
-  return /HTTP 403|\b403\b|Resource not accessible|does not have (?:the )?(?:correct )?permission|not have permission|must have (?:admin|write|push)|requires? .*scope|forbidden|SAML enforcement/i.test(
+  return /HTTP 40[13]|\b40[13]\b|Resource not accessible|does not have (?:the )?(?:correct )?permission|not have permission|must have (?:admin|write|push)|requires? .*scope|forbidden|SAML enforcement|unauthenticated|Bad credentials|authentication|gh auth login|not logged in|To authenticate/i.test(
     text,
   );
+}
+
+/**
+ * Whether `env` carries any GitHub token `gh` can authenticate the cross-repo
+ * LIST/write with. The filer binds FEEDBACK_GITHUB_TOKEN → GH_TOKEN (else an
+ * already-set GH_TOKEN/GITHUB_TOKEN); when none is present `gh` runs
+ * unauthenticated and every cross-repo call fails, so we degrade loudly BEFORE
+ * spending a call. Pure.
+ *
+ * @param {Record<string, string|undefined>} env
+ * @returns {boolean}
+ */
+export function hasFeedbackToken(env = process.env) {
+  for (const key of ['FEEDBACK_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN']) {
+    const v = env?.[key];
+    if (typeof v === 'string' && v.trim().length > 0) return true;
+  }
+  return false;
 }
 
 /**
@@ -415,10 +437,11 @@ function fileOneFinding(finding, envelope, { gh, repo, openIssues, logger }) {
  * File every finding in an envelope onto the target repo, deduplicated by
  * fingerprint marker (comment-on-hit, create-on-miss, no-op on an
  * already-recorded cohort). In `--dry-run` mode it prints the intended per-
- * finding actions and makes NO gh calls at all (not even the LIST). When a
- * cross-repo write is refused for lack of scope, it logs a loud non-fatal
- * degradation warning naming the missing scope and returns `degraded: true`
- * (the CLI exits 0).
+ * finding actions and makes NO gh calls at all (not even the LIST). When the
+ * cross-repo LIST or a write is refused for lack of scope OR the token is
+ * absent/unauthenticated, it logs a loud non-fatal degradation warning and
+ * returns `degraded: true` (the CLI exits 0), so a misconfigured secret never
+ * red-Xes a merge — the findings still live in the merged results-PR body.
  *
  * @param {object} opts
  * @param {object} opts.envelope  A `deriveFindings` envelope.
@@ -429,6 +452,7 @@ function fileOneFinding(finding, envelope, { gh, repo, openIssues, logger }) {
  * @param {object} [deps]
  * @param {(args: string[]) => string} [deps.gh]  The gh port (injected in tests).
  * @param {{ info: Function, warn: Function }} [deps.logger]
+ * @param {Record<string, string|undefined>} [deps.env]  Token env (default process.env).
  * @returns {{ repo: string, dryRun: boolean, degraded: boolean, actions: object[] }}
  */
 export function fileFindings(
@@ -473,7 +497,46 @@ export function fileFindings(
     return { repo, dryRun: false, degraded: false, actions: [] };
   }
 
-  const openIssues = listFeedbackIssues(gh, { repo, label, limit });
+  const env = deps.env ?? process.env;
+
+  // Absent/empty feedback token: the DEFAULT gh port cannot authenticate the
+  // cross-repo LIST at all, so degrade LOUDLY and exit 0 rather than red-X every
+  // merge to main until the secret is configured. The findings already live in
+  // the merged results-PR body (D-009 fallback), so a misconfigured secret must
+  // NOT fail the workflow. Detected BEFORE the LIST so zero gh calls are spent
+  // (M7). Guarded to the default port: an INJECTED gh port owns its own auth
+  // story (a test mock, or a programmatic caller), so the token env is moot
+  // there — the underscoped-token case is still caught by the LIST wrap below.
+  if (!deps.gh && !hasFeedbackToken(env)) {
+    logger.warn(
+      `[file] ⚠️  DEGRADED: no GitHub token is configured for ${MISSING_SCOPE_LABEL} ` +
+        `on ${repo} (FEEDBACK_GITHUB_TOKEN / GH_TOKEN absent or empty). ` +
+        'Skipping ALL feedback writes; the findings remain in the merged ' +
+        'results-PR body (D-009 fallback). Configure the token to file findings.',
+    );
+    return { repo, dryRun: false, degraded: true, actions: [] };
+  }
+
+  // The LIST is the FIRST cross-repo call, so an underscoped / unauthenticated
+  // token surfaces HERE — wrap it in the SAME scope-error degradation guard as
+  // the writes below (M7), so a 401/403 at list time degrades loudly + exits 0
+  // instead of throwing an unhandled FATAL that red-Xes the merge.
+  let openIssues;
+  try {
+    openIssues = listFeedbackIssues(gh, { repo, label, limit });
+  } catch (err) {
+    if (isScopeError(err)) {
+      logger.warn(
+        `[file] ⚠️  DEGRADED: the GitHub token cannot list/write ${MISSING_SCOPE_LABEL} ` +
+          `on ${repo}. Skipping ALL feedback writes; the findings remain in the ` +
+          'merged results-PR body (D-009 fallback). Grant that scope to file ' +
+          `findings. (underlying error: ${err?.message ?? err})`,
+      );
+      return { repo, dryRun: false, degraded: true, actions: [] };
+    }
+    throw err;
+  }
+
   const actions = [];
   for (const finding of findings) {
     try {
@@ -564,7 +627,7 @@ Options:
  */
 export async function main(
   argv = process.argv.slice(2),
-  _env = process.env,
+  env = process.env,
   deps = {},
 ) {
   const logger = deps.logger ?? defaultCliLogger();
@@ -602,7 +665,7 @@ export async function main(
         limit: args.limit,
         dryRun: args.dryRun,
       },
-      { gh: deps.gh, logger },
+      { gh: deps.gh, logger, env: deps.env ?? env },
     );
   } catch (err) {
     logger.error(`[file] FATAL: ${err?.message ?? err}`);

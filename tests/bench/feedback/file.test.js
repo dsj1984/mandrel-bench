@@ -19,6 +19,7 @@ import {
   defaultGhPort,
   fileFindings,
   fingerprintMarker,
+  hasFeedbackToken,
   isScopeError,
   main,
   parseFileCliArgs,
@@ -306,6 +307,81 @@ describe('fileFindings — degradation on missing cross-repo write scope', () =>
     err.stderr = 'HTTP 403: Resource not accessible by integration';
     assert.equal(isScopeError(err), true);
     assert.equal(isScopeError(new Error('some unrelated network blip')), false);
+  });
+});
+
+describe('fileFindings — degradation at LIST time / absent token (M7)', () => {
+  it('hasFeedbackToken detects an absent/empty token vs a configured one', () => {
+    assert.equal(hasFeedbackToken({}), false);
+    assert.equal(hasFeedbackToken({ FEEDBACK_GITHUB_TOKEN: '   ' }), false);
+    assert.equal(hasFeedbackToken({ GH_TOKEN: '' }), false);
+    assert.equal(hasFeedbackToken({ FEEDBACK_GITHUB_TOKEN: 'ghp_x' }), true);
+    assert.equal(hasFeedbackToken({ GH_TOKEN: 'gho_y' }), true);
+    assert.equal(hasFeedbackToken({ GITHUB_TOKEN: 'ghp_z' }), true);
+  });
+
+  it('isScopeError now also classifies a 401 unauthenticated failure', () => {
+    const err = new Error('boom');
+    err.stderr = 'HTTP 401: Bad credentials';
+    assert.equal(isScopeError(err), true);
+    assert.equal(
+      isScopeError(new Error('gh: To authenticate, run gh auth login')),
+      true,
+    );
+  });
+
+  it('absent/empty FEEDBACK token degrades loudly (default port), zero gh calls', () => {
+    // No gh injected → the DEFAULT port would be used; the absent-token precheck
+    // must fire BEFORE any gh call, so nothing is ever spawned.
+    const warns = [];
+    const logger = { info() {}, warn: (m) => warns.push(m), error() {} };
+    const result = fileFindings({ envelope: envelope() }, { logger, env: {} });
+    assert.equal(result.degraded, true);
+    assert.deepEqual(result.actions, [], 'zero writes on an absent token');
+    assert.ok(
+      warns.some((m) => /DEGRADED/.test(m) && /token/i.test(m)),
+      'the absent-token degradation must be logged loudly',
+    );
+  });
+
+  it('an underscoped/unauthenticated token surfaces at LIST → degrade, zero writes', () => {
+    // The LIST is the first cross-repo call. gh returns a 401 there (exactly
+    // what an empty FEEDBACK_GITHUB_TOKEN yields). The filer must degrade, not
+    // throw, and make ZERO writes (no create / comment).
+    const gh = makeGh({
+      list: [],
+      failOn: (a) => a[0] === 'issue' && a[1] === 'list',
+    });
+    const warns = [];
+    const logger = { info() {}, warn: (m) => warns.push(m), error() {} };
+
+    const result = fileFindings({ envelope: envelope() }, { gh, logger });
+
+    assert.equal(result.degraded, true);
+    assert.deepEqual(result.actions, []);
+    // Only the LIST was attempted; no write (create / comment) was made.
+    assert.ok(
+      !gh.calls.some(
+        (a) => a[0] === 'issue' && (a[1] === 'create' || a[1] === 'comment'),
+      ),
+      'a LIST-time degradation must make zero writes',
+    );
+    assert.ok(warns.some((m) => /DEGRADED/.test(m)));
+  });
+
+  it('main exits 0 on an absent token (a misconfigured secret never red-Xes a merge)', async () => {
+    const out = [];
+    const code = await main(
+      ['--envelope', '/env.json'],
+      {}, // no token in env
+      {
+        readFileImpl: () => JSON.stringify(envelope()),
+        logger: silentLogger(),
+        write: (s) => out.push(s),
+      },
+    );
+    assert.equal(code, 0);
+    assert.equal(JSON.parse(out.join('')).degraded, true);
   });
 });
 
