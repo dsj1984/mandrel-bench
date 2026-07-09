@@ -99,6 +99,11 @@
       "enum": ["epic", "story", null],
       "description": "Which delivery route Mandrel actually took for this mandrel-arm cell: 'epic' (an Epic lifecycle ledger was found), 'story' (the standalone single-Story path — telemetry recovered from GitHub per the standalone adapter), or null (control arm, or routing could not be determined). Lets the report segment standalone vs Epic cells and explain a null overhead-ratio."
     },
+    "routingMismatch": {
+      "type": "boolean",
+      "default": false,
+      "description": "Epic #66, Story #76: true when a mandrel-arm run's OBSERVED `routingVerdict` diverges from the scenario contract's DECLARED `routing` (scenario.json). Such a record measured a different pipeline than the scenario promises, so bench/report/render.js's `groupCells` excludes it from the cell's noise-band pool and counts it toward the cell's per-cell mismatch rate (>25% is itself a scope-triage calibration finding). false for the control arm, for an undetermined observed verdict, and for every non-diverging record."
+    },
     "dimensions": {
       "type": "object",
       "additionalProperties": false,

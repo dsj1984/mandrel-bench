@@ -775,6 +775,112 @@ test('runFirstBenchmark: recovers standalone telemetry when the mandrel arm prod
   assert.equal(mandrel.dimensions.overheadRatio.tokenRatio, null);
 });
 
+test('runOneRun: marks routingMismatch true when observed standalone routing diverges from the scenario\'s declared "epic" contract (Epic #66, Story #76)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  deps.ghJson = (args) => {
+    const key = `${args[0]} ${args[1]}`;
+    if (key === 'issue list') {
+      return [{ number: 99, createdAt: '2026-06-16T20:30:00.000Z' }];
+    }
+    if (key === 'issue view') {
+      return {
+        number: 99,
+        state: 'CLOSED',
+        labels: [{ name: 'type::story' }, { name: 'agent::done' }],
+        comments: [
+          {
+            body: '<!-- ap:structured-comment type="story-init" -->\n"standalone": true',
+          },
+        ],
+      };
+    }
+    if (key === 'pr list') {
+      return [
+        {
+          number: 100,
+          mergedAt: '2026-06-16T20:50:00.000Z',
+          files: [{ path: 'src/server.js' }],
+        },
+      ];
+    }
+    return [];
+  };
+
+  const { evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario: { ...FAKE_SCENARIO, routing: 'epic' },
+      evaluate,
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
+        owner: 'dsj1984',
+        repo: 'legacy-sandbox-repo',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.equal(scorecard.routingVerdict, 'story');
+  assert.equal(scorecard.routingMismatch, true);
+});
+
+test('runOneRun: carries routingMismatch false when observed routing matches the declared contract (Epic #66, Story #76)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  deps.ghJson = (args) => {
+    const key = `${args[0]} ${args[1]}`;
+    if (key === 'issue list') {
+      return [{ number: 99, createdAt: '2026-06-16T20:30:00.000Z' }];
+    }
+    if (key === 'issue view') {
+      return {
+        number: 99,
+        state: 'CLOSED',
+        labels: [{ name: 'type::story' }, { name: 'agent::done' }],
+        comments: [
+          {
+            body: '<!-- ap:structured-comment type="story-init" -->\n"standalone": true',
+          },
+        ],
+      };
+    }
+    if (key === 'pr list') {
+      return [
+        {
+          number: 100,
+          mergedAt: '2026-06-16T20:50:00.000Z',
+          files: [{ path: 'src/server.js' }],
+        },
+      ];
+    }
+    return [];
+  };
+
+  const { evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario: { ...FAKE_SCENARIO, routing: 'story' },
+      evaluate,
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
+        owner: 'dsj1984',
+        repo: 'legacy-sandbox-repo',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.equal(scorecard.routingVerdict, 'story');
+  assert.equal(scorecard.routingMismatch, false);
+});
+
 test('runFirstBenchmark: requires sandbox coordinates', async () => {
   await assert.rejects(
     runFirstBenchmark({ sandbox: { repoUrl: 'x' } }, {}),

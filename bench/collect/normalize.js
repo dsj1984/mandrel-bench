@@ -401,6 +401,15 @@ function nonNeg(v) {
  *   `{ planning: {...}, autonomy: {...}, routingVerdict: 'story' }`. When
  *   present it stands in for the absent ledger so planning-fidelity + autonomy
  *   are measured. Null/absent ⇒ unchanged null behaviour.
+ * @param {string|null} [args.scenarioRouting]  The scenario contract's
+ *   declared routing (`scenario.json`'s `routing: 'story' | 'epic'`, Epic #66
+ *   Story #76). Compared against the OBSERVED `routingVerdict`: a mandrel-arm
+ *   record whose observed routing diverges from the contract is marked
+ *   `routingMismatch: true` (it measured a different pipeline than the
+ *   scenario declares — excluded from noise-band pooling downstream by
+ *   `bench/report/render.js` `groupCells`). Null/absent (no contract
+ *   declared, or the observed verdict could not be determined) ⇒ `false` —
+ *   an undetermined comparison is never treated as a divergence.
  * @returns {object} A scorecard record conforming to scorecard.schema.json.
  */
 export function buildScorecard({
@@ -415,6 +424,7 @@ export function buildScorecard({
   trap = null,
   rawRefs,
   standalone = null,
+  scenarioRouting = null,
 }) {
   if (!run || typeof run !== 'object') {
     throw new TypeError('buildScorecard: run identity is required');
@@ -466,6 +476,18 @@ export function buildScorecard({
     : standaloneObserved
       ? (standalone.routingVerdict ?? 'story')
       : null;
+  // Routing contract enforcement (Epic #66, Story #76): a mandrel-arm record
+  // whose OBSERVED routing diverges from the scenario's DECLARED contract
+  // measured a different pipeline than the one the contract promises, so it
+  // is excluded from the cell's noise-band pool downstream. Both the
+  // contract and the observed verdict must be known for a comparison to be
+  // meaningful — an undetermined verdict (no ledger, no standalone recovery)
+  // is never itself treated as a divergence.
+  const routingMismatch =
+    run.arm === 'mandrel' &&
+    typeof scenarioRouting === 'string' &&
+    routingVerdict != null &&
+    routingVerdict !== scenarioRouting;
   const planningInput = standaloneObserved ? standalone.planning : planning;
 
   // ---- Lifecycle-derived raw sub-signals -------------------------------
@@ -579,6 +601,7 @@ export function buildScorecard({
     scenario: run.scenario,
     arm: run.arm,
     routingVerdict,
+    routingMismatch,
     dimensions,
   };
 

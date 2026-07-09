@@ -37,6 +37,7 @@ function card({
   scenario = 'hello-world',
   arm = 'mandrel',
   routingVerdict = null,
+  routingMismatch = false,
   runId = `${scenario}-${arm}-r1`,
   quality = 1,
   planningFidelity = 0.9,
@@ -62,6 +63,7 @@ function card({
     scenario,
     arm,
     routingVerdict,
+    routingMismatch,
     dimensions: {
       quality: { score: quality, frozenSuitePassRate: quality },
       planningFidelity: { score: arm === 'control' ? null : planningFidelity },
@@ -163,6 +165,89 @@ describe('groupCells', () => {
 
   it('throws on a non-array input', () => {
     assert.throws(() => groupCells(null), TypeError);
+  });
+
+  it('tags hello-world cells with the floor/calibration framing marker, and no other scenario', () => {
+    const cells = groupCells([
+      card({ scenario: 'hello-world', runId: 'hw-1' }),
+      card({ scenario: 'crud-db', runId: 'crud-1' }),
+    ]);
+    const hw = cells.find((c) => c.scenario === 'hello-world');
+    const crud = cells.find((c) => c.scenario === 'crud-db');
+    assert.equal(hw.floorCalibration, true);
+    assert.equal(crud.floorCalibration, false);
+  });
+
+  describe('routing-mismatch exclusion (Epic #66, Story #76)', () => {
+    it('excludes routingMismatch:true mandrel records from the pool and reports the mismatch rate', () => {
+      const cells = groupCells([
+        card({ scenario: 'crud-db', arm: 'mandrel', runId: 'm-1' }),
+        card({ scenario: 'crud-db', arm: 'mandrel', runId: 'm-2' }),
+        card({
+          scenario: 'crud-db',
+          arm: 'mandrel',
+          runId: 'm-3',
+          routingMismatch: true,
+        }),
+        card({ scenario: 'crud-db', arm: 'control', runId: 'c-1' }),
+      ]);
+      const cell = cells.find((c) => c.scenario === 'crud-db');
+      assert.equal(cell.mandrelRuns.length, 2);
+      assert.deepEqual(
+        cell.mandrelRuns.map((sc) => sc.runId),
+        ['m-1', 'm-2'],
+      );
+      assert.equal(cell.mismatchedRuns.length, 1);
+      assert.equal(cell.mismatchedRuns[0].runId, 'm-3');
+      assert.ok(Math.abs(cell.mismatchRate - 1 / 3) < 1e-9);
+    });
+
+    it('flags a cell whose mismatch rate exceeds the 25% scope-triage threshold', () => {
+      const cells = groupCells([
+        card({ scenario: 'crud-db', arm: 'mandrel', runId: 'm-1' }),
+        card({
+          scenario: 'crud-db',
+          arm: 'mandrel',
+          runId: 'm-2',
+          routingMismatch: true,
+        }),
+        card({
+          scenario: 'crud-db',
+          arm: 'mandrel',
+          runId: 'm-3',
+          routingMismatch: true,
+        }),
+      ]);
+      const cell = cells.find((c) => c.scenario === 'crud-db');
+      assert.ok(cell.mismatchRate > 0.25);
+      assert.equal(cell.mismatchFlag, true);
+    });
+
+    it('does not flag a cell whose mismatch rate is at or below the 25% threshold', () => {
+      const cells = groupCells([
+        card({ scenario: 'crud-db', arm: 'mandrel', runId: 'm-1' }),
+        card({ scenario: 'crud-db', arm: 'mandrel', runId: 'm-2' }),
+        card({ scenario: 'crud-db', arm: 'mandrel', runId: 'm-3' }),
+        card({
+          scenario: 'crud-db',
+          arm: 'mandrel',
+          runId: 'm-4',
+          routingMismatch: true,
+        }),
+      ]);
+      const cell = cells.find((c) => c.scenario === 'crud-db');
+      assert.equal(cell.mismatchRate, 0.25);
+      assert.equal(cell.mismatchFlag, false);
+    });
+
+    it('reports a zero mismatch rate for a cell with no mandrel records at all', () => {
+      const cells = groupCells([
+        card({ scenario: 'crud-db', arm: 'control', runId: 'c-1' }),
+      ]);
+      const cell = cells.find((c) => c.scenario === 'crud-db');
+      assert.equal(cell.mismatchRate, 0);
+      assert.equal(cell.mismatchFlag, false);
+    });
   });
 });
 
@@ -461,6 +546,51 @@ describe('renderReport — full Markdown', () => {
     const md = renderReport({ scorecards, method: 'iqr' });
     assert.match(md, /Mandrel routing: standalone Story/);
     assert.match(md, /overhead-ratio is \*\*n\/a\*\*/);
+  });
+
+  it('surfaces the routing-mismatch note and excludes the mismatched record from the rendered n (Epic #66, Story #76)', () => {
+    const scorecards = [
+      card({ scenario: 'crud-db', arm: 'mandrel', runId: 'm1' }),
+      card({
+        scenario: 'crud-db',
+        arm: 'mandrel',
+        runId: 'm2',
+        routingMismatch: true,
+      }),
+      card({ scenario: 'crud-db', arm: 'control', runId: 'c1' }),
+    ];
+    const md = renderReport({ scorecards, method: 'iqr' });
+    assert.match(md, /Routing mismatch: 50% of mandrel runs/);
+    assert.match(md, /n = 1 mandrel \/ 1 control/);
+  });
+
+  it('flags a scenario section when the mismatch rate exceeds 25% (Epic #66, Story #76)', () => {
+    const scorecards = [
+      card({ scenario: 'crud-db', arm: 'mandrel', runId: 'm1' }),
+      card({
+        scenario: 'crud-db',
+        arm: 'mandrel',
+        runId: 'm2',
+        routingMismatch: true,
+      }),
+      card({
+        scenario: 'crud-db',
+        arm: 'mandrel',
+        runId: 'm3',
+        routingMismatch: true,
+      }),
+    ];
+    const md = renderReport({ scorecards, method: 'iqr' });
+    assert.match(md, /above the 25% scope-triage threshold/);
+  });
+
+  it('marks the hello-world section with the floor/calibration framing note (Epic #66, Story #76)', () => {
+    const md = renderReport({ scorecards: healthyCorpus(), method: 'iqr' });
+    const hwIndex = md.indexOf('Scenario: `hello-world`');
+    const crudIndex = md.indexOf('Scenario: `crud-db`');
+    const hwSection = md.slice(hwIndex, crudIndex);
+    assert.match(hwSection, /Floor\/calibration rung/);
+    assert.doesNotMatch(md.slice(crudIndex), /Floor\/calibration rung/);
   });
 
   it('surfaces the mixed-cohort warning in the header', () => {
