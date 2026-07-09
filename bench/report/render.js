@@ -385,7 +385,7 @@ function renderRoutingNote(mandrelRuns) {
  * @param {object} cell  A `groupCells` entry.
  * @returns {string}
  */
-function renderMismatchNote(cell) {
+export function renderMismatchNote(cell) {
   const n = cell.mismatchedRuns?.length ?? 0;
   if (n === 0) return '';
   const pct = fmt(cell.mismatchRate * 100, 1);
@@ -407,7 +407,7 @@ function renderMismatchNote(cell) {
  * @param {object} cell  A `groupCells` entry.
  * @returns {string}
  */
-function renderFloorCalibrationNote(cell) {
+export function renderFloorCalibrationNote(cell) {
   if (!cell.floorCalibration) return '';
   return (
     '> 🧭 **Floor/calibration rung** — instrumentation, not a value rung. ' +
@@ -508,6 +508,25 @@ export function trapAxisRows(cell, method) {
 }
 
 /**
+ * Format one arm's trap-axis stat (`{ mean, spread, min, n }`, as returned by
+ * `trapArmStat`) as a compact `mean (spread …, min …, n=…)` cell, or an
+ * em-dash when the arm has no finite trap data for this cell. Shared by the
+ * Markdown report (`renderTrapAxisSection`, below) and the HTML dashboard
+ * (`bench/report/html.js`'s `renderTrapAxisSectionHtml`) so the two
+ * renderers can never drift on rounding/digit precision (Epic #66 audit
+ * remediation, M4).
+ *
+ * @param {{ mean: number, spread: number, min: number, n: number }|null} s
+ * @param {number} [digits=3]
+ * @returns {string}
+ */
+export function formatTrapStat(s, digits = 3) {
+  return s
+    ? `${fmt(s.mean, digits)} (spread ${fmt(s.spread, digits)}, min ${fmt(s.min, digits)}, n=${s.n})`
+    : '—';
+}
+
+/**
  * Render one scenario's trap-axis section (Epic #66, Story #79): per-class
  * scores and `cleanRate` as mean/spread/min distributions per arm, in a
  * section clearly separate from the seven-dimension table. Returns '' when
@@ -520,10 +539,7 @@ export function trapAxisRows(cell, method) {
 export function renderTrapAxisSection(cell, method) {
   const rows = trapAxisRows(cell, method);
   if (rows.length === 0) return '';
-  const fmtStat = (s) =>
-    s
-      ? `${fmt(s.mean)} (spread ${fmt(s.spread)}, min ${fmt(s.min)}, n=${s.n})`
-      : '—';
+  const fmtStat = formatTrapStat;
   const lines = [
     '#### Trap axis (differential — separate from the seven dimensions)',
     '',

@@ -39,7 +39,12 @@
 // emitted string is fixed for a fixed corpus.
 
 import { cohortSegments } from './cohort-path.js';
-import { autonomyGuardrailRows, groupCells, trapAxisRows } from './render.js';
+import {
+  autonomyGuardrailRows,
+  formatTrapStat,
+  groupCells,
+  trapAxisRows,
+} from './render.js';
 
 /**
  * The headline metrics the trend chart plots, each with a label, the side of
@@ -296,6 +301,8 @@ select, input[type=text] {
   border-radius: 6px; padding: 5px 8px; font: inherit;
 }
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+.trap-axis h3 { font-size: 13px; margin: 16px 0 6px; font-weight: 600; }
+.trap-axis h3:first-child { margin-top: 0; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 th { cursor: pointer; user-select: none; color: var(--muted); font-weight: 600; }
@@ -846,10 +853,7 @@ ${
  * @returns {string}
  */
 function renderTrapAxisSectionHtml(trapAxis) {
-  const fmtStat = (s) =>
-    s
-      ? `${Math.round(s.mean * 1000) / 1000} (spread ${Math.round(s.spread * 1000) / 1000}, min ${Math.round(s.min * 1000) / 1000}, n=${s.n})`
-      : '—';
+  const fmtStat = formatTrapStat;
   const scenarioBlocks = trapAxis
     .map((s) => {
       const rows = s.rows
@@ -864,7 +868,7 @@ function renderTrapAxisSectionHtml(trapAxis) {
   return `<section>
 <h2>Trap axis (differential — separate from the seven dimensions)</h2>
 <div class="sub">Per-class adversarial trap-oracle verdicts the frozen suite is blind to, plus <code>cleanRate</code> (the mean of the declared classes). Higher is better (1 = clean, 0 = planted defect present). Never folded into the seven composite dimensions (Epic #66, Story #74/#79).</div>
-<div class="panel">
+<div class="panel trap-axis">
 ${trapAxis.length ? scenarioBlocks : '<div class="empty">No scenario in this corpus declares a trap class.</div>'}
 </div>
 </section>`;

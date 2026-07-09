@@ -22,6 +22,8 @@ import {
   dimensionRows,
   groupCells,
   recommendImprovements,
+  renderFloorCalibrationNote,
+  renderMismatchNote,
   renderReport,
   renderScalingView,
   trapAxisRows,
@@ -733,5 +735,47 @@ describe('autonomy guardrail — mandrel-arm pass/fail, never a delta (Epic #66,
     const md = renderReport({ scorecards: healthyCorpus(), method: 'iqr' });
     assert.match(md, /## Autonomy guardrail \(mandrel arm\)/);
     assert.doesNotMatch(md, /\| Autonomy \|/);
+  });
+});
+
+describe('renderMismatchNote — direct coverage (Epic #66 audit remediation, M4-M10)', () => {
+  it('returns "" when the cell has no mismatched records', () => {
+    assert.equal(renderMismatchNote({ mismatchedRuns: [] }), '');
+    assert.equal(renderMismatchNote({}), '');
+  });
+
+  it('renders the plain note when below the 25% scope-triage threshold', () => {
+    const note = renderMismatchNote({
+      mismatchedRuns: [{ runId: 'm-1' }],
+      mismatchRate: 0.2,
+      mismatchFlag: false,
+    });
+    assert.match(note, /Routing mismatch: 20% of mandrel runs/);
+    assert.match(note, /\(1 record\(s\)\)/);
+    assert.doesNotMatch(note, /⚠️/);
+  });
+
+  it('renders the warning-emoji branch when mismatchFlag is true (above threshold)', () => {
+    const note = renderMismatchNote({
+      mismatchedRuns: [{ runId: 'm-1' }, { runId: 'm-2' }, { runId: 'm-3' }],
+      mismatchRate: 1 / 3,
+      mismatchFlag: true,
+    });
+    assert.match(note, /⚠️ \*\*Routing mismatch: 33\.3% of mandrel runs\*\*/);
+    assert.match(note, /\(3 record\(s\)\)/);
+    assert.match(note, /above the 25% scope-triage threshold/);
+  });
+});
+
+describe('renderFloorCalibrationNote — direct coverage (Epic #66 audit remediation, M4-M10)', () => {
+  it('returns "" for a cell not tagged floorCalibration', () => {
+    assert.equal(renderFloorCalibrationNote({ floorCalibration: false }), '');
+    assert.equal(renderFloorCalibrationNote({}), '');
+  });
+
+  it('renders the floor/calibration framing note when floorCalibration is true', () => {
+    const note = renderFloorCalibrationNote({ floorCalibration: true });
+    assert.match(note, /🧭 \*\*Floor\/calibration rung\*\*/);
+    assert.match(note, /instrumentation, not a value rung/);
   });
 });
