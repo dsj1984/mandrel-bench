@@ -386,12 +386,14 @@ function nonNeg(v) {
  *   `{ objectiveSecurityScore?, securityJudgeScore?,
  *      criticalFindings?, highFindings?, secretsDetected? }`.
  *   When absent the dimension scores 0 (conservative default).
- * @param {object} [args.trap]             Adversarial trap-oracle verdict for
- *   the differential-trap rung (Story #57):
- *   `{ defectClass, defectPresent, score, signals, evidence, filesScanned? }`.
- *   Present only for the trap scenario; null/absent for every other scenario.
- *   Recorded under `scorecard.trap` as a SEPARATE differential signal — never
- *   folded into the five composite dimensions.
+ * @param {object} [args.trap]             Multi-class trap-runner verdict
+ *   (Epic #66, Story #74 — replaces the single-oracle Story #57 shape):
+ *   `{ classes: [{ class, score, defectPresent, evidence? }], cleanRate }`,
+ *   the aggregate `bench/scenarios/trap-runner.js` produces. Present only
+ *   when the scenario declares at least one trap class (non-empty
+ *   `classes[]`); null/absent (or an empty `classes[]`) for every other
+ *   scenario. Recorded under `scorecard.trap` as a SEPARATE differential
+ *   signal — never folded into the seven composite dimensions.
  * @param {object} [args.rawRefs]          Provenance breadcrumbs for `rawRefs`.
  * @param {object} [args.standalone]       Standalone-path telemetry (Story #48),
  *   present only when the mandrel arm produced no Epic ledger but the run
@@ -580,20 +582,28 @@ export function buildScorecard({
     dimensions,
   };
 
-  // Differential trap signal (Story #57). Present only for the trap rung; the
-  // SEPARATE adversarial oracle's verdict, NOT folded into the five composite
-  // dimensions — it is the differential signal the spike reads on its own. A
-  // `null`/absent trap (every non-trap scenario, or an oracle that failed)
-  // leaves the block off the scorecard entirely, so the schema keeps it
-  // optional and no false delta is introduced.
-  if (trap && typeof trap === 'object') {
+  // Multi-class differential trap signal (Epic #66, Story #74). Present only
+  // when the scenario declares at least one trap class; the SEPARATE
+  // per-class trap-runner verdict, NOT folded into the seven composite
+  // dimensions — it is a differential axis reported on its own. A
+  // `null`/absent trap, or one with an empty `classes[]` (every non-trap
+  // scenario, or a runner that failed), leaves the block off the scorecard
+  // entirely, so the schema keeps it optional and no false delta is
+  // introduced.
+  if (
+    trap &&
+    typeof trap === 'object' &&
+    Array.isArray(trap.classes) &&
+    trap.classes.length > 0
+  ) {
     scorecard.trap = {
-      defectClass: trap.defectClass,
-      defectPresent: Boolean(trap.defectPresent),
-      score: trap.score,
-      signals: trap.signals,
-      evidence: trap.evidence,
-      ...(trap.filesScanned != null ? { filesScanned: trap.filesScanned } : {}),
+      classes: trap.classes.map((entry) => ({
+        class: entry.class,
+        score: entry.score,
+        defectPresent: Boolean(entry.defectPresent),
+        ...(Array.isArray(entry.evidence) ? { evidence: entry.evidence } : {}),
+      })),
+      cleanRate: trap.cleanRate,
     };
   }
 

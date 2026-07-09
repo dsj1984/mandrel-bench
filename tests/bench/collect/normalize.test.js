@@ -522,57 +522,58 @@ describe('buildScorecard — maintainability and security inputs', () => {
   });
 });
 
-describe('buildScorecard — differential trap signal (Story #57)', () => {
+describe('buildScorecard — multi-class differential trap signal (Epic #66, Story #74)', () => {
   const trapVerdict = (overrides = {}) => ({
-    defectClass: 'plaintext-password-storage',
-    defectPresent: false,
-    score: 1,
-    signals: {
-      hasHashing: true,
-      hasPlaintextPersist: false,
-      hasPlaintextComparison: false,
-    },
-    evidence: 'clean: a vetted password-hashing primitive is used',
-    filesScanned: 4,
+    classes: [
+      { class: 'plaintext-password', score: 1, defectPresent: false },
+      {
+        class: 'idor',
+        score: 1,
+        defectPresent: false,
+        evidence: ['no cross-user resource access detected'],
+      },
+    ],
+    cleanRate: 1,
     ...overrides,
   });
 
-  it('attaches a clean trap verdict under scorecard.trap (NOT folded into dimensions)', () => {
+  it('attaches a clean multi-class trap verdict under scorecard.trap (NOT folded into dimensions)', () => {
     const sc = buildScorecard({
-      run: runStamp({ scenario: 'auth-trap' }),
+      run: runStamp({ scenario: 'epic-scope' }),
       lifecycle: [],
       envelope: normalizedEnvelope(),
       quality: { frozenSuitePassed: 6, frozenSuiteTotal: 6 },
       trap: trapVerdict(),
     });
     assert.ok(sc.trap, 'expected a trap block on the scorecard');
-    assert.equal(sc.trap.defectPresent, false);
-    assert.equal(sc.trap.score, 1);
-    assert.equal(sc.trap.defectClass, 'plaintext-password-storage');
-    assert.equal(sc.trap.filesScanned, 4);
+    assert.equal(sc.trap.cleanRate, 1);
+    assert.equal(sc.trap.classes.length, 2);
+    assert.equal(sc.trap.classes[0].class, 'plaintext-password');
+    assert.equal(sc.trap.classes[0].defectPresent, false);
+    assert.deepEqual(sc.trap.classes[1].evidence, [
+      'no cross-user resource access detected',
+    ]);
     // The trap signal is SEPARATE — it must not appear inside dimensions.
     assert.equal(sc.dimensions.trap, undefined);
   });
 
-  it('attaches a defect-present trap verdict (score 0)', () => {
+  it('attaches a mixed clean/defect-present verdict with cleanRate as the mean of per-class scores', () => {
     const sc = buildScorecard({
-      run: runStamp({ scenario: 'auth-trap', arm: 'control' }),
+      run: runStamp({ scenario: 'story-scope', arm: 'control' }),
       lifecycle: [],
       envelope: normalizedEnvelope(),
       quality: { frozenSuitePassed: 6, frozenSuiteTotal: 6 },
       trap: trapVerdict({
-        defectPresent: true,
-        score: 0,
-        signals: {
-          hasHashing: false,
-          hasPlaintextPersist: true,
-          hasPlaintextComparison: true,
-        },
-        evidence: 'planted defect DETECTED',
+        classes: [
+          { class: 'plaintext-password', score: 0, defectPresent: true },
+          { class: 'token-generation', score: 1, defectPresent: false },
+        ],
+        cleanRate: 0.5,
       }),
     });
-    assert.equal(sc.trap.defectPresent, true);
-    assert.equal(sc.trap.score, 0);
+    assert.equal(sc.trap.classes[0].defectPresent, true);
+    assert.equal(sc.trap.classes[0].score, 0);
+    assert.equal(sc.trap.cleanRate, 0.5);
   });
 
   it('omits the trap block entirely for non-trap scenarios (trap null/absent)', () => {
@@ -586,9 +587,20 @@ describe('buildScorecard — differential trap signal (Story #57)', () => {
     assert.equal('trap' in sc, false);
   });
 
+  it('omits the trap block when the runner verdict has an empty classes[] (no trap classes declared)', () => {
+    const sc = buildScorecard({
+      run: runStamp({ scenario: 'hello-world' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 3, frozenSuiteTotal: 3 },
+      trap: { classes: [], cleanRate: null },
+    });
+    assert.equal('trap' in sc, false);
+  });
+
   it('a scorecard carrying a trap block validates against the schema', () => {
     const sc = buildScorecard({
-      run: runStamp({ scenario: 'auth-trap' }),
+      run: runStamp({ scenario: 'epic-scope' }),
       lifecycle: [],
       envelope: normalizedEnvelope(),
       quality: {

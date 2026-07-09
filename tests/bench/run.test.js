@@ -26,6 +26,7 @@ import {
   cellKey,
   derivedSecurityInputs,
   discoverLedger,
+  loadScenario,
   main,
   planningInputs,
   qualityInputs,
@@ -476,6 +477,13 @@ function benchDeps(record) {
       record.overlays.push(o.arm);
       return { overlaid: true, arm: o.arm, copied: [] };
     },
+    // control-arm gate package.json seam (Story #74) — the counterpart to
+    // overlayFn for the mandrel arm; keeps the control provisioning path off
+    // real disk in tests.
+    writeGatePackageJsonFn: (o) => {
+      record.gatePackageJsonWrites?.push(o.workspacePath);
+      return { workspacePath: o.workspacePath, pkg: {} };
+    },
     // session seam
     runSessionFn: (o) => {
       record.sessions.push({
@@ -581,6 +589,7 @@ function freshRecord(overrides = {}) {
     teardowns: [],
     resets: [],
     overlays: [],
+    gatePackageJsonWrites: [],
     sessions: [],
     git: [],
     writes: [],
@@ -898,6 +907,187 @@ async function loadScenarioFake() {
     }),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Epic #66, Story #74 — trap-runner substrate wired into loadScenario /
+// runOneRun (replaces the single-oracle scenario.trapOracle field).
+// ---------------------------------------------------------------------------
+
+test('loadScenario: resolves the scenario directory (no more single-oracle trapOracle field)', async () => {
+  const { scenario, evaluate, scenarioDir } = await loadScenario(
+    'story-scope',
+    {
+      readFileImpl: () => JSON.stringify(FAKE_SCENARIO),
+      importImpl: async () => ({
+        evaluate: async () => ({ passed: true }),
+      }),
+    },
+  );
+  assert.equal(scenario.id, FAKE_SCENARIO.id);
+  assert.equal(typeof evaluate, 'function');
+  assert.ok(scenarioDir.endsWith(path.join('scenarios', 'story-scope')));
+  // The old single-oracle field is no longer part of the returned envelope.
+  assert.equal('trapEvaluate' in { scenario, evaluate, scenarioDir }, false);
+});
+
+test('runOneRun: discovers and executes trap oracles via the runner and passes the multi-class verdict to buildScorecard', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  const seenTrapRunnerArgs = [];
+  deps.runTrapOraclesFn = async (o) => {
+    seenTrapRunnerArgs.push(o);
+    return {
+      classes: [
+        { class: 'plaintext-password', score: 1, defectPresent: false },
+        { class: 'idor', score: 0, defectPresent: true },
+      ],
+      cleanRate: 0.5,
+    };
+  };
+
+  const { scenario, evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario,
+      evaluate,
+      scenarioDir: '/repo/bench/scenarios/story-scope',
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'https://github.com/dsj1984/bench-sbx-abc.git',
+        owner: 'dsj1984',
+        repo: 'bench-sbx-abc',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.equal(seenTrapRunnerArgs.length, 1);
+  assert.equal(
+    seenTrapRunnerArgs[0].scenarioDir,
+    '/repo/bench/scenarios/story-scope',
+  );
+  assert.equal(seenTrapRunnerArgs[0].deliveredTreePath, '/ws-mandrel');
+
+  assert.deepEqual(scorecard.trap, {
+    classes: [
+      { class: 'plaintext-password', score: 1, defectPresent: false },
+      { class: 'idor', score: 0, defectPresent: true },
+    ],
+    cleanRate: 0.5,
+  });
+});
+
+test('runOneRun: no scenarioDir ⇒ no trap-runner call, no trap block on the scorecard', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  let called = false;
+  deps.runTrapOraclesFn = async () => {
+    called = true;
+    return { classes: [], cleanRate: null };
+  };
+
+  const { scenario, evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario,
+      evaluate,
+      // scenarioDir omitted
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'https://github.com/dsj1984/bench-sbx-abc.git',
+        owner: 'dsj1984',
+        repo: 'bench-sbx-abc',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.equal(called, false);
+  assert.equal('trap' in scorecard, false);
+});
+
+test('runOneRun: an empty classes[] verdict (no declared trap classes) leaves the scorecard without a trap block', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  deps.runTrapOraclesFn = async () => ({ classes: [], cleanRate: null });
+
+  const { scenario, evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario,
+      evaluate,
+      scenarioDir: '/repo/bench/scenarios/hello-world',
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'https://github.com/dsj1984/bench-sbx-abc.git',
+        owner: 'dsj1984',
+        repo: 'bench-sbx-abc',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.equal('trap' in scorecard, false);
+});
+
+test('runOneRun: a trap-runner failure is best-effort — the run still completes with no trap block', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  deps.runTrapOraclesFn = async () => {
+    throw new Error('boom');
+  };
+
+  const { scenario, evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario,
+      evaluate,
+      scenarioDir: '/repo/bench/scenarios/story-scope',
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'https://github.com/dsj1984/bench-sbx-abc.git',
+        owner: 'dsj1984',
+        repo: 'bench-sbx-abc',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.equal('trap' in scorecard, false);
+});
+
+test('runOneRun (control arm): writes the gate package.json directly, without the mandrel overlay', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+
+  const { scenario, evaluate } = await loadScenarioFake();
+  await runOneRun(
+    {
+      scenario,
+      evaluate,
+      arm: 'control',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'https://github.com/dsj1984/bench-sbx-abc.git',
+        owner: 'dsj1984',
+        repo: 'bench-sbx-abc',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.deepEqual(record.overlays, []);
+  assert.deepEqual(record.gatePackageJsonWrites, ['/ws-control']);
+});
 
 // ---------------------------------------------------------------------------
 // Story #22 — checkpoint + ceiling pure helpers
