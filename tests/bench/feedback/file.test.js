@@ -429,6 +429,30 @@ describe('defaultGhPort — explicit FEEDBACK token binding (M8)', () => {
       else process.env.BENCH_GITHUB_TOKEN = prevBench;
     }
   });
+
+  it('forwards an ARGUMENT ARRAY (never a shell string) under a sanitized env (M5)', () => {
+    // The security-relevant seam: gh is invoked via execFile with an argv ARRAY
+    // and a sanitized-env object — so a finding subject / cohort value / body
+    // can never be interpreted as a shell command. Parallels sandbox.test.js.
+    let captured;
+    const execFileFn = (cmd, args, opts) => {
+      captured = { cmd, args, opts };
+      return '[]';
+    };
+    const out = defaultGhPort(['issue', 'list', '--repo', 'o/r'], {
+      execFileFn,
+    });
+    assert.equal(out, '[]');
+    assert.equal(captured.cmd, 'gh');
+    // argv is passed straight through as an ARRAY (no shell interpolation).
+    assert.deepEqual(captured.args, ['issue', 'list', '--repo', 'o/r']);
+    // The env is the sanitized OBJECT (not the ambient process.env identity),
+    // and gh is run with a piped, non-shell stdio.
+    assert.equal(typeof captured.opts.env, 'object');
+    assert.notEqual(captured.opts.env, process.env);
+    assert.equal(captured.opts.stdio, 'pipe');
+    assert.equal(captured.opts.encoding, 'utf-8');
+  });
 });
 
 describe('threadHasMarker', () => {

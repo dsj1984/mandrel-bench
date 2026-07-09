@@ -372,6 +372,29 @@ describe('derive-cli — main writes the envelope + PR-body beside the report', 
     );
   });
 
+  it('exits 1 with a [derive-cli] FATAL log when aggregation THROWS (catch branch)', async () => {
+    // Distinct from the resolved.error path: here aggregateScorecards itself
+    // throws (a disk read blows up) and the try/catch FATAL branch must convert
+    // it to exit 1 + a `[derive-cli] FATAL` log, never an unhandled rejection.
+    const fs = memFs({ [STORE_PATH]: store([card()]) });
+    const deps = depsFor(fs);
+    deps.aggregateDeps.readFileImpl = () => {
+      throw new Error('disk exploded mid-walk');
+    };
+    const errors = [];
+    deps.logger = { info() {}, warn() {}, error: (m) => errors.push(m) };
+    const code = await main(['--results-dir', '/results'], {}, deps);
+    assert.equal(code, 1);
+    assert.ok(
+      errors.some((m) => /\[derive-cli\] FATAL/.test(m)),
+      'the catch branch must log a [derive-cli] FATAL line',
+    );
+    assert.ok(
+      errors.some((m) => /disk exploded mid-walk/.test(m)),
+      'the FATAL log must carry the underlying error message',
+    );
+  });
+
   it('honors explicit --envelope-out / --pr-body-out paths', async () => {
     const fs = memFs({ [STORE_PATH]: store([card({ arm: 'mandrel' })]) });
     const code = await main(
