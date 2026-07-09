@@ -45,6 +45,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildScorecard, parseNdjson } from './collect/normalize.js';
 import { withRunningApp as defaultWithRunningApp } from './driver/app-runner.js';
+import { DEFAULT_TTL_HOURS, sweepLeakedRepos } from './driver/janitor.js';
 import { overlayFrameworkUnderTest } from './driver/overlay.js';
 import {
   DEFAULT_BENCH_MODEL,
@@ -1289,11 +1290,40 @@ export async function main(env = process.env, deps = {}) {
     .map((s) => s.trim());
   const epicIds = resolveEpicIds(scenarios, env);
 
+  // Janitor sweep (Story #72): runs at the start of every invocation, BEFORE
+  // this cell's own repo is provisioned, so a prior crashed run's leaked
+  // `bench-sbx-*` repo is swept before we add another one. Best-effort — a
+  // sweep failure (e.g. a transient `gh repo list` error) must never abort
+  // the benchmark run itself; it logs and the run proceeds.
+  const sweepJanitorFn = deps.sweepJanitorFn ?? sweepLeakedRepos;
+  try {
+    sweepJanitorFn(
+      {
+        owner,
+        ttlHours:
+          env.BENCH_JANITOR_TTL_HOURS != null
+            ? Number(env.BENCH_JANITOR_TTL_HOURS)
+            : DEFAULT_TTL_HOURS,
+      },
+      { logger, ghFn: deps.janitorGhFn },
+    );
+  } catch (err) {
+    logger.warn(
+      `[run] janitor sweep failed (continuing): ${err?.message ?? err}`,
+    );
+  }
+
   // Ephemeral sandbox lifecycle (Story #71): create → seed → run(s) → destroy.
   // This invocation provisions ONE `bench-sbx-*` repo, seeded from
   // `bench/sandbox-template/`, that every cell in this invocation runs
   // against — replacing the retired standing `mandrel-bench-sandbox` repo.
   // Teardown is guaranteed (destroy runs in `finally`, best-effort).
+  const createEphemeralRepoFn =
+    deps.createEphemeralRepoFn ?? createEphemeralRepo;
+  const seedFromTemplateFn = deps.seedFromTemplateFn ?? seedFromTemplate;
+  const destroyEphemeralRepoFn =
+    deps.destroyEphemeralRepoFn ?? destroyEphemeralRepo;
+
   const cohort = env.BENCH_COHORT ?? new Date().toISOString().slice(0, 10);
   const nonce = randomBytes(4).toString('hex');
   const repoName = sandboxRepoName({
@@ -1302,13 +1332,13 @@ export async function main(env = process.env, deps = {}) {
     arm: 'session',
     nonce,
   });
-  const created = createEphemeralRepo({ owner, name: repoName }, { logger });
+  const created = createEphemeralRepoFn({ owner, name: repoName }, { logger });
 
   const ephemeralRoot = defaultEphemeralRoot();
   const seedDir = mkdtempSync(path.join(ephemeralRoot, SANDBOX_DIR_PREFIX));
   let seeded;
   try {
-    seeded = seedFromTemplate(
+    seeded = seedFromTemplateFn(
       { repoFullName: created.repoFullName, workspacePath: seedDir },
       { logger },
     );
@@ -1342,13 +1372,14 @@ export async function main(env = process.env, deps = {}) {
     ...(env.BENCH_CHECKPOINT ? { checkpointPath: env.BENCH_CHECKPOINT } : {}),
   };
 
+  const runFirstBenchmarkFn = deps.runFirstBenchmarkFn ?? runFirstBenchmark;
   let result;
   try {
-    result = await runFirstBenchmark(opts, { logger });
+    result = await runFirstBenchmarkFn(opts, { logger });
   } finally {
     // Best-effort: a failed delete must never abort/mask the run's own
     // result — it logs and defers to the janitor sweep (sibling Story).
-    destroyEphemeralRepo({ repoFullName: created.repoFullName }, { logger });
+    destroyEphemeralRepoFn({ repoFullName: created.repoFullName }, { logger });
   }
   const cohortLines = result.cohorts
     .map(

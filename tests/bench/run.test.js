@@ -1250,3 +1250,161 @@ test('main(): a retired var set alongside missing required vars emits BOTH the d
     process.exitCode = prevExitCode;
   }
 });
+
+// ---------------------------------------------------------------------------
+// Story #72 — janitor sweep invoked at startup, before provisioning
+// ---------------------------------------------------------------------------
+
+test('main(): invokes the janitor sweep BEFORE provisioning the cell repo (call order)', async () => {
+  const calls = [];
+  const logger = { info: () => {}, warn: () => {}, error: () => {} };
+  const sweepJanitorFn = (opts) => {
+    calls.push({ step: 'janitor', owner: opts.owner, ttlHours: opts.ttlHours });
+    return { candidates: [], deleted: [], failed: [], dryRun: false };
+  };
+  const createEphemeralRepoFn = ({ owner, name }) => {
+    calls.push({ step: 'createEphemeralRepo' });
+    return { repoFullName: `${owner}/${name}` };
+  };
+  const seedFromTemplateFn = ({ repoFullName }) => {
+    calls.push({ step: 'seedFromTemplate' });
+    return {
+      repoFullName,
+      baselineSha: 'deadbeef',
+      repoUrl: `https://github.com/${repoFullName}.git`,
+    };
+  };
+  const destroyEphemeralRepoFn = ({ repoFullName }) => {
+    calls.push({ step: 'destroyEphemeralRepo' });
+    return { deleted: true, repoFullName };
+  };
+  const runFirstBenchmarkFn = async () => {
+    calls.push({ step: 'runFirstBenchmark' });
+    return {
+      scorecards: [],
+      cohorts: [],
+      dashboardPath: 'x',
+      skipped: 0,
+      stopped: null,
+    };
+  };
+
+  await main(
+    { BENCH_GITHUB_TOKEN: 'ghp_x', BENCH_SANDBOX_OWNER: 'dsj1984' },
+    {
+      logger,
+      sweepJanitorFn,
+      createEphemeralRepoFn,
+      seedFromTemplateFn,
+      destroyEphemeralRepoFn,
+      runFirstBenchmarkFn,
+    },
+  );
+
+  const steps = calls.map((c) => c.step);
+  assert.deepEqual(steps, [
+    'janitor',
+    'createEphemeralRepo',
+    'seedFromTemplate',
+    'runFirstBenchmark',
+    'destroyEphemeralRepo',
+  ]);
+  assert.equal(calls[0].owner, 'dsj1984');
+  assert.equal(calls[0].ttlHours, 24);
+});
+
+test('main(): a janitor sweep failure is logged but does not abort the run', async () => {
+  const messages = { warn: [] };
+  const logger = {
+    info: () => {},
+    warn: (m) => messages.warn.push(m),
+    error: () => {},
+  };
+  const sweepJanitorFn = () => {
+    throw new Error('gh: rate limited');
+  };
+  const createEphemeralRepoFn = ({ owner, name }) => ({
+    repoFullName: `${owner}/${name}`,
+  });
+  const seedFromTemplateFn = ({ repoFullName }) => ({
+    repoFullName,
+    baselineSha: 'deadbeef',
+    repoUrl: `https://github.com/${repoFullName}.git`,
+  });
+  const destroyEphemeralRepoFn = ({ repoFullName }) => ({
+    deleted: true,
+    repoFullName,
+  });
+  let benchmarkRan = false;
+  const runFirstBenchmarkFn = async () => {
+    benchmarkRan = true;
+    return {
+      scorecards: [],
+      cohorts: [],
+      dashboardPath: 'x',
+      skipped: 0,
+      stopped: null,
+    };
+  };
+
+  await main(
+    { BENCH_GITHUB_TOKEN: 'ghp_x', BENCH_SANDBOX_OWNER: 'dsj1984' },
+    {
+      logger,
+      sweepJanitorFn,
+      createEphemeralRepoFn,
+      seedFromTemplateFn,
+      destroyEphemeralRepoFn,
+      runFirstBenchmarkFn,
+    },
+  );
+
+  assert.equal(benchmarkRan, true);
+  assert.ok(messages.warn.some((w) => w.includes('janitor sweep failed')));
+});
+
+test('main(): BENCH_JANITOR_TTL_HOURS overrides the default janitor TTL', async () => {
+  let seenTtlHours;
+  const logger = { info: () => {}, warn: () => {}, error: () => {} };
+  const sweepJanitorFn = (opts) => {
+    seenTtlHours = opts.ttlHours;
+    return { candidates: [], deleted: [], failed: [], dryRun: false };
+  };
+  const createEphemeralRepoFn = ({ owner, name }) => ({
+    repoFullName: `${owner}/${name}`,
+  });
+  const seedFromTemplateFn = ({ repoFullName }) => ({
+    repoFullName,
+    baselineSha: 'deadbeef',
+    repoUrl: `https://github.com/${repoFullName}.git`,
+  });
+  const destroyEphemeralRepoFn = ({ repoFullName }) => ({
+    deleted: true,
+    repoFullName,
+  });
+  const runFirstBenchmarkFn = async () => ({
+    scorecards: [],
+    cohorts: [],
+    dashboardPath: 'x',
+    skipped: 0,
+    stopped: null,
+  });
+
+  await main(
+    {
+      BENCH_GITHUB_TOKEN: 'ghp_x',
+      BENCH_SANDBOX_OWNER: 'dsj1984',
+      BENCH_JANITOR_TTL_HOURS: '48',
+    },
+    {
+      logger,
+      sweepJanitorFn,
+      createEphemeralRepoFn,
+      seedFromTemplateFn,
+      destroyEphemeralRepoFn,
+      runFirstBenchmarkFn,
+    },
+  );
+
+  assert.equal(seenTtlHours, 48);
+});
