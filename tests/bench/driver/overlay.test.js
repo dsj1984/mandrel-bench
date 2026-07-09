@@ -93,6 +93,31 @@ test('rewriteAgentrc: rejects bad input', () => {
   );
 });
 
+test('rewriteAgentrc: targets the coordinates carried on the EPHEMERAL sandbox handle, not any env-configured standing repo (Story #71)', () => {
+  // The ephemeral per-cell repo's owner/repo are whatever createEphemeralRepo
+  // + sandboxRepoName produced for THIS cell — a fresh, dynamic name every
+  // time, never a fixed standing repo. rewriteAgentrc must be driven purely by
+  // the { owner, repo } it is handed, proving there is no hidden fallback to a
+  // fixed/env-configured repo.
+  const ephemeralHandleCoords = {
+    owner: 'dsj1984',
+    repo: 'bench-sbx-1-75-0-hello-world-mandrel-a1b2c3',
+  };
+  const cfg = rewriteAgentrc(AGENTRC_SRC, ephemeralHandleCoords);
+  assert.equal(cfg.github.owner, ephemeralHandleCoords.owner);
+  assert.equal(cfg.github.repo, ephemeralHandleCoords.repo);
+
+  // A second cell's differently-named ephemeral repo produces a differently
+  // rewritten .agentrc.json — coordinates are handle-sourced, not a constant.
+  const otherCellCoords = {
+    owner: 'dsj1984',
+    repo: 'bench-sbx-1-75-0-hello-world-control-d4e5f6',
+  };
+  const cfg2 = rewriteAgentrc(AGENTRC_SRC, otherCellCoords);
+  assert.equal(cfg2.github.repo, otherCellCoords.repo);
+  assert.notEqual(cfg.github.repo, cfg2.github.repo);
+});
+
 test('buildTargetPackageJson: clean minimal ESM consumer with no-op gate scripts', () => {
   const pkg = buildTargetPackageJson();
   assert.equal(pkg.type, 'module');

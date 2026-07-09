@@ -26,16 +26,21 @@ import {
   cellKey,
   derivedSecurityInputs,
   discoverLedger,
+  main,
   planningInputs,
   qualityInputs,
+  REQUIRED_SANDBOX_ENV_VARS,
+  RETIRED_SANDBOX_ENV_VARS,
   readCheckpoint,
   readFrameworkVersion,
   resolveEpicIds,
   resolveModelId,
+  retiredSandboxEnvWarnings,
   runFirstBenchmark,
   runOneRun,
   sanitizeRunId,
   scenarioEnvSuffix,
+  validateSandboxEnv,
 } from '../../bench/run.js';
 import { computeSecurity } from '../../bench/score/dimensions.js';
 
@@ -1118,4 +1123,130 @@ test('runFirstBenchmark: a resumed batch renders the report over the FULL store,
   // control. Before the fix it rendered only this run's cards, under-counting
   // the resumed cell (it would have read "1 mandrel / 0 control").
   assert.match(result.cohorts[0].report, /n = 1 mandrel \/ 1 control/);
+});
+
+// ---------------------------------------------------------------------------
+// Story #71 — ephemeral sandbox env contract: fail-fast + deprecation
+// ---------------------------------------------------------------------------
+
+test('REQUIRED_SANDBOX_ENV_VARS: BENCH_GITHUB_TOKEN and BENCH_SANDBOX_OWNER', () => {
+  assert.deepEqual(
+    [...REQUIRED_SANDBOX_ENV_VARS].sort(),
+    ['BENCH_GITHUB_TOKEN', 'BENCH_SANDBOX_OWNER'].sort(),
+  );
+});
+
+test('validateSandboxEnv: ok when both required vars are set', () => {
+  const res = validateSandboxEnv({
+    BENCH_GITHUB_TOKEN: 'ghp_x',
+    BENCH_SANDBOX_OWNER: 'dsj1984',
+  });
+  assert.deepEqual(res, { ok: true });
+});
+
+test('validateSandboxEnv: missing BENCH_GITHUB_TOKEN fails, naming the var', () => {
+  const res = validateSandboxEnv({ BENCH_SANDBOX_OWNER: 'dsj1984' });
+  assert.equal(res.ok, false);
+  assert.match(res.message, /BENCH_GITHUB_TOKEN/);
+});
+
+test('validateSandboxEnv: missing BENCH_SANDBOX_OWNER fails, naming the var', () => {
+  const res = validateSandboxEnv({ BENCH_GITHUB_TOKEN: 'ghp_x' });
+  assert.equal(res.ok, false);
+  assert.match(res.message, /BENCH_SANDBOX_OWNER/);
+});
+
+test('validateSandboxEnv: a blank (whitespace-only) value counts as missing', () => {
+  const res = validateSandboxEnv({
+    BENCH_GITHUB_TOKEN: '   ',
+    BENCH_SANDBOX_OWNER: 'dsj1984',
+  });
+  assert.equal(res.ok, false);
+  assert.match(res.message, /BENCH_GITHUB_TOKEN/);
+});
+
+test('retiredSandboxEnvWarnings: empty when no retired var is set', () => {
+  assert.deepEqual(
+    retiredSandboxEnvWarnings({
+      BENCH_GITHUB_TOKEN: 'x',
+      BENCH_SANDBOX_OWNER: 'o',
+    }),
+    [],
+  );
+});
+
+test('retiredSandboxEnvWarnings: one warning per retired var, each naming its replacement', () => {
+  const warnings = retiredSandboxEnvWarnings({
+    BENCH_SANDBOX_REPO_URL: 'https://github.com/dsj1984/mandrel-bench-sandbox',
+    BENCH_SANDBOX_REPO: 'mandrel-bench-sandbox',
+    BENCH_SANDBOX_BASELINE_REF: 'bench-baseline',
+  });
+  assert.equal(warnings.length, Object.keys(RETIRED_SANDBOX_ENV_VARS).length);
+  assert.match(
+    warnings.find((w) => w.includes('BENCH_SANDBOX_REPO_URL')),
+    /BENCH_GITHUB_TOKEN/,
+  );
+  assert.ok(warnings.every((w) => w.includes('DEPRECATED')));
+});
+
+test('main(): exits non-zero with a message naming the missing var, BEFORE any model invocation (BENCH_GITHUB_TOKEN unset)', async () => {
+  const messages = { info: [], warn: [], error: [] };
+  const logger = {
+    info: (m) => messages.info.push(m),
+    warn: (m) => messages.warn.push(m),
+    error: (m) => messages.error.push(m),
+  };
+  const prevExitCode = process.exitCode;
+  process.exitCode = undefined;
+  try {
+    await main({ BENCH_SANDBOX_OWNER: 'dsj1984' }, { logger });
+    assert.equal(process.exitCode, 1);
+    assert.equal(messages.error.length, 1);
+    assert.match(messages.error[0], /BENCH_GITHUB_TOKEN/);
+  } finally {
+    process.exitCode = prevExitCode;
+  }
+});
+
+test('main(): exits non-zero with a message naming the missing var (BENCH_SANDBOX_OWNER unset)', async () => {
+  const messages = { info: [], warn: [], error: [] };
+  const logger = {
+    info: (m) => messages.info.push(m),
+    warn: (m) => messages.warn.push(m),
+    error: (m) => messages.error.push(m),
+  };
+  const prevExitCode = process.exitCode;
+  process.exitCode = undefined;
+  try {
+    await main({ BENCH_GITHUB_TOKEN: 'ghp_x' }, { logger });
+    assert.equal(process.exitCode, 1);
+    assert.match(messages.error[0], /BENCH_SANDBOX_OWNER/);
+  } finally {
+    process.exitCode = prevExitCode;
+  }
+});
+
+test('main(): a retired var set alongside missing required vars emits BOTH the deprecation warning and the fatal error', async () => {
+  const messages = { info: [], warn: [], error: [] };
+  const logger = {
+    info: (m) => messages.info.push(m),
+    warn: (m) => messages.warn.push(m),
+    error: (m) => messages.error.push(m),
+  };
+  const prevExitCode = process.exitCode;
+  process.exitCode = undefined;
+  try {
+    await main(
+      {
+        BENCH_SANDBOX_REPO_URL:
+          'https://github.com/dsj1984/mandrel-bench-sandbox',
+      },
+      { logger },
+    );
+    assert.equal(process.exitCode, 1);
+    assert.ok(messages.warn.some((w) => w.includes('BENCH_SANDBOX_REPO_URL')));
+    assert.ok(messages.error.some((e) => e.includes('BENCH_GITHUB_TOKEN')));
+  } finally {
+    process.exitCode = prevExitCode;
+  }
 });
