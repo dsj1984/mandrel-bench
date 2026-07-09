@@ -1,7 +1,8 @@
 /**
  * plaintext-password.js — adversarial source-scanning trap-oracle for the
  * `story-scope` scenario's `plaintext-password` defect class (Epic #66,
- * Story #75, absorbing `bench/scenarios/auth-trap/trap-oracle.js`, Story #57).
+ * Story #75, absorbing the trap-oracle convention from the retired
+ * single-defect spike scenario, Story #57).
  *
  * This is the SEPARATE, adversarial face of the trap axis, deliberately kept
  * apart from the frozen functional suite (`../acceptance.test.js`). The

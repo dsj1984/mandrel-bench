@@ -314,7 +314,7 @@ test('derivedSecurityInputs: secret penalty saturates at 5+ hits (never negative
 });
 
 // ---------------------------------------------------------------------------
-// Re-scoring the 1.75.0 project-api cohort → non-inverted security delta
+// Re-scoring the 1.75.0 largest-rung cohort (the retired epic-scale scenario) → non-inverted security delta
 // (Story #55, acceptance #4). The deliverable source trees for that cohort are
 // not persisted in the checked-in `.raw/` artifacts (only the lifecycle ledger,
 // signals, and cost envelope are), so we re-score from the documented per-run
@@ -329,7 +329,7 @@ test('derivedSecurityInputs: secret penalty saturates at 5+ hits (never negative
 // non-inverted (≥ control) mean security score.
 // ---------------------------------------------------------------------------
 
-test('re-scoring 1.75.0 project-api sub-signals yields a non-inverted security delta', () => {
+test('re-scoring 1.75.0 largest-rung sub-signals yields a non-inverted security delta', () => {
   // Per-run secret-scan counts from the cohort (issue #55 evidence). With the
   // test-fixture exclusion landed (Story #55 prong a), the bulk of these counts
   // were fixture credentials; the residual *delivered* secret count is modelled
@@ -340,7 +340,7 @@ test('re-scoring 1.75.0 project-api sub-signals yields a non-inverted security d
   const mandrelDeliveredSecrets = [0, 0, 0, 0, 0, 0, 0, 0]; // fixtures excluded
   const controlDeliveredSecrets = [0, 0, 0, 0, 0, 0, 0, 0];
 
-  // Both arms deliver the same MUST posture for project-api (auth scenario):
+  // Both arms deliver the same MUST posture for the largest-rung auth scenario:
   // model a representative present-posture so the comparison isolates the secret
   // dimension.
   const must = {
@@ -1200,15 +1200,15 @@ test('runOneRun (control arm): writes the gate package.json directly, without th
 // ---------------------------------------------------------------------------
 
 test('cellKey: stable, separator-isolated identity for a (scenario × arm × run) cell', () => {
-  const a = cellKey({ scenario: 'crud-db', arm: 'mandrel', runIndex: 3 });
+  const a = cellKey({ scenario: 'story-scope', arm: 'mandrel', runIndex: 3 });
   assert.equal(
     a,
-    cellKey({ scenario: 'crud-db', arm: 'mandrel', runIndex: 3 }),
+    cellKey({ scenario: 'story-scope', arm: 'mandrel', runIndex: 3 }),
   );
   // No collision across the three fields (a hostile id can't forge another key).
   assert.notEqual(
-    cellKey({ scenario: 'crud', arm: 'db-mandrel', runIndex: 3 }),
-    cellKey({ scenario: 'crud-db', arm: 'mandrel', runIndex: 3 }),
+    cellKey({ scenario: 'story', arm: 'db-mandrel', runIndex: 3 }),
+    cellKey({ scenario: 'story-scope', arm: 'mandrel', runIndex: 3 }),
   );
 });
 
@@ -1254,7 +1254,7 @@ test('appendCheckpoint: appends one NDJSON cell record, creating the dir', () =>
 // ---------------------------------------------------------------------------
 
 test('scenarioEnvSuffix: uppercases and folds non-alnum runs to single _', () => {
-  assert.equal(scenarioEnvSuffix('crud-db'), 'CRUD_DB');
+  assert.equal(scenarioEnvSuffix('story-scope'), 'STORY_SCOPE');
   assert.equal(scenarioEnvSuffix('hello-world'), 'HELLO_WORLD');
   assert.equal(scenarioEnvSuffix('a.b/c'), 'A_B_C');
 });
@@ -1265,29 +1265,29 @@ test('resolveEpicIds: single-scenario BENCH_EPIC_ID back-compat → scenarios[0]
 });
 
 test('resolveEpicIds: per-scenario vars drive each rung from its own Epic', () => {
-  const ids = resolveEpicIds(['hello-world', 'crud-db'], {
+  const ids = resolveEpicIds(['hello-world', 'story-scope'], {
     BENCH_EPIC_ID_HELLO_WORLD: '99',
-    BENCH_EPIC_ID_CRUD_DB: '100',
+    BENCH_EPIC_ID_STORY_SCOPE: '100',
   });
-  assert.deepEqual(ids, { 'hello-world': 99, 'crud-db': 100 });
+  assert.deepEqual(ids, { 'hello-world': 99, 'story-scope': 100 });
 });
 
 test('resolveEpicIds: JSON-map form + per-var override precedence', () => {
-  const ids = resolveEpicIds(['hello-world', 'crud-db'], {
-    BENCH_EPIC_IDS: JSON.stringify({ 'hello-world': 99, 'crud-db': 100 }),
+  const ids = resolveEpicIds(['hello-world', 'story-scope'], {
+    BENCH_EPIC_IDS: JSON.stringify({ 'hello-world': 99, 'story-scope': 100 }),
     // per-scenario var overrides the JSON map for the same scenario
-    BENCH_EPIC_ID_CRUD_DB: '200',
+    BENCH_EPIC_ID_STORY_SCOPE: '200',
   });
-  assert.deepEqual(ids, { 'hello-world': 99, 'crud-db': 200 });
+  assert.deepEqual(ids, { 'hello-world': 99, 'story-scope': 200 });
 });
 
 test('resolveEpicIds: malformed JSON map is ignored, non-numeric ids dropped', () => {
-  const ids = resolveEpicIds(['hello-world', 'crud-db'], {
+  const ids = resolveEpicIds(['hello-world', 'story-scope'], {
     BENCH_EPIC_IDS: '{ not json',
     BENCH_EPIC_ID_HELLO_WORLD: 'not-a-number',
-    BENCH_EPIC_ID_CRUD_DB: '100',
+    BENCH_EPIC_ID_STORY_SCOPE: '100',
   });
-  assert.deepEqual(ids, { 'crud-db': 100 });
+  assert.deepEqual(ids, { 'story-scope': 100 });
 });
 
 test('CHECKPOINT_FILENAME is the default checkpoint name beside the results root', () => {

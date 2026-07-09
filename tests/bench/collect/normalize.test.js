@@ -346,7 +346,7 @@ describe('buildScorecard — control arm efficiency/overhead', () => {
 describe('buildScorecard — standalone fallback (Story #48)', () => {
   it('measures planning + autonomy from standalone telemetry when no ledger exists', () => {
     const sc = buildScorecard({
-      run: runStamp({ arm: 'mandrel', scenario: 'crud-db' }),
+      run: runStamp({ arm: 'mandrel', scenario: 'story-scope' }),
       lifecycle: [], // standalone path → no Epic ledger
       envelope: normalizedEnvelope(),
       quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
@@ -429,7 +429,7 @@ describe('buildScorecard — standalone fallback (Story #48)', () => {
 describe('buildScorecard — standalone overhead phase-split (Epic #66, Story #77)', () => {
   it('yields a non-null ceremony/codegen split for a story-routed run with phase telemetry', () => {
     const sc = buildScorecard({
-      run: runStamp({ arm: 'mandrel', scenario: 'crud-db' }),
+      run: runStamp({ arm: 'mandrel', scenario: 'story-scope' }),
       lifecycle: [], // standalone path → no Epic ledger
       envelope: normalizedEnvelope({ durationMs: 40 * 60 * 1000 }), // 40min session
       quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
@@ -462,7 +462,7 @@ describe('buildScorecard — standalone overhead phase-split (Epic #66, Story #7
 
   it('falls back to a null tokenRatio when phases.codegenMs could not be derived', () => {
     const sc = buildScorecard({
-      run: runStamp({ arm: 'mandrel', scenario: 'crud-db' }),
+      run: runStamp({ arm: 'mandrel', scenario: 'story-scope' }),
       lifecycle: [],
       envelope: normalizedEnvelope({ durationMs: 40 * 60 * 1000 }),
       quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
@@ -586,7 +586,7 @@ describe('buildScorecard — routing contract enforcement (Epic #66, Story #76)'
 
   it('carries routingMismatch: false when the observed routing matches the declared contract', () => {
     const sc = buildScorecard({
-      run: runStamp({ arm: 'mandrel', scenario: 'crud-db' }),
+      run: runStamp({ arm: 'mandrel', scenario: 'story-scope' }),
       lifecycle: [], // standalone path → no Epic ledger
       envelope: normalizedEnvelope(),
       quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },

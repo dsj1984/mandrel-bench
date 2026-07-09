@@ -62,7 +62,7 @@ export const DEFAULT_OVERLAY_PATHS = Object.freeze([
 
 /**
  * The real `typecheck` gate written into every scenario's sandbox, for both
- * arms (Epic #66, Story #74 — generalizes the former auth-trap-only special
+ * arms (Epic #66, Story #74 — generalizes the former single-scenario special
  * case): a `node --check` parse sweep over every delivered `.js`/`.mjs`/`.cjs`
  * file. This repo is plain ESM JavaScript with no TypeScript, so a per-file
  * `node --check` IS the typecheck contract (the same rationale as the repo's
@@ -207,7 +207,7 @@ export function repoRoot() {
  * copied `node_modules` still resolves the framework runtime deps regardless
  * of what this file declares.
  *
- * ── Un-stubbed gates everywhere (generalizes the former auth-trap-only
+ * ── Un-stubbed gates everywhere (generalizes the former single-scenario
  * special case — Story #57 scoped un-stubbing to one scenario; this Story
  * inverts that: `buildTargetPackageJson` is now arm- and scenario-agnostic) ──
  * Every scenario gets REAL gate scripts that exercise the delivered code on
@@ -396,7 +396,7 @@ export function overlayFrameworkUnderTest(opts = {}, deps = {}) {
   // Clean minimal consumer package.json (keeps the scenario target
   // uncluttered) carrying REAL lint/test/typecheck gates so Mandrel's
   // close-validation enforcement genuinely fires (Story #74 — generalized
-  // from the former auth-trap-only special case; see buildTargetPackageJson).
+  // from the former single-scenario special case; see buildTargetPackageJson).
   writeFile(
     path.join(workspacePath, 'package.json'),
     `${JSON.stringify(buildTargetPackageJson(), null, 2)}\n`,

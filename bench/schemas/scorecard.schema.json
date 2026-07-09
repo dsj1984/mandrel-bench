@@ -79,15 +79,8 @@
     },
     "scenario": {
       "type": "string",
-      "enum": [
-        "hello-world",
-        "crud-db",
-        "project-api",
-        "auth-trap",
-        "story-scope",
-        "epic-scope"
-      ],
-      "description": "Scenario this run exercised. Legacy rungs by rising difficulty: 'hello-world' (the overhead floor + end-to-end smoke), 'crud-db' (decomposition, multi-wave delivery, planning fidelity, autonomy at depth), 'project-api' (the largest rung — multi-resource API surface), and 'auth-trap' (the differential-trap rung, Story #57 — a pass/pass signup/login API with a planted plaintext-password defect). Epic #66 corpus ids: 'story-scope' (routing: story) and 'epic-scope' (routing: epic) — the new multi-class trap rungs; both may carry a `trap` block."
+      "enum": ["hello-world", "story-scope", "epic-scope"],
+      "description": "Scenario this run exercised — the Epic #66 3-rung corpus, by rising difficulty: 'hello-world' (the overhead floor + end-to-end smoke, instrumentation only — never a value-delta rung), 'story-scope' (routing: story — persisted-auth API with per-user notes; carries a `trap` block for plaintext-password + token-generation), and 'epic-scope' (routing: epic — multi-user project/task management API; carries a `trap` block for plaintext-password, idor, missing-input-validation, and hardcoded-secret). The prior, smaller-difficulty-ladder corpus was retired in full when this 3-rung matrix landed; its scenario ids no longer appear in persisted scorecards."
     },
     "arm": {
       "type": "string",

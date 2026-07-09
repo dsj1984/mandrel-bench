@@ -401,7 +401,7 @@ function nonNeg(v) {
  * @param {{ id: string, displayName?: string }} args.run.model
  * @param {string} args.run.frameworkVersion
  * @param {{ node: string, os: string, host?: string }} args.run.env
- * @param {'hello-world'|'crud-db'} args.run.scenario
+ * @param {'hello-world'|'story-scope'|'epic-scope'} args.run.scenario
  * @param {'mandrel'|'control'} args.run.arm
  * @param {Array<object>} args.lifecycle   Parsed lifecycle NDJSON records.
  * @param {Array<object>} [args.signals]   Flattened per-Story signal records.

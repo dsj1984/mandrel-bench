@@ -7,7 +7,7 @@
  *   - the mandrel arm copies the framework tree + node_modules into the clone,
  *   - a package.json with REAL lint/typecheck/test gates is written into the
  *     clone for EVERY scenario (arm-agnostic — Story #74 inverted the former
- *     auth-trap-only special case),
+ *     single-scenario special case),
  *   - .agentrc.json is rewritten to target the sandbox repo (projectNumber dropped),
  *   - the control arm is NOT overlaid (bare baseline) but writeGatePackageJson
  *     writes the SAME gate package.json directly into its workspace,

@@ -235,4 +235,49 @@ describe('renderDashboard', () => {
       /must be an array/,
     );
   });
+
+  it('renders the autonomy-guardrail panel, marked deltaExempt (Epic #66, Story #77/#79)', () => {
+    const html = renderDashboard({ scorecards: [card(), CONTROL] });
+    assert.match(html, /Autonomy guardrail \(mandrel arm\)/);
+    assert.match(html, /"deltaExempt":true/);
+  });
+
+  it('renders a trap-axis panel, empty when no scenario declares a trap class', () => {
+    const html = renderDashboard({ scorecards: [card(), CONTROL] });
+    assert.match(html, /Trap axis \(differential/);
+    assert.match(html, /No scenario in this corpus declares a trap class/);
+  });
+
+  it('renders per-class trap distributions when a scorecard carries a trap block', () => {
+    const trapCard = card({
+      runId: 'trap-1',
+      trap: {
+        classes: [
+          { class: 'plaintext-password', score: 1, defectPresent: false },
+        ],
+        cleanRate: 1,
+      },
+    });
+    const html = renderDashboard({ scorecards: [trapCard] });
+    assert.match(html, /plaintext-password/);
+    assert.doesNotMatch(
+      html,
+      /No scenario in this corpus declares a trap class/,
+    );
+  });
+});
+
+describe('buildDashboardModel — guardrail + trap axis (Epic #66, Story #79)', () => {
+  it('computes the autonomy-guardrail rows from the mandrel arm', () => {
+    const model = buildDashboardModel([card(), CONTROL]);
+    assert.ok(Array.isArray(model.guardrail));
+    const row = model.guardrail.find((r) => r.scenario === 'hello-world');
+    assert.ok(row);
+    assert.equal(row.n, 1);
+  });
+
+  it('computes an empty trapAxis when no scorecard carries a trap block', () => {
+    const model = buildDashboardModel([card(), CONTROL]);
+    assert.deepEqual(model.trapAxis, []);
+  });
 });
