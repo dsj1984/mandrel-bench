@@ -1240,6 +1240,172 @@ export function retiredSandboxEnvWarnings(env = process.env) {
 }
 
 /**
+ * Best-effort janitor sweep run at the start of every `main()` invocation,
+ * BEFORE this invocation's own cells are provisioned, so a prior crashed
+ * run's leaked `bench-sbx-*` repo is swept before we add another one
+ * (Story #72). A sweep failure (e.g. a transient `gh repo list` error) must
+ * never abort the benchmark run itself — it logs and the run proceeds.
+ *
+ * @param {Record<string, string|undefined>} env
+ * @param {string} owner
+ * @param {{ logger: object, sweepJanitorFn?: Function, janitorGhFn?: Function }} deps
+ */
+function runJanitorSweep(env, owner, deps) {
+  const { logger } = deps;
+  const sweepJanitorFn = deps.sweepJanitorFn ?? sweepLeakedRepos;
+  try {
+    sweepJanitorFn(
+      {
+        owner,
+        ttlHours:
+          env.BENCH_JANITOR_TTL_HOURS != null
+            ? Number(env.BENCH_JANITOR_TTL_HOURS)
+            : DEFAULT_TTL_HOURS,
+      },
+      { logger, ghFn: deps.janitorGhFn },
+    );
+  } catch (err) {
+    logger.warn(
+      `[run] janitor sweep failed (continuing): ${err?.message ?? err}`,
+    );
+  }
+}
+
+/**
+ * Ephemeral sandbox lifecycle (Story #71, restructured under Epic #65 audit
+ * remediation — the critical defect this remediation exists to fix):
+ * create → seed → run(N serial) → destroy runs ONCE PER (scenario × arm)
+ * CELL, not once for the whole invocation. Each cell gets its own private
+ * `bench-sbx-*` repo, seeded from `bench/sandbox-template/`, used for that
+ * cell's N serial runs, and destroyed once those runs complete — replacing
+ * the retired standing external sandbox repo (docs/decisions.md D-013) and
+ * matching docs/target-architecture.md §5.2's per-cell lifecycle (the
+ * previous implementation provisioned a single shared repo for the entire
+ * invocation, contradicting that design and silently defeating cell-level
+ * parallelism). This cell's create-through-destroy sequence is scoped in
+ * its own try/finally, so ANY failure after this cell's repo is
+ * created — including a seed failure — still best-effort destroys this
+ * cell's repo before the error propagates; a failed destroy itself is
+ * best-effort too, logging and deferring to the janitor sweep rather than
+ * masking the cell's own result.
+ *
+ * @param {{ scenarioId: string, arm: string, ctx: object, deps: object }} args
+ *   `ctx` carries the invocation-wide, cross-cell state this cell needs to
+ *   read (owner, cohort, ephemeralRoot, n, epicIds, resultsDir,
+ *   checkpointPath, completedTotal, costTotal, maxRuns, maxCostUsd) — none
+ *   of it is mutated in place; the caller folds the returned cell result
+ *   into its own running totals.
+ * @returns {Promise<{ cellResult: object, created: { repoFullName: string } }>}
+ */
+async function runCell({ scenarioId, arm, ctx, deps }) {
+  const { logger } = deps;
+  const createEphemeralRepoFn =
+    deps.createEphemeralRepoFn ?? createEphemeralRepo;
+  const seedFromTemplateFn = deps.seedFromTemplateFn ?? seedFromTemplate;
+  const destroyEphemeralRepoFn =
+    deps.destroyEphemeralRepoFn ?? destroyEphemeralRepo;
+  const mkdtempFn = deps.mkdtempFn ?? mkdtempSync;
+  const rmFn = deps.rmFn ?? rmSync;
+  const runFirstBenchmarkFn = deps.runFirstBenchmarkFn ?? runFirstBenchmark;
+
+  const {
+    owner,
+    cohort,
+    ephemeralRoot,
+    n,
+    epicIds,
+    resultsDir,
+    checkpointPath,
+    completedTotal,
+    costTotal,
+    maxRuns,
+    maxCostUsd,
+  } = ctx;
+
+  const nonce = randomBytes(4).toString('hex');
+  const repoName = sandboxRepoName({
+    cohort,
+    scenario: scenarioId,
+    arm,
+    nonce,
+  });
+  const created = createEphemeralRepoFn({ owner, name: repoName }, { logger });
+  try {
+    const seedDir = mkdtempFn(path.join(ephemeralRoot, SANDBOX_DIR_PREFIX));
+    let seeded;
+    try {
+      seeded = seedFromTemplateFn(
+        { repoFullName: created.repoFullName, workspacePath: seedDir },
+        { logger },
+      );
+    } finally {
+      try {
+        rmFn(seedDir, { recursive: true, force: true });
+      } catch (err) {
+        logger.warn(
+          `[run] could not clean up the local seed workspace ${seedDir}: ${err?.message ?? err}`,
+        );
+      }
+    }
+
+    const cellSandbox = {
+      repoUrl: seeded.repoUrl,
+      owner,
+      repo: repoName,
+      repoFullName: created.repoFullName,
+      baselineSha: seeded.baselineSha,
+    };
+
+    const cellOpts = {
+      sandbox: cellSandbox,
+      scenarios: [scenarioId],
+      arms: [arm],
+      n,
+      epicIds,
+      resultsDir,
+      checkpointPath,
+      ...(maxRuns != null
+        ? { maxRuns: Math.max(0, maxRuns - completedTotal) }
+        : {}),
+      ...(maxCostUsd != null
+        ? { maxCostUsd: Math.max(0, maxCostUsd - costTotal) }
+        : {}),
+    };
+
+    const cellResult = await runFirstBenchmarkFn(cellOpts, { logger });
+    return { cellResult, created };
+  } finally {
+    // Best-effort: a failed delete must never abort/mask the cell's own
+    // result — it logs and defers to the janitor sweep (sibling Story).
+    destroyEphemeralRepoFn({ repoFullName: created.repoFullName }, { logger });
+  }
+}
+
+/**
+ * Formats and writes the final operator-facing stderr summary/dashboard
+ * line for a completed (or early-stopped) `main()` invocation.
+ *
+ * @param {object} result
+ */
+function reportRunResult(result) {
+  const cohortLines = result.cohorts
+    .map(
+      (c) => `[run]   store → ${c.storePath}\n[run]   report → ${c.reportPath}`,
+    )
+    .join('\n');
+  const stoppedLine = result.stopped
+    ? `[run] 🛑 stopped early (${result.stopped.reason}); resume to continue the batch.\n`
+    : '';
+  process.stderr.write(
+    `\n[run] ${result.scorecards.length} scorecard(s) across ${result.cohorts.length} cohort(s)` +
+      ` (${result.skipped} cell(s) skipped on resume):\n` +
+      `${cohortLines}\n` +
+      stoppedLine +
+      `[run] dashboard → ${result.dashboardPath}\n`,
+  );
+}
+
+/**
  * Minimal CLI entry. Sandbox coordinates are the ephemeral per-cell lifecycle
  * (Story #71): auth/config collapses to two env vars —
  *   BENCH_GITHUB_TOKEN (required) — token with repo create/delete scopes.
@@ -1288,51 +1454,13 @@ export async function main(env = process.env, deps = {}) {
   const epicIds = resolveEpicIds(scenarios, env);
 
   // Janitor sweep (Story #72): runs at the start of every invocation, BEFORE
-  // this cell's own repo is provisioned, so a prior crashed run's leaked
-  // `bench-sbx-*` repo is swept before we add another one. Best-effort — a
-  // sweep failure (e.g. a transient `gh repo list` error) must never abort
-  // the benchmark run itself; it logs and the run proceeds.
-  const sweepJanitorFn = deps.sweepJanitorFn ?? sweepLeakedRepos;
-  try {
-    sweepJanitorFn(
-      {
-        owner,
-        ttlHours:
-          env.BENCH_JANITOR_TTL_HOURS != null
-            ? Number(env.BENCH_JANITOR_TTL_HOURS)
-            : DEFAULT_TTL_HOURS,
-      },
-      { logger, ghFn: deps.janitorGhFn },
-    );
-  } catch (err) {
-    logger.warn(
-      `[run] janitor sweep failed (continuing): ${err?.message ?? err}`,
-    );
-  }
-
-  // Ephemeral sandbox lifecycle (Story #71, restructured under Epic #65 audit
-  // remediation — the critical defect this remediation exists to fix):
-  // create → seed → run(N serial) → destroy runs ONCE PER (scenario × arm)
-  // CELL, not once for the whole invocation. Each cell gets its own private
-  // `bench-sbx-*` repo, seeded from `bench/sandbox-template/`, used for that
-  // cell's N serial runs, and destroyed once those runs complete — replacing
-  // the retired standing external sandbox repo (docs/decisions.md D-013) and
-  // matching docs/target-architecture.md §5.2's per-cell lifecycle (the
-  // previous implementation provisioned a single shared repo for the entire
-  // invocation, contradicting that design and silently defeating cell-level
-  // parallelism). Each cell's create-through-destroy sequence below is scoped
-  // in its own try/finally, so ANY failure after that cell's repo is
-  // created — including a seed failure — still best-effort destroys that
-  // cell's repo before the error propagates; a failed destroy itself is
-  // best-effort too, logging and deferring to the janitor sweep rather than
-  // masking the cell's own result.
-  const createEphemeralRepoFn =
-    deps.createEphemeralRepoFn ?? createEphemeralRepo;
-  const seedFromTemplateFn = deps.seedFromTemplateFn ?? seedFromTemplate;
-  const destroyEphemeralRepoFn =
-    deps.destroyEphemeralRepoFn ?? destroyEphemeralRepo;
-  const mkdtempFn = deps.mkdtempFn ?? mkdtempSync;
-  const rmFn = deps.rmFn ?? rmSync;
+  // this invocation's own cells are provisioned. See runJanitorSweep() for
+  // the full rationale.
+  runJanitorSweep(env, owner, {
+    logger,
+    sweepJanitorFn: deps.sweepJanitorFn,
+    janitorGhFn: deps.janitorGhFn,
+  });
 
   const cohort = env.BENCH_COHORT ?? new Date().toISOString().slice(0, 10);
   const ephemeralRoot = defaultEphemeralRoot();
@@ -1347,8 +1475,6 @@ export async function main(env = process.env, deps = {}) {
   const resultsDir = path.join(repoRoot(), 'results');
   const checkpointPath =
     env.BENCH_CHECKPOINT ?? path.join(resultsDir, CHECKPOINT_FILENAME);
-
-  const runFirstBenchmarkFn = deps.runFirstBenchmarkFn ?? runFirstBenchmark;
 
   // Aggregated across every cell this invocation provisions, so the final
   // operator summary (and the maxRuns/maxCostUsd ceilings, which are
@@ -1382,85 +1508,51 @@ export async function main(env = process.env, deps = {}) {
         break cellLoop;
       }
 
-      const nonce = randomBytes(4).toString('hex');
-      const repoName = sandboxRepoName({
-        cohort,
-        scenario: scenarioId,
+      // See runCell() for the full create → seed → run(N) → destroy
+      // per-cell lifecycle and its try/finally teardown guarantee.
+      const { cellResult } = await runCell({
+        scenarioId,
         arm,
-        nonce,
-      });
-      const created = createEphemeralRepoFn(
-        { owner, name: repoName },
-        { logger },
-      );
-      try {
-        const seedDir = mkdtempFn(path.join(ephemeralRoot, SANDBOX_DIR_PREFIX));
-        let seeded;
-        try {
-          seeded = seedFromTemplateFn(
-            { repoFullName: created.repoFullName, workspacePath: seedDir },
-            { logger },
-          );
-        } finally {
-          try {
-            rmFn(seedDir, { recursive: true, force: true });
-          } catch (err) {
-            logger.warn(
-              `[run] could not clean up the local seed workspace ${seedDir}: ${err?.message ?? err}`,
-            );
-          }
-        }
-
-        const cellSandbox = {
-          repoUrl: seeded.repoUrl,
+        ctx: {
           owner,
-          repo: repoName,
-          repoFullName: created.repoFullName,
-          baselineSha: seeded.baselineSha,
-        };
-
-        const cellOpts = {
-          sandbox: cellSandbox,
-          scenarios: [scenarioId],
-          arms: [arm],
+          cohort,
+          ephemeralRoot,
           n,
           epicIds,
           resultsDir,
           checkpointPath,
-          ...(maxRuns != null
-            ? { maxRuns: Math.max(0, maxRuns - completedTotal) }
-            : {}),
-          ...(maxCostUsd != null
-            ? { maxCostUsd: Math.max(0, maxCostUsd - costTotal) }
-            : {}),
+          completedTotal,
+          costTotal,
+          maxRuns,
+          maxCostUsd,
+        },
+        deps: {
+          logger,
+          createEphemeralRepoFn: deps.createEphemeralRepoFn,
+          seedFromTemplateFn: deps.seedFromTemplateFn,
+          destroyEphemeralRepoFn: deps.destroyEphemeralRepoFn,
+          mkdtempFn: deps.mkdtempFn,
+          rmFn: deps.rmFn,
+          runFirstBenchmarkFn: deps.runFirstBenchmarkFn,
+        },
+      });
+
+      allScorecards.push(...cellResult.scorecards);
+      for (const c of cellResult.cohorts) cohortsByDir.set(c.dir, c);
+      totalSkipped += cellResult.skipped;
+      lastDashboardPath = cellResult.dashboardPath;
+      lastDashboard = cellResult.dashboard;
+      completedTotal += cellResult.scorecards.length;
+      for (const sc of cellResult.scorecards) {
+        const c = sc?.dimensions?.efficiency?.costUsd;
+        if (typeof c === 'number') costTotal += c;
+      }
+      if (cellResult.stopped) {
+        overallStopped = {
+          reason: cellResult.stopped.reason,
+          completed: completedTotal,
+          costUsd: costTotal,
         };
-
-        const cellResult = await runFirstBenchmarkFn(cellOpts, { logger });
-
-        allScorecards.push(...cellResult.scorecards);
-        for (const c of cellResult.cohorts) cohortsByDir.set(c.dir, c);
-        totalSkipped += cellResult.skipped;
-        lastDashboardPath = cellResult.dashboardPath;
-        lastDashboard = cellResult.dashboard;
-        completedTotal += cellResult.scorecards.length;
-        for (const sc of cellResult.scorecards) {
-          const c = sc?.dimensions?.efficiency?.costUsd;
-          if (typeof c === 'number') costTotal += c;
-        }
-        if (cellResult.stopped) {
-          overallStopped = {
-            reason: cellResult.stopped.reason,
-            completed: completedTotal,
-            costUsd: costTotal,
-          };
-        }
-      } finally {
-        // Best-effort: a failed delete must never abort/mask the cell's own
-        // result — it logs and defers to the janitor sweep (sibling Story).
-        destroyEphemeralRepoFn(
-          { repoFullName: created.repoFullName },
-          { logger },
-        );
       }
 
       if (overallStopped) break cellLoop;
@@ -1476,21 +1568,7 @@ export async function main(env = process.env, deps = {}) {
     stopped: overallStopped,
   };
 
-  const cohortLines = result.cohorts
-    .map(
-      (c) => `[run]   store → ${c.storePath}\n[run]   report → ${c.reportPath}`,
-    )
-    .join('\n');
-  const stoppedLine = result.stopped
-    ? `[run] 🛑 stopped early (${result.stopped.reason}); resume to continue the batch.\n`
-    : '';
-  process.stderr.write(
-    `\n[run] ${result.scorecards.length} scorecard(s) across ${result.cohorts.length} cohort(s)` +
-      ` (${result.skipped} cell(s) skipped on resume):\n` +
-      `${cohortLines}\n` +
-      stoppedLine +
-      `[run] dashboard → ${result.dashboardPath}\n`,
-  );
+  reportRunResult(result);
 }
 
 // Run when invoked directly (not when imported by tests).
