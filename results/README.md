@@ -73,8 +73,9 @@ the delivered output is: objective spine from static-analysis signals (linter
 density, cyclomatic complexity, maintainability index) weighted 0.7, plus an
 LLM judge cross-check against the `engineer`/`refactorer` persona rubric at
 0.3 (folded into the spine when null). It is most likely to diverge between
-arms on the difficulty-3 `project-api` breadth rung, where decomposition
-quality and code-structure choices separate.
+arms on the `epic-scope` breadth rung (the 3-rung matrix's flagship
+Epic-routed scenario), where decomposition quality and code-structure choices
+separate.
 
 **Security** (added Epic #32) measures how free of vulnerabilities the
 delivered output is: objective spine from security-scanner signals

@@ -112,7 +112,7 @@ mandrel-bench/
 │   ├── metrics/      # five-dimension formulas (README.md) + variance/noise-band
 │   ├── schemas/      # scorecard.schema.json (the per-run record contract)
 │   ├── driver/       # claude -p run launcher + ephemeral sandbox lifecycle + unattended.md
-│   ├── scenarios/    # hello-world/ + crud-db/ defs, frozen oracles, acceptance-eval adapter
+│   ├── scenarios/    # hello-world/ + story-scope/ + epic-scope/ defs, frozen oracles, trap oracles
 │   ├── collect/      # lifecycle + signals + cost-envelope → normalized per-run record
 │   ├── score/        # dimensions + Mandrel-vs-control differential + derived metrics
 │   ├── report/       # value-add report renderer + stamped persistence + cross-run compare
@@ -157,8 +157,9 @@ and the value-add report.
 
 **Still open (deferred, separately planned):**
 
-- [ ] Scale to N≈8–10 and add the `crud-db` rung for a statistically meaningful
-      verdict (the N=1 result is non-inferential — see [`results/`](results/)).
+- [ ] Scale to N≈8–10 across the `story-scope`/`epic-scope` rungs for a
+      statistically meaningful verdict (the N=1 result is non-inferential —
+      see [`results/`](results/)).
 - [ ] CI for this repo (run the unit suites; the full benchmark is a periodic,
       manually-triggered capability report, not a per-PR gate).
 - [ ] A first-class `/plan` headless flag and an auto-merge gate that does not
