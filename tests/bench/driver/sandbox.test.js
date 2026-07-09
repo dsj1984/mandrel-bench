@@ -29,6 +29,7 @@ import {
   sanitizeGitHubTokenEnv,
   seedFromTemplate,
   teardownSandbox,
+  withRetry,
   withSandbox,
 } from '../../../bench/driver/sandbox.js';
 
@@ -392,6 +393,102 @@ test('defaultGhInvoke: passes a token-sanitized env to the gh child', () => {
   }
 });
 
+test('sanitizeGitHubTokenEnv: BENCH_GITHUB_TOKEN wins as GH_TOKEN, overriding an ambient GH_TOKEN/GITHUB_TOKEN (Epic #65 audit remediation, finding #2)', () => {
+  const cleaned = sanitizeGitHubTokenEnv({
+    PATH: '/usr/bin',
+    GH_TOKEN: 'ambient-broad-scope-token',
+    GITHUB_TOKEN: 'ambient-broad-scope-token',
+    BENCH_GITHUB_TOKEN: 'bench-scoped-token\r',
+  });
+  assert.equal(cleaned.GH_TOKEN, 'bench-scoped-token');
+  // The ambient GITHUB_TOKEN is left as-is (only whitespace-stripped) — the
+  // injected GH_TOKEN is what `gh` actually reads (GH_TOKEN takes precedence
+  // over GITHUB_TOKEN in gh's own resolution order).
+  assert.equal(cleaned.GITHUB_TOKEN, 'ambient-broad-scope-token');
+});
+
+test('sanitizeGitHubTokenEnv: no BENCH_GITHUB_TOKEN leaves GH_TOKEN untouched', () => {
+  const cleaned = sanitizeGitHubTokenEnv({ PATH: '/bin' });
+  assert.equal('GH_TOKEN' in cleaned, false);
+});
+
+test('defaultGhInvoke: BENCH_GITHUB_TOKEN in the environment reaches the gh child as GH_TOKEN', () => {
+  const prevBench = process.env.BENCH_GITHUB_TOKEN;
+  const prevGh = process.env.GH_TOKEN;
+  process.env.BENCH_GITHUB_TOKEN = 'bench-scoped-token';
+  delete process.env.GH_TOKEN;
+  try {
+    let capturedEnv;
+    const execFileFn = (_cmd, _args, opts) => {
+      capturedEnv = opts.env;
+      return 'ok';
+    };
+    defaultGhInvoke(['repo', 'list', 'dsj1984'], { execFileFn });
+    assert.equal(capturedEnv.GH_TOKEN, 'bench-scoped-token');
+  } finally {
+    if (prevBench === undefined) delete process.env.BENCH_GITHUB_TOKEN;
+    else process.env.BENCH_GITHUB_TOKEN = prevBench;
+    if (prevGh === undefined) delete process.env.GH_TOKEN;
+    else process.env.GH_TOKEN = prevGh;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// withRetry — idempotent-operation retry wrapper (Epic #65 audit remediation,
+// finding #9)
+// ---------------------------------------------------------------------------
+
+test('withRetry: returns the result on first success without retrying', () => {
+  let calls = 0;
+  const result = withRetry(() => {
+    calls += 1;
+    return 'ok';
+  });
+  assert.equal(result, 'ok');
+  assert.equal(calls, 1);
+});
+
+test('withRetry: retries once on failure then succeeds', () => {
+  let calls = 0;
+  const result = withRetry(() => {
+    calls += 1;
+    if (calls === 1) throw new Error('transient');
+    return 'ok';
+  });
+  assert.equal(result, 'ok');
+  assert.equal(calls, 2);
+});
+
+test('withRetry: exhausts retries and rethrows the last error', () => {
+  let calls = 0;
+  assert.throws(
+    () =>
+      withRetry(() => {
+        calls += 1;
+        throw new Error(`fail ${calls}`);
+      }),
+    /fail 2/,
+  );
+  assert.equal(calls, 2);
+});
+
+test('destroyEphemeralRepo: retries once on a transient gh failure before succeeding', () => {
+  let attempts = 0;
+  const res = destroyEphemeralRepo(
+    { repoFullName: 'dsj1984/bench-sbx-c1-hw-mandrel-a1b2' },
+    {
+      ghFn: () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('gh: transient network error');
+        return '';
+      },
+      logger: { info() {}, warn() {} },
+    },
+  );
+  assert.equal(res.deleted, true);
+  assert.equal(attempts, 2);
+});
+
 // ---------------------------------------------------------------------------
 // sandboxRepoName — pure repo-name generator (Story #71)
 // ---------------------------------------------------------------------------
@@ -574,8 +671,18 @@ test('seedFromTemplate: materializes the template, commits, pushes, and resolves
     '/repo/bench/sandbox-template',
   );
 
-  const cmds = execCalls.map((c) => c.args[0]);
-  assert.deepEqual(cmds, [
+  for (const c of execCalls) assert.equal(c.cmd, 'git');
+
+  // The commit call is prefixed with a pinned, synthetic `-c user.name=…`
+  // identity (Epic #65 audit remediation, finding #5) so the seed commit
+  // never bakes the operator's ambient git identity into a repo pushed to
+  // GitHub; every other call's args[0] is the plain git subcommand.
+  const subcommands = execCalls.map((c) =>
+    c.args[0] === '-c'
+      ? c.args.find((a, i) => i >= 4 && !a.startsWith('-'))
+      : c.args[0],
+  );
+  assert.deepEqual(subcommands, [
     'init',
     'add',
     'commit',
@@ -583,7 +690,13 @@ test('seedFromTemplate: materializes the template, commits, pushes, and resolves
     'push',
     'rev-parse',
   ]);
-  for (const c of execCalls) assert.equal(c.cmd, 'git');
+  const commitCall = execCalls.find((c) => c.args.includes('commit'));
+  assert.deepEqual(commitCall.args.slice(0, 4), [
+    '-c',
+    'user.name=mandrel-bench',
+    '-c',
+    'user.email=bench@noreply.local',
+  ]);
 });
 
 test('seedFromTemplate: requires a non-empty repoFullName and workspacePath', () => {

@@ -319,9 +319,12 @@ reference-sweep regression guard by name).
 **Why safe to make destructive repo-deletion unattended.** The `bench-sbx-`
 prefix is *reserved* — nothing else under the operator account may use it —
 so `destroyEphemeralRepo` and the janitor can refuse any name outside the
-prefix and delete freely within it. Existing containment and token-hygiene
-primitives (`assertInsideRoot`, `sanitizeGitHubTokenEnv`) are preserved
-unchanged for the local working-tree surface.
+prefix and delete freely within it. The existing local-containment primitive
+(`assertInsideRoot`) is preserved unchanged. `sanitizeGitHubTokenEnv` was
+extended (Epic #65 audit remediation) so `BENCH_GITHUB_TOKEN`, when present,
+is written into `GH_TOKEN` and wins over any ambient `gh`/`git` credential —
+closing a gap where the documented two-secret contract was validated
+fail-fast but not actually threaded into the subprocess environment.
 
 **Supersedes.** The standing `mandrel-bench-sandbox` external repo and its
 `BENCH_SANDBOX_REPO_URL`/`REPO`/`BASELINE_REF` env contract, in place since
@@ -334,4 +337,15 @@ they were run against is now historical provenance only.
 Ephemeral provisioning (Story #71) and the janitor (Story #72) landed first;
 this entry is logged alongside the reference-sweep + docs cutover (Story #73)
 that retires every remaining reference to the standing repo from code, tests,
-and the README.
+and the README. **Correction (Epic #65 audit remediation, 2026-07-09):** the
+Story #71/#73 implementation of `bench/run.js`'s `main()` provisioned a
+single shared ephemeral repo for the ENTIRE invocation (`arm` hardcoded to
+the literal `'session'`), not one repo per `(scenario × arm)` cell as this
+decision and §5.2 describe — silently defeating the cell-level parallelism
+this design exists to enable. The audit-remediation pass fixed `main()` to
+provision, seed, run, and destroy one repo per cell, with the real arm value
+in the repo name; the per-cell repo-name test in
+`tests/bench/driver/overlay.test.js` and the new call-order assertions in
+`tests/bench/run.test.js` now exercise the corrected behavior. The design
+described above (and in §5.2) was always the intended target; only the
+implementation was behind it.

@@ -563,6 +563,17 @@ Epic-sized unit for `/plan`:
      mechanism change — it already took `{ owner, repo }` as a parameter, so
      repointing it at the ephemeral repo's dynamic coordinates was a
      call-site change only, not a rewrite of the overlay itself.
+   - **Correction (Epic #65 audit remediation, 2026-07-09):** the Story
+     #71/#73 delivery had `bench/run.js`'s `main()` provision exactly ONE
+     shared `bench-sbx-*` repo for the whole invocation (arm hardcoded to the
+     literal `'session'`), reused/reset across every cell — contradicting
+     §5.2's per-cell lifecycle below and silently defeating the cell-level
+     parallelism §5.5 describes. This is now fixed: `main()` provisions,
+     seeds, runs, and destroys one repo per `(scenario × arm)` cell, with the
+     real arm value in the repo name (see `docs/decisions.md` D-013's
+     correction note). The design in §5.2/§5.5 was always the intended
+     target; the "Delivered" marks above now reflect a genuinely matching
+     implementation.
 2. **Phase 2 — Scenario matrix + measurement fixes.** Build `story-scope`
    and `epic-scope` (absorbing auth-trap/crud-db/project-api), generalize
    un-stubbed gates, multi-class trap oracles + discrimination tests,

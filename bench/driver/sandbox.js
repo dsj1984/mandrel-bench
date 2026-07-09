@@ -233,6 +233,7 @@ export function provisionSandbox(opts = {}, deps = {}) {
       encoding: 'utf-8',
       stdio: 'pipe',
       timeout: 5 * 60 * 1000,
+      env: sanitizeGitHubTokenEnv(),
     });
   } catch (err) {
     // Clone failed — best-effort clean up the (possibly partial) workspace so a
@@ -427,7 +428,10 @@ export function destroyEphemeralRepo({ repoFullName } = {}, deps = {}) {
   const logger = deps.logger;
 
   try {
-    ghFn(['repo', 'delete', repoFullName, '--yes']);
+    // Repo deletion is idempotent from `gh`'s perspective (re-deleting an
+    // already-gone repo is a no-op failure, not a data hazard), so a single
+    // blind retry on a transient error is safe (devops lens, Epic #65 audit).
+    withRetry(() => ghFn(['repo', 'delete', repoFullName, '--yes']));
     logger?.info?.(`[sandbox] Destroyed ephemeral repo ${repoFullName}`);
     return { deleted: true, repoFullName };
   } catch (err) {
@@ -587,11 +591,21 @@ export function seedFromTemplate(
       cwd: workspacePath,
       encoding: 'utf-8',
       stdio: 'pipe',
+      env: sanitizeGitHubTokenEnv(),
     });
 
   git(['init', '--initial-branch=main']);
   git(['add', '-A']);
+  // Pin a synthetic committer identity for THIS commit only (`-c` scopes the
+  // config override to this single invocation — global git config is never
+  // touched) so the seed commit never bakes the operator's real ambient
+  // `user.name`/`user.email` into a repo that gets pushed to GitHub (privacy
+  // lens, Epic #65 audit remediation).
   git([
+    '-c',
+    'user.name=mandrel-bench',
+    '-c',
+    'user.email=bench@noreply.local',
     'commit',
     '-m',
     'chore: seed ephemeral sandbox from bench/sandbox-template',
@@ -614,8 +628,18 @@ export function seedFromTemplate(
  * `net/http: invalid header field value for "Authorization"`, which silently
  * fails the per-run sandbox reset and lets a run clone an un-reset `main`.
  * GitHub tokens never contain whitespace, so stripping it is always safe.
+ *
+ * `BENCH_GITHUB_TOKEN` (the harness's own credential — README / `.env.example`
+ * / docs/architecture.md §7) is the credential that is supposed to authorize
+ * this whole lifecycle. When it is present in `env`, it WINS: its
+ * (whitespace-stripped) value is written into `GH_TOKEN`, taking precedence
+ * over whatever ambient `GH_TOKEN`/`GITHUB_TOKEN` the operator's shell or `gh
+ * auth login` session happens to carry. Without this, `gh` silently falls
+ * back to that ambient session, which may be a broader-scoped credential than
+ * the operator intended for this harness (Epic #65 audit remediation).
+ *
  * Returns a shallow copy; unset / empty tokens are left untouched so a clean
- * `gh` keyring auth still applies.
+ * `gh` keyring auth still applies when `BENCH_GITHUB_TOKEN` is not set.
  *
  * @param {NodeJS.ProcessEnv} [env=process.env]
  * @returns {NodeJS.ProcessEnv}
@@ -628,7 +652,42 @@ export function sanitizeGitHubTokenEnv(env = process.env) {
       out[key] = v.replace(/\s/g, '');
     }
   }
+  const benchToken = out.BENCH_GITHUB_TOKEN;
+  if (typeof benchToken === 'string' && benchToken.length > 0) {
+    out.GH_TOKEN = benchToken.replace(/\s/g, '');
+  }
   return out;
+}
+
+/**
+ * Retry a synchronous, potentially-flaky operation once (default) before
+ * giving up. Scoped to operations that are safe to retry blindly — idempotent
+ * reads (`gh repo list`) and idempotent deletes (`gh repo delete`, which is a
+ * no-op-safe re-delete of an already-gone repo from `gh`'s perspective). NOT
+ * used for `gh repo create` / `git push`, which are not naturally idempotent
+ * and get worse, not better, from a blind retry on an ambiguous failure.
+ *
+ * No inter-attempt delay: every call site wraps a synchronous `execFileSync`
+ * subprocess, so a blocking sleep here would stall the single-threaded
+ * harness for no benefit against the transient failure classes this targets
+ * (a brief rate-limit blip, a dropped connection) — deliberately not
+ * over-engineered with a backoff timer.
+ *
+ * @template T
+ * @param {() => T} fn
+ * @param {{ retries?: number }} [opts]
+ * @returns {T}
+ */
+export function withRetry(fn, { retries = 1 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return fn();
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr;
 }
 
 /**

@@ -831,6 +831,62 @@ test('runOneRun: resets the sandbox baseline before provision AND in the finally
   assert.equal(order.at(-2), 'reset');
 });
 
+test('runOneRun: threads sandbox.baselineSha unchanged into both resetSandbox calls and provision', async () => {
+  // Epic #65 audit remediation, finding #3 (quality lens): baselineSha —
+  // recorded on the ephemeral repo's seed handle — must reach BOTH the
+  // pre-run defensive reset and the post-run primary reset (the finally),
+  // and must be forwarded to provisionSandbox unchanged, never re-derived.
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  const seenResetShas = [];
+  deps.resetSandboxFn = (o) => {
+    seenResetShas.push(o.sha);
+    record.resets.push({ owner: o.owner, baselineRef: o.baselineRef });
+    return { reset: true, sha: o.sha };
+  };
+  let seenProvisionArgs;
+  deps.provisionFn = (o) => {
+    seenProvisionArgs = {
+      repoFullName: o.repoFullName,
+      baselineSha: o.baselineSha,
+    };
+    record.provisions.push(o.arm);
+    return {
+      workspacePath: `/ws-${o.arm}`,
+      ephemeralRoot: '/tmp/root',
+      arm: o.arm,
+    };
+  };
+
+  const { scenario, evaluate } = await loadScenarioFake();
+  await runOneRun(
+    {
+      scenario,
+      evaluate,
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'https://github.com/dsj1984/bench-sbx-abc.git',
+        owner: 'dsj1984',
+        repo: 'bench-sbx-abc',
+        repoFullName: 'dsj1984/bench-sbx-abc',
+        baselineSha: 'deadbeefcafe',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  // Pre-run reset AND the post-run (finally) reset both receive the SAME sha.
+  assert.equal(seenResetShas.length, 2);
+  assert.deepEqual(seenResetShas, ['deadbeefcafe', 'deadbeefcafe']);
+  // provisionSandbox receives repoFullName/baselineSha unchanged.
+  assert.deepEqual(seenProvisionArgs, {
+    repoFullName: 'dsj1984/bench-sbx-abc',
+    baselineSha: 'deadbeefcafe',
+  });
+});
+
 /** Load the fake scenario + oracle the same way benchDeps' loadDeps does. */
 async function loadScenarioFake() {
   return {
@@ -1255,8 +1311,13 @@ test('main(): a retired var set alongside missing required vars emits BOTH the d
 // Story #72 — janitor sweep invoked at startup, before provisioning
 // ---------------------------------------------------------------------------
 
-test('main(): invokes the janitor sweep BEFORE provisioning the cell repo (call order)', async () => {
+test('main(): invokes the janitor sweep BEFORE provisioning, then create→seed→run→destroy ONCE PER (scenario × arm) CELL (call order)', async () => {
+  // Epic #65 audit remediation: main() no longer provisions a single shared
+  // repo for the whole invocation — it loops per (scenario × arm) cell. The
+  // default env (no BENCH_SCENARIOS/BENCH_ARMS) is one scenario × two arms →
+  // two cells, so the create/seed/run/destroy quartet must appear TWICE.
   const calls = [];
+  const repoNames = [];
   const logger = { info: () => {}, warn: () => {}, error: () => {} };
   const sweepJanitorFn = (opts) => {
     calls.push({ step: 'janitor', owner: opts.owner, ttlHours: opts.ttlHours });
@@ -1264,6 +1325,7 @@ test('main(): invokes the janitor sweep BEFORE provisioning the cell repo (call 
   };
   const createEphemeralRepoFn = ({ owner, name }) => {
     calls.push({ step: 'createEphemeralRepo' });
+    repoNames.push(name);
     return { repoFullName: `${owner}/${name}` };
   };
   const seedFromTemplateFn = ({ repoFullName }) => {
@@ -1298,6 +1360,9 @@ test('main(): invokes the janitor sweep BEFORE provisioning the cell repo (call 
       seedFromTemplateFn,
       destroyEphemeralRepoFn,
       runFirstBenchmarkFn,
+      // Injected (Epic #65 audit remediation, finding #6) — no real disk touched.
+      mkdtempFn: (p) => `${p}fake`,
+      rmFn: () => {},
     },
   );
 
@@ -1308,9 +1373,79 @@ test('main(): invokes the janitor sweep BEFORE provisioning the cell repo (call 
     'seedFromTemplate',
     'runFirstBenchmark',
     'destroyEphemeralRepo',
+    'createEphemeralRepo',
+    'seedFromTemplate',
+    'runFirstBenchmark',
+    'destroyEphemeralRepo',
   ]);
   assert.equal(calls[0].owner, 'dsj1984');
   assert.equal(calls[0].ttlHours, 24);
+
+  // The two cells get DIFFERENT, arm-derived repo names — never the old
+  // placeholder literal 'session'.
+  assert.equal(repoNames.length, 2);
+  assert.notEqual(repoNames[0], repoNames[1]);
+  for (const name of repoNames) {
+    assert.ok(name.startsWith('bench-sbx-'));
+    assert.ok(!name.includes('-session-'));
+  }
+  assert.ok(repoNames.some((n) => n.includes('mandrel')));
+  assert.ok(repoNames.some((n) => n.includes('control')));
+});
+
+test('main(): a seed failure still destroys that cell repo before the error propagates (no leak)', async () => {
+  // Epic #65 audit remediation, high-severity finding #1: seedFromTemplateFn
+  // throwing after createEphemeralRepoFn succeeded must not leak the repo.
+  const calls = [];
+  const logger = { info: () => {}, warn: () => {}, error: () => {} };
+  const createEphemeralRepoFn = ({ owner, name }) => {
+    calls.push('create');
+    return { repoFullName: `${owner}/${name}` };
+  };
+  const seedFromTemplateFn = () => {
+    calls.push('seed');
+    throw new Error('seed boom');
+  };
+  const destroyEphemeralRepoFn = ({ repoFullName }) => {
+    calls.push('destroy');
+    return { deleted: true, repoFullName };
+  };
+  const runFirstBenchmarkFn = async () => {
+    calls.push('runFirstBenchmark');
+    return {
+      scorecards: [],
+      cohorts: [],
+      dashboardPath: 'x',
+      skipped: 0,
+      stopped: null,
+    };
+  };
+
+  await assert.rejects(
+    main(
+      { BENCH_GITHUB_TOKEN: 'ghp_x', BENCH_SANDBOX_OWNER: 'dsj1984' },
+      {
+        logger,
+        sweepJanitorFn: () => ({
+          candidates: [],
+          deleted: [],
+          failed: [],
+          dryRun: false,
+        }),
+        createEphemeralRepoFn,
+        seedFromTemplateFn,
+        destroyEphemeralRepoFn,
+        runFirstBenchmarkFn,
+        mkdtempFn: (p) => `${p}fake`,
+        rmFn: () => {},
+      },
+    ),
+    /seed boom/,
+  );
+
+  // create → seed (throws) → destroy — runFirstBenchmark never reached, and
+  // the repo was still torn down before the error propagated.
+  assert.deepEqual(calls, ['create', 'seed', 'destroy']);
 });
 
 test('main(): a janitor sweep failure is logged but does not abort the run', async () => {

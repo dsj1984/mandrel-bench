@@ -144,10 +144,15 @@ decomposition, multi-wave delivery, planning fidelity, autonomy at depth).
 - **No shell injection** — `git`, `gh`, and `claude` are invoked via
   `execFileSync` / `spawnSync` with argument arrays (never a shell string on
   POSIX); the clone uses a `--` separator before the repo URL.
-- **Secrets** — `BENCH_GITHUB_TOKEN` is environment-sourced and never logged;
-  `sanitizeGitHubTokenEnv` scrubs conflicting ambient tokens so it wins
-  inside sandbox `git`/`gh` subprocesses; the collector logs token *counts*,
-  never values.
+- **Secrets** — `BENCH_GITHUB_TOKEN` is environment-sourced and never logged.
+  `sanitizeGitHubTokenEnv` (`bench/driver/sandbox.js`) strips whitespace from
+  any ambient `GH_TOKEN`/`GITHUB_TOKEN` AND, when `BENCH_GITHUB_TOKEN` is
+  present, writes its value into `GH_TOKEN` — the variable `gh` itself
+  resolves first — so it wins over whatever ambient `gh auth login` session
+  or broader-scoped token the operator's shell happens to carry. Every `git`
+  clone/push and `gh` call this lifecycle makes (provision, seed, reset,
+  destroy, the janitor sweep) is passed this sanitized environment; the
+  collector logs token *counts*, never values.
 - **Private, disposable repos** — ephemeral repos are created `--private` and
   carry only template + benchmark-delivered content; no secrets are ever
   committed to them.
