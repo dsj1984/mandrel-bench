@@ -312,6 +312,66 @@ describe('derive-cli — main writes the envelope + PR-body beside the report', 
     assert.equal(code, 1);
   });
 
+  it('a MULTI-cohort tree + explicit pins selects the right cohort (not ambiguous)', async () => {
+    // Two distinct cohorts on the same tree — exactly the steady state that
+    // fails ambiguous WITHOUT pins (see the ambiguous test above). Pinning the
+    // full run-under-test triple must select that cohort's records and exit 0.
+    const targetCards = [
+      card({ runId: 't-m', arm: 'mandrel', frameworkVersion: '1.71.0' }),
+      card({ runId: 't-c', arm: 'control', frameworkVersion: '1.71.0' }),
+    ];
+    const otherCards = [
+      card({ runId: 'o-m', arm: 'mandrel', frameworkVersion: '1.70.0' }),
+      card({ runId: 'o-c', arm: 'control', frameworkVersion: '1.70.0' }),
+    ];
+    const fs = memFs({
+      [`/results/${MODEL_SLUG}/1.71.0/scorecards.ndjson`]: store(targetCards),
+      [`/results/${MODEL_SLUG}/1.70.0/scorecards.ndjson`]: store(otherCards),
+    });
+    const out = [];
+    const code = await main(
+      [
+        '--results-dir',
+        '/results',
+        '--stamp',
+        'run-71',
+        '--model',
+        MODEL.id,
+        '--framework-version',
+        '1.71.0',
+        '--benchmark-version',
+        '0.5.0',
+      ],
+      {},
+      depsFor(fs, { write: (s) => out.push(s) }),
+    );
+    assert.equal(code, 0, 'explicit pins must resolve, never exit ambiguous');
+
+    const summary = JSON.parse(out.join(''));
+    assert.deepEqual(summary.cohort, {
+      model: MODEL.id,
+      frameworkVersion: '1.71.0',
+      benchmarkVersion: '0.5.0',
+    });
+    // The envelope must be written into the PINNED cohort's version dir, and its
+    // findings must carry the pinned cohort triple (never the other cohort's).
+    const envelopePath = `/results/${MODEL_SLUG}/1.71.0/reports/findings-run-71.json`;
+    assert.ok(
+      fs.files.has(envelopePath),
+      'envelope must land under the pinned cohort version dir',
+    );
+    const envelope = JSON.parse(fs.files.get(envelopePath));
+    assert.deepEqual(envelope.cohort, {
+      model: MODEL.id,
+      frameworkVersion: '1.71.0',
+      benchmarkVersion: '0.5.0',
+    });
+    assert.ok(
+      envelope.findings.every((f) => f.cohort.frameworkVersion === '1.71.0'),
+      'every finding must carry the pinned cohort triple',
+    );
+  });
+
   it('honors explicit --envelope-out / --pr-body-out paths', async () => {
     const fs = memFs({ [STORE_PATH]: store([card({ arm: 'mandrel' })]) });
     const code = await main(

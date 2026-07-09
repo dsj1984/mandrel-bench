@@ -80,6 +80,14 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       has_deficit: ${{ steps.plan.outputs.has_deficit }}
+      # The run-under-test cohort triple, resolved by the top-up planner and
+      # surfaced here so the aggregate job's derive step can PIN the target
+      # cohort (H1). Without these pins derive-cli auto-selects only when the
+      # whole results tree holds exactly one cohort — which fails ambiguous
+      # once main accumulates a second cohort (the benchmark's steady state).
+      model: ${{ steps.plan.outputs.model }}
+      framework_version: ${{ steps.plan.outputs.framework_version }}
+      benchmark_version: ${{ steps.plan.outputs.benchmark_version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -121,6 +129,13 @@ jobs:
             const out = process.env.GITHUB_OUTPUT;
             appendFileSync(out, `matrix=${JSON.stringify(matrix)}\n`);
             appendFileSync(out, `has_deficit=${matrix.include.length > 0}\n`);
+            // Surface the resolved run-under-test cohort triple so the aggregate
+            // derive step can pin it (H1). planTopup returns the resolved
+            // { model, frameworkVersion, benchmarkVersion } on plan.cohort.
+            const cohort = plan.cohort ?? {};
+            appendFileSync(out, `model=${cohort.model ?? ""}\n`);
+            appendFileSync(out, `framework_version=${cohort.frameworkVersion ?? ""}\n`);
+            appendFileSync(out, `benchmark_version=${cohort.benchmarkVersion ?? ""}\n`);
           '
 
   # ---------------------------------------------------------------------------
@@ -251,12 +266,24 @@ jobs:
         id: findings
         env:
           BENCH_RUN_ID: ${{ github.run_id }}
+          # PIN the target cohort to the run-under-test triple (H1). Passed
+          # through env (never interpolated into the run: body) to keep the
+          # shell-injection surface closed. An empty pin means "don't filter on
+          # this field" in derive-cli (a null pin) — harmless, but in a normal
+          # run the planner resolves all three, so the derive step selects the
+          # exact cohort even when main holds several.
+          BENCH_COHORT_MODEL: ${{ needs.plan.outputs.model }}
+          BENCH_COHORT_FRAMEWORK_VERSION: ${{ needs.plan.outputs.framework_version }}
+          BENCH_COHORT_BENCHMARK_VERSION: ${{ needs.plan.outputs.benchmark_version }}
         run: |
           set -euo pipefail
-          if node bench/feedback/derive-cli.js \
-            --results-dir results \
-            --stamp "$BENCH_RUN_ID" \
-            --pr-body-out findings-pr-body.md; then
+          # Build the derive argv from the (validated) BENCH_* env vars, adding a
+          # cohort pin only when the planner resolved a non-empty value.
+          DERIVE_ARGS=(--results-dir results --stamp "$BENCH_RUN_ID" --pr-body-out findings-pr-body.md)
+          if [ -n "$BENCH_COHORT_MODEL" ]; then DERIVE_ARGS+=(--model "$BENCH_COHORT_MODEL"); fi
+          if [ -n "$BENCH_COHORT_FRAMEWORK_VERSION" ]; then DERIVE_ARGS+=(--framework-version "$BENCH_COHORT_FRAMEWORK_VERSION"); fi
+          if [ -n "$BENCH_COHORT_BENCHMARK_VERSION" ]; then DERIVE_ARGS+=(--benchmark-version "$BENCH_COHORT_BENCHMARK_VERSION"); fi
+          if node bench/feedback/derive-cli.js "${DERIVE_ARGS[@]}"; then
             :
           else
             echo "## Benchmark findings" > findings-pr-body.md

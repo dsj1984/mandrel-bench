@@ -175,6 +175,65 @@ describe('benchmark aggregate job — derive wiring', () => {
     );
   });
 
+  it('the plan job exposes the resolved cohort triple as job outputs (H1)', () => {
+    const plan = benchmark.jobs?.plan;
+    assert.ok(plan, 'benchmark.yml must declare the plan job');
+    const outputs = plan.outputs ?? {};
+    for (const key of ['model', 'framework_version', 'benchmark_version']) {
+      assert.ok(
+        Object.hasOwn(outputs, key),
+        `the plan job must expose a \`${key}\` output for the derive step to pin`,
+      );
+    }
+  });
+
+  it('the derive step PINS the run-under-test cohort triple (H1)', () => {
+    const aggregate = benchmark.jobs?.aggregate;
+    const deriveStep = (aggregate.steps ?? []).find(
+      (step) =>
+        typeof step.run === 'string' &&
+        step.run.includes('bench/feedback/derive-cli.js'),
+    );
+    assert.ok(deriveStep, 'the aggregate job must invoke the derive CLI');
+    // The three cohort pins must be forwarded to derive-cli. Without them
+    // derive-cli auto-selects only in a single-cohort tree and dies ambiguous
+    // once main holds >1 cohort — the pipe-breaker H1 fixes.
+    const run = String(deriveStep.run);
+    for (const flag of [
+      '--model',
+      '--framework-version',
+      '--benchmark-version',
+    ]) {
+      assert.ok(
+        run.includes(flag),
+        `the derive step must pass ${flag} to pin the target cohort`,
+      );
+    }
+    // The pins must be sourced from the plan job's resolved-cohort outputs, not
+    // interpolated raw inputs (which would reopen the shell-injection surface).
+    assert.match(
+      run,
+      /BENCH_COHORT_MODEL/,
+      'the model pin must flow through the BENCH_COHORT_MODEL env var',
+    );
+    const env = deriveStep.env ?? {};
+    assert.match(
+      String(env.BENCH_COHORT_MODEL ?? ''),
+      /needs\.plan\.outputs\.model/,
+      'the model pin env must read the plan job output',
+    );
+    assert.match(
+      String(env.BENCH_COHORT_FRAMEWORK_VERSION ?? ''),
+      /needs\.plan\.outputs\.framework_version/,
+      'the framework-version pin env must read the plan job output',
+    );
+    assert.match(
+      String(env.BENCH_COHORT_BENCHMARK_VERSION ?? ''),
+      /needs\.plan\.outputs\.benchmark_version/,
+      'the benchmark-version pin env must read the plan job output',
+    );
+  });
+
   it('the aggregate job still opens the results PR (does not file directly)', () => {
     const aggregate = benchmark.jobs?.aggregate;
     const usesPr = (aggregate.steps ?? []).some(
