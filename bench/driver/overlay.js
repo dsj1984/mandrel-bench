@@ -251,7 +251,7 @@ export function buildTargetPackageJson() {
     type: 'module',
     scripts: {
       typecheck: NODE_CHECK_SWEEP,
-      lint: `node -e "process.exit(require('fs').existsSync('biome.json')||require('fs').existsSync('biome.jsonc')?1:0)" && (npx --no-install biome ci . || true) || ${NODE_CHECK_SWEEP}`,
+      lint: `if [ -f biome.json ] || [ -f biome.jsonc ]; then npx --no-install biome ci .; else ${NODE_CHECK_SWEEP}; fi`,
       test: 'node --test',
     },
   };

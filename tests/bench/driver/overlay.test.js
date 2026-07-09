@@ -17,6 +17,9 @@
  */
 
 import assert from 'node:assert/strict';
+import { execSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -153,6 +156,92 @@ test('buildTargetPackageJson: the node --check sweep is a syntactically valid pr
     .replace(/"$/, '')
     .replace(/\\"/g, '"');
   assert.doesNotThrow(() => new Function(program));
+});
+
+test('buildTargetPackageJson: the emitted lint script actually EXECUTES the correct branch (Epic #66 audit remediation — inverted ternary + `|| true` masking bug)', async (t) => {
+  // Regex-matching the script string (as the tests above do) does not catch a
+  // flipped `process.exit()` polarity or a `|| true` that swallows a real
+  // failure — both bugs shipped silently because nothing ever ran the
+  // compound shell command. These sub-tests actually execute it.
+  const pkg = buildTargetPackageJson();
+  const lintScript = pkg.scripts.lint;
+
+  await t.test(
+    'no biome config: runs the node --check sweep and exits 0 on clean code',
+    () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'overlay-lint-clean-'));
+      try {
+        writeFileSync(path.join(dir, 'index.js'), 'export const ok = 1;\n');
+        const stdout = execSync(lintScript, { cwd: dir, encoding: 'utf8' });
+        assert.match(
+          stdout,
+          /node --check passed for \d+ file\(s\)/,
+          'the node --check sweep branch ran (not the biome branch) when no biome config is present',
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  await t.test(
+    'no biome config: a genuine syntax error propagates as a nonzero exit (no silent swallow)',
+    () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'overlay-lint-broken-'));
+      try {
+        // No `export` — this dir has no package.json declaring `type: module`,
+        // so a bare "(;\n" is parsed as a CommonJS script and is a genuine
+        // syntax error under `node --check`.
+        writeFileSync(path.join(dir, 'index.js'), 'const broken = (;\n');
+        assert.throws(
+          () => execSync(lintScript, { cwd: dir, encoding: 'utf8' }),
+          /status|Command failed/,
+          'a real parse failure must propagate as a nonzero exit, not be masked',
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  await t.test(
+    'biome config present: takes the biome branch (not the node --check sweep), and a real biome failure propagates',
+    () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'overlay-lint-biome-'));
+      try {
+        writeFileSync(path.join(dir, 'biome.json'), '{}\n');
+        // A clean file that WOULD pass the node --check sweep, so a nonzero
+        // exit here can only come from the biome branch actually running —
+        // proving the ternary polarity picks the biome branch when the config
+        // exists (not the sweep) and that a real biome failure is no longer
+        // masked by a trailing `|| true`. A fake `biome` binary is installed
+        // into a local node_modules/.bin so npx resolves it deterministically,
+        // with no dependency on the registry or a real biome install.
+        writeFileSync(path.join(dir, 'index.js'), 'const ok = 1;\n');
+        mkdirSync(path.join(dir, 'node_modules', '.bin'), { recursive: true });
+        const fakeBiome = path.join(dir, 'node_modules', '.bin', 'biome');
+        writeFileSync(fakeBiome, '#!/bin/sh\nexit 7\n');
+        execSync(`chmod +x ${JSON.stringify(fakeBiome)}`);
+        let caught;
+        try {
+          execSync(lintScript, { cwd: dir, encoding: 'utf8' });
+        } catch (err) {
+          caught = err;
+        }
+        assert.ok(
+          caught,
+          'the biome branch must run (and its failure must propagate) when a biome config exists',
+        );
+        assert.equal(
+          caught.status,
+          7,
+          "the fake biome binary's own exit code propagates through, unmasked",
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 test('the old Story #57 single-scenario special-case exports are gone', async () => {
