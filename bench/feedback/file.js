@@ -43,7 +43,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
 import { defaultCliLogger, runIfMain } from '../driver/cli-shell.js';
-import { sanitizeGitHubTokenEnv } from '../driver/sandbox.js';
+import { sanitizeFeedbackTokenEnv } from '../driver/token-env.js';
 import { cohortTripleKey } from './derive.js';
 
 /** The repo the feedback loop files against. */
@@ -86,10 +86,13 @@ export function cohortMarker(cohort) {
 
 /**
  * Default `gh` port: runs `gh <args>` via `execFileSync` (an argument array —
- * NEVER a shell string) with a token-sanitized environment
- * ({@link sanitizeGitHubTokenEnv}, reused from the sandbox lifecycle). Exported
- * with an injectable `execFileFn` so the sanitization is unit-testable without
- * spawning a real `gh` process.
+ * NEVER a shell string) with a token-sanitized environment. It binds
+ * EXPLICITLY to the feedback credential ({@link sanitizeFeedbackTokenEnv}:
+ * FEEDBACK_GITHUB_TOKEN → GH_TOKEN, else an already-set GH_TOKEN) and never
+ * inherits the sandbox's BENCH_GITHUB_TOKEN-wins preference, so the cross-repo
+ * filer can never silently authenticate with the destructive sandbox PAT (M8).
+ * Exported with an injectable `execFileFn` so the binding is unit-testable
+ * without spawning a real `gh` process.
  *
  * @param {string[]} args  argv passed to `gh`.
  * @param {{ execFileFn?: typeof execFileSync }} [deps]
@@ -99,7 +102,7 @@ export function defaultGhPort(args, { execFileFn = execFileSync } = {}) {
   return execFileFn('gh', args, {
     encoding: 'utf-8',
     stdio: 'pipe',
-    env: sanitizeGitHubTokenEnv(),
+    env: sanitizeFeedbackTokenEnv(),
   });
 }
 

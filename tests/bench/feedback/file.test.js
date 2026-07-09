@@ -16,6 +16,7 @@ import { describe, it } from 'node:test';
 
 import {
   cohortMarker,
+  defaultGhPort,
   fileFindings,
   fingerprintMarker,
   isScopeError,
@@ -305,6 +306,35 @@ describe('fileFindings — degradation on missing cross-repo write scope', () =>
     err.stderr = 'HTTP 403: Resource not accessible by integration';
     assert.equal(isScopeError(err), true);
     assert.equal(isScopeError(new Error('some unrelated network blip')), false);
+  });
+});
+
+describe('defaultGhPort — explicit FEEDBACK token binding (M8)', () => {
+  it('binds GH_TOKEN to FEEDBACK_GITHUB_TOKEN and NEVER the destructive BENCH PAT', () => {
+    const prevFeedback = process.env.FEEDBACK_GITHUB_TOKEN;
+    const prevBench = process.env.BENCH_GITHUB_TOKEN;
+    process.env.FEEDBACK_GITHUB_TOKEN = 'ghp_feedback';
+    process.env.BENCH_GITHUB_TOKEN = 'ghp_destructive';
+    try {
+      let capturedEnv;
+      const execFileFn = (cmd, args, opts) => {
+        assert.equal(cmd, 'gh');
+        assert.deepEqual(args, ['issue', 'list']);
+        capturedEnv = opts.env;
+        return '[]';
+      };
+      const out = defaultGhPort(['issue', 'list'], { execFileFn });
+      assert.equal(out, '[]');
+      // The filer authenticates with the FEEDBACK credential, never the
+      // destructive sandbox PAT — even when both are exported.
+      assert.equal(capturedEnv.GH_TOKEN, 'ghp_feedback');
+      assert.notEqual(capturedEnv.GH_TOKEN, 'ghp_destructive');
+    } finally {
+      if (prevFeedback === undefined) delete process.env.FEEDBACK_GITHUB_TOKEN;
+      else process.env.FEEDBACK_GITHUB_TOKEN = prevFeedback;
+      if (prevBench === undefined) delete process.env.BENCH_GITHUB_TOKEN;
+      else process.env.BENCH_GITHUB_TOKEN = prevBench;
+    }
   });
 });
 
