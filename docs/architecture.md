@@ -127,11 +127,13 @@ near-zero work).
 ## 5. Data models
 
 - **Scorecard** (`bench/schemas/scorecard.schema.json`, draft 2020-12) — the
-  per-run record: `{ runId, timestamp, model, frameworkVersion, env, scenario,
-  arm, dimensions{…}, … }`. Validated on emit.
+  per-run record: `{ runId, timestamp, model, frameworkVersion,
+  benchmarkVersion, env, scenario, arm, dimensions{…}, … }`. Validated on emit.
 - **Longitudinal store** (`results/`) — an append-only, committed record of
-  every scorecard, stamped with model + framework-version + env. This is the
-  "track over time" substrate; `compare.js` reads it for cross-run deltas.
+  every scorecard, stamped with model + framework-version + benchmark-version +
+  env (the 4-part cohort stamp, D-014). This is the "track over time" substrate;
+  `compare.js` reads it for cross-run deltas, pooling only records that match on
+  the full cohort key.
 - **Cost source** — the `claude -p` envelope only. Mandrel records no token
   actuals (its preflight is estimate-only), so the session envelope is the
   single, identical cost instrument for both arms.

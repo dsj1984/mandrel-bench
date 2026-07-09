@@ -466,3 +466,54 @@ two, and bundling them kept the review to one pass over
 §10) — delivered (Story #77; the report/dashboard rendering of the
 guardrail and the code/test/docs sweep of the retired autonomy delta row
 landed in Story #79).
+
+## D-014 — Cohort identity is the triple (model, mandrelVersion/frameworkVersion, benchmarkVersion); all three keys gate pooling (Epic #66/#84, decided 2026-07-09)
+
+**Decision.** Implements [`target-architecture.md`](target-architecture.md)
+§3.1 (and listed in §11). A **cohort** — the unit of statistical comparison —
+is the triple `(model, frameworkVersion, benchmarkVersion)`, not just the
+`(model, frameworkVersion)` pair the earlier layout keyed on. `benchmarkVersion`
+(this repo's own `package.json` version) joins the key because the benchmark is
+itself a variable: scoring formulas, scenario specs, and oracles all live here,
+so a benchmark change can move numbers with no framework or model change at all.
+
+- Every scorecard carries a required `benchmarkVersion`
+  (`bench/schemas/scorecard.schema.json`), stamped from THIS repo's version via
+  `readBenchmarkVersion` (distinct from `readFrameworkVersion`, which reads the
+  pinned `mandrel` dependency under test). Both readers live in the shared leaf
+  `bench/driver/version-readers.js`.
+- **Noise-bands, deltas, and top-up counting only ever pool records that match
+  on all three keys.** `groupCells` (`bench/report/render.js`) marks any cell
+  that mixes more than one `benchmarkVersion` **non-inferential** and suppresses
+  its band ("no band at the grouping seam"); `matchesCohort`
+  (`bench/driver/topup-planner.js`) counts a deficit only against exact-triple
+  matches; `compareRuns` (`bench/report/compare.js`) suppresses the bands of any
+  run that internally spans >1 benchmark version and annotates cross-cohort
+  comparisons with exactly which key moved (or flags them confounded).
+- The on-disk layout stays `results/<model-slug>/<frameworkVersion>/` (no
+  migration); cohort membership is resolved by filtering, not by directory.
+
+**Status.** Delivered (Story #87; the Epic #84 audit remediation closed the
+remaining rendering seams — dashboard guardrail/trap panels scope to the
+most-recent cohort, and `compareRuns` suppresses internally-multi-cohort bands).
+
+## D-021 — `results.html` publishes to GitHub Pages on results-PR merge (Epic #84, decided 2026-07-09)
+
+**Decision.** Implements [`target-architecture.md`](target-architecture.md) §11
+(the "Dashboard also published to GitHub Pages on results-PR merge" delta). The
+longitudinal dashboard (`results/results.html`, rendered by the aggregate job)
+is published to GitHub Pages automatically. `.github/workflows/publish-pages.yml`
+triggers on a `push` to `main` whose changed paths include
+`results/results.html` — i.e. exactly when a merged benchmark results PR (opened
+by the `benchmark.yml` aggregate job) lands the freshly-rendered dashboard on
+`main`. The workflow holds `pages: write` + the OIDC `id-token`, and a single
+`pages` concurrency group serializes deploys.
+
+- Publication is a **consequence of review**, not a side effect of a run: the
+  benchmark workflow never pushes to `main`; it opens a PR, and only the
+  operator's merge fires the Pages deploy. An unreviewed cohort never reaches
+  the public dashboard.
+- The dashboard remains a committed artifact in the repo as well — Pages is an
+  additional surface, not the source of truth.
+
+**Status.** Delivered (Epic #84 Phase 3).
