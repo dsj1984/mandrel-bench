@@ -1,0 +1,62 @@
+name: Publish Pages
+
+# Publish the longitudinal benchmark dashboard (results/results.html) to
+# GitHub Pages so it is publicly readable without cloning the repo (D-021).
+#
+# Trigger: a push to `main` that touches the committed dashboard. The
+# results-PR merge that updates results/results.html lands on main and fires
+# this workflow; ordinary source changes do not.
+#
+# One-time repo enablement (Settings → Pages → Build and deployment →
+# Source: "GitHub Actions") is documented in the repo README.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - results/results.html
+  workflow_dispatch:
+
+# Least-privilege token: read the checkout, write the Pages deployment, and
+# mint the OIDC token actions/deploy-pages verifies.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Serialize Pages deployments; never cancel an in-flight publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy dashboard
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Stage ONLY the dashboard artifact into a clean publish root. The
+      # per-cohort provenance tree under results/ (lifecycle ledgers, cost
+      # envelopes, per-Story signals) is deliberately never copied here, so
+      # it can never leak onto the public Pages site. Serving results.html
+      # as index.html makes the site root render the dashboard directly.
+      - name: Stage dashboard only (exclude provenance tree)
+        run: |
+          rm -rf _site
+          mkdir -p _site
+          cp results/results.html _site/index.html
+
+      - uses: actions/configure-pages@v5
+
+      - name: Upload dashboard artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

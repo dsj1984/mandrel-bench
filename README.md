@@ -125,6 +125,30 @@ mandrel-bench/
 
 ---
 
+## Published dashboard
+
+The longitudinal dashboard is published to **GitHub Pages** so it is publicly
+readable without cloning the repo (decision D-021):
+
+- **Live URL:** <https://dsj1984.github.io/mandrel-bench/>
+
+Publishing is automated by
+[`.github/workflows/publish-pages.yml`](.github/workflows/publish-pages.yml).
+The workflow fires on a push to `main` that touches the committed dashboard
+(`results/results.html`) — i.e. when a results PR merges — and deploys via the
+standard `actions/deploy-pages` flow. It stages and uploads **only**
+`results/results.html` (served as the site's `index.html`); the per-cohort
+`.raw/` provenance tree (lifecycle ledgers, cost envelopes, per-Story signals)
+is **never** copied to the public site.
+
+**One-time repo enablement.** GitHub Pages must be switched to the Actions
+source once, by a repo admin: **Settings → Pages → Build and deployment →
+Source → "GitHub Actions"**. No branch or `/docs` folder selection is needed —
+the workflow owns the artifact. After that, every results-PR merge republishes
+the dashboard automatically.
+
+---
+
 ## Status
 
 **Wired and exercised end to end.** The full component set (metrics model +
@@ -250,6 +274,8 @@ references it anymore.
   model, components, data flow, security).
 - [`docs/decisions.md`](docs/decisions.md) — the decision log and rationale.
 - [`results/`](results/) — the scorecard store and value-add reports.
+- [Published dashboard](https://dsj1984.github.io/mandrel-bench/) — the
+  longitudinal scorecard dashboard on GitHub Pages.
 
 ## Development
 
@@ -265,6 +291,9 @@ references it anymore.
 - **Releases:** [release-please](https://github.com/googleapis/release-please)
   versions + changelogs on `main` (tags `vX.Y.Z`); **not** published to npm.
 - **CI:** GitHub Actions — `lint` + `test` on every PR to `main`.
+- **Pages:** GitHub Actions — `publish-pages` deploys `results/results.html` to
+  GitHub Pages on every results-PR merge to `main` (see
+  [Published dashboard](#published-dashboard)).
 
 ## License
 
