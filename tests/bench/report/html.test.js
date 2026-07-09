@@ -25,6 +25,7 @@ function card(overrides = {}) {
     timestamp: '2026-06-16T19:42:11.000Z',
     model: { id: 'claude-opus-4-8[1m]' },
     frameworkVersion: '1.70.0',
+    benchmarkVersion: '0.5.0',
     env: { node: 'v24.16.0', os: 'darwin', host: 'h' },
     scenario: 'hello-world',
     arm: 'mandrel',
@@ -107,6 +108,9 @@ describe('toRow', () => {
     assert.deepEqual(row.rawRefs.signalsNdjson, [
       '.raw/hw-mandrel-r1/signals-0.ndjson',
     ]);
+    // D-014: the projected row carries benchmarkVersion so the client trend
+    // view can key cohorts on the full stamp.
+    assert.equal(row.benchmarkVersion, '0.5.0');
   });
 
   it('coerces non-finite / missing metrics to null', () => {
@@ -114,6 +118,8 @@ describe('toRow', () => {
     assert.equal(row.quality, null);
     assert.equal(row.costUsd, null);
     assert.equal(row.model, '');
+    // A record with no benchmarkVersion projects to '' (never undefined).
+    assert.equal(row.benchmarkVersion, '');
   });
 });
 
@@ -234,6 +240,28 @@ describe('renderDashboard', () => {
       () => renderDashboard({ scorecards: null }),
       /must be an array/,
     );
+  });
+
+  it('keys the trend view on the full stamp including benchmarkVersion so different benchmark versions never collapse (D-014)', () => {
+    const html = renderDashboard({
+      scorecards: [
+        card({ runId: 'm-05', benchmarkVersion: '0.5.0' }),
+        card({ runId: 'm-06', benchmarkVersion: '0.6.0' }),
+      ],
+    });
+    // The inlined corpus carries benchmarkVersion on every row...
+    assert.match(html, /"benchmarkVersion":"0\.5\.0"/);
+    assert.match(html, /"benchmarkVersion":"0\.6\.0"/);
+    // ...and the client cohort key concatenates the benchmark version, so two
+    // records that share (model, frameworkVersion) but differ in benchmark
+    // version resolve to distinct cohorts (distinct trend points).
+    assert.match(html, /\+ " · bench " \+ r\.benchmarkVersion/);
+    assert.match(html, /r\.benchmarkVersion === cohort\.benchmarkVersion/);
+  });
+
+  it('exposes benchmarkVersion as an index-table column (D-014)', () => {
+    const html = renderDashboard({ scorecards: [card(), CONTROL] });
+    assert.match(html, /key: "benchmarkVersion", label: "Bench"/);
   });
 
   it('renders the autonomy-guardrail panel, marked deltaExempt (Epic #66, Story #77/#79)', () => {

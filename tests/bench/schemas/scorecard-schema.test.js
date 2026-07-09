@@ -91,6 +91,26 @@ describe('scorecard schema — rejects malformed records', () => {
     assert.equal(validate(bad), false);
   });
 
+  it('rejects a scorecard missing benchmarkVersion (D-014: it is a required top-level stamp field)', () => {
+    const bad = clone(fixture);
+    delete bad.benchmarkVersion;
+    assert.equal(validate(bad), false);
+    assert.ok(
+      (validate.errors ?? []).some(
+        (e) =>
+          e.keyword === 'required' &&
+          e.params?.missingProperty === 'benchmarkVersion',
+      ),
+      'expected a "required" error naming benchmarkVersion',
+    );
+  });
+
+  it('rejects an empty benchmarkVersion (minLength 1)', () => {
+    const bad = clone(fixture);
+    bad.benchmarkVersion = '';
+    assert.equal(validate(bad), false);
+  });
+
   it('rejects a record missing one of the seven dimensions', () => {
     const bad = clone(fixture);
     delete bad.dimensions.overheadRatio;

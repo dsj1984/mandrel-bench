@@ -33,6 +33,7 @@ import { scoreCorpus } from '../../../bench/score/differential.js';
 const MODEL = { id: 'claude-opus-4-8[1m]' };
 const ENV = { node: 'v24.16.0', os: 'darwin' };
 const FW = '1.70.0';
+const BV = '0.5.0';
 
 /**
  * Build a full per-run scorecard carrying the stamp + the dimension scalars a
@@ -58,6 +59,7 @@ function card({
   costUsd = 1.4,
   model = MODEL,
   frameworkVersion = FW,
+  benchmarkVersion = BV,
   env = ENV,
   trap = null,
 } = {}) {
@@ -67,6 +69,7 @@ function card({
     timestamp: '2026-06-16T19:42:11.000Z',
     model,
     frameworkVersion,
+    benchmarkVersion,
     env,
     scenario,
     arm,
@@ -270,6 +273,10 @@ describe('deriveCohort', () => {
     const cohort = deriveCohort(healthyCorpus());
     assert.deepEqual(cohort.models, ['claude-opus-4-8[1m]']);
     assert.deepEqual(cohort.frameworkVersions, ['1.70.0']);
+    // D-014: benchmarkVersion joins the stamp; a single-benchmark corpus is
+    // not mixed and the env guard is unchanged.
+    assert.deepEqual(cohort.benchmarkVersions, ['0.5.0']);
+    assert.deepEqual(cohort.nodes, ['v24.16.0']);
     assert.equal(cohort.mixed, false);
   });
 
@@ -280,6 +287,50 @@ describe('deriveCohort', () => {
     ]);
     assert.equal(cohort.mixed, true);
     assert.equal(cohort.frameworkVersions.length, 2);
+  });
+
+  it('flags a mixed cohort when only the benchmark version diverges (D-014)', () => {
+    const cohort = deriveCohort([
+      card({ runId: 'a', benchmarkVersion: '0.5.0' }),
+      card({ runId: 'b', benchmarkVersion: '0.6.0' }),
+    ]);
+    assert.equal(cohort.mixed, true);
+    assert.deepEqual(cohort.benchmarkVersions, ['0.5.0', '0.6.0']);
+    // The framework version did NOT diverge — the mix is purely the benchmark.
+    assert.deepEqual(cohort.frameworkVersions, ['1.70.0']);
+  });
+});
+
+describe('groupCells — benchmarkVersion non-inferential pooling (D-014, Story #87)', () => {
+  it('does not pool a cell that mixes benchmark versions: no noise-band and a non-inferential flag', () => {
+    // One (model, frameworkVersion) hello-world cell whose mandrel runs span
+    // two benchmark versions — the harness itself changed between them.
+    const corpus = [
+      card({ runId: 'm-a', arm: 'mandrel', benchmarkVersion: '0.5.0' }),
+      card({ runId: 'm-b', arm: 'mandrel', benchmarkVersion: '0.5.0' }),
+      card({ runId: 'm-c', arm: 'mandrel', benchmarkVersion: '0.6.0' }),
+      card({ runId: 'c-a', arm: 'control', benchmarkVersion: '0.5.0' }),
+      card({ runId: 'c-b', arm: 'control', benchmarkVersion: '0.6.0' }),
+    ];
+    const cells = groupCells(corpus);
+    const hw = cells.find((c) => c.scenario === 'hello-world');
+    assert.equal(hw.nonInferential, true);
+    assert.deepEqual(hw.benchmarkVersions, ['0.5.0', '0.6.0']);
+    // No poolable runs remain at the grouping seam → no noise-band can form.
+    assert.equal(hw.mandrelRuns.length, 0);
+    assert.equal(hw.controlRuns.length, 0);
+    // The raw records are still held for counting / labelling.
+    assert.equal(hw.nonInferentialRuns.length, 5);
+  });
+
+  it('leaves a single-benchmark-version cell fully poolable (no false suppression)', () => {
+    const cells = groupCells(healthyCorpus());
+    for (const c of cells) {
+      assert.equal(c.nonInferential, false);
+      assert.equal(c.benchmarkVersions.length, 1);
+    }
+    const hw = cells.find((c) => c.scenario === 'hello-world');
+    assert.ok(hw.mandrelRuns.length > 0);
   });
 });
 
@@ -615,6 +666,28 @@ describe('renderReport — full Markdown', () => {
         card({ runId: 'b', frameworkVersion: '1.71.0' }),
       ],
     });
+    assert.match(md, /Mixed cohort/);
+  });
+
+  it('stamps the benchmark version in the cohort header (D-014)', () => {
+    const md = renderReport({ scorecards: healthyCorpus(), method: 'iqr' });
+    assert.match(md, /\*\*Benchmark version:\*\* 0\.5\.0/);
+  });
+
+  it('labels a benchmark-version-mixed cell non-inferential and emits no noise-band for it (D-014)', () => {
+    // A hello-world cell whose runs span two benchmark versions within one
+    // (model, frameworkVersion) cohort must not be pooled into a band.
+    const scorecards = [
+      card({ runId: 'm-a', arm: 'mandrel', benchmarkVersion: '0.5.0' }),
+      card({ runId: 'm-b', arm: 'mandrel', benchmarkVersion: '0.6.0' }),
+      card({ runId: 'c-a', arm: 'control', benchmarkVersion: '0.5.0' }),
+      card({ runId: 'c-b', arm: 'control', benchmarkVersion: '0.6.0' }),
+    ];
+    const md = renderReport({ scorecards, method: 'iqr' });
+    // The corpus is labelled non-inferential at the grouping seam...
+    assert.match(md, /Non-inferential corpus/);
+    assert.match(md, /0\.5\.0, 0\.6\.0/);
+    // ...and the whole corpus header flags the benchmark-version mix.
     assert.match(md, /Mixed cohort/);
   });
 

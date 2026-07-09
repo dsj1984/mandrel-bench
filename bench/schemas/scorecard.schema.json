@@ -11,6 +11,7 @@
     "timestamp",
     "model",
     "frameworkVersion",
+    "benchmarkVersion",
     "env",
     "scenario",
     "arm",
@@ -53,7 +54,12 @@
     "frameworkVersion": {
       "type": "string",
       "minLength": 1,
-      "description": "The Mandrel framework version under test (the `version` field of the repo's root package.json) for the Mandrel arm. For the control arm this records the framework version the comparison is anchored to, even though the control clone carries no .agents/ scaffolding."
+      "description": "The Mandrel framework version under test — the `version` of the pinned `mandrel` dependency (node_modules/mandrel/package.json), read by bench/run.js#readFrameworkVersion — for the Mandrel arm. For the control arm this records the framework version the comparison is anchored to, even though the control clone carries no .agents/ scaffolding. Distinct from `benchmarkVersion` (this benchmark repo's own version)."
+    },
+    "benchmarkVersion": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The benchmark harness version this record was produced under — THIS repo's own `version` (the mandrel-bench package.json version, read by bench/run.js#readBenchmarkVersion), NOT the pinned `mandrel` dependency version that `frameworkVersion` records. The benchmark is itself a variable: scoring formulas, scenario specs, and oracles all live in this repo, so a benchmark change can move numbers with no framework or model change at all. Per D-014 (docs/target-architecture.md § 3.1) it JOINS `model` + `frameworkVersion` + `env` to form the triple cohort key: noise-bands, deltas, and top-up counting only ever pool records that match on the full stamp, and a corpus mixing benchmark versions in one (model, frameworkVersion) cell is labelled non-inferential rather than silently pooled."
     },
     "env": {
       "type": "object",

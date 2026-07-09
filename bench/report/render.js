@@ -15,8 +15,8 @@
 //
 // The report renders, in order:
 //
-//   1. A header stamped with the cohort (model, framework version, env) so a
-//      reader only ever compares like-to-like.
+//   1. A header stamped with the cohort (model, framework version, benchmark
+//      version, env) so a reader only ever compares like-to-like.
 //   2. Per-scenario, per-dimension DISTRIBUTIONS — each dimension reported as a
 //      noise-band for BOTH arms (never a bare point estimate), plus the
 //      Mandrel-vs-bare delta and its real/within-noise verdict against the
@@ -151,6 +151,17 @@ const MISMATCH_RATE_FLAG_THRESHOLD = 0.25;
  * and instead surfaced via `mismatchedRuns` / `mismatchRate` / `mismatchFlag`
  * so a reader sees the deficit rather than a silently thinned pool.
  *
+ * Non-inferential benchmark-version mixing (D-014, Story #87): a cell whose
+ * records span MORE THAN ONE `benchmarkVersion` is NOT poolable — the harness
+ * itself changed between those records, so a noise-band over them would
+ * silently confound a benchmark change with a framework/model signal. Such a
+ * cell is flagged `nonInferential: true`, its pooled arms are emptied (so NO
+ * noise-band forms downstream — the "no band at the grouping seam" contract),
+ * and the raw records are held on `nonInferentialRuns` so the report can still
+ * count and label them. This is the render-time enforcement of the cohort
+ * triple; `cohortKey()` in persist.js is its persistence-time counterpart. A
+ * single benchmark version (the normal case) leaves the pool untouched.
+ *
  * @param {Array<object>} scorecards
  * @returns {Array<{
  *   scenario: string,
@@ -160,7 +171,10 @@ const MISMATCH_RATE_FLAG_THRESHOLD = 0.25;
  *   mismatchedRuns: Array<object>,
  *   mismatchRate: number,
  *   mismatchFlag: boolean,
- *   floorCalibration: boolean
+ *   floorCalibration: boolean,
+ *   benchmarkVersions: string[],
+ *   nonInferential: boolean,
+ *   nonInferentialRuns: Array<object>
  * }>}
  */
 export function groupCells(scorecards) {
@@ -176,9 +190,16 @@ export function groupCells(scorecards) {
         mandrelRuns: [],
         controlRuns: [],
         mismatchedRuns: [],
+        benchmarkVersions: new Set(),
       });
     }
     const cell = byScenario.get(scenario);
+    if (
+      typeof sc.benchmarkVersion === 'string' &&
+      sc.benchmarkVersion.length > 0
+    ) {
+      cell.benchmarkVersions.add(sc.benchmarkVersion);
+    }
     if (sc.arm === 'mandrel') {
       if (sc.routingMismatch === true) cell.mismatchedRuns.push(sc);
       else cell.mandrelRuns.push(sc);
@@ -189,18 +210,34 @@ export function groupCells(scorecards) {
 
   const cells = [];
   for (const [scenario, arms] of byScenario) {
+    const benchmarkVersions = [...arms.benchmarkVersions].sort();
+    // A cell that mixes >1 benchmark version is non-inferential: the harness
+    // itself changed between those records, so they must never pool into one
+    // band. An undetermined version (absent on every record) is not a mix.
+    const nonInferential = benchmarkVersions.length > 1;
+    const nonInferentialRuns = nonInferential
+      ? [...arms.mandrelRuns, ...arms.mismatchedRuns, ...arms.controlRuns]
+      : [];
     const totalMandrel = arms.mandrelRuns.length + arms.mismatchedRuns.length;
     const mismatchRate =
-      totalMandrel > 0 ? arms.mismatchedRuns.length / totalMandrel : 0;
+      !nonInferential && totalMandrel > 0
+        ? arms.mismatchedRuns.length / totalMandrel
+        : 0;
     cells.push({
       scenario,
       difficulty: DIFFICULTY_BY_SCENARIO[scenario] ?? Number.POSITIVE_INFINITY,
-      mandrelRuns: arms.mandrelRuns,
-      controlRuns: arms.controlRuns,
-      mismatchedRuns: arms.mismatchedRuns,
+      // Suppress the pool when non-inferential so NO noise-band forms at the
+      // grouping seam; otherwise pass the arms through unchanged.
+      mandrelRuns: nonInferential ? [] : arms.mandrelRuns,
+      controlRuns: nonInferential ? [] : arms.controlRuns,
+      mismatchedRuns: nonInferential ? [] : arms.mismatchedRuns,
       mismatchRate,
-      mismatchFlag: mismatchRate > MISMATCH_RATE_FLAG_THRESHOLD,
+      mismatchFlag:
+        !nonInferential && mismatchRate > MISMATCH_RATE_FLAG_THRESHOLD,
       floorCalibration: FLOOR_CALIBRATION_SCENARIOS.has(scenario),
+      benchmarkVersions,
+      nonInferential,
+      nonInferentialRuns,
     });
   }
   cells.sort((a, b) => {
@@ -211,16 +248,22 @@ export function groupCells(scorecards) {
 }
 
 /**
- * Derive the cohort stamp (model, framework version, env) from the corpus. The
+ * Derive the cohort stamp (model, framework version, benchmark version, env)
+ * from the corpus. The
  * harness only ever compares like-to-like, so every scorecard in a corpus is
  * expected to share one cohort; if more than one distinct value is present for
  * a field, that is itself a finding — we record every distinct value and flag
  * the mix so the report never silently averages across cohorts.
  *
+ * `benchmarkVersion` (D-014) JOINS the stamp alongside model / framework
+ * version / env — the harness itself is a variable, so a corpus that mixes
+ * benchmark versions is `mixed` exactly as one that mixes framework versions.
+ *
  * @param {Array<object>} scorecards
  * @returns {{
  *   models: string[],
  *   frameworkVersions: string[],
+ *   benchmarkVersions: string[],
  *   nodes: string[],
  *   oses: string[],
  *   mixed: boolean
@@ -229,22 +272,26 @@ export function groupCells(scorecards) {
 export function deriveCohort(scorecards) {
   const models = new Set();
   const frameworkVersions = new Set();
+  const benchmarkVersions = new Set();
   const nodes = new Set();
   const oses = new Set();
   for (const sc of scorecards) {
     if (sc?.model?.id) models.add(sc.model.id);
     if (sc?.frameworkVersion) frameworkVersions.add(sc.frameworkVersion);
+    if (sc?.benchmarkVersion) benchmarkVersions.add(sc.benchmarkVersion);
     if (sc?.env?.node) nodes.add(sc.env.node);
     if (sc?.env?.os) oses.add(sc.env.os);
   }
   const mixed =
     models.size > 1 ||
     frameworkVersions.size > 1 ||
+    benchmarkVersions.size > 1 ||
     nodes.size > 1 ||
     oses.size > 1;
   return {
     models: [...models],
     frameworkVersions: [...frameworkVersions],
+    benchmarkVersions: [...benchmarkVersions],
     nodes: [...nodes],
     oses: [...oses],
     mixed,
@@ -271,6 +318,7 @@ function renderHeader(cohort, method) {
     '',
     `- **Model:** ${cohort.models.length ? cohort.models.join(', ') : '—'}`,
     `- **Framework version:** ${cohort.frameworkVersions.length ? cohort.frameworkVersions.join(', ') : '—'}`,
+    `- **Benchmark version:** ${cohort.benchmarkVersions?.length ? cohort.benchmarkVersions.join(', ') : '—'}`,
     `- **Node:** ${cohort.nodes.length ? cohort.nodes.join(', ') : '—'}`,
     `- **OS:** ${cohort.oses.length ? cohort.oses.join(', ') : '—'}`,
     `- **Band method:** ${method}`,
@@ -279,9 +327,9 @@ function renderHeader(cohort, method) {
     lines.push(
       '',
       '> ⚠️ **Mixed cohort:** this corpus mixes more than one',
-      '> (model, framework version, env) — comparisons below are NOT',
-      '> strictly like-to-like. Re-run within a single cohort for a clean',
-      '> verdict.',
+      '> (model, framework version, benchmark version, env) — comparisons',
+      '> below are NOT strictly like-to-like. Re-run within a single cohort',
+      '> for a clean verdict.',
     );
   }
   return lines.join('\n');
@@ -397,6 +445,31 @@ export function renderMismatchNote(cell) {
     );
   }
   return `> **Routing mismatch: ${pct}% of mandrel runs** (${n} record(s)) — excluded from the noise-band pool below.`;
+}
+
+/**
+ * Render the non-inferential note (D-014, Story #87) for a cell whose records
+ * span more than one `benchmarkVersion`. Such a cell's pool is suppressed (no
+ * noise-band), so instead of the usual distribution table it carries an
+ * explicit "non-inferential" banner naming the mixed versions — the harness
+ * itself changed across those records, so no like-to-like verdict is possible.
+ * Returns '' for the normal (single-benchmark-version) cell.
+ *
+ * @param {object} cell  A `groupCells` entry.
+ * @returns {string}
+ */
+export function renderNonInferentialNote(cell) {
+  if (!cell.nonInferential) return '';
+  const versions = (cell.benchmarkVersions ?? []).join(', ');
+  const n = cell.nonInferentialRuns?.length ?? 0;
+  return (
+    `> ⛔ **Non-inferential corpus:** this cell mixes ${cell.benchmarkVersions?.length ?? 0} ` +
+    `benchmark versions (${versions}) across ${n} record(s). The benchmark ` +
+    'harness itself changed between them, so they are NOT pooled into a ' +
+    'noise-band — a delta here would confound a benchmark-repo change with a ' +
+    'framework/model signal (D-014). Re-run within a single benchmark version ' +
+    'for an inferential verdict.'
+  );
 }
 
 /**
@@ -677,10 +750,21 @@ function renderScenarioSection(cell, diff, method) {
   const routingNote = renderRoutingNote(cell.mandrelRuns);
   const mismatchNote = renderMismatchNote(cell);
   const floorNote = renderFloorCalibrationNote(cell);
+  const nonInferentialNote = renderNonInferentialNote(cell);
+  // When the pool is suppressed (non-inferential), the pooled arms are empty;
+  // report the raw held counts instead so the reader still sees the corpus size.
+  const held = cell.nonInferentialRuns ?? [];
+  const nMandrel = cell.nonInferential
+    ? held.filter((r) => r?.arm === 'mandrel').length
+    : cell.mandrelRuns.length;
+  const nControl = cell.nonInferential
+    ? held.filter((r) => r?.arm === 'control').length
+    : cell.controlRuns.length;
   const header = [
     `### Scenario: \`${cell.scenario}\` (difficulty ${Number.isFinite(cell.difficulty) ? cell.difficulty : '?'})`,
     '',
-    `n = ${cell.mandrelRuns.length} mandrel / ${cell.controlRuns.length} control · band = ${method} (\`center [low, high]\`)`,
+    `n = ${nMandrel} mandrel / ${nControl} control · band = ${method} (\`center [low, high]\`)`,
+    ...(nonInferentialNote ? ['', nonInferentialNote] : []),
     ...(floorNote ? ['', floorNote] : []),
     ...(routingNote ? ['', routingNote] : []),
     ...(mismatchNote ? ['', mismatchNote] : []),
