@@ -1183,8 +1183,8 @@ export const REQUIRED_SANDBOX_ENV_VARS = Object.freeze([
 /**
  * Retired standing-repo env vars, mapped to a human-readable replacement
  * note. Presence of any of these must never be silently accepted — it
- * signals an operator still configured for the old `mandrel-bench-sandbox`
- * standing-repo path.
+ * signals an operator still configured for the old, retired standing-repo
+ * path (docs/decisions.md D-013).
  */
 export const RETIRED_SANDBOX_ENV_VARS = Object.freeze({
   BENCH_SANDBOX_REPO_URL:
@@ -1316,8 +1316,9 @@ export async function main(env = process.env, deps = {}) {
   // Ephemeral sandbox lifecycle (Story #71): create → seed → run(s) → destroy.
   // This invocation provisions ONE `bench-sbx-*` repo, seeded from
   // `bench/sandbox-template/`, that every cell in this invocation runs
-  // against — replacing the retired standing `mandrel-bench-sandbox` repo.
-  // Teardown is guaranteed (destroy runs in `finally`, best-effort).
+  // against — replacing the retired standing external sandbox repo
+  // (docs/decisions.md D-013). Teardown is guaranteed (destroy runs in
+  // `finally`, best-effort).
   const createEphemeralRepoFn =
     deps.createEphemeralRepoFn ?? createEphemeralRepo;
   const seedFromTemplateFn = deps.seedFromTemplateFn ?? seedFromTemplate;

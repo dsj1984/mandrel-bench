@@ -598,9 +598,9 @@ test('runFirstBenchmark: emits a schema-valid scorecard per arm and renders a re
       arms: ['mandrel', 'control'],
       n: 1,
       sandbox: {
-        repoUrl: 'git@github.com:dsj1984/mandrel-bench-sandbox.git',
+        repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
         owner: 'dsj1984',
-        repo: 'mandrel-bench-sandbox',
+        repo: 'legacy-sandbox-repo',
       },
       resultsDir: '/results',
     },
@@ -747,9 +747,9 @@ test('runFirstBenchmark: recovers standalone telemetry when the mandrel arm prod
       arms: ['mandrel'],
       n: 1,
       sandbox: {
-        repoUrl: 'git@github.com:dsj1984/mandrel-bench-sandbox.git',
+        repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
         owner: 'dsj1984',
-        repo: 'mandrel-bench-sandbox',
+        repo: 'legacy-sandbox-repo',
       },
       resultsDir: '/results',
     },
@@ -807,9 +807,9 @@ test('runOneRun: resets the sandbox baseline before provision AND in the finally
       arm: 'mandrel',
       runIndex: 1,
       sandbox: {
-        repoUrl: 'git@github.com:dsj1984/mandrel-bench-sandbox.git',
+        repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
         owner: 'dsj1984',
-        repo: 'mandrel-bench-sandbox',
+        repo: 'legacy-sandbox-repo',
         baselineRef: 'bench-baseline',
       },
       resultsDir: '/results',
@@ -947,9 +947,9 @@ test('CHECKPOINT_FILENAME is the default checkpoint name beside the results root
 // ---------------------------------------------------------------------------
 
 const SANDBOX = {
-  repoUrl: 'git@github.com:dsj1984/mandrel-bench-sandbox.git',
+  repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
   owner: 'dsj1984',
-  repo: 'mandrel-bench-sandbox',
+  repo: 'legacy-sandbox-repo',
 };
 
 test('runFirstBenchmark: threads per-scenario epicIds into the mandrel arm session', async () => {
@@ -1177,8 +1177,8 @@ test('retiredSandboxEnvWarnings: empty when no retired var is set', () => {
 
 test('retiredSandboxEnvWarnings: one warning per retired var, each naming its replacement', () => {
   const warnings = retiredSandboxEnvWarnings({
-    BENCH_SANDBOX_REPO_URL: 'https://github.com/dsj1984/mandrel-bench-sandbox',
-    BENCH_SANDBOX_REPO: 'mandrel-bench-sandbox',
+    BENCH_SANDBOX_REPO_URL: 'https://github.com/dsj1984/legacy-sandbox-repo',
+    BENCH_SANDBOX_REPO: 'legacy-sandbox-repo',
     BENCH_SANDBOX_BASELINE_REF: 'bench-baseline',
   });
   assert.equal(warnings.length, Object.keys(RETIRED_SANDBOX_ENV_VARS).length);
@@ -1239,7 +1239,7 @@ test('main(): a retired var set alongside missing required vars emits BOTH the d
     await main(
       {
         BENCH_SANDBOX_REPO_URL:
-          'https://github.com/dsj1984/mandrel-bench-sandbox',
+          'https://github.com/dsj1984/legacy-sandbox-repo',
       },
       { logger },
     );

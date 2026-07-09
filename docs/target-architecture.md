@@ -521,7 +521,7 @@ The delta at a glance, mapped to the migration phase that closes each gap
 
 | Area | Current | Target | Phase |
 | --- | --- | --- | --- |
-| Sandbox substrate | Standing external repo (`mandrel-bench-sandbox`), `main` force-reset around every cell; content unversioned | Ephemeral per-cell repos from in-repo `bench/sandbox-template/`; janitor sweep; standing repo retired | 1 |
+| Sandbox substrate | ✅ **Delivered** (Stories #71/#72/#73, D-013). Ephemeral per-cell repos (`bench-sbx-<cohort>-<scenario>-<arm>-<nonce>`) from in-repo `bench/sandbox-template/`; `bench-sbx-` prefix + TTL janitor sweep; standing `mandrel-bench-sandbox` repo retired and every code/test/README reference swept | Ephemeral per-cell repos from in-repo `bench/sandbox-template/`; janitor sweep; standing repo retired | 1 |
 | Scenario corpus | 4 scenarios: `hello-world`, `crud-db`, `project-api`, `auth-trap` (spike) | 3 rungs: `hello-world` (instrumentation), `story-scope`, `epic-scope`; old rungs 2–4 absorbed and retired | 2 |
 | Quality gates | Stubbed to `node --version` everywhere except auth-trap | Un-stubbed lint/typecheck/test on every rung, both arms | 2 |
 | Trap scoring | Single defect class on one spike scenario; probe never run | Multi-class traps on rungs 2–3 with per-class oracles; trap axis first-class in schema, report, dashboard | 2 |
@@ -543,10 +543,26 @@ The delta at a glance, mapped to the migration phase that closes each gap
 Phased so every phase leaves the benchmark runnable and each is an
 Epic-sized unit for `/plan`:
 
-1. **Phase 1 — Self-contained sandbox.** `bench/sandbox-template/`,
-   ephemeral repo lifecycle in `sandbox.js`, janitor, config/env migration,
-   retire the standing sandbox repo. *Exit: a full local run with no
-   reference to `mandrel-bench-sandbox`.*
+1. **Phase 1 — Self-contained sandbox.** ✅ **Delivered** (Stories #71, #72,
+   #73). `bench/sandbox-template/`, ephemeral repo lifecycle in `sandbox.js`,
+   janitor, config/env migration, retire the standing sandbox repo. *Exit: a
+   full local run with no reference to `mandrel-bench-sandbox`.* — met; the
+   reference sweep (Story #73) is grep-enforced by
+   `tests/bench/driver/no-standing-sandbox.test.js` plus a CI-checkable
+   `git grep` in the Story's own `verify[]`.
+
+   **Implementation deltas discovered during delivery:**
+   - The retired env vars (`BENCH_SANDBOX_REPO_URL`/`REPO`/`BASELINE_REF`)
+     are not simply removed — `bench/run.js` keeps a small
+     `RETIRED_SANDBOX_ENV_VARS` deprecation-warning shim so an operator
+     still configured for the old standing-repo path gets a named-replacement
+     warning instead of silent misconfiguration. That shim is the sole
+     permitted post-retirement reference to the old env-var names and is
+     explicitly exempted by the Story #73 regression-guard test.
+   - `overlay.js`'s `.agentrc.json` rewrite (`rewriteAgentrc`) needed no
+     mechanism change — it already took `{ owner, repo }` as a parameter, so
+     repointing it at the ephemeral repo's dynamic coordinates was a
+     call-site change only, not a rewrite of the overlay itself.
 2. **Phase 2 — Scenario matrix + measurement fixes.** Build `story-scope`
    and `epic-scope` (absorbing auth-trap/crud-db/project-api), generalize
    un-stubbed gates, multi-class trap oracles + discrimination tests,

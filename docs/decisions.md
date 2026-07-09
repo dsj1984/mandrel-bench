@@ -281,3 +281,57 @@ signal/no-signal read would be a large bet on an unverified premise. The spike
 buys the read cheaply: the apparatus is validated by a **detector-discrimination
 unit test** (`tests/bench/scenarios/auth-trap/trap-oracle.test.js`) on
 hand-crafted vulnerable/clean samples — no expensive run required.
+
+---
+
+## D-013 — Ephemeral per-cell sandbox repos, materialized from an in-repo template; the standing sandbox repo retires (Epic #65, decided 2026-07-09)
+
+**Decision.** Replace the standing external sandbox repo — whose `main` was
+force-reset around every cell and whose content was unversioned — with a
+**per-cell ephemeral GitHub repo lifecycle**: `create → seed → run(N serial
+runs) → destroy`. Each cell gets its own private repo named
+`bench-sbx-<cohort>-<scenario>-<arm>-<nonce>` (reserved `bench-sbx-` prefix),
+seeded from `bench/sandbox-template/` (plus an optional per-scenario overlay
+at `bench/scenarios/<id>/sandbox/`) as the baseline commit, and deleted at
+teardown (best-effort on every failure path). A `bench/driver/janitor.js`
+sweep, filtering on the reserved prefix + owner + a TTL (default 24h), runs
+at the start of every invocation (and standalone) to clean up anything a
+crash leaks.
+
+**The problem this addresses.** The standing repo was a shared mutable
+substrate: its `main` had to be force-reset around every cell, which blocks
+running cells in parallel and lets content drift silently outside version
+control. A fresh benchmark installation also required a second, manually
+provisioned repo before a single run could happen.
+
+**Auth/config collapses to two secrets.** `BENCH_GITHUB_TOKEN` (a
+fine-grained PAT or machine-account token scoped to repository
+create/delete, contents, issues, and pull-requests) and
+`BENCH_SANDBOX_OWNER` (the account/org ephemeral repos are created under)
+are the only required env vars, validated fail-fast at `bench/run.js`
+startup before any cost is spent. `BENCH_SANDBOX_REPO_URL`,
+`BENCH_SANDBOX_REPO`, and
+`BENCH_SANDBOX_BASELINE_REF` are **retired** — their presence emits a
+deprecation warning naming the replacement rather than being silently
+accepted (`bench/run.js`'s `RETIRED_SANDBOX_ENV_VARS` shim, exempted from the
+reference-sweep regression guard by name).
+
+**Why safe to make destructive repo-deletion unattended.** The `bench-sbx-`
+prefix is *reserved* — nothing else under the operator account may use it —
+so `destroyEphemeralRepo` and the janitor can refuse any name outside the
+prefix and delete freely within it. Existing containment and token-hygiene
+primitives (`assertInsideRoot`, `sanitizeGitHubTokenEnv`) are preserved
+unchanged for the local working-tree surface.
+
+**Supersedes.** The standing `mandrel-bench-sandbox` external repo and its
+`BENCH_SANDBOX_REPO_URL`/`REPO`/`BASELINE_REF` env contract, in place since
+the initial design (D-002 era). Prior benchmark results (`results/`) carry
+no continuity obligation across this cutover — the standing-repo dependency
+they were run against is now historical provenance only.
+
+**Status.** Migration Phase 1 (see
+[`target-architecture.md`](target-architecture.md) §10) — delivered.
+Ephemeral provisioning (Story #71) and the janitor (Story #72) landed first;
+this entry is logged alongside the reference-sweep + docs cutover (Story #73)
+that retires every remaining reference to the standing repo from code, tests,
+and the README.
