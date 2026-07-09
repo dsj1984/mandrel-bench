@@ -642,6 +642,85 @@ describe('buildScorecard — standalone overhead phase-split (Epic #66, Story #7
   });
 });
 
+describe('buildScorecard — planning-footprint-unmeasured-epic-routed warning (Epic #66 audit remediation, M3)', () => {
+  it('fires when the mandrel arm is Epic-ledger-routed but the planning input carries no footprint signal', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:00:00.000Z',
+          event: 'story.dispatch.start',
+        },
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:30:00.000Z',
+          event: 'story.dispatch.end',
+        },
+      ],
+      // No fileFootprintDrift / plannedPaths / actualPaths / plannedFileCount:
+      // the Epic-ledger routing path in bench/run.js never threads a
+      // plan-size signal, so footprint accuracy is genuinely unmeasured here.
+      planning: { plannedStoryCount: 1, deliveredStoryCount: 1 },
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.ok(
+      sc.warnings.includes('planning-footprint-unmeasured-epic-routed'),
+    );
+  });
+
+  it('stays absent when the Epic-ledger-routed run carries a real footprint signal', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:00:00.000Z',
+          event: 'story.dispatch.start',
+        },
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:30:00.000Z',
+          event: 'story.dispatch.end',
+        },
+      ],
+      planning: {
+        plannedStoryCount: 1,
+        deliveredStoryCount: 1,
+        fileFootprintDrift: 0.2,
+      },
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.ok(
+      !sc.warnings.includes('planning-footprint-unmeasured-epic-routed'),
+    );
+  });
+
+  it('never fires for a non-Epic-routed (standalone story) run, even with no footprint signal', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel', scenario: 'story-scope' }),
+      lifecycle: [], // no Epic ledger → standalone path
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+      standalone: {
+        planning: {
+          plannedStoryCount: 1,
+          deliveredStoryCount: 1,
+          // Deliberately no footprint signal either — the warning is scoped
+          // to the Epic-ledger path, so it must stay absent here regardless.
+        },
+        autonomy: { hitlStops: 0, blockedEvents: 0, manualRescues: 0 },
+        routingVerdict: 'story',
+      },
+    });
+    assert.ok(
+      !sc.warnings.includes('planning-footprint-unmeasured-epic-routed'),
+    );
+  });
+});
+
 describe('buildScorecard — autonomy guardrail surfaced on the record (Epic #66, Story #77)', () => {
   it('carries guardrail.met on dimensions.autonomy', () => {
     const sc = buildScorecard({
