@@ -151,6 +151,35 @@ export function readFrameworkVersion(sourceRoot, deps = {}) {
 }
 
 /**
+ * Read the BENCHMARK version — THIS repo's own `package.json` version — for the
+ * cohort stamp (D-014, docs/target-architecture.md § 3.1). This is deliberately
+ * NOT `readFrameworkVersion`: that reads the pinned `mandrel` dependency
+ * (`node_modules/mandrel/package.json`), the framework UNDER test, whereas this
+ * reads the version of the benchmark harness DOING the testing. The benchmark
+ * is itself a variable — scoring formulas, scenario specs, and oracles all live
+ * here — so a benchmark change can move numbers with no framework or model
+ * change at all, and its version must join the cohort key. Falls back to
+ * `'unknown'` when the file is absent or carries no `version`.
+ *
+ * @param {string} sourceRoot
+ * @param {object} [deps]
+ * @param {(p: string, enc: string) => string} [deps.readFileImpl]
+ * @returns {string}
+ */
+export function readBenchmarkVersion(sourceRoot, deps = {}) {
+  const read = deps.readFileImpl ?? readFileSync;
+  try {
+    const pkg = JSON.parse(read(path.join(sourceRoot, 'package.json'), 'utf8'));
+    if (typeof pkg?.version === 'string' && pkg.version.length > 0) {
+      return pkg.version;
+    }
+  } catch {
+    // fall through
+  }
+  return 'unknown';
+}
+
+/**
  * Sanitize an arbitrary string into the scorecard `runId` pattern
  * (`^[A-Za-z0-9._-]+$`).
  *
@@ -173,6 +202,7 @@ export function sanitizeRunId(s) {
  * @param {string} args.timestamp  ISO-8601 run-complete time.
  * @param {string} args.modelId
  * @param {string} args.frameworkVersion
+ * @param {string} args.benchmarkVersion  This benchmark repo's own version (D-014).
  * @param {{ node: string, os: string, host?: string }} args.env
  * @returns {object} The `run` identity object buildScorecard expects.
  */
@@ -183,6 +213,7 @@ export function buildRunIdentity({
   timestamp,
   modelId,
   frameworkVersion,
+  benchmarkVersion,
   env,
 }) {
   const idStamp = sanitizeRunId(`${scenario}-${arm}-${timestamp}-r${runIndex}`);
@@ -191,6 +222,7 @@ export function buildRunIdentity({
     timestamp,
     model: { id: modelId },
     frameworkVersion,
+    benchmarkVersion,
     env,
     scenario,
     arm,
@@ -588,6 +620,10 @@ export async function runOneRun(opts, deps = {}) {
   };
   const frameworkVersion =
     deps.frameworkVersion ?? readFrameworkVersion(sourceRoot, deps);
+  // The benchmark harness's OWN version (D-014) — read from THIS repo's
+  // package.json, NOT the pinned mandrel dependency `frameworkVersion` reads.
+  const benchmarkVersion =
+    deps.benchmarkVersion ?? readBenchmarkVersion(sourceRoot, deps);
   const cp = deps.cpFn ?? cpSync;
   const mkdir = deps.mkdirFn ?? ((p) => mkdirSync(p, { recursive: true }));
   const writeFile = deps.writeFileFn ?? writeFileSync;
@@ -895,6 +931,7 @@ export async function runOneRun(opts, deps = {}) {
       timestamp: nowIso(),
       modelId,
       frameworkVersion,
+      benchmarkVersion,
       env,
     });
 

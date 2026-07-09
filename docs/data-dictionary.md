@@ -23,10 +23,50 @@ scorecards.ndjson` (one per line), validated against the schema on emit.
 | `runId` | string | Unique id for this `(scenario × arm × run)`. |
 | `timestamp` | string (RFC 3339) | Run-complete time. |
 | `model.id` | string | Exact pinned model id from the `claude -p` envelope. |
-| `frameworkVersion` | string | The `mandrel` version under test. |
-| `env.node` / `env.os` | string | Execution environment stamp — a band is computed per `(model, frameworkVersion, env)` cohort. |
+| `frameworkVersion` | string | The `mandrel` version under test — the `version` of the pinned `mandrel` dependency (`node_modules/mandrel/package.json`), read by `bench/run.js#readFrameworkVersion`. |
+| `benchmarkVersion` | string | The benchmark harness version this record was produced under — THIS repo's own `version` (the `mandrel-bench` `package.json`, read by `bench/run.js#readBenchmarkVersion`), NOT the pinned `mandrel` dependency version `frameworkVersion` records. Joins the cohort key (D-014) — see [The triple cohort key](#the-triple-cohort-key-d-014) below. |
+| `env.node` / `env.os` | string | Execution environment stamp — part of the cohort key (see below). |
 | `scenario` | enum | `hello-world` \| `story-scope` \| `epic-scope` — the Epic #66 3-rung corpus (see `docs/architecture.md` § 6). |
 | `arm` | enum | `mandrel` \| `control`. |
+
+## The triple cohort key (D-014)
+
+A **cohort** is the unit of statistical comparison — the harness only ever
+pools, bands, and diffs records that match on the full stamp. Per D-014
+(`docs/target-architecture.md` § 3.1) that stamp is the triple:
+
+```text
+cohort = (model, frameworkVersion, benchmarkVersion)   [+ env guard]
+```
+
+`benchmarkVersion` **joins** the existing `(model, frameworkVersion, env)`
+stamp rather than replacing any part of it — the `env` guard is retained. The
+benchmark is itself a variable: scoring formulas, scenario specs, and oracles
+all live in this repo, so a benchmark change can move numbers with no framework
+or model change at all, and must be held constant within a comparison.
+
+**Consumption.**
+
+- `bench/report/persist.js`'s `cohortKey()` concatenates
+  `model | frameworkVersion | benchmarkVersion | env.node | env.os`; every
+  persisted record must carry a non-empty `benchmarkVersion` (enforced by the
+  `REQUIRED_STAMP` guard and the schema's top-level `required`).
+- `bench/report/render.js`'s `deriveCohort()` reports the distinct
+  `benchmarkVersions` and flags a `mixed` corpus; `groupCells()` refuses to
+  pool a scenario cell whose records span more than one benchmark version —
+  it emits **no noise-band** for that cell and labels it **non-inferential**
+  (a delta there would confound a benchmark-repo change with a framework/model
+  signal).
+- `bench/report/compare.js`'s `compareRuns()` annotates which single cohort
+  key changed between two runs, or flags the comparison **confounded** when
+  more than one changed.
+- `bench/report/html.js`'s trend view keys each cohort point on the full stamp
+  including `benchmarkVersion`, so records from different benchmark versions
+  never collapse into one trend point.
+
+The on-disk layout stays `results/<model-slug>/<frameworkVersion>/` (no
+migration); cohort membership is resolved by filtering records on the full
+triple, not by the directory tree.
 
 ## `routingVerdict` and `routingMismatch` (Epic #66, Story #76)
 

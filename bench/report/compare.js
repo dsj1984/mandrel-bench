@@ -19,9 +19,13 @@
 //     is reported as "within noise", not a spurious regression/improvement.
 //
 // It refuses to compare across cohorts: a baseline and candidate stamped with a
-// different (model, framework version, env) are NOT like-to-like, and silently
-// differencing them would be exactly the apples-to-oranges error the stamp
-// exists to prevent. A cohort mismatch is surfaced as a flag, never hidden.
+// different (model, framework version, benchmark version, env) are NOT
+// like-to-like, and silently differencing them would be exactly the
+// apples-to-oranges error the stamp exists to prevent. A cohort mismatch is
+// surfaced as a flag, never hidden — and, per D-014 (Story #87), annotated with
+// exactly which cohort key changed, or flagged CONFOUNDED when more than one
+// did (so a movement is always attributable to a single variable or explicitly
+// declared unattributable).
 //
 // Determinism: pure functions, no I/O, no clock, no randomness. Reads of the
 // persisted store live in persist.js; this module operates on the in-memory
@@ -111,6 +115,37 @@ function cohortKeysOf(run) {
 }
 
 /**
+ * The named component fields of the cohort key, in the same order `cohortKey`
+ * concatenates them (model | frameworkVersion | benchmarkVersion | env.node |
+ * env.os). Used to attribute a cross-cohort comparison to the exact key(s) that
+ * moved (D-014, Story #87) — so a movement is either pinned to one variable or
+ * explicitly flagged confounded when more than one changed.
+ */
+const COHORT_KEY_FIELDS = Object.freeze([
+  { key: 'model', get: (sc) => sc?.model?.id ?? '' },
+  { key: 'frameworkVersion', get: (sc) => sc?.frameworkVersion ?? '' },
+  { key: 'benchmarkVersion', get: (sc) => sc?.benchmarkVersion ?? '' },
+  { key: 'env.node', get: (sc) => sc?.env?.node ?? '' },
+  { key: 'env.os', get: (sc) => sc?.env?.os ?? '' },
+]);
+
+/**
+ * The list of cohort-key fields that differ between two representative
+ * scorecards (one from each run). Pure — order matches `COHORT_KEY_FIELDS`.
+ *
+ * @param {object} baselineCard
+ * @param {object} candidateCard
+ * @returns {string[]}
+ */
+function changedCohortKeys(baselineCard, candidateCard) {
+  const changed = [];
+  for (const f of COHORT_KEY_FIELDS) {
+    if (f.get(baselineCard) !== f.get(candidateCard)) changed.push(f.key);
+  }
+  return changed;
+}
+
+/**
  * Compare the Mandrel arm's center of one metric between two runs, applying the
  * real-delta rule against the combined run-to-run noise (the larger of the two
  * runs' band spreads — the same `max(spread)` floor the single-run differential
@@ -183,6 +218,9 @@ function compareCenters({ baselineBand, candidateBand, higherIsBetter }) {
  *   cohortMatch: boolean,
  *   baselineCohorts: string[],
  *   candidateCohorts: string[],
+ *   changedCohortKeys?: string[],
+ *   confounded?: boolean,
+ *   cohortMismatchWarning?: string,
  *   scenarios: Array<{
  *     scenario: string,
  *     inBaseline: boolean,
@@ -259,16 +297,40 @@ export function compareRuns({
     scenarios,
   };
 
+  // Attribute a cross-cohort comparison to the exact key(s) that moved
+  // (D-014, Story #87). This is only well-defined when each run is internally
+  // single-cohort (a run that itself mixes cohorts is a different problem,
+  // already visible via its cohort-key list). When exactly one key changed the
+  // movement is attributable to that one variable; when more than one changed
+  // the comparison is CONFOUNDED and no single cause can be isolated.
+  if (
+    !cohortMatch &&
+    baselineCohorts.length === 1 &&
+    candidateCohorts.length === 1
+  ) {
+    const changed = changedCohortKeys(baseline[0], candidate[0]);
+    result.changedCohortKeys = changed;
+    result.confounded = changed.length > 1;
+  }
+
   if (requireSameCohort && !cohortMatch) {
     // Surface the mismatch as a first-class field; the caller / renderer must
     // show it. We do NOT throw — a deliberate cross-cohort diff (e.g. to see a
     // version bump's effect) is a legitimate operator action, but it must be
     // labelled, never silent.
+    const changed = result.changedCohortKeys;
+    const attribution = Array.isArray(changed)
+      ? changed.length === 1
+        ? ` The only cohort key that changed is \`${changed[0]}\`, so any movement below is attributable to it.`
+        : changed.length > 1
+          ? ` CONFOUNDED: more than one cohort key changed (${changed.join(', ')}), so no movement below can be attributed to a single variable.`
+          : ''
+      : '';
     result.cohortMismatchWarning =
       'Baseline and candidate are not a single shared cohort ' +
       `(baseline: ${baselineCohorts.join(' / ') || 'none'}; ` +
       `candidate: ${candidateCohorts.join(' / ') || 'none'}). ` +
-      'Cross-run deltas are not strictly like-to-like.';
+      `Cross-run deltas are not strictly like-to-like.${attribution}`;
   }
 
   return result;

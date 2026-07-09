@@ -34,6 +34,7 @@ function card({
   dispatches = 2,
   costUsd = 1.4,
   frameworkVersion = '1.70.0',
+  benchmarkVersion = '0.5.0',
   model = MODEL,
   env = ENV,
 } = {}) {
@@ -43,6 +44,7 @@ function card({
     timestamp: '2026-06-16T19:42:11.000Z',
     model,
     frameworkVersion,
+    benchmarkVersion,
     env,
     scenario,
     arm,
@@ -64,28 +66,39 @@ function card({
 }
 
 /** A run of N mandrel hello-world cards at a given quality center. */
-function run({ quality, totalTokens = 180000, fw = '1.70.0', n = 4 } = {}) {
+function run({
+  quality,
+  totalTokens = 180000,
+  fw = '1.70.0',
+  bv = '0.5.0',
+  model = MODEL,
+  n = 4,
+} = {}) {
   const cards = [];
   for (let i = 0; i < n; i += 1) {
     cards.push(
       card({
         scenario: 'hello-world',
         arm: 'mandrel',
-        runId: `hw-m-${fw}-${i}`,
+        runId: `hw-m-${fw}-${bv}-${i}`,
         quality: quality + (i % 2 === 0 ? 0.002 : -0.002),
         totalTokens: totalTokens + i * 100,
         frameworkVersion: fw,
+        benchmarkVersion: bv,
+        model,
       }),
     );
     cards.push(
       card({
         scenario: 'hello-world',
         arm: 'control',
-        runId: `hw-c-${fw}-${i}`,
+        runId: `hw-c-${fw}-${bv}-${i}`,
         quality: 0.5,
         totalTokens: 40000,
         tokenRatio: 0.1,
         frameworkVersion: fw,
+        benchmarkVersion: bv,
+        model,
       }),
     );
   }
@@ -199,6 +212,53 @@ describe('compareRuns — cohort safety', () => {
     });
     assert.equal(cmp.cohortMatch, false);
     assert.match(cmp.cohortMismatchWarning, /not strictly like-to-like/);
+  });
+
+  it('annotates the single cohort key that changed (framework version only)', () => {
+    const cmp = compareRuns({
+      baseline: run({ quality: 0.9, fw: '1.70.0', bv: '0.5.0' }),
+      candidate: run({ quality: 0.9, fw: '1.71.0', bv: '0.5.0' }),
+    });
+    assert.equal(cmp.cohortMatch, false);
+    assert.deepEqual(cmp.changedCohortKeys, ['frameworkVersion']);
+    assert.equal(cmp.confounded, false);
+    assert.match(cmp.cohortMismatchWarning, /only cohort key that changed/);
+    assert.match(cmp.cohortMismatchWarning, /frameworkVersion/);
+  });
+
+  it('annotates a benchmark-version-only change (D-014)', () => {
+    const cmp = compareRuns({
+      baseline: run({ quality: 0.9, fw: '1.70.0', bv: '0.5.0' }),
+      candidate: run({ quality: 0.9, fw: '1.70.0', bv: '0.6.0' }),
+    });
+    assert.equal(cmp.cohortMatch, false);
+    assert.deepEqual(cmp.changedCohortKeys, ['benchmarkVersion']);
+    assert.equal(cmp.confounded, false);
+    assert.match(cmp.cohortMismatchWarning, /benchmarkVersion/);
+  });
+
+  it('flags the comparison CONFOUNDED when more than one cohort key changed', () => {
+    const cmp = compareRuns({
+      baseline: run({ quality: 0.9, fw: '1.70.0', bv: '0.5.0' }),
+      candidate: run({ quality: 0.9, fw: '1.71.0', bv: '0.6.0' }),
+    });
+    assert.equal(cmp.cohortMatch, false);
+    assert.equal(cmp.confounded, true);
+    assert.deepEqual(cmp.changedCohortKeys, [
+      'frameworkVersion',
+      'benchmarkVersion',
+    ]);
+    assert.match(cmp.cohortMismatchWarning, /CONFOUNDED/);
+  });
+
+  it('leaves the attribution fields off a matched (single-cohort) comparison', () => {
+    const cmp = compareRuns({
+      baseline: run({ quality: 0.9, fw: '1.70.0', bv: '0.5.0' }),
+      candidate: run({ quality: 0.9, fw: '1.70.0', bv: '0.5.0' }),
+    });
+    assert.equal(cmp.cohortMatch, true);
+    assert.equal(cmp.changedCohortKeys, undefined);
+    assert.equal(cmp.confounded, undefined);
   });
 
   it('throws on non-array inputs', () => {

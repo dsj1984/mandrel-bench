@@ -71,6 +71,7 @@ function runStamp(overrides = {}) {
       displayName: 'Claude Opus 4.8 (1M context)',
     },
     frameworkVersion: '1.70.0',
+    benchmarkVersion: '0.5.0',
     env: { node: 'v24.16.0', os: 'darwin', host: 'bench-runner-01' },
     scenario: 'hello-world',
     arm: 'mandrel',
@@ -418,6 +419,7 @@ describe('buildScorecard — control arm efficiency/overhead', () => {
         timestamp: '2026-06-17T00:00:00.000Z',
         model: { id: 'claude-opus-4-8' },
         frameworkVersion: '1.70.0',
+        benchmarkVersion: '0.5.0',
         env: { node: 'v24.0.0', os: 'darwin' },
         scenario: 'hello-world',
         arm: 'control',
@@ -1151,6 +1153,40 @@ describe('buildScorecard — schema conformance (binding acceptance)', () => {
           quality: {},
         }),
       /required/,
+    );
+  });
+
+  it('stamps benchmarkVersion onto the emitted record from the run identity (D-014)', () => {
+    const sc = buildScorecard({
+      run: runStamp({ frameworkVersion: '1.88.0', benchmarkVersion: '0.6.0' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 3, frozenSuiteTotal: 3 },
+    });
+    // benchmarkVersion is threaded through the collect pipeline distinct from
+    // frameworkVersion — the pinned dependency version and the benchmark's own
+    // version are separate stamp fields.
+    assert.equal(sc.frameworkVersion, '1.88.0');
+    assert.equal(sc.benchmarkVersion, '0.6.0');
+    const validate = buildValidator();
+    assert.ok(
+      validate(sc),
+      `scorecard failed schema validation: ${JSON.stringify(validate.errors, null, 2)}`,
+    );
+  });
+
+  it('rejects a run identity missing benchmarkVersion', () => {
+    const run = runStamp();
+    delete run.benchmarkVersion;
+    assert.throws(
+      () =>
+        buildScorecard({
+          run,
+          lifecycle: [],
+          envelope: normalizedEnvelope(),
+          quality: { frozenSuitePassed: 0, frozenSuiteTotal: 0 },
+        }),
+      /benchmarkVersion is required/,
     );
   });
 });

@@ -41,6 +41,7 @@ function card(model, version, runId) {
     timestamp: '2026-06-16T19:42:11.000Z',
     model: { id: model },
     frameworkVersion: version,
+    benchmarkVersion: '0.5.0',
     env: { node: 'v24.16.0', os: 'darwin' },
     scenario: 'hello-world',
     arm: 'mandrel',
