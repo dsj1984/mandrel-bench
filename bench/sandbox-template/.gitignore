@@ -1,0 +1,8 @@
+# Ephemeral sandbox working-tree ignores. This file ships as part of the
+# baseline seed content materialized into every per-cell sandbox repo.
+
+node_modules/
+.env
+.env.local
+*.log
+.DS_Store

@@ -1,46 +1,94 @@
 // bench/driver/sandbox.js
 /**
- * Ephemeral sandbox-repo lifecycle for the Mandrel self-benchmark harness.
+ * Ephemeral sandbox-repo lifecycle for the Mandrel self-benchmark harness
+ * (Epic #65 / Story #71 — self-contained sandbox: ephemeral per-cell repos
+ * from an in-repo template).
  *
  * The harness must never mutate the live `mandrel` repo (Epic #4211 Non-Goal:
- * "Running against the live `mandrel` repo"). Every benchmark run executes in a
- * throwaway clone of a dedicated sandbox GitHub repo, created under the OS temp
- * directory and torn down when the run finishes.
+ * "Running against the live `mandrel` repo"). Every benchmark cell gets its
+ * OWN private GitHub repo, seeded from `bench/sandbox-template/` (plus an
+ * optional per-scenario overlay), used for the cell's N serial runs, and
+ * destroyed at teardown — a `create → seed → run(N) → destroy` lifecycle
+ * (docs/target-architecture.md §5, decision delta D-013). This replaces the
+ * former standing external sandbox repo (retired — see docs/decisions.md
+ * D-013), whose `main` was force-reset around every cell and whose content
+ * was unversioned — a shared mutable substrate that blocked parallel cells
+ * and drifted silently.
  *
- * Two operations:
- *   - `provisionSandbox(opts)` — `git clone` the configured sandbox repo into a
- *     fresh `mkdtemp` workspace and return a handle describing it. For the
- *     control arm the materialized `.agents/` bundle is stripped so the bare
- *     model receives no Mandrel scaffolding (Tech Spec #4213: "The control arm
- *     clone has **no** `.agents/` scaffolding").
+ * Lifecycle primitives:
+ *   - `sandboxRepoName(opts)` — pure repo-name generator, always prefixed
+ *     `bench-sbx-`, length-clamped to GitHub's 100-char limit (the prefix and
+ *     nonce are never truncated).
+ *   - `createEphemeralRepo(opts, deps)` — `gh repo create <owner>/<name>
+ *     --private` via the injected `gh` seam. Refuses any name outside the
+ *     reserved `bench-sbx-` prefix.
+ *   - `materializeSandboxTemplate(opts, deps)` — copies the baseline template
+ *     tree (`bench/sandbox-template/`) into a working tree, layering a
+ *     per-scenario seed directory (`bench/scenarios/<id>/sandbox/`) on top
+ *     when present.
+ *   - `seedFromTemplate(opts, deps)` — materializes the template, commits it,
+ *     and pushes it as the ephemeral repo's baseline commit, returning the
+ *     baseline SHA recorded on the sandbox handle.
+ *   - `destroyEphemeralRepo(opts, deps)` — `gh repo delete --yes`, best-effort
+ *     on every failure path (a failed delete logs and defers to the janitor
+ *     sweep — a sibling Story — rather than aborting the cell).
+ *   - `provisionSandbox(opts)` — `git clone` the (now-seeded) ephemeral repo
+ *     into a fresh `mkdtemp` workspace for one run and return a handle
+ *     describing it. For the control arm the materialized `.agents/` bundle is
+ *     stripped so the bare model receives no Mandrel scaffolding (Tech Spec
+ *     #4213: "The control arm clone has **no** `.agents/` scaffolding"). When
+ *     called with `repoFullName`/`baselineSha` (the ephemeral-repo path) the
+ *     returned handle carries `{ repoFullName, baselineSha, ephemeral: true }`
+ *     per the Story #71 binding contract.
  *   - `teardownSandbox(handle)` — recursively remove the workspace, with the
  *     removal path asserted to live strictly inside the configured ephemeral
  *     root before a single byte is deleted.
  *
- * SECURITY (security-baseline + Story #4216 binding contract): teardown is
- * scoped strictly to the ephemeral workspace path. `assertInsideRoot` rejects
- * any path that is not a proper descendant of the ephemeral root, so a
- * malformed or adversarial handle can never escalate into an `rm -rf` of a real
- * repository, the home directory, or `/`. The git binary is invoked via
- * `execFileSync` with an argument array — never a shell string — so a
- * repo-URL or path value can never be interpreted as a shell command.
+ * SECURITY (security-baseline + Story #4216 binding contract, extended by
+ * Story #71): teardown is scoped strictly to the ephemeral workspace path.
+ * `assertInsideRoot` rejects any path that is not a proper descendant of the
+ * ephemeral root, so a malformed or adversarial handle can never escalate into
+ * an `rm -rf` of a real repository, the home directory, or `/`. Destroying a
+ * remote repo is guarded the same way: `createEphemeralRepo` and
+ * `destroyEphemeralRepo` both refuse any repo name that does not start with
+ * the reserved `bench-sbx-` prefix — nothing else under the operator account
+ * may use it, which is what makes unattended deletion safe. The `git`/`gh`
+ * binaries are invoked via `execFileSync` with an argument array — never a
+ * shell string — so a repo-URL or path value can never be interpreted as a
+ * shell command.
  *
- * All external effects (`git`, `mkdtemp`, `rm`, `existsSync`) are injectable so
- * the unit tests exercise the full provision/teardown contract — including the
- * path-containment guard — without cloning a real repository or deleting real
- * files.
+ * All external effects (`git`, `gh`, `mkdtemp`, `rm`, `cp`, `existsSync`) are
+ * injectable so the unit tests exercise the full lifecycle — including the
+ * path-containment guard and the prefix-reservation guard — without cloning,
+ * creating, or deleting a real repository.
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * Canonical prefix for every ephemeral sandbox workspace directory. Exported so
- * tests and teardown share one constant rather than a magic string.
+ * Canonical prefix for every ephemeral sandbox artifact: BOTH the local
+ * `mkdtemp` workspace directory AND the per-cell GitHub repo name share this
+ * reserved prefix (Story #71). The prefix is what makes unattended teardown
+ * and the janitor sweep (sibling Story) safe — nothing else under the
+ * operator account or the OS temp root may use it.
  */
-export const SANDBOX_DIR_PREFIX = 'mandrel-bench-sandbox-';
+export const SANDBOX_DIR_PREFIX = 'bench-sbx-';
+
+/** GitHub's hard repo-name length ceiling. */
+const GITHUB_REPO_NAME_MAX_LENGTH = 100;
 
 /**
  * Default ephemeral root under which all sandbox workspaces are created. Kept
@@ -96,6 +144,14 @@ export function assertInsideRoot(root, target, label = 'path') {
  * @property {'mandrel'|'control'} arm  Which benchmark arm this workspace serves.
  * @property {string|null} ref       The branch/ref checked out, or null for default.
  * @property {boolean} agentsStripped Whether `.agents/` was removed (true for the control arm).
+ * @property {string|null} repoFullName  `owner/name` of the ephemeral per-cell
+ *   repo this workspace was cloned from, or null for the legacy standing-repo
+ *   path.
+ * @property {string|null} baselineSha   The baseline commit SHA recorded at
+ *   seed time (see {@link seedFromTemplate}), or null when not ephemeral.
+ * @property {boolean} ephemeral     True when this handle belongs to a
+ *   per-cell ephemeral repo (i.e. `repoFullName` was supplied), false for the
+ *   legacy standing-repo path.
  */
 
 /**
@@ -120,6 +176,11 @@ export function assertInsideRoot(root, target, label = 'path') {
  * @param {string|null} [opts.ref=null]  Branch / ref to check out (default branch when null).
  * @param {string} [opts.ephemeralRoot]  Temp root to clone under. Defaults to `tmpdir()`.
  * @param {number} [opts.depth=1]  `git clone --depth` value (shallow by default).
+ * @param {string|null} [opts.repoFullName]  `owner/name` of the ephemeral
+ *   per-cell repo this clone belongs to (Story #71). When supplied, the
+ *   returned handle sets `ephemeral: true`.
+ * @param {string|null} [opts.baselineSha]  The baseline commit SHA recorded
+ *   at seed time (see {@link seedFromTemplate}); carried onto the handle.
  * @param {ProvisionDeps} [deps]
  * @returns {SandboxHandle}
  */
@@ -130,6 +191,8 @@ export function provisionSandbox(opts = {}, deps = {}) {
     ref = null,
     ephemeralRoot = defaultEphemeralRoot(),
     depth = 1,
+    repoFullName = null,
+    baselineSha = null,
   } = opts;
 
   if (typeof repoUrl !== 'string' || repoUrl.length === 0) {
@@ -170,6 +233,7 @@ export function provisionSandbox(opts = {}, deps = {}) {
       encoding: 'utf-8',
       stdio: 'pipe',
       timeout: 5 * 60 * 1000,
+      env: sanitizeGitHubTokenEnv(),
     });
   } catch (err) {
     // Clone failed — best-effort clean up the (possibly partial) workspace so a
@@ -216,7 +280,345 @@ export function provisionSandbox(opts = {}, deps = {}) {
     arm,
     ref,
     agentsStripped,
+    repoFullName,
+    baselineSha,
+    ephemeral: repoFullName != null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Ephemeral per-cell repo lifecycle (Story #71): create → seed → destroy.
+// `provisionSandbox`/`teardownSandbox` above remain the PER-RUN local
+// workspace clone/remove; these three functions are the PER-CELL remote
+// GitHub-repo lifecycle that wraps a cell's N serial runs.
+// ---------------------------------------------------------------------------
+
+/**
+ * Slugify an arbitrary string into a lowercase, dash-separated, GitHub
+ * repo-name-safe token: non `[a-z0-9]` runs collapse to a single `-`, and
+ * leading/trailing dashes are trimmed. Pure.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+function slugify(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+/**
+ * Generate the ephemeral per-cell repo name: always `bench-sbx-`-prefixed,
+ * slug-sanitized, and clamped to GitHub's 100-char repo-name limit. The
+ * `cohort`/`scenario`/`arm` slugs are truncated (from the middle segment)
+ * before the nonce is ever touched — the prefix and nonce are load-bearing
+ * (the prefix for the reservation guarantee, the nonce for collision-freedom)
+ * and are NEVER truncated. Pure.
+ *
+ * @param {object} opts
+ * @param {string} [opts.cohort]    Cohort label (e.g. a version/date stamp).
+ * @param {string} [opts.scenario]  Scenario id.
+ * @param {string} [opts.arm]       Benchmark arm.
+ * @param {string} opts.nonce       Collision-freedom token (required, non-empty).
+ * @returns {string}
+ */
+export function sandboxRepoName({ cohort, scenario, arm, nonce } = {}) {
+  if (typeof nonce !== 'string' || nonce.length === 0) {
+    throw new TypeError('sandboxRepoName requires a non-empty nonce');
+  }
+  const nonceSlug = slugify(nonce);
+  if (nonceSlug.length === 0) {
+    throw new TypeError(
+      'sandboxRepoName nonce must contain at least one alphanumeric character',
+    );
+  }
+
+  const middleParts = [
+    slugify(cohort ?? ''),
+    slugify(scenario ?? ''),
+    slugify(arm ?? ''),
+  ].filter(Boolean);
+  let middle = middleParts.join('-');
+
+  // Reserve room for the prefix + a separating dash + the nonce; clamp ONLY
+  // the middle (cohort/scenario/arm) segment to fit, never the prefix or nonce.
+  const fixedLength = SANDBOX_DIR_PREFIX.length + nonceSlug.length + 1;
+  const budget = Math.max(0, GITHUB_REPO_NAME_MAX_LENGTH - fixedLength);
+  if (middle.length > budget) {
+    middle = middle.slice(0, budget).replace(/-+$/, '');
+  }
+
+  return middle
+    ? `${SANDBOX_DIR_PREFIX}${middle}-${nonceSlug}`
+    : `${SANDBOX_DIR_PREFIX}${nonceSlug}`;
+}
+
+/**
+ * Assert `name` carries the reserved `bench-sbx-` prefix. The prefix
+ * reservation is what makes unattended repo creation/deletion safe (security
+ * baseline + Story #71 Security & Privacy section) — nothing else under the
+ * operator account may use it.
+ *
+ * @param {string} name
+ * @param {string} label
+ */
+function assertReservedPrefix(name, label) {
+  if (typeof name !== 'string' || !name.startsWith(SANDBOX_DIR_PREFIX)) {
+    throw new Error(
+      `[sandbox] refusing ${label}: repo name is outside the reserved ${SANDBOX_DIR_PREFIX} prefix: ${name}`,
+    );
+  }
+}
+
+/**
+ * @typedef {object} EphemeralRepoDeps
+ * @property {(args: string[]) => string} [ghFn]  Injected `gh` invoker.
+ *   Defaults to {@link defaultGhInvoke}. Tests stub this so no real GitHub API
+ *   call runs.
+ * @property {{ info?: Function, warn?: Function }} [logger]
+ */
+
+/**
+ * Create the ephemeral per-cell GitHub repo: `gh repo create <owner>/<name>
+ * --private`. Refuses any `name` outside the reserved `bench-sbx-` prefix.
+ *
+ * @param {{ owner: string, name: string }} opts
+ * @param {EphemeralRepoDeps} [deps]
+ * @returns {{ repoFullName: string }}
+ */
+export function createEphemeralRepo({ owner, name } = {}, deps = {}) {
+  if (typeof owner !== 'string' || owner.length === 0) {
+    throw new TypeError('createEphemeralRepo requires a non-empty owner');
+  }
+  assertReservedPrefix(name, 'repo creation');
+
+  const ghFn = deps.ghFn ?? defaultGhInvoke;
+  const logger = deps.logger;
+  const repoFullName = `${owner}/${name}`;
+
+  logger?.info?.(`[sandbox] Creating ephemeral repo ${repoFullName}`);
+  ghFn(['repo', 'create', repoFullName, '--private']);
+
+  return { repoFullName };
+}
+
+/**
+ * Destroy the ephemeral per-cell GitHub repo: `gh repo delete --yes`.
+ * Best-effort on every failure path — a failed delete logs and defers to the
+ * janitor sweep (sibling Story) rather than throwing, so a teardown failure
+ * never masks a run's own result or aborts the batch. The reserved-prefix
+ * guard still throws (a repo outside the prefix is refused outright, never
+ * "best-effort" swallowed).
+ *
+ * @param {{ repoFullName: string }} opts
+ * @param {EphemeralRepoDeps} [deps]
+ * @returns {{ deleted: boolean, repoFullName: string, error?: string }}
+ */
+export function destroyEphemeralRepo({ repoFullName } = {}, deps = {}) {
+  if (typeof repoFullName !== 'string' || repoFullName.length === 0) {
+    throw new TypeError(
+      'destroyEphemeralRepo requires a non-empty repoFullName',
+    );
+  }
+  const name = repoFullName.split('/').pop();
+  assertReservedPrefix(name, 'repo deletion');
+
+  const ghFn = deps.ghFn ?? defaultGhInvoke;
+  const logger = deps.logger;
+
+  try {
+    // Repo deletion is idempotent from `gh`'s perspective (re-deleting an
+    // already-gone repo is a no-op failure, not a data hazard), so a single
+    // blind retry on a transient error is safe (devops lens, Epic #65 audit).
+    withRetry(() => ghFn(['repo', 'delete', repoFullName, '--yes']));
+    logger?.info?.(`[sandbox] Destroyed ephemeral repo ${repoFullName}`);
+    return { deleted: true, repoFullName };
+  } catch (err) {
+    logger?.warn?.(
+      `[sandbox] destroy failed for ${repoFullName} (best-effort, deferring to janitor): ${err?.message ?? err}`,
+    );
+    return { deleted: false, repoFullName, error: err?.message ?? String(err) };
+  }
+}
+
+/**
+ * Absolute path of the in-repo sandbox template root (`bench/sandbox-template/`).
+ * Kept as a function so tests can override it without mutating module state.
+ *
+ * @returns {string}
+ */
+export function defaultSandboxTemplateRoot() {
+  return path.resolve(__dirname, '..', 'sandbox-template');
+}
+
+/**
+ * Absolute path of a scenario's optional seed-layer directory
+ * (`bench/scenarios/<id>/sandbox/`).
+ *
+ * @param {string} scenarioId
+ * @returns {string}
+ */
+export function defaultScenarioSandboxDir(scenarioId) {
+  return path.resolve(
+    __dirname,
+    '..',
+    'scenarios',
+    String(scenarioId),
+    'sandbox',
+  );
+}
+
+/**
+ * @typedef {object} MaterializeDeps
+ * @property {(p: string) => boolean} [existsFn]  Injected `existsSync`.
+ * @property {(p: string, opts: object) => void} [mkdirFn]  Injected `mkdirSync`.
+ * @property {(src: string, dest: string) => void} [cpFn]  Injected recursive copy.
+ * @property {{ info?: Function, warn?: Function }} [logger]
+ */
+
+/**
+ * Materialize the sandbox template into a working tree: the baseline template
+ * (`templateRoot`) is copied first, then the optional per-scenario seed layer
+ * (`scenarioSandboxDir`) is copied ON TOP when it exists — later files win, so
+ * a scenario can override a baseline file. Missing `scenarioSandboxDir` is not
+ * an error (most scenarios carry no seed layer yet).
+ *
+ * @param {object} opts
+ * @param {string} opts.templateRoot          Baseline template directory.
+ * @param {string|null} [opts.scenarioSandboxDir]  Optional per-scenario overlay dir.
+ * @param {string} opts.targetDir             Destination working tree.
+ * @param {MaterializeDeps} [deps]
+ * @returns {{ targetDir: string, templateRoot: string, scenarioSandboxDir: string|null }}
+ */
+export function materializeSandboxTemplate(
+  { templateRoot, scenarioSandboxDir = null, targetDir } = {},
+  deps = {},
+) {
+  if (typeof templateRoot !== 'string' || templateRoot.length === 0) {
+    throw new TypeError('materializeSandboxTemplate requires templateRoot');
+  }
+  if (typeof targetDir !== 'string' || targetDir.length === 0) {
+    throw new TypeError('materializeSandboxTemplate requires targetDir');
+  }
+
+  const existsFn = deps.existsFn ?? existsSync;
+  const mkdirFn = deps.mkdirFn ?? ((p) => mkdirSync(p, { recursive: true }));
+  const cpFn =
+    deps.cpFn ?? ((src, dest) => cpSync(src, dest, { recursive: true }));
+  const logger = deps.logger;
+
+  if (!existsFn(templateRoot)) {
+    throw new Error(`[sandbox] template root does not exist: ${templateRoot}`);
+  }
+
+  mkdirFn(targetDir);
+  cpFn(templateRoot, targetDir);
+  logger?.info?.(
+    `[sandbox] Materialized baseline template ${templateRoot} → ${targetDir}`,
+  );
+
+  let layeredScenarioDir = null;
+  if (
+    typeof scenarioSandboxDir === 'string' &&
+    scenarioSandboxDir.length > 0 &&
+    existsFn(scenarioSandboxDir)
+  ) {
+    cpFn(scenarioSandboxDir, targetDir);
+    layeredScenarioDir = scenarioSandboxDir;
+    logger?.info?.(
+      `[sandbox] Layered per-scenario seed ${scenarioSandboxDir} → ${targetDir}`,
+    );
+  }
+
+  return { targetDir, templateRoot, scenarioSandboxDir: layeredScenarioDir };
+}
+
+/**
+ * @typedef {object} SeedDeps
+ * @property {(cmd: string, args: string[], opts: object) => unknown} [execFileFn]
+ *   Injected `execFileSync`. Defaults to the real one.
+ * @property {typeof materializeSandboxTemplate} [materializeFn]  Injected
+ *   materializer. Defaults to {@link materializeSandboxTemplate}.
+ * @property {MaterializeDeps} [materializeDeps]  Forwarded to `materializeFn`.
+ * @property {(repoFullName: string) => string} [repoUrlFn]  Overrides the
+ *   `origin` URL derivation (defaults to an `https://github.com/<repoFullName>.git` URL).
+ * @property {{ info?: Function, warn?: Function }} [logger]
+ */
+
+/**
+ * Seed the ephemeral repo's baseline commit: materialize the template into
+ * `workspacePath`, `git init` + commit it, push it as `main`, and resolve the
+ * baseline commit SHA. The returned `baselineSha` is what
+ * {@link resetSandboxBaseline} force-resets `main` back to between a cell's
+ * serial runs.
+ *
+ * @param {object} opts
+ * @param {string} opts.repoFullName        `owner/name` of the ephemeral repo.
+ * @param {string} opts.workspacePath       Local working tree to seed from.
+ * @param {string} [opts.templateRoot]      Defaults to {@link defaultSandboxTemplateRoot}.
+ * @param {string|null} [opts.scenarioSandboxDir]  Optional per-scenario overlay dir.
+ * @param {SeedDeps} [deps]
+ * @returns {{ repoFullName: string, baselineSha: string, repoUrl: string }}
+ */
+export function seedFromTemplate(
+  {
+    repoFullName,
+    workspacePath,
+    templateRoot = defaultSandboxTemplateRoot(),
+    scenarioSandboxDir = null,
+  } = {},
+  deps = {},
+) {
+  if (typeof repoFullName !== 'string' || repoFullName.length === 0) {
+    throw new TypeError('seedFromTemplate requires a non-empty repoFullName');
+  }
+  if (typeof workspacePath !== 'string' || workspacePath.length === 0) {
+    throw new TypeError('seedFromTemplate requires a non-empty workspacePath');
+  }
+
+  const execFileFn = deps.execFileFn ?? execFileSync;
+  const materialize = deps.materializeFn ?? materializeSandboxTemplate;
+  const logger = deps.logger;
+
+  materialize(
+    { templateRoot, scenarioSandboxDir, targetDir: workspacePath },
+    deps.materializeDeps,
+  );
+
+  const git = (args) =>
+    execFileFn('git', args, {
+      cwd: workspacePath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+      env: sanitizeGitHubTokenEnv(),
+    });
+
+  git(['init', '--initial-branch=main']);
+  git(['add', '-A']);
+  // Pin a synthetic committer identity for THIS commit only (`-c` scopes the
+  // config override to this single invocation — global git config is never
+  // touched) so the seed commit never bakes the operator's real ambient
+  // `user.name`/`user.email` into a repo that gets pushed to GitHub (privacy
+  // lens, Epic #65 audit remediation).
+  git([
+    '-c',
+    'user.name=mandrel-bench',
+    '-c',
+    'user.email=bench@noreply.local',
+    'commit',
+    '-m',
+    'chore: seed ephemeral sandbox from bench/sandbox-template',
+  ]);
+  const repoUrl = deps.repoUrlFn
+    ? deps.repoUrlFn(repoFullName)
+    : `https://github.com/${repoFullName}.git`;
+  git(['remote', 'add', 'origin', repoUrl]);
+  git(['push', '-u', 'origin', 'main']);
+  const sha = String(git(['rev-parse', 'HEAD'])).trim();
+
+  logger?.info?.(`[sandbox] Seeded ${repoFullName} baseline @ ${sha}`);
+  return { repoFullName, baselineSha: sha, repoUrl };
 }
 
 /**
@@ -226,8 +628,18 @@ export function provisionSandbox(opts = {}, deps = {}) {
  * `net/http: invalid header field value for "Authorization"`, which silently
  * fails the per-run sandbox reset and lets a run clone an un-reset `main`.
  * GitHub tokens never contain whitespace, so stripping it is always safe.
+ *
+ * `BENCH_GITHUB_TOKEN` (the harness's own credential — README / `.env.example`
+ * / docs/architecture.md §7) is the credential that is supposed to authorize
+ * this whole lifecycle. When it is present in `env`, it WINS: its
+ * (whitespace-stripped) value is written into `GH_TOKEN`, taking precedence
+ * over whatever ambient `GH_TOKEN`/`GITHUB_TOKEN` the operator's shell or `gh
+ * auth login` session happens to carry. Without this, `gh` silently falls
+ * back to that ambient session, which may be a broader-scoped credential than
+ * the operator intended for this harness (Epic #65 audit remediation).
+ *
  * Returns a shallow copy; unset / empty tokens are left untouched so a clean
- * `gh` keyring auth still applies.
+ * `gh` keyring auth still applies when `BENCH_GITHUB_TOKEN` is not set.
  *
  * @param {NodeJS.ProcessEnv} [env=process.env]
  * @returns {NodeJS.ProcessEnv}
@@ -240,7 +652,42 @@ export function sanitizeGitHubTokenEnv(env = process.env) {
       out[key] = v.replace(/\s/g, '');
     }
   }
+  const benchToken = out.BENCH_GITHUB_TOKEN;
+  if (typeof benchToken === 'string' && benchToken.length > 0) {
+    out.GH_TOKEN = benchToken.replace(/\s/g, '');
+  }
   return out;
+}
+
+/**
+ * Retry a synchronous, potentially-flaky operation once (default) before
+ * giving up. Scoped to operations that are safe to retry blindly — idempotent
+ * reads (`gh repo list`) and idempotent deletes (`gh repo delete`, which is a
+ * no-op-safe re-delete of an already-gone repo from `gh`'s perspective). NOT
+ * used for `gh repo create` / `git push`, which are not naturally idempotent
+ * and get worse, not better, from a blind retry on an ambiguous failure.
+ *
+ * No inter-attempt delay: every call site wraps a synchronous `execFileSync`
+ * subprocess, so a blocking sleep here would stall the single-threaded
+ * harness for no benefit against the transient failure classes this targets
+ * (a brief rate-limit blip, a dropped connection) — deliberately not
+ * over-engineered with a backoff timer.
+ *
+ * @template T
+ * @param {() => T} fn
+ * @param {{ retries?: number }} [opts]
+ * @returns {T}
+ */
+export function withRetry(fn, { retries = 1 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return fn();
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr;
 }
 
 /**
@@ -274,30 +721,39 @@ export function defaultGhInvoke(args, { execFileFn = execFileSync } = {}) {
  */
 
 /**
- * Reset the sandbox repo's `main` branch back to a preserved clean baseline
- * branch (`bench-baseline` by default).
+ * Reset the sandbox repo's `main` branch back to a clean baseline commit.
  *
  * The mandrel arm auto-merges each delivery into the sandbox repo's GitHub
  * `main`, so runs accumulate state. To keep runs clean and repeatable, the
- * harness force-resets `main` to the baseline ref before each run (a
- * defensive secondary check) and after each run (the primary cleanup). This
- * resolves the baseline commit SHA via the GitHub API, then force-updates the
- * `main` ref to point at it.
+ * harness force-resets `main` to the baseline before each run (a defensive
+ * secondary check) and after each run (the primary cleanup) — including
+ * between a cell's N serial runs in the ephemeral per-cell model (Story #71).
  *
- * Pure with respect to the filesystem — the only side effect is the two GitHub
- * API calls, both injectable so the unit tests exercise the full contract
- * without touching a real repo.
+ * Two ways to identify the baseline:
+ *   - `opts.sha` — the baseline commit SHA already known (e.g. recorded on the
+ *     sandbox handle by {@link seedFromTemplate} at cell-seed time). Skips the
+ *     resolve step entirely — a single GitHub API call.
+ *   - `opts.baselineRef` (default `'bench-baseline'`) — a branch name resolved
+ *     to its SHA via the GitHub API first (the legacy standing-repo path).
+ * `sha` takes precedence when both are supplied.
+ *
+ * Pure with respect to the filesystem — the only side effect is the GitHub API
+ * call(s), injectable so the unit tests exercise the full contract without
+ * touching a real repo.
  *
  * @param {object} opts
  * @param {string} opts.owner  Sandbox repo owner (org/user).
  * @param {string} opts.repo   Sandbox repo name.
- * @param {string} [opts.baselineRef='bench-baseline']  The clean baseline branch.
+ * @param {string} [opts.baselineRef='bench-baseline']  The clean baseline branch
+ *   (resolved via the API); ignored when `sha` is supplied.
+ * @param {string} [opts.sha]  A known baseline commit SHA — resets straight to
+ *   it, skipping the branch-resolve API call.
  * @param {ResetBaselineDeps} [deps]
  * @returns {{ reset: boolean, sha: string }}
  * @throws {TypeError} when `owner` or `repo` is not a non-empty string.
  */
 export function resetSandboxBaseline(
-  { owner, repo, baselineRef = 'bench-baseline' } = {},
+  { owner, repo, baselineRef = 'bench-baseline', sha: providedSha } = {},
   deps = {},
 ) {
   if (typeof owner !== 'string' || owner.length === 0) {
@@ -310,16 +766,21 @@ export function resetSandboxBaseline(
   const ghFn = deps.ghFn ?? defaultGhInvoke;
   const logger = deps.logger;
 
-  // 1. Resolve the baseline branch's commit SHA.
-  const refJson = ghFn([
-    'api',
-    `repos/${owner}/${repo}/git/ref/heads/${baselineRef}`,
-  ]);
-  const sha = JSON.parse(refJson)?.object?.sha;
+  // 1. Resolve the baseline commit SHA — reuse the caller-supplied SHA
+  //    (ephemeral per-cell path, recorded at seed time) when present, else
+  //    resolve the baseline branch via the API (legacy standing-repo path).
+  let sha = providedSha;
   if (typeof sha !== 'string' || sha.length === 0) {
-    throw new Error(
-      `[sandbox] could not resolve baseline SHA for ${owner}/${repo}@${baselineRef}`,
-    );
+    const refJson = ghFn([
+      'api',
+      `repos/${owner}/${repo}/git/ref/heads/${baselineRef}`,
+    ]);
+    sha = JSON.parse(refJson)?.object?.sha;
+    if (typeof sha !== 'string' || sha.length === 0) {
+      throw new Error(
+        `[sandbox] could not resolve baseline SHA for ${owner}/${repo}@${baselineRef}`,
+      );
+    }
   }
 
   // 2. Force-update main to the baseline SHA (rewinds any accumulated state).
@@ -334,9 +795,11 @@ export function resetSandboxBaseline(
     'force=true',
   ]);
 
-  logger?.info?.(
-    `[sandbox] Reset ${owner}/${repo}@main → ${baselineRef} (${sha})`,
-  );
+  const source =
+    typeof providedSha === 'string' && providedSha.length > 0
+      ? 'recorded baseline SHA'
+      : baselineRef;
+  logger?.info?.(`[sandbox] Reset ${owner}/${repo}@main → ${source} (${sha})`);
 
   return { reset: true, sha };
 }

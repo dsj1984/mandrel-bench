@@ -28,13 +28,16 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import {
   appendFileSync,
   cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { hostname } from 'node:os';
@@ -42,6 +45,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildScorecard, parseNdjson } from './collect/normalize.js';
 import { withRunningApp as defaultWithRunningApp } from './driver/app-runner.js';
+import { defaultCliLogger, runIfMain } from './driver/cli-shell.js';
+import { DEFAULT_TTL_HOURS, sweepLeakedRepos } from './driver/janitor.js';
 import { overlayFrameworkUnderTest } from './driver/overlay.js';
 import {
   DEFAULT_BENCH_MODEL,
@@ -49,8 +54,14 @@ import {
   runSession as defaultRunSession,
 } from './driver/run-session.js';
 import {
+  createEphemeralRepo,
+  defaultEphemeralRoot,
+  destroyEphemeralRepo,
   provisionSandbox,
   resetSandboxBaseline,
+  SANDBOX_DIR_PREFIX,
+  sandboxRepoName,
+  seedFromTemplate,
   teardownSandbox,
 } from './driver/sandbox.js';
 import { aggregateScorecards } from './report/aggregate.js';
@@ -533,7 +544,9 @@ export async function runOneRun(opts, deps = {}) {
     arm,
     runIndex,
     model = DEFAULT_BENCH_MODEL,
-    sandbox, // { repoUrl, owner, repo }
+    sandbox, // { repoUrl, owner, repo, baselineSha? } — baselineSha (Story #71,
+    // recorded on the ephemeral repo's seed handle) takes precedence over
+    // baselineRef branch-resolution when present.
     sourceRoot = repoRoot(),
     resultsDir,
     ephemeralRoot,
@@ -541,6 +554,7 @@ export async function runOneRun(opts, deps = {}) {
   } = opts;
 
   const baselineRef = sandbox.baselineRef ?? 'bench-baseline';
+  const baselineSha = sandbox.baselineSha ?? undefined;
 
   const logger = deps.logger;
   const provision = deps.provisionFn ?? provisionSandbox;
@@ -590,7 +604,12 @@ export async function runOneRun(opts, deps = {}) {
   // guarantee).
   try {
     resetSandbox(
-      { owner: sandbox.owner, repo: sandbox.repo, baselineRef },
+      {
+        owner: sandbox.owner,
+        repo: sandbox.repo,
+        baselineRef,
+        sha: baselineSha,
+      },
       { ghFn: deps.ghApiFn, logger },
     );
   } catch (err) {
@@ -600,7 +619,13 @@ export async function runOneRun(opts, deps = {}) {
   }
 
   const handle = provision(
-    { repoUrl: sandbox.repoUrl, arm, ephemeralRoot },
+    {
+      repoUrl: sandbox.repoUrl,
+      arm,
+      ephemeralRoot,
+      repoFullName: sandbox.repoFullName ?? null,
+      baselineSha: baselineSha ?? null,
+    },
     deps.provisionDeps,
   );
   try {
@@ -882,7 +907,12 @@ export async function runOneRun(opts, deps = {}) {
     // a reset failure must not mask the run's own result or break teardown.
     try {
       resetSandbox(
-        { owner: sandbox.owner, repo: sandbox.repo, baselineRef },
+        {
+          owner: sandbox.owner,
+          repo: sandbox.repo,
+          baselineRef,
+          sha: baselineSha,
+        },
         { ghFn: deps.ghApiFn, logger },
       );
     } catch (err) {
@@ -1140,57 +1170,224 @@ export function resolveEpicIds(scenarios, env = process.env) {
 }
 
 /**
- * Minimal CLI entry. Reads sandbox coordinates from the environment:
- *   BENCH_SANDBOX_REPO_URL, BENCH_SANDBOX_OWNER, BENCH_SANDBOX_REPO.
- * Optional: BENCH_SCENARIOS (csv), BENCH_ARMS (csv), BENCH_N,
- *   BENCH_SANDBOX_BASELINE_REF (clean baseline branch main is reset to
- *   before/after each run; default 'bench-baseline').
- * Per-scenario seed Epic ids (mandrel arm):
- *   BENCH_EPIC_ID (single-scenario back-compat → scenarios[0]),
- *   BENCH_EPIC_IDS (JSON map keyed by scenario id),
- *   BENCH_EPIC_ID_<SCENARIO> (one var per scenario; see scenarioEnvSuffix).
- * Batch bounds (resumable, cost-bounded loop):
- *   BENCH_MAX_RUNS (run-count ceiling for this invocation),
- *   BENCH_MAX_COST_USD (USD cost ceiling for this invocation),
- *   BENCH_CHECKPOINT (override the resume-checkpoint path).
+ * The two required environment variables for the ephemeral per-cell sandbox
+ * lifecycle (Story #71 / docs/target-architecture.md §5). Auth/config
+ * collapses to these two: `BENCH_GITHUB_TOKEN` (create/delete + contents +
+ * issues + pull-requests scoped token) and `BENCH_SANDBOX_OWNER` (the
+ * account/org ephemeral repos are created under).
  */
-export async function main() {
-  const sandbox = {
-    repoUrl: process.env.BENCH_SANDBOX_REPO_URL,
-    owner: process.env.BENCH_SANDBOX_OWNER,
-    repo: process.env.BENCH_SANDBOX_REPO,
-    baselineRef: process.env.BENCH_SANDBOX_BASELINE_REF ?? 'bench-baseline',
-  };
-  const scenarios = (process.env.BENCH_SCENARIOS ?? 'hello-world')
-    .split(',')
-    .map((s) => s.trim());
-  const epicIds = resolveEpicIds(scenarios, process.env);
-  const opts = {
-    sandbox,
-    scenarios,
+export const REQUIRED_SANDBOX_ENV_VARS = Object.freeze([
+  'BENCH_GITHUB_TOKEN',
+  'BENCH_SANDBOX_OWNER',
+]);
+
+/**
+ * Retired standing-repo env vars, mapped to a human-readable replacement
+ * note. Presence of any of these must never be silently accepted — it
+ * signals an operator still configured for the old, retired standing-repo
+ * path (docs/decisions.md D-013).
+ */
+export const RETIRED_SANDBOX_ENV_VARS = Object.freeze({
+  BENCH_SANDBOX_REPO_URL:
+    'ephemeral per-cell repos are created automatically — set BENCH_GITHUB_TOKEN + BENCH_SANDBOX_OWNER instead',
+  BENCH_SANDBOX_REPO:
+    'ephemeral per-cell repos are named automatically (bench-sbx-<cohort>-<scenario>-<arm>-<nonce>) — this var is no longer read',
+  BENCH_SANDBOX_BASELINE_REF:
+    'the baseline is now the per-cell seed commit recorded on the sandbox handle at seed time — this var is no longer read',
+});
+
+/**
+ * Fail-fast validation for the two required sandbox env vars. Pure — reads
+ * only from the supplied `env` bag, never `process.env` directly, so it is
+ * unit-testable with injected env. Called at CLI-entry startup, BEFORE any
+ * model invocation or sandbox provisioning, per the Story #71 binding
+ * contract: a missing var must abort before any cost is spent.
+ *
+ * @param {Record<string, string|undefined>} [env=process.env]
+ * @returns {{ ok: true } | { ok: false, message: string }}
+ */
+export function validateSandboxEnv(env = process.env) {
+  for (const name of REQUIRED_SANDBOX_ENV_VARS) {
+    const v = env[name];
+    if (typeof v !== 'string' || v.trim() === '') {
+      return {
+        ok: false,
+        message: `[run] FATAL: missing required environment variable ${name}. Set BENCH_GITHUB_TOKEN and BENCH_SANDBOX_OWNER before running the benchmark (see .env.example).`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * Detect any retired standing-repo env var still set and produce one
+ * deprecation-warning message per var, naming its replacement. Pure.
+ *
+ * @param {Record<string, string|undefined>} [env=process.env]
+ * @returns {string[]}
+ */
+export function retiredSandboxEnvWarnings(env = process.env) {
+  const warnings = [];
+  for (const [name, replacement] of Object.entries(RETIRED_SANDBOX_ENV_VARS)) {
+    const v = env[name];
+    if (typeof v === 'string' && v.trim() !== '') {
+      warnings.push(
+        `[run] DEPRECATED: ${name} is retired and no longer read — ${replacement}.`,
+      );
+    }
+  }
+  return warnings;
+}
+
+/**
+ * Best-effort janitor sweep run at the start of every `main()` invocation,
+ * BEFORE this invocation's own cells are provisioned, so a prior crashed
+ * run's leaked `bench-sbx-*` repo is swept before we add another one
+ * (Story #72). A sweep failure (e.g. a transient `gh repo list` error) must
+ * never abort the benchmark run itself — it logs and the run proceeds.
+ *
+ * @param {Record<string, string|undefined>} env
+ * @param {string} owner
+ * @param {{ logger: object, sweepJanitorFn?: Function, janitorGhFn?: Function }} deps
+ */
+function runJanitorSweep(env, owner, deps) {
+  const { logger } = deps;
+  const sweepJanitorFn = deps.sweepJanitorFn ?? sweepLeakedRepos;
+  try {
+    sweepJanitorFn(
+      {
+        owner,
+        ttlHours:
+          env.BENCH_JANITOR_TTL_HOURS != null
+            ? Number(env.BENCH_JANITOR_TTL_HOURS)
+            : DEFAULT_TTL_HOURS,
+      },
+      { logger, ghFn: deps.janitorGhFn },
+    );
+  } catch (err) {
+    logger.warn(
+      `[run] janitor sweep failed (continuing): ${err?.message ?? err}`,
+    );
+  }
+}
+
+/**
+ * Ephemeral sandbox lifecycle (Story #71, restructured under Epic #65 audit
+ * remediation — the critical defect this remediation exists to fix):
+ * create → seed → run(N serial) → destroy runs ONCE PER (scenario × arm)
+ * CELL, not once for the whole invocation. Each cell gets its own private
+ * `bench-sbx-*` repo, seeded from `bench/sandbox-template/`, used for that
+ * cell's N serial runs, and destroyed once those runs complete — replacing
+ * the retired standing external sandbox repo (docs/decisions.md D-013) and
+ * matching docs/target-architecture.md §5.2's per-cell lifecycle (the
+ * previous implementation provisioned a single shared repo for the entire
+ * invocation, contradicting that design and silently defeating cell-level
+ * parallelism). This cell's create-through-destroy sequence is scoped in
+ * its own try/finally, so ANY failure after this cell's repo is
+ * created — including a seed failure — still best-effort destroys this
+ * cell's repo before the error propagates; a failed destroy itself is
+ * best-effort too, logging and deferring to the janitor sweep rather than
+ * masking the cell's own result.
+ *
+ * @param {{ scenarioId: string, arm: string, ctx: object, deps: object }} args
+ *   `ctx` carries the invocation-wide, cross-cell state this cell needs to
+ *   read (owner, cohort, ephemeralRoot, n, epicIds, resultsDir,
+ *   checkpointPath, completedTotal, costTotal, maxRuns, maxCostUsd) — none
+ *   of it is mutated in place; the caller folds the returned cell result
+ *   into its own running totals.
+ * @returns {Promise<{ cellResult: object, created: { repoFullName: string } }>}
+ */
+async function runCell({ scenarioId, arm, ctx, deps }) {
+  const { logger } = deps;
+  const createEphemeralRepoFn =
+    deps.createEphemeralRepoFn ?? createEphemeralRepo;
+  const seedFromTemplateFn = deps.seedFromTemplateFn ?? seedFromTemplate;
+  const destroyEphemeralRepoFn =
+    deps.destroyEphemeralRepoFn ?? destroyEphemeralRepo;
+  const mkdtempFn = deps.mkdtempFn ?? mkdtempSync;
+  const rmFn = deps.rmFn ?? rmSync;
+  const runFirstBenchmarkFn = deps.runFirstBenchmarkFn ?? runFirstBenchmark;
+
+  const {
+    owner,
+    cohort,
+    ephemeralRoot,
+    n,
     epicIds,
-    arms: (process.env.BENCH_ARMS ?? 'mandrel,control')
-      .split(',')
-      .map((s) => s.trim()),
-    n: Number(process.env.BENCH_N ?? '1'),
-    maxRuns:
-      process.env.BENCH_MAX_RUNS != null
-        ? Number(process.env.BENCH_MAX_RUNS)
-        : null,
-    maxCostUsd:
-      process.env.BENCH_MAX_COST_USD != null
-        ? Number(process.env.BENCH_MAX_COST_USD)
-        : null,
-    ...(process.env.BENCH_CHECKPOINT
-      ? { checkpointPath: process.env.BENCH_CHECKPOINT }
-      : {}),
-  };
-  const logger = {
-    info: (m) => process.stderr.write(`${m}\n`),
-    warn: (m) => process.stderr.write(`${m}\n`),
-    error: (m) => process.stderr.write(`${m}\n`),
-  };
-  const result = await runFirstBenchmark(opts, { logger });
+    resultsDir,
+    checkpointPath,
+    completedTotal,
+    costTotal,
+    maxRuns,
+    maxCostUsd,
+  } = ctx;
+
+  const nonce = randomBytes(4).toString('hex');
+  const repoName = sandboxRepoName({
+    cohort,
+    scenario: scenarioId,
+    arm,
+    nonce,
+  });
+  const created = createEphemeralRepoFn({ owner, name: repoName }, { logger });
+  try {
+    const seedDir = mkdtempFn(path.join(ephemeralRoot, SANDBOX_DIR_PREFIX));
+    let seeded;
+    try {
+      seeded = seedFromTemplateFn(
+        { repoFullName: created.repoFullName, workspacePath: seedDir },
+        { logger },
+      );
+    } finally {
+      try {
+        rmFn(seedDir, { recursive: true, force: true });
+      } catch (err) {
+        logger.warn(
+          `[run] could not clean up the local seed workspace ${seedDir}: ${err?.message ?? err}`,
+        );
+      }
+    }
+
+    const cellSandbox = {
+      repoUrl: seeded.repoUrl,
+      owner,
+      repo: repoName,
+      repoFullName: created.repoFullName,
+      baselineSha: seeded.baselineSha,
+    };
+
+    const cellOpts = {
+      sandbox: cellSandbox,
+      scenarios: [scenarioId],
+      arms: [arm],
+      n,
+      epicIds,
+      resultsDir,
+      checkpointPath,
+      ...(maxRuns != null
+        ? { maxRuns: Math.max(0, maxRuns - completedTotal) }
+        : {}),
+      ...(maxCostUsd != null
+        ? { maxCostUsd: Math.max(0, maxCostUsd - costTotal) }
+        : {}),
+    };
+
+    const cellResult = await runFirstBenchmarkFn(cellOpts, { logger });
+    return { cellResult, created };
+  } finally {
+    // Best-effort: a failed delete must never abort/mask the cell's own
+    // result — it logs and defers to the janitor sweep (sibling Story).
+    destroyEphemeralRepoFn({ repoFullName: created.repoFullName }, { logger });
+  }
+}
+
+/**
+ * Formats and writes the final operator-facing stderr summary/dashboard
+ * line for a completed (or early-stopped) `main()` invocation.
+ *
+ * @param {object} result
+ */
+function reportRunResult(result) {
   const cohortLines = result.cohorts
     .map(
       (c) => `[run]   store → ${c.storePath}\n[run]   report → ${c.reportPath}`,
@@ -1208,13 +1405,176 @@ export async function main() {
   );
 }
 
+/**
+ * Minimal CLI entry. Sandbox coordinates are the ephemeral per-cell lifecycle
+ * (Story #71): auth/config collapses to two env vars —
+ *   BENCH_GITHUB_TOKEN (required) — token with repo create/delete scopes.
+ *   BENCH_SANDBOX_OWNER (required) — the account/org ephemeral repos are
+ *     created under.
+ * Retired: BENCH_SANDBOX_REPO_URL, BENCH_SANDBOX_REPO,
+ *   BENCH_SANDBOX_BASELINE_REF — presence emits a deprecation warning naming
+ *   the replacement; they are no longer read.
+ * Optional: BENCH_SCENARIOS (csv), BENCH_ARMS (csv), BENCH_N.
+ * Per-scenario seed Epic ids (mandrel arm):
+ *   BENCH_EPIC_ID (single-scenario back-compat → scenarios[0]),
+ *   BENCH_EPIC_IDS (JSON map keyed by scenario id),
+ *   BENCH_EPIC_ID_<SCENARIO> (one var per scenario; see scenarioEnvSuffix).
+ * Batch bounds (resumable, cost-bounded loop):
+ *   BENCH_MAX_RUNS (run-count ceiling for this invocation),
+ *   BENCH_MAX_COST_USD (USD cost ceiling for this invocation),
+ *   BENCH_CHECKPOINT (override the resume-checkpoint path).
+ *
+ * @param {Record<string, string|undefined>} [env=process.env]  Injectable for
+ *   tests — exercises the fail-fast / deprecation-warning contract without
+ *   mutating real process env.
+ * @param {{ logger?: object }} [deps]
+ */
+export async function main(env = process.env, deps = {}) {
+  const logger = deps.logger ?? defaultCliLogger();
+
+  // Deprecation warnings for retired vars fire regardless of whether the run
+  // proceeds — an operator with BOTH a retired var set AND the new vars
+  // missing should see both signals, not just the fatal one.
+  for (const warning of retiredSandboxEnvWarnings(env)) {
+    logger.warn(warning);
+  }
+
+  // Fail fast — before any model invocation or sandbox provisioning.
+  const validation = validateSandboxEnv(env);
+  if (!validation.ok) {
+    logger.error(validation.message);
+    process.exitCode = 1;
+    return;
+  }
+
+  const owner = env.BENCH_SANDBOX_OWNER;
+  const scenarios = (env.BENCH_SCENARIOS ?? 'hello-world')
+    .split(',')
+    .map((s) => s.trim());
+  const epicIds = resolveEpicIds(scenarios, env);
+
+  // Janitor sweep (Story #72): runs at the start of every invocation, BEFORE
+  // this invocation's own cells are provisioned. See runJanitorSweep() for
+  // the full rationale.
+  runJanitorSweep(env, owner, {
+    logger,
+    sweepJanitorFn: deps.sweepJanitorFn,
+    janitorGhFn: deps.janitorGhFn,
+  });
+
+  const cohort = env.BENCH_COHORT ?? new Date().toISOString().slice(0, 10);
+  const ephemeralRoot = defaultEphemeralRoot();
+  const arms = (env.BENCH_ARMS ?? 'mandrel,control')
+    .split(',')
+    .map((s) => s.trim());
+  const n = Number(env.BENCH_N ?? '1');
+  const maxRuns =
+    env.BENCH_MAX_RUNS != null ? Number(env.BENCH_MAX_RUNS) : null;
+  const maxCostUsd =
+    env.BENCH_MAX_COST_USD != null ? Number(env.BENCH_MAX_COST_USD) : null;
+  const resultsDir = path.join(repoRoot(), 'results');
+  const checkpointPath =
+    env.BENCH_CHECKPOINT ?? path.join(resultsDir, CHECKPOINT_FILENAME);
+
+  // Aggregated across every cell this invocation provisions, so the final
+  // operator summary (and the maxRuns/maxCostUsd ceilings, which are
+  // invocation-wide, not per-cell) reflect the WHOLE batch, not just the last
+  // cell's `runFirstBenchmarkFn` call.
+  const allScorecards = [];
+  const cohortsByDir = new Map();
+  let totalSkipped = 0;
+  let lastDashboardPath = null;
+  let lastDashboard = null;
+  let completedTotal = 0;
+  let costTotal = 0;
+  let overallStopped = null;
+
+  cellLoop: for (const scenarioId of scenarios) {
+    for (const arm of arms) {
+      if (maxRuns != null && completedTotal >= maxRuns) {
+        overallStopped = {
+          reason: 'maxRuns',
+          completed: completedTotal,
+          costUsd: costTotal,
+        };
+        break cellLoop;
+      }
+      if (maxCostUsd != null && costTotal >= maxCostUsd) {
+        overallStopped = {
+          reason: 'maxCostUsd',
+          completed: completedTotal,
+          costUsd: costTotal,
+        };
+        break cellLoop;
+      }
+
+      // See runCell() for the full create → seed → run(N) → destroy
+      // per-cell lifecycle and its try/finally teardown guarantee.
+      const { cellResult } = await runCell({
+        scenarioId,
+        arm,
+        ctx: {
+          owner,
+          cohort,
+          ephemeralRoot,
+          n,
+          epicIds,
+          resultsDir,
+          checkpointPath,
+          completedTotal,
+          costTotal,
+          maxRuns,
+          maxCostUsd,
+        },
+        deps: {
+          logger,
+          createEphemeralRepoFn: deps.createEphemeralRepoFn,
+          seedFromTemplateFn: deps.seedFromTemplateFn,
+          destroyEphemeralRepoFn: deps.destroyEphemeralRepoFn,
+          mkdtempFn: deps.mkdtempFn,
+          rmFn: deps.rmFn,
+          runFirstBenchmarkFn: deps.runFirstBenchmarkFn,
+        },
+      });
+
+      allScorecards.push(...cellResult.scorecards);
+      for (const c of cellResult.cohorts) cohortsByDir.set(c.dir, c);
+      totalSkipped += cellResult.skipped;
+      lastDashboardPath = cellResult.dashboardPath;
+      lastDashboard = cellResult.dashboard;
+      completedTotal += cellResult.scorecards.length;
+      for (const sc of cellResult.scorecards) {
+        const c = sc?.dimensions?.efficiency?.costUsd;
+        if (typeof c === 'number') costTotal += c;
+      }
+      if (cellResult.stopped) {
+        overallStopped = {
+          reason: cellResult.stopped.reason,
+          completed: completedTotal,
+          costUsd: costTotal,
+        };
+      }
+
+      if (overallStopped) break cellLoop;
+    }
+  }
+
+  const result = {
+    scorecards: allScorecards,
+    cohorts: [...cohortsByDir.values()],
+    dashboardPath: lastDashboardPath,
+    dashboard: lastDashboard,
+    skipped: totalSkipped,
+    stopped: overallStopped,
+  };
+
+  reportRunResult(result);
+}
+
 // Run when invoked directly (not when imported by tests).
-if (
-  process.argv[1] &&
-  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-) {
+runIfMain(import.meta.url, () => {
   main().catch((err) => {
     process.stderr.write(`[run] FATAL: ${err?.stack ?? err}\n`);
     process.exitCode = 1;
   });
-}
+});

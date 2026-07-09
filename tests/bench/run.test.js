@@ -26,16 +26,21 @@ import {
   cellKey,
   derivedSecurityInputs,
   discoverLedger,
+  main,
   planningInputs,
   qualityInputs,
+  REQUIRED_SANDBOX_ENV_VARS,
+  RETIRED_SANDBOX_ENV_VARS,
   readCheckpoint,
   readFrameworkVersion,
   resolveEpicIds,
   resolveModelId,
+  retiredSandboxEnvWarnings,
   runFirstBenchmark,
   runOneRun,
   sanitizeRunId,
   scenarioEnvSuffix,
+  validateSandboxEnv,
 } from '../../bench/run.js';
 import { computeSecurity } from '../../bench/score/dimensions.js';
 
@@ -593,9 +598,9 @@ test('runFirstBenchmark: emits a schema-valid scorecard per arm and renders a re
       arms: ['mandrel', 'control'],
       n: 1,
       sandbox: {
-        repoUrl: 'git@github.com:dsj1984/mandrel-bench-sandbox.git',
+        repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
         owner: 'dsj1984',
-        repo: 'mandrel-bench-sandbox',
+        repo: 'legacy-sandbox-repo',
       },
       resultsDir: '/results',
     },
@@ -742,9 +747,9 @@ test('runFirstBenchmark: recovers standalone telemetry when the mandrel arm prod
       arms: ['mandrel'],
       n: 1,
       sandbox: {
-        repoUrl: 'git@github.com:dsj1984/mandrel-bench-sandbox.git',
+        repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
         owner: 'dsj1984',
-        repo: 'mandrel-bench-sandbox',
+        repo: 'legacy-sandbox-repo',
       },
       resultsDir: '/results',
     },
@@ -802,9 +807,9 @@ test('runOneRun: resets the sandbox baseline before provision AND in the finally
       arm: 'mandrel',
       runIndex: 1,
       sandbox: {
-        repoUrl: 'git@github.com:dsj1984/mandrel-bench-sandbox.git',
+        repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
         owner: 'dsj1984',
-        repo: 'mandrel-bench-sandbox',
+        repo: 'legacy-sandbox-repo',
         baselineRef: 'bench-baseline',
       },
       resultsDir: '/results',
@@ -824,6 +829,62 @@ test('runOneRun: resets the sandbox baseline before provision AND in the finally
   assert.equal(order[1], 'provision');
   assert.equal(order.at(-1), 'teardown');
   assert.equal(order.at(-2), 'reset');
+});
+
+test('runOneRun: threads sandbox.baselineSha unchanged into both resetSandbox calls and provision', async () => {
+  // Epic #65 audit remediation, finding #3 (quality lens): baselineSha —
+  // recorded on the ephemeral repo's seed handle — must reach BOTH the
+  // pre-run defensive reset and the post-run primary reset (the finally),
+  // and must be forwarded to provisionSandbox unchanged, never re-derived.
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  const seenResetShas = [];
+  deps.resetSandboxFn = (o) => {
+    seenResetShas.push(o.sha);
+    record.resets.push({ owner: o.owner, baselineRef: o.baselineRef });
+    return { reset: true, sha: o.sha };
+  };
+  let seenProvisionArgs;
+  deps.provisionFn = (o) => {
+    seenProvisionArgs = {
+      repoFullName: o.repoFullName,
+      baselineSha: o.baselineSha,
+    };
+    record.provisions.push(o.arm);
+    return {
+      workspacePath: `/ws-${o.arm}`,
+      ephemeralRoot: '/tmp/root',
+      arm: o.arm,
+    };
+  };
+
+  const { scenario, evaluate } = await loadScenarioFake();
+  await runOneRun(
+    {
+      scenario,
+      evaluate,
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'https://github.com/dsj1984/bench-sbx-abc.git',
+        owner: 'dsj1984',
+        repo: 'bench-sbx-abc',
+        repoFullName: 'dsj1984/bench-sbx-abc',
+        baselineSha: 'deadbeefcafe',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  // Pre-run reset AND the post-run (finally) reset both receive the SAME sha.
+  assert.equal(seenResetShas.length, 2);
+  assert.deepEqual(seenResetShas, ['deadbeefcafe', 'deadbeefcafe']);
+  // provisionSandbox receives repoFullName/baselineSha unchanged.
+  assert.deepEqual(seenProvisionArgs, {
+    repoFullName: 'dsj1984/bench-sbx-abc',
+    baselineSha: 'deadbeefcafe',
+  });
 });
 
 /** Load the fake scenario + oracle the same way benchDeps' loadDeps does. */
@@ -942,9 +1003,9 @@ test('CHECKPOINT_FILENAME is the default checkpoint name beside the results root
 // ---------------------------------------------------------------------------
 
 const SANDBOX = {
-  repoUrl: 'git@github.com:dsj1984/mandrel-bench-sandbox.git',
+  repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
   owner: 'dsj1984',
-  repo: 'mandrel-bench-sandbox',
+  repo: 'legacy-sandbox-repo',
 };
 
 test('runFirstBenchmark: threads per-scenario epicIds into the mandrel arm session', async () => {
@@ -1118,4 +1179,367 @@ test('runFirstBenchmark: a resumed batch renders the report over the FULL store,
   // control. Before the fix it rendered only this run's cards, under-counting
   // the resumed cell (it would have read "1 mandrel / 0 control").
   assert.match(result.cohorts[0].report, /n = 1 mandrel \/ 1 control/);
+});
+
+// ---------------------------------------------------------------------------
+// Story #71 — ephemeral sandbox env contract: fail-fast + deprecation
+// ---------------------------------------------------------------------------
+
+test('REQUIRED_SANDBOX_ENV_VARS: BENCH_GITHUB_TOKEN and BENCH_SANDBOX_OWNER', () => {
+  assert.deepEqual(
+    [...REQUIRED_SANDBOX_ENV_VARS].sort(),
+    ['BENCH_GITHUB_TOKEN', 'BENCH_SANDBOX_OWNER'].sort(),
+  );
+});
+
+test('validateSandboxEnv: ok when both required vars are set', () => {
+  const res = validateSandboxEnv({
+    BENCH_GITHUB_TOKEN: 'ghp_x',
+    BENCH_SANDBOX_OWNER: 'dsj1984',
+  });
+  assert.deepEqual(res, { ok: true });
+});
+
+test('validateSandboxEnv: missing BENCH_GITHUB_TOKEN fails, naming the var', () => {
+  const res = validateSandboxEnv({ BENCH_SANDBOX_OWNER: 'dsj1984' });
+  assert.equal(res.ok, false);
+  assert.match(res.message, /BENCH_GITHUB_TOKEN/);
+});
+
+test('validateSandboxEnv: missing BENCH_SANDBOX_OWNER fails, naming the var', () => {
+  const res = validateSandboxEnv({ BENCH_GITHUB_TOKEN: 'ghp_x' });
+  assert.equal(res.ok, false);
+  assert.match(res.message, /BENCH_SANDBOX_OWNER/);
+});
+
+test('validateSandboxEnv: a blank (whitespace-only) value counts as missing', () => {
+  const res = validateSandboxEnv({
+    BENCH_GITHUB_TOKEN: '   ',
+    BENCH_SANDBOX_OWNER: 'dsj1984',
+  });
+  assert.equal(res.ok, false);
+  assert.match(res.message, /BENCH_GITHUB_TOKEN/);
+});
+
+test('retiredSandboxEnvWarnings: empty when no retired var is set', () => {
+  assert.deepEqual(
+    retiredSandboxEnvWarnings({
+      BENCH_GITHUB_TOKEN: 'x',
+      BENCH_SANDBOX_OWNER: 'o',
+    }),
+    [],
+  );
+});
+
+test('retiredSandboxEnvWarnings: one warning per retired var, each naming its replacement', () => {
+  const warnings = retiredSandboxEnvWarnings({
+    BENCH_SANDBOX_REPO_URL: 'https://github.com/dsj1984/legacy-sandbox-repo',
+    BENCH_SANDBOX_REPO: 'legacy-sandbox-repo',
+    BENCH_SANDBOX_BASELINE_REF: 'bench-baseline',
+  });
+  assert.equal(warnings.length, Object.keys(RETIRED_SANDBOX_ENV_VARS).length);
+  assert.match(
+    warnings.find((w) => w.includes('BENCH_SANDBOX_REPO_URL')),
+    /BENCH_GITHUB_TOKEN/,
+  );
+  assert.ok(warnings.every((w) => w.includes('DEPRECATED')));
+});
+
+test('main(): exits non-zero with a message naming the missing var, BEFORE any model invocation (BENCH_GITHUB_TOKEN unset)', async () => {
+  const messages = { info: [], warn: [], error: [] };
+  const logger = {
+    info: (m) => messages.info.push(m),
+    warn: (m) => messages.warn.push(m),
+    error: (m) => messages.error.push(m),
+  };
+  const prevExitCode = process.exitCode;
+  process.exitCode = undefined;
+  try {
+    await main({ BENCH_SANDBOX_OWNER: 'dsj1984' }, { logger });
+    assert.equal(process.exitCode, 1);
+    assert.equal(messages.error.length, 1);
+    assert.match(messages.error[0], /BENCH_GITHUB_TOKEN/);
+  } finally {
+    process.exitCode = prevExitCode;
+  }
+});
+
+test('main(): exits non-zero with a message naming the missing var (BENCH_SANDBOX_OWNER unset)', async () => {
+  const messages = { info: [], warn: [], error: [] };
+  const logger = {
+    info: (m) => messages.info.push(m),
+    warn: (m) => messages.warn.push(m),
+    error: (m) => messages.error.push(m),
+  };
+  const prevExitCode = process.exitCode;
+  process.exitCode = undefined;
+  try {
+    await main({ BENCH_GITHUB_TOKEN: 'ghp_x' }, { logger });
+    assert.equal(process.exitCode, 1);
+    assert.match(messages.error[0], /BENCH_SANDBOX_OWNER/);
+  } finally {
+    process.exitCode = prevExitCode;
+  }
+});
+
+test('main(): a retired var set alongside missing required vars emits BOTH the deprecation warning and the fatal error', async () => {
+  const messages = { info: [], warn: [], error: [] };
+  const logger = {
+    info: (m) => messages.info.push(m),
+    warn: (m) => messages.warn.push(m),
+    error: (m) => messages.error.push(m),
+  };
+  const prevExitCode = process.exitCode;
+  process.exitCode = undefined;
+  try {
+    await main(
+      {
+        BENCH_SANDBOX_REPO_URL:
+          'https://github.com/dsj1984/legacy-sandbox-repo',
+      },
+      { logger },
+    );
+    assert.equal(process.exitCode, 1);
+    assert.ok(messages.warn.some((w) => w.includes('BENCH_SANDBOX_REPO_URL')));
+    assert.ok(messages.error.some((e) => e.includes('BENCH_GITHUB_TOKEN')));
+  } finally {
+    process.exitCode = prevExitCode;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Story #72 — janitor sweep invoked at startup, before provisioning
+// ---------------------------------------------------------------------------
+
+test('main(): invokes the janitor sweep BEFORE provisioning, then create→seed→run→destroy ONCE PER (scenario × arm) CELL (call order)', async () => {
+  // Epic #65 audit remediation: main() no longer provisions a single shared
+  // repo for the whole invocation — it loops per (scenario × arm) cell. The
+  // default env (no BENCH_SCENARIOS/BENCH_ARMS) is one scenario × two arms →
+  // two cells, so the create/seed/run/destroy quartet must appear TWICE.
+  const calls = [];
+  const repoNames = [];
+  const logger = { info: () => {}, warn: () => {}, error: () => {} };
+  const sweepJanitorFn = (opts) => {
+    calls.push({ step: 'janitor', owner: opts.owner, ttlHours: opts.ttlHours });
+    return { candidates: [], deleted: [], failed: [], dryRun: false };
+  };
+  const createEphemeralRepoFn = ({ owner, name }) => {
+    calls.push({ step: 'createEphemeralRepo' });
+    repoNames.push(name);
+    return { repoFullName: `${owner}/${name}` };
+  };
+  const seedFromTemplateFn = ({ repoFullName }) => {
+    calls.push({ step: 'seedFromTemplate' });
+    return {
+      repoFullName,
+      baselineSha: 'deadbeef',
+      repoUrl: `https://github.com/${repoFullName}.git`,
+    };
+  };
+  const destroyEphemeralRepoFn = ({ repoFullName }) => {
+    calls.push({ step: 'destroyEphemeralRepo' });
+    return { deleted: true, repoFullName };
+  };
+  const runFirstBenchmarkFn = async () => {
+    calls.push({ step: 'runFirstBenchmark' });
+    return {
+      scorecards: [],
+      cohorts: [],
+      dashboardPath: 'x',
+      skipped: 0,
+      stopped: null,
+    };
+  };
+
+  await main(
+    { BENCH_GITHUB_TOKEN: 'ghp_x', BENCH_SANDBOX_OWNER: 'dsj1984' },
+    {
+      logger,
+      sweepJanitorFn,
+      createEphemeralRepoFn,
+      seedFromTemplateFn,
+      destroyEphemeralRepoFn,
+      runFirstBenchmarkFn,
+      // Injected (Epic #65 audit remediation, finding #6) — no real disk touched.
+      mkdtempFn: (p) => `${p}fake`,
+      rmFn: () => {},
+    },
+  );
+
+  const steps = calls.map((c) => c.step);
+  assert.deepEqual(steps, [
+    'janitor',
+    'createEphemeralRepo',
+    'seedFromTemplate',
+    'runFirstBenchmark',
+    'destroyEphemeralRepo',
+    'createEphemeralRepo',
+    'seedFromTemplate',
+    'runFirstBenchmark',
+    'destroyEphemeralRepo',
+  ]);
+  assert.equal(calls[0].owner, 'dsj1984');
+  assert.equal(calls[0].ttlHours, 24);
+
+  // The two cells get DIFFERENT, arm-derived repo names — never the old
+  // placeholder literal 'session'.
+  assert.equal(repoNames.length, 2);
+  assert.notEqual(repoNames[0], repoNames[1]);
+  for (const name of repoNames) {
+    assert.ok(name.startsWith('bench-sbx-'));
+    assert.ok(!name.includes('-session-'));
+  }
+  assert.ok(repoNames.some((n) => n.includes('mandrel')));
+  assert.ok(repoNames.some((n) => n.includes('control')));
+});
+
+test('main(): a seed failure still destroys that cell repo before the error propagates (no leak)', async () => {
+  // Epic #65 audit remediation, high-severity finding #1: seedFromTemplateFn
+  // throwing after createEphemeralRepoFn succeeded must not leak the repo.
+  const calls = [];
+  const logger = { info: () => {}, warn: () => {}, error: () => {} };
+  const createEphemeralRepoFn = ({ owner, name }) => {
+    calls.push('create');
+    return { repoFullName: `${owner}/${name}` };
+  };
+  const seedFromTemplateFn = () => {
+    calls.push('seed');
+    throw new Error('seed boom');
+  };
+  const destroyEphemeralRepoFn = ({ repoFullName }) => {
+    calls.push('destroy');
+    return { deleted: true, repoFullName };
+  };
+  const runFirstBenchmarkFn = async () => {
+    calls.push('runFirstBenchmark');
+    return {
+      scorecards: [],
+      cohorts: [],
+      dashboardPath: 'x',
+      skipped: 0,
+      stopped: null,
+    };
+  };
+
+  await assert.rejects(
+    main(
+      { BENCH_GITHUB_TOKEN: 'ghp_x', BENCH_SANDBOX_OWNER: 'dsj1984' },
+      {
+        logger,
+        sweepJanitorFn: () => ({
+          candidates: [],
+          deleted: [],
+          failed: [],
+          dryRun: false,
+        }),
+        createEphemeralRepoFn,
+        seedFromTemplateFn,
+        destroyEphemeralRepoFn,
+        runFirstBenchmarkFn,
+        mkdtempFn: (p) => `${p}fake`,
+        rmFn: () => {},
+      },
+    ),
+    /seed boom/,
+  );
+
+  // create → seed (throws) → destroy — runFirstBenchmark never reached, and
+  // the repo was still torn down before the error propagated.
+  assert.deepEqual(calls, ['create', 'seed', 'destroy']);
+});
+
+test('main(): a janitor sweep failure is logged but does not abort the run', async () => {
+  const messages = { warn: [] };
+  const logger = {
+    info: () => {},
+    warn: (m) => messages.warn.push(m),
+    error: () => {},
+  };
+  const sweepJanitorFn = () => {
+    throw new Error('gh: rate limited');
+  };
+  const createEphemeralRepoFn = ({ owner, name }) => ({
+    repoFullName: `${owner}/${name}`,
+  });
+  const seedFromTemplateFn = ({ repoFullName }) => ({
+    repoFullName,
+    baselineSha: 'deadbeef',
+    repoUrl: `https://github.com/${repoFullName}.git`,
+  });
+  const destroyEphemeralRepoFn = ({ repoFullName }) => ({
+    deleted: true,
+    repoFullName,
+  });
+  let benchmarkRan = false;
+  const runFirstBenchmarkFn = async () => {
+    benchmarkRan = true;
+    return {
+      scorecards: [],
+      cohorts: [],
+      dashboardPath: 'x',
+      skipped: 0,
+      stopped: null,
+    };
+  };
+
+  await main(
+    { BENCH_GITHUB_TOKEN: 'ghp_x', BENCH_SANDBOX_OWNER: 'dsj1984' },
+    {
+      logger,
+      sweepJanitorFn,
+      createEphemeralRepoFn,
+      seedFromTemplateFn,
+      destroyEphemeralRepoFn,
+      runFirstBenchmarkFn,
+    },
+  );
+
+  assert.equal(benchmarkRan, true);
+  assert.ok(messages.warn.some((w) => w.includes('janitor sweep failed')));
+});
+
+test('main(): BENCH_JANITOR_TTL_HOURS overrides the default janitor TTL', async () => {
+  let seenTtlHours;
+  const logger = { info: () => {}, warn: () => {}, error: () => {} };
+  const sweepJanitorFn = (opts) => {
+    seenTtlHours = opts.ttlHours;
+    return { candidates: [], deleted: [], failed: [], dryRun: false };
+  };
+  const createEphemeralRepoFn = ({ owner, name }) => ({
+    repoFullName: `${owner}/${name}`,
+  });
+  const seedFromTemplateFn = ({ repoFullName }) => ({
+    repoFullName,
+    baselineSha: 'deadbeef',
+    repoUrl: `https://github.com/${repoFullName}.git`,
+  });
+  const destroyEphemeralRepoFn = ({ repoFullName }) => ({
+    deleted: true,
+    repoFullName,
+  });
+  const runFirstBenchmarkFn = async () => ({
+    scorecards: [],
+    cohorts: [],
+    dashboardPath: 'x',
+    skipped: 0,
+    stopped: null,
+  });
+
+  await main(
+    {
+      BENCH_GITHUB_TOKEN: 'ghp_x',
+      BENCH_SANDBOX_OWNER: 'dsj1984',
+      BENCH_JANITOR_TTL_HOURS: '48',
+    },
+    {
+      logger,
+      sweepJanitorFn,
+      createEphemeralRepoFn,
+      seedFromTemplateFn,
+      destroyEphemeralRepoFn,
+      runFirstBenchmarkFn,
+    },
+  );
+
+  assert.equal(seenTtlHours, 48);
 });
