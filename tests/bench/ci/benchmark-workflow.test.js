@@ -247,6 +247,58 @@ describe('benchmark workflow — shape contract', () => {
     );
   });
 
+  it('guards every paid job behind has_deficit && dry_run gates; plan always runs', () => {
+    // Money-safety gate (H5): a complete cohort (has_deficit=false) or a
+    // dry-run must skip every job that can spend, but the plan job itself must
+    // ALWAYS run so it can compute the deficit / print the dry-run plan.
+    const jobs = workflow.jobs ?? {};
+    for (const id of ['canary', 'cell', 'aggregate']) {
+      const guard = String(jobs[id].if ?? '');
+      assert.match(
+        guard,
+        /has_deficit == 'true'/,
+        `${id} must gate on has_deficit == 'true'`,
+      );
+      assert.match(
+        guard,
+        /dry_run != true/,
+        `${id} must gate on dry_run != true`,
+      );
+    }
+    assert.ok(
+      jobs.plan.if == null,
+      'the plan job must carry NO such guard — it always runs',
+    );
+  });
+
+  it('aggregate runs even if a cell fails (always()), so paid work is not stranded', () => {
+    // H3/H5: the aggregate job must use always() so a single failed cell no
+    // longer skips aggregation and strands the rest of the cohort with no PR.
+    const guard = String(workflow.jobs.aggregate.if ?? '');
+    assert.match(
+      guard,
+      /always\(\)/,
+      'aggregate must use always() so one failed cell never strands the rest',
+    );
+  });
+
+  it('caps each cell at its deficit via BENCH_MAX_RUNS', () => {
+    // H2/H5: the cell run step must set BENCH_MAX_RUNS from matrix.deficit so a
+    // cell can never re-run the full scenario targetN and overspend.
+    const runStep = (workflow.jobs.cell.steps ?? []).find(
+      (step) => step.env && 'BENCH_MAX_RUNS' in step.env,
+    );
+    assert.ok(
+      runStep,
+      'a cell step must set BENCH_MAX_RUNS to cap new runs at the deficit',
+    );
+    assert.match(
+      String(runStep.env.BENCH_MAX_RUNS),
+      /matrix\.deficit/,
+      'BENCH_MAX_RUNS must carry the per-cell deficit',
+    );
+  });
+
   it('references the two required Action secrets', () => {
     assert.match(
       rawWorkflow,

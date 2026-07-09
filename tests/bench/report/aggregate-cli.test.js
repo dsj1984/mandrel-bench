@@ -368,6 +368,48 @@ describe('aggregate-cli — main() end to end (merge + render, no run)', () => {
     );
   });
 
+  it('exits 1 and logs a FATAL line when a port throws', async () => {
+    // M8: the main() catch branch must convert any thrown port error into a
+    // clean exit code 1 with a FATAL log line — never a bare crash that leaves
+    // the aggregate job's failure unattributable.
+    const errors = [];
+    const recordingLogger = {
+      info() {},
+      warn() {},
+      error: (m) => errors.push(String(m)),
+    };
+    const fs = memFs({});
+    let output = '';
+    const code = await main(
+      ['--artifacts-dir', '/dl', '--results-dir', '/results'],
+      {},
+      depsFor(fs, {
+        logger: recordingLogger,
+        write: (s) => {
+          output += s;
+        },
+        now: () => 'x',
+        // Force the merge path to blow up: the artifacts root "exists" but
+        // reading it throws, so readArtifactScorecards propagates into main's
+        // try/catch.
+        existsImpl: () => true,
+        readdirImpl: () => {
+          throw new Error('disk gone');
+        },
+      }),
+    );
+    assert.equal(code, 1, 'a thrown port must yield exit code 1');
+    assert.equal(output, '', 'no JSON summary is printed on the FATAL path');
+    assert.ok(
+      errors.some((m) => m.includes('[aggregate-cli] FATAL')),
+      'the FATAL log line must be emitted',
+    );
+    assert.ok(
+      errors.some((m) => m.includes('disk gone')),
+      'the FATAL line must carry the underlying error message',
+    );
+  });
+
   it('--no-merge renders the existing tree without touching artifacts', async () => {
     const storePath = path.join(
       '/results',
