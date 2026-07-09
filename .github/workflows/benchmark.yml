@@ -238,6 +238,37 @@ jobs:
       - name: Merge + render results tree
         run: node bench/report/aggregate-cli.js --artifacts-dir artifacts --results-dir results
 
+      # Derive the Phase-4 feedback findings for the merged cohort (Epic #85).
+      # This COMMITS the finding-envelope JSON into the results tree (picked up
+      # by the add-paths below) and captures the Markdown findings section, which
+      # we embed in the PR body — so the findings are always reviewed with the
+      # cohort and the loop degrades to D-009 behaviour if cross-repo filing is
+      # unavailable. Merging this PR lands the envelope on main and fires the
+      # merge-gated filer (.github/workflows/feedback-file.yml); filing NEVER
+      # happens here (no unreviewed write). Tolerant: an empty / ambiguous tree
+      # yields an empty findings section rather than failing the aggregate job.
+      - name: Derive feedback findings
+        id: findings
+        env:
+          BENCH_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if node bench/feedback/derive-cli.js \
+            --results-dir results \
+            --stamp "$BENCH_RUN_ID" \
+            --pr-body-out findings-pr-body.md; then
+            :
+          else
+            echo "## Benchmark findings" > findings-pr-body.md
+            echo "" >> findings-pr-body.md
+            echo "No findings section derived (empty or ambiguous results tree)." >> findings-pr-body.md
+          fi
+          {
+            echo 'markdown<<FINDINGS_EOF'
+            cat findings-pr-body.md
+            echo 'FINDINGS_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       # Open a pull request with the merged results. This job NEVER pushes to
       # main — the PR is the review gate. create-pull-request pushes to a
       # dedicated results branch and opens the PR against the default branch.
@@ -257,5 +288,10 @@ jobs:
 
             Review this PR in place of the interactive STOP gate: inspect the
             rendered scorecard + delta-vs-noise-band, then merge to publish.
+            Merging lands the finding envelope on main and fires the merge-gated
+            feedback filer (.github/workflows/feedback-file.yml); nothing is
+            filed on the mandrel repo until you merge.
+
+            ${{ steps.findings.outputs.markdown }}
           add-paths: |
             results/**

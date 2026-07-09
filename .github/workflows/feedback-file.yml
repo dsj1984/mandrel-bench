@@ -1,0 +1,91 @@
+name: File feedback
+
+# Merge-gated feedback filing (Epic #85, Story #93; target-architecture §7,
+# decision D-016 supersedes D-009). This is the LAST stage of the Phase-4
+# feedback loop and the ONLY place bench/feedback/file.js runs in CI.
+#
+# Trigger — a push to `main` that lands a finding envelope under the results
+# tree. The benchmark aggregate job (.github/workflows/benchmark.yml) derives
+# the findings, commits the envelope JSON with the cohort results, and opens a
+# results PR that embeds the findings section. MERGING that PR lands the
+# envelope on `main` and fires THIS workflow.
+#
+# It NEVER runs on `pull_request`: an unreviewed cohort can never write to the
+# mandrel repo. Review of the results PR is the human gate — that gate plus the
+# per-(fingerprint × cohort) dedup in the filer is the anti-spam design.
+#
+# Cross-repo write: filing issues on dsj1984/mandrel needs a token with
+# `issues:write` on THAT repo (FEEDBACK_GITHUB_TOKEN). When that scope is absent
+# the filer degrades LOUDLY and exits 0 (the D-009 fallback: the findings still
+# live in the merged results-PR body), so a missing scope never fails this
+# workflow.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'results/**/reports/findings-*.json'
+
+# Least privilege: this workflow only READS this repo. The issue writes target
+# dsj1984/mandrel via FEEDBACK_GITHUB_TOKEN, not the workflow's own GITHUB_TOKEN,
+# so no write scope on THIS repo is required.
+permissions:
+  contents: read
+
+# Never file the same merged cohort twice concurrently.
+concurrency:
+  group: feedback-file
+  cancel-in-progress: false
+
+jobs:
+  file:
+    name: File merged findings on the mandrel repo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need the pre-merge commit to diff which envelopes this push landed.
+          fetch-depth: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --ignore-scripts
+
+      # File each finding envelope this merge landed. The filer LISTS the target
+      # repo's open bench-feedback issues and matches each finding's fingerprint
+      # marker CLIENT-SIDE (never GitHub issue search): a hit appends a dated
+      # cohort comment, a miss opens a fresh issue, and an already-recorded
+      # (fingerprint × cohort) is a no-op — so a re-run writes nothing. A missing
+      # cross-repo scope degrades loudly and the CLI exits 0 (D-009 fallback), so
+      # this step never fails the workflow.
+      #
+      # SHAs are passed through env (never interpolated into the run: body) to
+      # keep the shell-injection surface closed, mirroring benchmark.yml.
+      - name: File merged finding envelopes
+        env:
+          # A token with `issues:write` on dsj1984/mandrel. Absent/underscoped →
+          # the filer logs a loud DEGRADED warning and exits 0.
+          GH_TOKEN: ${{ secrets.FEEDBACK_GITHUB_TOKEN }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # The finding envelopes this push added or modified under the results
+          # tree. Fall back to every committed envelope when the pre-merge commit
+          # is unavailable (first push / shallow base).
+          if [ -n "$PUSH_BEFORE" ] && git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
+            CHANGED="$(git diff --name-only --diff-filter=AM "$PUSH_BEFORE" "$PUSH_SHA" -- results || true)"
+          else
+            CHANGED="$(git ls-files -- results || true)"
+          fi
+          ENVELOPES="$(printf '%s\n' "$CHANGED" | grep -E 'results/.*/reports/findings-.*\.json$' || true)"
+          if [ -z "$ENVELOPES" ]; then
+            echo "No finding envelopes in this push — nothing to file."
+            exit 0
+          fi
+          printf '%s\n' "$ENVELOPES" | while IFS= read -r envelope; do
+            [ -n "$envelope" ] || continue
+            echo "::group::Filing ${envelope}"
+            node bench/feedback/file.js --envelope "$envelope"
+            echo "::endgroup::"
+          done
