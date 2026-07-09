@@ -1,7 +1,7 @@
 // tests/bench/driver/no-standing-sandbox.test.js
 /**
- * Regression guard for Story #73 (Epic #65 — retire the standing
- * `mandrel-bench-sandbox` repo).
+ * Regression guard for Story #73 (Epic #65 — retire the standing external
+ * sandbox repo, see docs/decisions.md D-013).
  *
  * Asserts that no `bench/driver/*.js` module reads the retired standing-repo
  * env vars (`BENCH_SANDBOX_REPO_URL`, `BENCH_SANDBOX_REPO`,
