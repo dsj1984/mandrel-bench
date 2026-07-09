@@ -29,7 +29,11 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { defaultCliLogger, runIfMain } from '../driver/cli-shell.js';
+import {
+  defaultCliLogger,
+  runIfMain,
+  sanitizeIdent,
+} from '../driver/cli-shell.js';
 import { findCohortStores, STORE_FILENAME } from './aggregate.js';
 import { cohortDir } from './cohort-path.js';
 import { appendScorecards, parseStore, readStore } from './persist.js';
@@ -39,16 +43,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Sanitize an arbitrary string into a filesystem-safe report stamp
- * (`^[A-Za-z0-9._-]+$`). Kept local so this CLI never imports bench/run.js
+ * (`^[A-Za-z0-9._-]+$`). Thin alias over the shared `sanitizeIdent` in
+ * `../driver/cli-shell.js` — this CLI still imports nothing from bench/run.js
  * (whose module graph pulls in the whole run loop). Pure.
  *
  * @param {string} s
  * @returns {string}
  */
 export function sanitizeStamp(s) {
-  return String(s)
-    .replace(/[^A-Za-z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+  return sanitizeIdent(s);
 }
 
 /**

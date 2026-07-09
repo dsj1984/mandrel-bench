@@ -30,7 +30,7 @@
  * imports no run-executing code, so it can never launch a session.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,6 +40,10 @@ import addFormats from 'ajv-formats';
 import { aggregateScorecards } from '../report/aggregate.js';
 import { defaultCliLogger, runIfMain } from './cli-shell.js';
 import { DEFAULT_BENCH_MODEL } from './run-session.js';
+import {
+  readBenchmarkVersion,
+  readFrameworkVersion,
+} from './version-readers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -307,66 +311,14 @@ export function planTopup(
 // CLI ports + entry (each real effect injectable; no run.js coupling)
 // ---------------------------------------------------------------------------
 
-/**
- * Read the framework-under-test version from the pinned `mandrel` dependency,
- * falling back to the consumer package.json dependency spec, then `'unknown'`.
- * A small, deliberately-standalone reader so the planner never imports
- * bench/run.js (whose module graph pulls in the whole run loop). Pure over the
- * injected FS shim.
- *
- * @param {string} sourceRoot
- * @param {object} [deps]
- * @returns {string}
- */
-export function readFrameworkVersion(sourceRoot, deps = {}) {
-  const read = deps.readFileImpl ?? readFileSync;
-  const exists = deps.existsImpl ?? existsSync;
-  const pkgPath = path.join(
-    sourceRoot,
-    'node_modules',
-    'mandrel',
-    'package.json',
-  );
-  if (exists(pkgPath)) {
-    try {
-      const v = JSON.parse(read(pkgPath, 'utf8')).version;
-      if (typeof v === 'string' && v.length > 0) return v;
-    } catch {
-      // fall through
-    }
-  }
-  try {
-    const consumer = JSON.parse(
-      read(path.join(sourceRoot, 'package.json'), 'utf8'),
-    );
-    const spec = consumer?.dependencies?.mandrel;
-    if (typeof spec === 'string') return spec.replace(/^[\^~>=<\s]*/, '');
-  } catch {
-    // fall through
-  }
-  return 'unknown';
-}
-
-/**
- * Read the benchmark harness's OWN version (this repo's package.json version),
- * falling back to `'unknown'`. Pure over the injected FS shim.
- *
- * @param {string} sourceRoot
- * @param {object} [deps]
- * @returns {string}
- */
-export function readBenchmarkVersion(sourceRoot, deps = {}) {
-  const read = deps.readFileImpl ?? readFileSync;
-  try {
-    const pkg = JSON.parse(read(path.join(sourceRoot, 'package.json'), 'utf8'));
-    if (typeof pkg?.version === 'string' && pkg.version.length > 0) {
-      return pkg.version;
-    }
-  } catch {
-    // fall through
-  }
-  return 'unknown';
-}
+// The cohort-stamp version readers (`readFrameworkVersion`,
+// `readBenchmarkVersion`) live in the shared leaf module
+// `driver/version-readers.js` — imported above — so the planner and the run
+// loop resolve the cohort triple from one definition (D-014). That module
+// imports nothing from bench/run.js, so the planner's no-run-loop-coupling
+// invariant is preserved. They are re-exported here to keep this module's
+// public surface (and its CLI resolver below) unchanged.
+export { readBenchmarkVersion, readFrameworkVersion };
 
 /**
  * Default cohort-stamp resolver: the requested model plus the framework and

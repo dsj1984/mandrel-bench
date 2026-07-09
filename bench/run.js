@@ -46,7 +46,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildScorecard, parseNdjson } from './collect/normalize.js';
 import { withRunningApp as defaultWithRunningApp } from './driver/app-runner.js';
-import { defaultCliLogger, runIfMain } from './driver/cli-shell.js';
+import {
+  defaultCliLogger,
+  runIfMain,
+  sanitizeIdent,
+} from './driver/cli-shell.js';
 import { DEFAULT_TTL_HOURS, sweepLeakedRepos } from './driver/janitor.js';
 import {
   overlayFrameworkUnderTest,
@@ -68,6 +72,10 @@ import {
   seedFromTemplate,
   teardownSandbox,
 } from './driver/sandbox.js';
+import {
+  readBenchmarkVersion,
+  readFrameworkVersion,
+} from './driver/version-readers.js';
 import { cohortDir } from './report/cohort-path.js';
 import { appendScorecards } from './report/persist.js';
 import {
@@ -109,88 +117,22 @@ export const SESSION_EXTRA_ARGS = Object.freeze([
 // Pure helpers (unit-tested directly)
 // ---------------------------------------------------------------------------
 
-/**
- * Read the framework-under-test version from the pinned `mandrel` dependency
- * (`node_modules/mandrel/package.json`) — NOT the consumer's own
- * `package.json` version. Falls back to the dependency spec when the package is
- * absent.
- *
- * @param {string} sourceRoot
- * @param {object} [deps]
- * @param {(p: string, enc: string) => string} [deps.readFileImpl]
- * @param {(p: string) => boolean} [deps.existsImpl]
- * @returns {string}
- */
-export function readFrameworkVersion(sourceRoot, deps = {}) {
-  const read = deps.readFileImpl ?? readFileSync;
-  const exists = deps.existsImpl ?? existsSync;
-  const pkgPath = path.join(
-    sourceRoot,
-    'node_modules',
-    'mandrel',
-    'package.json',
-  );
-  if (exists(pkgPath)) {
-    try {
-      const v = JSON.parse(read(pkgPath, 'utf8')).version;
-      if (typeof v === 'string' && v.length > 0) return v;
-    } catch {
-      // fall through
-    }
-  }
-  // Fallback: the spec from the consumer package.json dependencies.
-  try {
-    const consumer = JSON.parse(
-      read(path.join(sourceRoot, 'package.json'), 'utf8'),
-    );
-    const spec = consumer?.dependencies?.mandrel;
-    if (typeof spec === 'string') return spec.replace(/^[\^~>=<\s]*/, '');
-  } catch {
-    // fall through
-  }
-  return 'unknown';
-}
-
-/**
- * Read the BENCHMARK version — THIS repo's own `package.json` version — for the
- * cohort stamp (D-014, docs/target-architecture.md § 3.1). This is deliberately
- * NOT `readFrameworkVersion`: that reads the pinned `mandrel` dependency
- * (`node_modules/mandrel/package.json`), the framework UNDER test, whereas this
- * reads the version of the benchmark harness DOING the testing. The benchmark
- * is itself a variable — scoring formulas, scenario specs, and oracles all live
- * here — so a benchmark change can move numbers with no framework or model
- * change at all, and its version must join the cohort key. Falls back to
- * `'unknown'` when the file is absent or carries no `version`.
- *
- * @param {string} sourceRoot
- * @param {object} [deps]
- * @param {(p: string, enc: string) => string} [deps.readFileImpl]
- * @returns {string}
- */
-export function readBenchmarkVersion(sourceRoot, deps = {}) {
-  const read = deps.readFileImpl ?? readFileSync;
-  try {
-    const pkg = JSON.parse(read(path.join(sourceRoot, 'package.json'), 'utf8'));
-    if (typeof pkg?.version === 'string' && pkg.version.length > 0) {
-      return pkg.version;
-    }
-  } catch {
-    // fall through
-  }
-  return 'unknown';
-}
+// The cohort-stamp version readers (`readFrameworkVersion`,
+// `readBenchmarkVersion`) live in the leaf module `driver/version-readers.js`
+// so this run loop and the top-up planner share one definition (D-014). They
+// are re-exported here to preserve this module's public surface.
+export { readBenchmarkVersion, readFrameworkVersion };
 
 /**
  * Sanitize an arbitrary string into the scorecard `runId` pattern
- * (`^[A-Za-z0-9._-]+$`).
+ * (`^[A-Za-z0-9._-]+$`). Thin alias over the shared `sanitizeIdent` in
+ * `driver/cli-shell.js`.
  *
  * @param {string} s
  * @returns {string}
  */
 export function sanitizeRunId(s) {
-  return String(s)
-    .replace(/[^A-Za-z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+  return sanitizeIdent(s);
 }
 
 /**
