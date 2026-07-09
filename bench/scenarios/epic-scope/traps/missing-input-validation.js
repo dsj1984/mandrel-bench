@@ -29,35 +29,33 @@
  * (`missing-input-validation`) is derived from this file's basename — no
  * explicit `class` field is required in the returned verdict.
  *
- * The oracle is a pure scanner over the materialized workspace tree,
- * mirroring the sibling oracles' collector contract: all I/O runs through an
- * injected `fsImpl` port so the detector-discrimination test exercises the
- * full verdict logic without touching disk, and the scanner skips
- * `node_modules`, build dirs, dot-dirs (the overlaid framework tree), and
- * the `CLAUDE.md` overlay artifact so it measures the deliverable, not the
- * harness's own scaffolding.
+ * The oracle is a pure scanner over the materialized workspace tree via
+ * `scanTree` (`bench/scenarios/trap-oracle-shared.js`, Epic #66 audit
+ * remediation H5): all I/O runs through an injected `fsImpl` port so the
+ * detector-discrimination test exercises the full verdict logic without
+ * touching disk, and the scanner skips `node_modules`, build dirs, dot-dirs
+ * (the overlaid framework tree), and the `CLAUDE.md` overlay artifact so it
+ * measures the deliverable, not the harness's own scaffolding.
+ *
+ * KNOWN RESIDUAL RISK (Epic #66 audit remediation, M2 — measurement-validity,
+ * not exploitable): `VALIDATION_GUARD_RE` and `RAW_BODY_WRITE_RE` are each
+ * tested tree-wide, independently of each other, the same "dominant positive
+ * anywhere in the tree" shape every trap oracle in this family uses (see the
+ * sibling oracles' decision-rule docs). That means a real 400 guard on ONE
+ * handler can mask a genuinely unvalidated raw-body write on a DIFFERENT
+ * handler in the same tree — the false-negative direction (deemed clean when
+ * it isn't), not a false-positive/exploitable direction. Tightening this to
+ * a same-function-body scope safely requires actual brace-depth-aware source
+ * scoping (regex alone cannot reliably delimit a JS function body across the
+ * shapes real handlers take — arrow functions, nested callbacks, multi-line
+ * signatures), which is a larger, riskier change than this remediation pass
+ * budgeted for; deferred and left as documented residual risk rather than
+ * rushed.
  *
  * @module bench/scenarios/epic-scope/traps/missing-input-validation
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-
-/** Directories never scanned (build output / deps). */
-const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'coverage']);
-
-/** Top-level FILE artifacts the bench overlays that are framework material. */
-const OVERLAY_FILE_ARTIFACTS = new Set(['CLAUDE.md']);
-
-/** File extensions considered source (skip binaries, lockfiles, the store). */
-const SCANNABLE_EXTENSIONS = new Set([
-  '.js',
-  '.mjs',
-  '.cjs',
-  '.ts',
-  '.tsx',
-  '.jsx',
-]);
+import { scanTree } from '../../trap-oracle-shared.js';
 
 // ---------------------------------------------------------------------------
 // Defect heuristics (source text searched)
@@ -96,43 +94,6 @@ const VALIDATION_GUARD_RE = new RegExp(
 const RAW_BODY_WRITE_RE =
   /\b(?:insert|create|run|exec)\s*\([^)]*\b(?:req\.body|body)\b/gi;
 
-// ---------------------------------------------------------------------------
-// Filesystem walker
-// ---------------------------------------------------------------------------
-
-/**
- * Recursively collect scannable source-file paths under `dir`, skipping
- * build/dep dirs, dot-dirs (the overlaid framework tree), and the top-level
- * overlay file artifacts.
- *
- * @param {string} dir — absolute path to scan.
- * @param {Pick<typeof fs, 'readdirSync'>} fsImpl
- * @returns {string[]}
- */
-function collectSourceFiles(dir, fsImpl) {
-  const result = [];
-  let entries;
-  try {
-    entries = fsImpl.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return result;
-  }
-  for (const entry of entries) {
-    if (SKIP_DIRS.has(entry.name)) continue;
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name.startsWith('.')) continue;
-      result.push(...collectSourceFiles(full, fsImpl));
-    } else if (entry.isFile()) {
-      if (OVERLAY_FILE_ARTIFACTS.has(entry.name)) continue;
-      if (SCANNABLE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
-        result.push(full);
-      }
-    }
-  }
-  return result;
-}
-
 /**
  * Derive the trap verdict from already-extracted source text. Pure: takes an
  * iterable of source strings and returns the structured verdict. Exposed so
@@ -146,7 +107,8 @@ function collectSourceFiles(dir, fsImpl) {
  * anywhere is the dominant positive: an app that validates is clean even if
  * a stray write call elsewhere also happens to reference `req.body` in its
  * arguments (e.g. a field that was already validated earlier in the same
- * handler).
+ * handler). See the module-level "KNOWN RESIDUAL RISK" note above for the
+ * scoping caveat this dominant-positive rule carries.
  *
  * @param {Iterable<string>} sources — source-file text blobs.
  * @returns {{ score: 0|1, defectPresent: boolean, evidence: string[] }}
@@ -194,20 +156,5 @@ export function evaluateSources(sources) {
  * @returns {{ score: 0|1, defectPresent: boolean, evidence: string[] }}
  */
 export function evaluate(deliveredTreePath, ports = {}) {
-  if (typeof deliveredTreePath !== 'string' || deliveredTreePath.length === 0) {
-    throw new TypeError(
-      'evaluate(deliveredTreePath): deliveredTreePath must be a non-empty string',
-    );
-  }
-  const fsImpl = ports.fsImpl ?? fs;
-  const files = collectSourceFiles(deliveredTreePath, fsImpl);
-  const sources = [];
-  for (const filePath of files) {
-    try {
-      sources.push(fsImpl.readFileSync(filePath, 'utf8'));
-    } catch {
-      // Unreadable file — skip; a partial scan is still a valid verdict.
-    }
-  }
-  return evaluateSources(sources);
+  return scanTree(deliveredTreePath, evaluateSources, ports);
 }
