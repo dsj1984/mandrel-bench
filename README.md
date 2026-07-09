@@ -196,6 +196,7 @@ provision by hand. Two secrets are all it takes:
 | --- | --- | --- |
 | `BENCH_GITHUB_TOKEN` | yes | a fine-grained PAT (or machine-account token) with repository create/delete + contents + issues + pull-requests scopes; used to create and tear down the per-cell `bench-sbx-*` repos |
 | `BENCH_SANDBOX_OWNER` | yes | the account/org the ephemeral repos are created under |
+| `BENCH_JANITOR_TTL_HOURS` | no | overrides the janitor sweep's TTL (hours); defaults to 24 |
 
 Each cell provisions one private repo (`bench-sbx-<cohort>-<scenario>-<arm>-<nonce>`,
 seeded from `bench/sandbox-template/`) and deletes it at teardown; a
@@ -206,6 +207,30 @@ seeded from `bench/sandbox-template/`) and deletes it at teardown; a
 `BENCH_SANDBOX_REPO_URL`, `BENCH_SANDBOX_REPO`, and `BENCH_SANDBOX_BASELINE_REF`
 are **retired** — setting any of them emits a deprecation warning naming its
 replacement; they are no longer read.
+
+**Least privilege.** A fine-grained PAT can't be pre-scoped to repos that
+don't exist yet, so in practice `BENCH_GITHUB_TOKEN` carries delete authority
+over every repo under `BENCH_SANDBOX_OWNER` — only the in-process reserved
+`bench-sbx-` prefix guard (`createEphemeralRepo`/`destroyEphemeralRepo`/the
+janitor all refuse any other name) bounds the blast radius, not the token's
+own scoping. Use a dedicated machine account or org that owns nothing else of
+value, rather than a personal account's token.
+
+#### Standalone janitor sweep
+
+The `bench-sbx-` prefix + TTL sweep also runs on its own, outside a benchmark
+invocation:
+
+```bash
+npm run janitor -- --dry-run              # list what would be deleted
+npm run janitor -- --ttl-hours 12         # override the default 24h TTL
+npm run janitor -- --owner someone-else   # override BENCH_SANDBOX_OWNER
+npm run janitor -- --help                 # usage — no env vars required
+```
+
+Flags: `--dry-run`, `--ttl-hours <hours>`, `--owner <owner>`, `--help`. With no
+flags it reads `BENCH_SANDBOX_OWNER` and `BENCH_JANITOR_TTL_HOURS` (or the
+24h default) the same way the sweep embedded in `npm run bench` does.
 
 #### Sandbox retirement (operator runbook)
 

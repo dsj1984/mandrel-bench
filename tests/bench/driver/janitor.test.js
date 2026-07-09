@@ -217,6 +217,33 @@ test('sweepLeakedRepos: an empty listing is a no-op', () => {
   });
 });
 
+test('sweepLeakedRepos: warns when gh repo list returns exactly the 1000-repo --limit cap (possible truncation) (Epic #65 audit remediation, finding #8)', () => {
+  // 1000 young, non-candidate repos — the sweep itself finds nothing to
+  // delete, but the LISTING SIZE alone (== the --limit value) is the signal
+  // that gh may have silently truncated a larger real listing.
+  const repos = Array.from({ length: 1000 }, (_, i) => ({
+    name: `some-other-repo-${i}`,
+    owner: OWNER,
+    createdAt: hoursAgo(1),
+  }));
+  const { ghFn } = listingGhFn(repos);
+  const { logger, messages } = makeLogger();
+  const result = sweepLeakedRepos({ owner: OWNER, now: NOW }, { ghFn, logger });
+  assert.deepEqual(result.candidates, []);
+  assert.ok(
+    messages.warn.some((w) => w.includes('--limit 1000 cap')),
+    `expected a truncation warning, got: ${JSON.stringify(messages.warn)}`,
+  );
+});
+
+test('sweepLeakedRepos: no truncation warning when the listing is below the --limit cap', () => {
+  const repos = [{ name: 'bench-sbx-a', owner: OWNER, createdAt: hoursAgo(1) }];
+  const { ghFn } = listingGhFn(repos);
+  const { logger, messages } = makeLogger();
+  sweepLeakedRepos({ owner: OWNER, now: NOW }, { ghFn, logger });
+  assert.ok(!messages.warn.some((w) => w.includes('--limit 1000 cap')));
+});
+
 test('sweepLeakedRepos: a delete failure for one repo is logged and does not abort the sweep', () => {
   const repos = [
     { name: 'bench-sbx-a', owner: OWNER, createdAt: hoursAgo(48) },

@@ -36,13 +36,21 @@
  * semantics without ever listing or deleting a real repository.
  */
 
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { defaultCliLogger, runIfMain } from './cli-shell.js';
 import {
   defaultGhInvoke,
   destroyEphemeralRepo,
   SANDBOX_DIR_PREFIX,
+  withRetry,
 } from './sandbox.js';
+
+/** The `--limit` value passed to `gh repo list`. Also the truncation boundary
+ * checked below: a returned listing whose length equals this value cannot be
+ * distinguished from "there are exactly this many repos" vs "there are MORE
+ * and gh silently truncated" — `gh repo list` has no pagination cursor in its
+ * JSON output mode, so a warning is the best available signal (devops +
+ * quality lenses, Epic #65 audit remediation). */
+const REPO_LIST_LIMIT = 1000;
 
 /** Default sweep TTL in hours — a leaked repo younger than this is left alone. */
 export const DEFAULT_TTL_HOURS = 24;
@@ -178,15 +186,19 @@ export function sweepLeakedRepos(
 
   let stdout;
   try {
-    stdout = ghFn([
-      'repo',
-      'list',
-      owner,
-      '--json',
-      'name,owner,createdAt',
-      '--limit',
-      '1000',
-    ]);
+    // `gh repo list` is a read — safe to retry once on a transient error
+    // (devops lens, Epic #65 audit remediation).
+    stdout = withRetry(() =>
+      ghFn([
+        'repo',
+        'list',
+        owner,
+        '--json',
+        'name,owner,createdAt',
+        '--limit',
+        String(REPO_LIST_LIMIT),
+      ]),
+    );
   } catch (err) {
     throw new Error(
       `[janitor] failed to list repos for ${owner}: ${err?.message ?? err}`,
@@ -199,6 +211,12 @@ export function sweepLeakedRepos(
   } catch (err) {
     throw new Error(
       `[janitor] could not parse \`gh repo list\` output: ${err?.message ?? err}`,
+    );
+  }
+
+  if (Array.isArray(repos) && repos.length === REPO_LIST_LIMIT) {
+    logger?.warn?.(
+      `[janitor] \`gh repo list\` returned exactly the --limit ${REPO_LIST_LIMIT} cap — the listing may be truncated; some leaked repos could be missed this sweep.`,
     );
   }
 
@@ -317,11 +335,7 @@ export async function main(
   env = process.env,
   deps = {},
 ) {
-  const logger = deps.logger ?? {
-    info: (m) => process.stderr.write(`${m}\n`),
-    warn: (m) => process.stderr.write(`${m}\n`),
-    error: (m) => process.stderr.write(`${m}\n`),
-  };
+  const logger = deps.logger ?? defaultCliLogger();
 
   const args = parseJanitorCliArgs(argv);
 
@@ -357,11 +371,8 @@ export async function main(
 }
 
 // Run when invoked directly (not when imported by tests or bench/run.js).
-if (
-  process.argv[1] &&
-  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-) {
+runIfMain(import.meta.url, () => {
   main().then((code) => {
     process.exitCode = code;
   });
-}
+});
