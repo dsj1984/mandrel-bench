@@ -46,7 +46,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildScorecard, parseNdjson } from './collect/normalize.js';
 import { withRunningApp as defaultWithRunningApp } from './driver/app-runner.js';
-import { defaultCliLogger, runIfMain } from './driver/cli-shell.js';
+import {
+  defaultCliLogger,
+  runIfMain,
+  sanitizeIdent,
+} from './driver/cli-shell.js';
 import { DEFAULT_TTL_HOURS, sweepLeakedRepos } from './driver/janitor.js';
 import {
   overlayFrameworkUnderTest,
@@ -68,11 +72,16 @@ import {
   seedFromTemplate,
   teardownSandbox,
 } from './driver/sandbox.js';
-import { aggregateScorecards } from './report/aggregate.js';
+import {
+  readBenchmarkVersion,
+  readFrameworkVersion,
+} from './driver/version-readers.js';
 import { cohortDir } from './report/cohort-path.js';
-import { renderDashboard } from './report/html.js';
-import { appendScorecards, readStore } from './report/persist.js';
-import { renderReport } from './report/render.js';
+import { appendScorecards } from './report/persist.js';
+import {
+  renderCohortReport,
+  renderDashboardFile,
+} from './report/render-tree.js';
 import { scoreScenarioQuality as defaultScoreScenarioQuality } from './scenarios/acceptance-eval-adapter.js';
 import { runDimensionJudge as defaultRunDimensionJudge } from './scenarios/dimension-judge-adapter.js';
 import { collectMaintainabilitySignals as defaultCollectMaintainabilitySignals } from './scenarios/maintainability-adapter.js';
@@ -108,59 +117,46 @@ export const SESSION_EXTRA_ARGS = Object.freeze([
 // Pure helpers (unit-tested directly)
 // ---------------------------------------------------------------------------
 
-/**
- * Read the framework-under-test version from the pinned `mandrel` dependency
- * (`node_modules/mandrel/package.json`) — NOT the consumer's own
- * `package.json` version. Falls back to the dependency spec when the package is
- * absent.
- *
- * @param {string} sourceRoot
- * @param {object} [deps]
- * @param {(p: string, enc: string) => string} [deps.readFileImpl]
- * @param {(p: string) => boolean} [deps.existsImpl]
- * @returns {string}
- */
-export function readFrameworkVersion(sourceRoot, deps = {}) {
-  const read = deps.readFileImpl ?? readFileSync;
-  const exists = deps.existsImpl ?? existsSync;
-  const pkgPath = path.join(
-    sourceRoot,
-    'node_modules',
-    'mandrel',
-    'package.json',
-  );
-  if (exists(pkgPath)) {
-    try {
-      const v = JSON.parse(read(pkgPath, 'utf8')).version;
-      if (typeof v === 'string' && v.length > 0) return v;
-    } catch {
-      // fall through
-    }
-  }
-  // Fallback: the spec from the consumer package.json dependencies.
-  try {
-    const consumer = JSON.parse(
-      read(path.join(sourceRoot, 'package.json'), 'utf8'),
-    );
-    const spec = consumer?.dependencies?.mandrel;
-    if (typeof spec === 'string') return spec.replace(/^[\^~>=<\s]*/, '');
-  } catch {
-    // fall through
-  }
-  return 'unknown';
-}
+// The cohort-stamp version readers (`readFrameworkVersion`,
+// `readBenchmarkVersion`) live in the leaf module `driver/version-readers.js`
+// so this run loop and the top-up planner share one definition (D-014). They
+// are re-exported here to preserve this module's public surface.
+export { readBenchmarkVersion, readFrameworkVersion };
 
 /**
  * Sanitize an arbitrary string into the scorecard `runId` pattern
- * (`^[A-Za-z0-9._-]+$`).
+ * (`^[A-Za-z0-9._-]+$`). Thin alias over the shared `sanitizeIdent` in
+ * `driver/cli-shell.js`.
  *
  * @param {string} s
  * @returns {string}
  */
 export function sanitizeRunId(s) {
-  return String(s)
-    .replace(/[^A-Za-z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+  return sanitizeIdent(s);
+}
+
+/**
+ * Parse an OPTIONAL numeric env var (BENCH_N / BENCH_MAX_RUNS /
+ * BENCH_MAX_COST_USD). An unset, empty, whitespace-only, or non-finite value
+ * resolves to `undefined` — the "operator did not specify" signal — NOT the
+ * poison `Number('') === 0`. This matters because CI passes these knobs
+ * straight through from `workflow_dispatch` inputs, and a blank input arrives
+ * as an EMPTY STRING (present, not unset). A blank `BENCH_N` reaching
+ * `Number('')` would resolve to a uniform run-count override of 0, zeroing
+ * every scenario's `targetN` so the cell runs nothing — silently producing an
+ * empty cohort on the default (blank `target_n`) dispatch (Epic #84 review
+ * finding). An explicit `'0'` is preserved (a deliberate zero override); only
+ * blank / non-numeric input degrades to `undefined`.
+ *
+ * @param {unknown} value  A raw env-var value (string | undefined).
+ * @returns {number|undefined}
+ */
+export function parseOptionalNumericEnv(value) {
+  if (value == null) return undefined;
+  const trimmed = String(value).trim();
+  if (trimmed === '') return undefined;
+  const n = Number(trimmed);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 /**
@@ -173,6 +169,7 @@ export function sanitizeRunId(s) {
  * @param {string} args.timestamp  ISO-8601 run-complete time.
  * @param {string} args.modelId
  * @param {string} args.frameworkVersion
+ * @param {string} args.benchmarkVersion  This benchmark repo's own version (D-014).
  * @param {{ node: string, os: string, host?: string }} args.env
  * @returns {object} The `run` identity object buildScorecard expects.
  */
@@ -183,6 +180,7 @@ export function buildRunIdentity({
   timestamp,
   modelId,
   frameworkVersion,
+  benchmarkVersion,
   env,
 }) {
   const idStamp = sanitizeRunId(`${scenario}-${arm}-${timestamp}-r${runIndex}`);
@@ -191,6 +189,7 @@ export function buildRunIdentity({
     timestamp,
     model: { id: modelId },
     frameworkVersion,
+    benchmarkVersion,
     env,
     scenario,
     arm,
@@ -588,6 +587,10 @@ export async function runOneRun(opts, deps = {}) {
   };
   const frameworkVersion =
     deps.frameworkVersion ?? readFrameworkVersion(sourceRoot, deps);
+  // The benchmark harness's OWN version (D-014) — read from THIS repo's
+  // package.json, NOT the pinned mandrel dependency `frameworkVersion` reads.
+  const benchmarkVersion =
+    deps.benchmarkVersion ?? readBenchmarkVersion(sourceRoot, deps);
   const cp = deps.cpFn ?? cpSync;
   const mkdir = deps.mkdirFn ?? ((p) => mkdirSync(p, { recursive: true }));
   const writeFile = deps.writeFileFn ?? writeFileSync;
@@ -895,6 +898,7 @@ export async function runOneRun(opts, deps = {}) {
       timestamp: nowIso(),
       modelId,
       frameworkVersion,
+      benchmarkVersion,
       env,
     });
 
@@ -1105,34 +1109,38 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
     }
   }
 
+  // Render over the FULL on-disk cohort store, NOT just this run's cards. A
+  // resumed batch only produces the cells it actually re-ran (the rest are
+  // skipped from the checkpoint), so rendering the run's cards alone
+  // under-counts every resumed cell — a resumed N=8 that re-ran 5 cells would
+  // report n=5 instead of the true n=8. The render logic is shared with the
+  // standalone aggregate CLI via bench/report/render-tree.js (Story #90).
   const cohorts = [];
   for (const [dir, cohortCards] of cohortReportCards) {
-    const storePath = path.join(dir, 'scorecards.ndjson');
-    // Render over the FULL on-disk cohort store, NOT just this run's
-    // `cohortCards`. A resumed batch only produces the cells it actually
-    // re-ran (the rest are skipped from the checkpoint), so rendering
-    // `cohortCards` alone under-counts every resumed cell — a resumed N=8 that
-    // re-ran 5 cells would report n=5 instead of the true n=8. This mirrors how
-    // the dashboard reads the corpus (`aggregateScorecards`). Deterministic:
-    // `readStore` + `renderReport` are pure over the append-ordered store.
-    const fullStore = readStore({ storePath }, deps.persistDeps);
-    const report = renderReport({ scorecards: fullStore, method: 'iqr' });
     const stamp = sanitizeRunId(cohortCards[0]?.timestamp ?? `${Date.now()}`);
-    const reportsDir = path.join(dir, 'reports');
-    const reportPath = path.join(reportsDir, `report-${stamp}.md`);
-    mkdir(reportsDir);
-    writeFile(reportPath, report);
-    cohorts.push({ dir, storePath, reportPath, report });
+    cohorts.push(
+      renderCohortReport(
+        { cohortDir: dir, stamp, method: 'iqr' },
+        {
+          readStoreDeps: deps.persistDeps,
+          writeFileImpl: writeFile,
+          mkdirImpl: mkdir,
+        },
+      ),
+    );
   }
 
   // Regenerate the aggregate dashboard from the FULL corpus across every cohort
   // (not just this run's scorecards) so `results.html` always reflects the whole
   // longitudinal history on disk.
-  const corpus = aggregateScorecards({ resultsDir }, deps.aggregateDeps);
-  const dashboard = renderDashboard({ scorecards: corpus });
-  const dashboardPath = path.join(resultsDir, 'results.html');
-  mkdir(resultsDir);
-  writeFile(dashboardPath, dashboard);
+  const { dashboardPath, dashboard } = renderDashboardFile(
+    { resultsDir },
+    {
+      aggregateDeps: deps.aggregateDeps,
+      writeFileImpl: writeFile,
+      mkdirImpl: mkdir,
+    },
+  );
 
   return { scorecards, cohorts, dashboardPath, dashboard, skipped, stopped };
 }
@@ -1505,11 +1513,9 @@ export async function main(env = process.env, deps = {}) {
   // every scenario; when unset, leave `n` undefined so
   // `runFirstBenchmark`/`runCell` resolve each scenario's own declared
   // `targetN` sizing contract instead of silently defaulting to 1.
-  const n = env.BENCH_N != null ? Number(env.BENCH_N) : undefined;
-  const maxRuns =
-    env.BENCH_MAX_RUNS != null ? Number(env.BENCH_MAX_RUNS) : null;
-  const maxCostUsd =
-    env.BENCH_MAX_COST_USD != null ? Number(env.BENCH_MAX_COST_USD) : null;
+  const n = parseOptionalNumericEnv(env.BENCH_N);
+  const maxRuns = parseOptionalNumericEnv(env.BENCH_MAX_RUNS) ?? null;
+  const maxCostUsd = parseOptionalNumericEnv(env.BENCH_MAX_COST_USD) ?? null;
   const resultsDir = path.join(repoRoot(), 'results');
   const checkpointPath =
     env.BENCH_CHECKPOINT ?? path.join(resultsDir, CHECKPOINT_FILENAME);

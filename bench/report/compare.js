@@ -19,9 +19,13 @@
 //     is reported as "within noise", not a spurious regression/improvement.
 //
 // It refuses to compare across cohorts: a baseline and candidate stamped with a
-// different (model, framework version, env) are NOT like-to-like, and silently
-// differencing them would be exactly the apples-to-oranges error the stamp
-// exists to prevent. A cohort mismatch is surfaced as a flag, never hidden.
+// different (model, framework version, benchmark version, env) are NOT
+// like-to-like, and silently differencing them would be exactly the
+// apples-to-oranges error the stamp exists to prevent. A cohort mismatch is
+// surfaced as a flag, never hidden — and, per D-014 (Story #87), annotated with
+// exactly which cohort key changed, or flagged CONFOUNDED when more than one
+// did (so a movement is always attributable to a single variable or explicitly
+// declared unattributable).
 //
 // Determinism: pure functions, no I/O, no clock, no randomness. Reads of the
 // persisted store live in persist.js; this module operates on the in-memory
@@ -111,6 +115,62 @@ function cohortKeysOf(run) {
 }
 
 /**
+ * Whether a single run internally spans MORE THAN ONE `benchmarkVersion`. Such
+ * a run is non-inferential: the benchmark harness itself changed between its
+ * records, so pooling them into one band would confound a benchmark change with
+ * a framework/model signal. This mirrors `groupCells`'s "no band at the
+ * grouping seam" contract (bench/report/render.js) — a mixed-benchmarkVersion
+ * run gets its bands suppressed (null centers) rather than a flagged-but-shown
+ * pooled band. Pure.
+ *
+ * @param {Array<object>} run
+ * @returns {boolean}
+ */
+function spansMultipleBenchmarkVersions(run) {
+  const versions = new Set();
+  for (const sc of run) {
+    if (
+      typeof sc?.benchmarkVersion === 'string' &&
+      sc.benchmarkVersion.length > 0
+    ) {
+      versions.add(sc.benchmarkVersion);
+    }
+  }
+  return versions.size > 1;
+}
+
+/**
+ * The named component fields of the cohort key, in the same order `cohortKey`
+ * concatenates them (model | frameworkVersion | benchmarkVersion | env.node |
+ * env.os). Used to attribute a cross-cohort comparison to the exact key(s) that
+ * moved (D-014, Story #87) — so a movement is either pinned to one variable or
+ * explicitly flagged confounded when more than one changed.
+ */
+const COHORT_KEY_FIELDS = Object.freeze([
+  { key: 'model', get: (sc) => sc?.model?.id ?? '' },
+  { key: 'frameworkVersion', get: (sc) => sc?.frameworkVersion ?? '' },
+  { key: 'benchmarkVersion', get: (sc) => sc?.benchmarkVersion ?? '' },
+  { key: 'env.node', get: (sc) => sc?.env?.node ?? '' },
+  { key: 'env.os', get: (sc) => sc?.env?.os ?? '' },
+]);
+
+/**
+ * The list of cohort-key fields that differ between two representative
+ * scorecards (one from each run). Pure — order matches `COHORT_KEY_FIELDS`.
+ *
+ * @param {object} baselineCard
+ * @param {object} candidateCard
+ * @returns {string[]}
+ */
+function changedCohortKeys(baselineCard, candidateCard) {
+  const changed = [];
+  for (const f of COHORT_KEY_FIELDS) {
+    if (f.get(baselineCard) !== f.get(candidateCard)) changed.push(f.key);
+  }
+  return changed;
+}
+
+/**
  * Compare the Mandrel arm's center of one metric between two runs, applying the
  * real-delta rule against the combined run-to-run noise (the larger of the two
  * runs' band spreads — the same `max(spread)` floor the single-run differential
@@ -183,6 +243,11 @@ function compareCenters({ baselineBand, candidateBand, higherIsBetter }) {
  *   cohortMatch: boolean,
  *   baselineCohorts: string[],
  *   candidateCohorts: string[],
+ *   baselineNonInferential: boolean,
+ *   candidateNonInferential: boolean,
+ *   changedCohortKeys?: string[],
+ *   confounded?: boolean,
+ *   cohortMismatchWarning?: string,
  *   scenarios: Array<{
  *     scenario: string,
  *     inBaseline: boolean,
@@ -215,6 +280,15 @@ export function compareRuns({
     candidateCohorts.length === 1 &&
     baselineCohorts[0] === candidateCohorts[0];
 
+  // A run that internally mixes benchmark versions is non-inferential: suppress
+  // its bands (null centers) so NO band forms at the grouping seam, matching
+  // groupCells's contract. This never pools a mixed-benchmark run into a shown
+  // band. (Cross-run cohort mismatch — a single-cohort baseline vs a different
+  // single-cohort candidate — is a separate concern, surfaced via cohortMatch
+  // below.)
+  const baselineNonInferential = spansMultipleBenchmarkVersions(baseline);
+  const candidateNonInferential = spansMultipleBenchmarkVersions(candidate);
+
   const baseCells = cellsByScenario(baseline);
   const candCells = cellsByScenario(candidate);
   const scenarioNames = new Set([...baseCells.keys(), ...candCells.keys()]);
@@ -225,12 +299,20 @@ export function compareRuns({
     const metrics = COMPARABLE_METRICS.map(
       ({ metric, accessor, higherIsBetter }) => {
         const mandrel = compareCenters({
-          baselineBand: bandOrNull(baseCell.mandrel, accessor, method),
-          candidateBand: bandOrNull(candCell.mandrel, accessor, method),
+          baselineBand: baselineNonInferential
+            ? null
+            : bandOrNull(baseCell.mandrel, accessor, method),
+          candidateBand: candidateNonInferential
+            ? null
+            : bandOrNull(candCell.mandrel, accessor, method),
           higherIsBetter,
         });
-        const controlBaseBand = bandOrNull(baseCell.control, accessor, method);
-        const controlCandBand = bandOrNull(candCell.control, accessor, method);
+        const controlBaseBand = baselineNonInferential
+          ? null
+          : bandOrNull(baseCell.control, accessor, method);
+        const controlCandBand = candidateNonInferential
+          ? null
+          : bandOrNull(candCell.control, accessor, method);
         return {
           metric,
           mandrel,
@@ -256,19 +338,48 @@ export function compareRuns({
     cohortMatch,
     baselineCohorts,
     candidateCohorts,
+    // Surfaced, never hidden: a run whose bands were suppressed because it
+    // internally mixes benchmark versions (D-014). A renderer can note WHY the
+    // centers are null rather than silently showing empty cells.
+    baselineNonInferential,
+    candidateNonInferential,
     scenarios,
   };
+
+  // Attribute a cross-cohort comparison to the exact key(s) that moved
+  // (D-014, Story #87). This is only well-defined when each run is internally
+  // single-cohort (a run that itself mixes cohorts is a different problem,
+  // already visible via its cohort-key list). When exactly one key changed the
+  // movement is attributable to that one variable; when more than one changed
+  // the comparison is CONFOUNDED and no single cause can be isolated.
+  if (
+    !cohortMatch &&
+    baselineCohorts.length === 1 &&
+    candidateCohorts.length === 1
+  ) {
+    const changed = changedCohortKeys(baseline[0], candidate[0]);
+    result.changedCohortKeys = changed;
+    result.confounded = changed.length > 1;
+  }
 
   if (requireSameCohort && !cohortMatch) {
     // Surface the mismatch as a first-class field; the caller / renderer must
     // show it. We do NOT throw — a deliberate cross-cohort diff (e.g. to see a
     // version bump's effect) is a legitimate operator action, but it must be
     // labelled, never silent.
+    const changed = result.changedCohortKeys;
+    const attribution = Array.isArray(changed)
+      ? changed.length === 1
+        ? ` The only cohort key that changed is \`${changed[0]}\`, so any movement below is attributable to it.`
+        : changed.length > 1
+          ? ` CONFOUNDED: more than one cohort key changed (${changed.join(', ')}), so no movement below can be attributed to a single variable.`
+          : ''
+      : '';
     result.cohortMismatchWarning =
       'Baseline and candidate are not a single shared cohort ' +
       `(baseline: ${baselineCohorts.join(' / ') || 'none'}; ` +
       `candidate: ${candidateCohorts.join(' / ') || 'none'}). ` +
-      'Cross-run deltas are not strictly like-to-like.';
+      `Cross-run deltas are not strictly like-to-like.${attribution}`;
   }
 
   return result;
@@ -306,6 +417,22 @@ export function renderComparison(
     `Baseline: **${baselineLabel}** → Candidate: **${candidateLabel}** · band = ${comparison.method}`,
     '',
   ];
+
+  if (comparison.baselineNonInferential || comparison.candidateNonInferential) {
+    const which = [
+      comparison.baselineNonInferential ? baselineLabel : null,
+      comparison.candidateNonInferential ? candidateLabel : null,
+    ]
+      .filter(Boolean)
+      .join(' and ');
+    lines.push(
+      `> ⛔ **Non-inferential run(s):** ${which} internally mix more than ` +
+        'one benchmark version, so their bands are suppressed (no centers) — ' +
+        'the harness itself changed within the run and no like-to-like band ' +
+        'can form. Re-compare within a single benchmark version.',
+      '',
+    );
+  }
 
   if (comparison.cohortMatch) {
     lines.push(`Cohort: \`${comparison.baselineCohorts[0]}\` (matched).`, '');

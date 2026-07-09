@@ -553,6 +553,9 @@ function resolveTokenSplit({
  * @param {string} args.run.timestamp   ISO-8601 run-complete time.
  * @param {{ id: string, displayName?: string }} args.run.model
  * @param {string} args.run.frameworkVersion
+ * @param {string} args.run.benchmarkVersion  This benchmark repo's own version
+ *   (D-014) — joins the cohort stamp; distinct from the pinned-dependency
+ *   `frameworkVersion`.
  * @param {{ node: string, os: string, host?: string }} args.run.env
  * @param {'hello-world'|'story-scope'|'epic-scope'} args.run.scenario
  * @param {'mandrel'|'control'} args.run.arm
@@ -628,6 +631,7 @@ export function buildScorecard({
     'timestamp',
     'model',
     'frameworkVersion',
+    'benchmarkVersion',
     'env',
     'scenario',
     'arm',
@@ -799,6 +803,7 @@ export function buildScorecard({
               : {}),
           },
     frameworkVersion: run.frameworkVersion,
+    benchmarkVersion: run.benchmarkVersion,
     env: {
       node: run.env.node,
       os: run.env.os,

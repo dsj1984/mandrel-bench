@@ -28,6 +28,8 @@
     "*.md": "markdownlint-cli2 --fix"
   },
   "dependencies": {
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "mandrel": "^1.88.0"
   },
   "devDependencies": {
@@ -36,6 +38,7 @@
     "@commitlint/config-conventional": "^21.0.2",
     "husky": "^9.1.7",
     "lint-staged": "^17.0.7",
-    "markdownlint-cli2": "^0.22.1"
+    "markdownlint-cli2": "^0.22.1",
+    "yaml": "^2.9.0"
   }
 }

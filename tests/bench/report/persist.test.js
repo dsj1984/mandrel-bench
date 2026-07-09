@@ -32,6 +32,7 @@ function card(overrides = {}) {
     timestamp: '2026-06-16T19:42:11.000Z',
     model: MODEL,
     frameworkVersion: '1.70.0',
+    benchmarkVersion: '0.5.0',
     env: ENV,
     scenario: 'hello-world',
     arm: 'mandrel',
@@ -94,10 +95,10 @@ describe('missingStampFields', () => {
 });
 
 describe('cohortKey', () => {
-  it('builds a stable model|fw|node|os key', () => {
+  it('builds a stable model|fw|benchmarkVersion|node|os key', () => {
     assert.equal(
       cohortKey(card()),
-      'claude-opus-4-8[1m]|1.70.0|v24.16.0|darwin',
+      'claude-opus-4-8[1m]|1.70.0|0.5.0|v24.16.0|darwin',
     );
   });
 
@@ -106,6 +107,15 @@ describe('cohortKey', () => {
       cohortKey(card({ frameworkVersion: '1.70.0' })),
       cohortKey(card({ frameworkVersion: '1.71.0' })),
     );
+  });
+
+  it('keys differ when only the benchmark version differs (D-014: benchmarkVersion joins the stamp, env guard retained)', () => {
+    assert.notEqual(
+      cohortKey(card({ benchmarkVersion: '0.5.0' })),
+      cohortKey(card({ benchmarkVersion: '0.6.0' })),
+    );
+    // The env guard is still present in the key.
+    assert.ok(cohortKey(card()).endsWith('|v24.16.0|darwin'));
   });
 });
 
@@ -272,7 +282,9 @@ describe('groupByCohort', () => {
     ];
     const grouped = groupByCohort(records);
     assert.equal(grouped.size, 2);
-    const v170 = grouped.get('claude-opus-4-8[1m]|1.70.0|v24.16.0|darwin');
+    const v170 = grouped.get(
+      'claude-opus-4-8[1m]|1.70.0|0.5.0|v24.16.0|darwin',
+    );
     assert.equal(v170.length, 2);
   });
 

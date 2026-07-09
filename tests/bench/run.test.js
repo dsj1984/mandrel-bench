@@ -28,10 +28,12 @@ import {
   discoverLedger,
   loadScenario,
   main,
+  parseOptionalNumericEnv,
   planningInputs,
   qualityInputs,
   REQUIRED_SANDBOX_ENV_VARS,
   RETIRED_SANDBOX_ENV_VARS,
+  readBenchmarkVersion,
   readCheckpoint,
   readFrameworkVersion,
   resolveEpicIds,
@@ -80,6 +82,49 @@ test('readFrameworkVersion: falls back to the dependency spec, stripped of ^', (
         : '{}',
   });
   assert.equal(v, '1.71.0');
+});
+
+test("readBenchmarkVersion: reads THIS repo's own package.json version, NOT the pinned mandrel dependency", () => {
+  // D-014: benchmarkVersion is THIS repo's own version. The reader must ignore
+  // node_modules/mandrel/package.json (that is readFrameworkVersion's job) and
+  // read only <sourceRoot>/package.json.
+  const v = readBenchmarkVersion('/src', {
+    readFileImpl: (p) => {
+      if (p.endsWith(path.join('node_modules', 'mandrel', 'package.json'))) {
+        // The framework-under-test dependency version — must NOT be returned.
+        return JSON.stringify({ version: '1.88.0' });
+      }
+      if (p.endsWith('package.json')) {
+        return JSON.stringify({ name: 'mandrel-bench', version: '0.5.0' });
+      }
+      throw new Error(`unexpected read: ${p}`);
+    },
+  });
+  assert.equal(v, '0.5.0');
+});
+
+test('readBenchmarkVersion: falls back to "unknown" when the package.json is unreadable', () => {
+  const v = readBenchmarkVersion('/src', {
+    readFileImpl: () => {
+      throw new Error('ENOENT');
+    },
+  });
+  assert.equal(v, 'unknown');
+});
+
+test('readBenchmarkVersion: distinct from readFrameworkVersion — the two stamp different versions', () => {
+  // The pinned mandrel dep (framework under test) vs THIS repo's own version
+  // (the benchmark doing the testing) must be sourced independently.
+  const deps = {
+    existsImpl: (p) =>
+      p.endsWith(path.join('node_modules', 'mandrel', 'package.json')),
+    readFileImpl: (p) =>
+      p.endsWith(path.join('node_modules', 'mandrel', 'package.json'))
+        ? JSON.stringify({ version: '1.88.0' })
+        : JSON.stringify({ version: '0.5.0' }),
+  };
+  assert.equal(readFrameworkVersion('/src', deps), '1.88.0');
+  assert.equal(readBenchmarkVersion('/src', deps), '0.5.0');
 });
 
 test('sanitizeRunId: conforms to the schema pattern', () => {
@@ -161,11 +206,15 @@ test('buildRunIdentity: produces a schema-shaped run stamp', () => {
     timestamp: '2026-06-16T19:42:11.000Z',
     modelId: 'claude-opus-4-8',
     frameworkVersion: '1.70.0',
+    benchmarkVersion: '0.5.0',
     env: { node: 'v24.0.0', os: 'darwin' },
   });
   assert.match(run.runId, /^hello-world-mandrel-.*-r1$/);
   assert.equal(run.model.id, 'claude-opus-4-8');
   assert.equal(run.scenario, 'hello-world');
+  // benchmarkVersion (D-014) joins the stamp alongside frameworkVersion.
+  assert.equal(run.frameworkVersion, '1.70.0');
+  assert.equal(run.benchmarkVersion, '0.5.0');
 });
 
 test('discoverLedger: archive-first, prefers a completed ledger', () => {
@@ -518,6 +567,7 @@ function benchDeps(record) {
     // identity + fs seams
     nowFn: () => '2026-06-16T20:00:00.000Z',
     frameworkVersion: '1.70.0',
+    benchmarkVersion: '0.5.0',
     env: { node: 'v24.16.0', os: 'darwin', host: 'test-host' },
     cpFn: () => {},
     mkdirFn: () => {},
@@ -625,6 +675,9 @@ test('runFirstBenchmark: emits a schema-valid scorecard per arm and renders a re
       `scorecard invalid: ${JSON.stringify(validateScorecard.errors)}`,
     );
     assert.equal(sc.frameworkVersion, '1.70.0');
+    // benchmarkVersion (D-014) is stamped onto every scorecard, threaded from
+    // runOneRun through the collect pipeline, distinct from frameworkVersion.
+    assert.equal(sc.benchmarkVersion, '0.5.0');
     assert.equal(sc.scenario, 'hello-world');
   }
 
@@ -1290,6 +1343,22 @@ test('resolveEpicIds: malformed JSON map is ignored, non-numeric ids dropped', (
   assert.deepEqual(ids, { 'story-scope': 100 });
 });
 
+test('parseOptionalNumericEnv: a blank/whitespace BENCH_* value is undefined, NOT the poison Number("")===0', () => {
+  // The CI money-safety regression: workflow_dispatch passes a blank input
+  // through as an empty string. Number('') === 0 would zero every scenario's
+  // targetN and run nothing on the default (blank target_n) dispatch.
+  assert.equal(parseOptionalNumericEnv(''), undefined);
+  assert.equal(parseOptionalNumericEnv('   '), undefined);
+  assert.equal(parseOptionalNumericEnv(undefined), undefined);
+  assert.equal(parseOptionalNumericEnv(null), undefined);
+  assert.equal(parseOptionalNumericEnv('not-a-number'), undefined);
+  // A deliberate explicit value (including an explicit 0) is preserved.
+  assert.equal(parseOptionalNumericEnv('0'), 0);
+  assert.equal(parseOptionalNumericEnv('8'), 8);
+  assert.equal(parseOptionalNumericEnv(' 4 '), 4);
+  assert.equal(parseOptionalNumericEnv('12.5'), 12.5);
+});
+
 test('CHECKPOINT_FILENAME is the default checkpoint name beside the results root', () => {
   assert.equal(CHECKPOINT_FILENAME, '.batch-checkpoint.ndjson');
 });
@@ -1525,6 +1594,7 @@ test('runFirstBenchmark: a resumed batch renders the report over the FULL store,
     timestamp: '2026-06-16T19:00:00.000Z',
     model: { id: 'claude-opus-4-8' },
     frameworkVersion: '1.70.0',
+    benchmarkVersion: '0.5.0',
     env: { node: 'v24.16.0', os: 'darwin', host: 'test-host' },
     scenario: 'hello-world',
     arm: 'control',

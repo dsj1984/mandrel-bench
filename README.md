@@ -125,6 +125,30 @@ mandrel-bench/
 
 ---
 
+## Published dashboard
+
+The longitudinal dashboard is published to **GitHub Pages** so it is publicly
+readable without cloning the repo (decision D-021):
+
+- **Live URL:** <https://dsj1984.github.io/mandrel-bench/>
+
+Publishing is automated by
+[`.github/workflows/publish-pages.yml`](.github/workflows/publish-pages.yml).
+The workflow fires on a push to `main` that touches the committed dashboard
+(`results/results.html`) — i.e. when a results PR merges — and deploys via the
+standard `actions/deploy-pages` flow. It stages and uploads **only**
+`results/results.html` (served as the site's `index.html`); the per-cohort
+`.raw/` provenance tree (lifecycle ledgers, cost envelopes, per-Story signals)
+is **never** copied to the public site.
+
+**One-time repo enablement.** GitHub Pages must be switched to the Actions
+source once, by a repo admin: **Settings → Pages → Build and deployment →
+Source → "GitHub Actions"**. No branch or `/docs` folder selection is needed —
+the workflow owns the artifact. After that, every results-PR merge republishes
+the dashboard automatically.
+
+---
+
 ## Status
 
 **Wired and exercised end to end.** The full component set (metrics model +
@@ -241,6 +265,53 @@ safe to **archive** (or delete) it once you've confirmed a local run succeeds
 against the ephemeral per-cell lifecycle above — nothing in this repo
 references it anymore.
 
+### Benchmark CI (`workflow_dispatch`)
+
+The full cohort can also run in CI, unattended, from a single manual dispatch:
+**Actions → Benchmark → Run workflow**
+([`.github/workflows/benchmark.yml`](.github/workflows/benchmark.yml)). One
+invocation runs the whole pipeline — plan → canary → per-cell matrix →
+aggregate — and lands the results as a reviewable pull request. A complete
+cohort is a near-zero-cost no-op: the plan job spends only on the deficit.
+
+**Topology.** `plan` runs the top-up planner
+([`bench/driver/topup-planner.js`](bench/driver/topup-planner.js)) to compute
+the per-cell deficit and its cost allocation; `canary` runs the cheapest rung
+(`hello-world`) end-to-end **first** as a smoke test — a canary failure aborts
+the invocation before any expensive cell runs; the per-cell `matrix` fans out
+one job per deficit cell (max 6 in parallel), each exporting its
+`BENCH_MAX_COST_USD` share so the in-loop stop enforces the per-cell ceiling
+and uploading its scorecards + `.raw` provenance as artifacts; `aggregate`
+downloads every cell's artifacts, merges them into `results/` (append-only
+NDJSON) and renders the cohort report + `results.html` via the standalone
+[`bench/report/aggregate-cli.js`](bench/report/aggregate-cli.js) — with **no**
+run — then **opens a pull request**. No job pushes to `main` directly.
+
+**The results PR replaces the interactive STOP gates.** The local
+[`/benchmark`](#running) flow pauses for an operator to review the scorecard
+before committing; in CI there is no interactive pause — the aggregate job's
+pull request **is** the review gate. Inspect the rendered scorecard and the
+delta-vs-noise-band in the PR, then merge to publish (which also fires
+`publish-pages`).
+
+**Inputs** (all optional; blanks fall back to the pinned/declared defaults):
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `mandrel_version` | pinned dependency | Framework version under test for this cohort. |
+| `model` | bench default | Model id for the cohort stamp (e.g. `claude-opus-4-8`). |
+| `scenarios` | the 3-rung corpus | Comma-separated scenario ids to benchmark. |
+| `target_n` | each scenario's `targetN` | Uniform per-scenario run-count override. |
+| `max_cost_usd` | `150` | USD ceiling allocated across the deficit cells. |
+| `dry_run` | `false` | Plan only — print the deficit plan and skip every paid cell. |
+
+**Required Action secrets** (Settings → Secrets and variables → Actions):
+
+| Secret | Meaning |
+| --- | --- |
+| `ANTHROPIC_API_KEY` | the model credential the benchmarked sessions call with. |
+| `BENCH_GITHUB_TOKEN` | token with repo create/delete + contents + issues + pull-requests scopes — used both for the ephemeral per-cell sandboxes and to open the results PR. |
+
 ---
 
 ## See also
@@ -250,6 +321,8 @@ references it anymore.
   model, components, data flow, security).
 - [`docs/decisions.md`](docs/decisions.md) — the decision log and rationale.
 - [`results/`](results/) — the scorecard store and value-add reports.
+- [Published dashboard](https://dsj1984.github.io/mandrel-bench/) — the
+  longitudinal scorecard dashboard on GitHub Pages.
 
 ## Development
 
@@ -265,6 +338,12 @@ references it anymore.
 - **Releases:** [release-please](https://github.com/googleapis/release-please)
   versions + changelogs on `main` (tags `vX.Y.Z`); **not** published to npm.
 - **CI:** GitHub Actions — `lint` + `test` on every PR to `main`.
+- **Benchmark CI:** GitHub Actions — `benchmark` runs the full cohort pipeline
+  from a manual `workflow_dispatch` and opens a results PR (see
+  [Benchmark CI](#benchmark-ci-workflow_dispatch)).
+- **Pages:** GitHub Actions — `publish-pages` deploys `results/results.html` to
+  GitHub Pages on every results-PR merge to `main` (see
+  [Published dashboard](#published-dashboard)).
 
 ## License
 

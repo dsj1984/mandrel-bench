@@ -43,6 +43,7 @@ const REQUIRED_STAMP = Object.freeze([
   { key: 'runId', get: (sc) => sc?.runId },
   { key: 'model.id', get: (sc) => sc?.model?.id },
   { key: 'frameworkVersion', get: (sc) => sc?.frameworkVersion },
+  { key: 'benchmarkVersion', get: (sc) => sc?.benchmarkVersion },
   { key: 'env.node', get: (sc) => sc?.env?.node },
   { key: 'env.os', get: (sc) => sc?.env?.os },
   { key: 'scenario', get: (sc) => sc?.scenario },
@@ -73,15 +74,21 @@ export function missingStampFields(scorecard) {
  * comparison groups by so it only ever compares like-to-like. Stable, so two
  * runs in the same cohort produce the identical key string.
  *
+ * Per D-014 (docs/target-architecture.md § 3.1) `benchmarkVersion` JOINS the
+ * existing `(model, frameworkVersion, env)` stamp — it does not replace the env
+ * guard — so a benchmark-repo change (scoring formulas, scenario specs,
+ * oracles) can never silently confound a framework or model comparison.
+ *
  * @param {object} scorecard
- * @returns {string}  `<model.id>|<frameworkVersion>|<env.node>|<env.os>`
+ * @returns {string}  `<model.id>|<frameworkVersion>|<benchmarkVersion>|<env.node>|<env.os>`
  */
 export function cohortKey(scorecard) {
   const model = scorecard?.model?.id ?? '';
   const fw = scorecard?.frameworkVersion ?? '';
+  const bench = scorecard?.benchmarkVersion ?? '';
   const node = scorecard?.env?.node ?? '';
   const os = scorecard?.env?.os ?? '';
-  return `${model}|${fw}|${node}|${os}`;
+  return `${model}|${fw}|${bench}|${node}|${os}`;
 }
 
 /**

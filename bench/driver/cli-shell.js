@@ -42,3 +42,20 @@ export function runIfMain(moduleUrl, mainFn) {
     mainFn();
   }
 }
+
+/**
+ * Sanitize an arbitrary string into the scorecard `runId` / report-stamp
+ * pattern (`^[A-Za-z0-9._-]+$`): every run of disallowed characters collapses
+ * to a single `-`, and leading/trailing dashes are trimmed. Shared by
+ * `bench/run.js` (`sanitizeRunId`) and `bench/report/aggregate-cli.js`
+ * (`sanitizeStamp`), which used to define this byte-identical 3-liner apiece.
+ * Pure.
+ *
+ * @param {string} s
+ * @returns {string}
+ */
+export function sanitizeIdent(s) {
+  return String(s)
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}

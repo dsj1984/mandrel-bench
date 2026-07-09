@@ -19,8 +19,9 @@
 //      direction is better, what "good" looks like) and a delta-vs-control
 //      badge for the most recent cohort.
 //   2. A sortable + filterable INDEX TABLE of every run (timestamp, scenario,
-//      arm, model, frameworkVersion, the five dimension headlines, env) — sort
-//      by any header, filter by scenario / arm / model / version + free text,
+//      arm, model, frameworkVersion, benchmarkVersion, the dimension headlines,
+//      env) — sort by any header, filter by scenario / arm / model / version +
+//      free text,
 //      with a "how to read" legend that states each dimension's good/bad
 //      direction.
 //   3. An in-page MODAL opened by clicking a row, showing the full per-dimension
@@ -166,6 +167,8 @@ export function toRow(sc) {
     model: typeof sc?.model?.id === 'string' ? sc.model.id : '',
     frameworkVersion:
       typeof sc?.frameworkVersion === 'string' ? sc.frameworkVersion : '',
+    benchmarkVersion:
+      typeof sc?.benchmarkVersion === 'string' ? sc.benchmarkVersion : '',
     env: {
       node: typeof sc?.env?.node === 'string' ? sc.env.node : '',
       os: typeof sc?.env?.os === 'string' ? sc.env.os : '',
@@ -209,6 +212,47 @@ export function toRow(sc) {
  * @param {Array<object>} scorecards
  * @returns {{ rows: object[], metrics: Array<object>, guardrail: Array<object>, trapAxis: Array<{ scenario: string, rows: Array<object> }> }}
  */
+/**
+ * The cohort discriminant (D-014): the (model, frameworkVersion,
+ * benchmarkVersion) triple, joined with a NUL separator that cannot occur in
+ * any field so distinct triples never collide.
+ *
+ * @param {object} sc
+ * @returns {string}
+ */
+function cohortTripleKey(sc) {
+  return [
+    sc?.model?.id ?? '',
+    sc?.frameworkVersion ?? '',
+    sc?.benchmarkVersion ?? '',
+  ].join('\u0000');
+}
+
+/**
+ * The subset of a corpus belonging to the MOST RECENT cohort — the cohort of
+ * the latest-timestamp record (ISO-8601 timestamps sort lexically). This mirrors
+ * how the client delta badge picks the most recent cohort, and is what the
+ * server-rendered guardrail + trap-axis panels scope to so a second recorded
+ * benchmarkVersion never blanks them. An empty corpus yields an empty subset.
+ * Pure.
+ *
+ * @param {Array<object>} scorecards
+ * @returns {Array<object>}
+ */
+function mostRecentCohortScorecards(scorecards) {
+  if (scorecards.length === 0) return [];
+  let latestKey = null;
+  let latestTs = null;
+  for (const sc of scorecards) {
+    const ts = typeof sc?.timestamp === 'string' ? sc.timestamp : '';
+    if (latestTs === null || ts > latestTs) {
+      latestTs = ts;
+      latestKey = cohortTripleKey(sc);
+    }
+  }
+  return scorecards.filter((sc) => cohortTripleKey(sc) === latestKey);
+}
+
 export function buildDashboardModel(scorecards) {
   if (!Array.isArray(scorecards)) {
     throw new TypeError('buildDashboardModel: scorecards must be an array');
@@ -230,7 +274,15 @@ export function buildDashboardModel(scorecards) {
       ...(deltaExempt ? { deltaExempt: true } : {}),
     }),
   );
-  const cells = groupCells(scorecards);
+  // Scope the server-rendered guardrail + trap-axis panels to the MOST RECENT
+  // cohort (the same one the client delta badge picks) before grouping. Feeding
+  // the whole multi-cohort corpus to groupCells would mark every cell
+  // non-inferential — and blank both panels permanently — the moment a second
+  // benchmarkVersion is recorded, because groupCells suppresses any cell that
+  // mixes benchmark versions. Scoping to one cohort keeps measurement-validity
+  // intact (records never pool across benchmarkVersion within a cell) while the
+  // panels keep rendering the current cohort.
+  const cells = groupCells(mostRecentCohortScorecards(scorecards));
   const guardrail = autonomyGuardrailRows(cells);
   const trapAxis = cells
     .map((cell) => ({
@@ -412,14 +464,21 @@ const SCRIPT = `
   }
 
   // ---- cohorts (the x-axis) --------------------------------------------
-  // A cohort is one (model, frameworkVersion) cell. ROWS arrive
-  // timestamp-sorted from the server, so first-seen order is chronological.
+  // A cohort is one (model, frameworkVersion, benchmarkVersion) cell (D-014):
+  // the benchmark version joins the key so records from different benchmark
+  // versions never collapse into one trend point. ROWS arrive timestamp-sorted
+  // from the server, so first-seen order is chronological.
   var COHORTS = (function () {
     var seen = {}; var list = [];
     ROWS.forEach(function (r) {
-      var id = r.model + " @ " + r.frameworkVersion;
+      var id = r.model + " @ " + r.frameworkVersion + " · bench " + r.benchmarkVersion;
       if (!seen[id]) {
-        seen[id] = { id: id, model: r.model, version: r.frameworkVersion };
+        seen[id] = {
+          id: id,
+          model: r.model,
+          version: r.frameworkVersion,
+          benchmarkVersion: r.benchmarkVersion
+        };
         list.push(seen[id]);
       }
     });
@@ -434,6 +493,7 @@ const SCRIPT = `
     { key: "arm", label: "Arm", type: "str" },
     { key: "model", label: "Model", type: "str" },
     { key: "frameworkVersion", label: "Version", type: "str" },
+    { key: "benchmarkVersion", label: "Bench", type: "str", hint: "Benchmark harness version (D-014) — joins the cohort key; records across different benchmark versions never pool" },
     { key: "quality", label: "Quality", type: "num", hint: "Value side · 0–1 · higher is better (1.0 = all assertions pass + judge agrees)" },
     { key: "planningFidelity", label: "Planning", type: "num", hint: "Value side · 0–1 · higher is better · null for control (it authors no plan)" },
     { key: "autonomy", label: "Autonomy", type: "num", hint: "Value side · 0–1 · higher is better (1.0 = fully unattended; <1 = a human stepped in)" },
@@ -476,7 +536,7 @@ const SCRIPT = `
       if (f.version && r.frameworkVersion !== f.version) return false;
       if (f.text) {
         var hay = (r.runId + " " + r.scenario + " " + r.arm + " " + r.model +
-          " " + r.frameworkVersion + " " + envStr(r)).toLowerCase();
+          " " + r.frameworkVersion + " " + r.benchmarkVersion + " " + envStr(r)).toLowerCase();
         if (hay.indexOf(f.text) === -1) return false;
       }
       return true;
@@ -577,7 +637,7 @@ const SCRIPT = `
     body.querySelector("h3").textContent = r.runId;
     body.querySelector(".sub").textContent =
       r.scenario + " · " + r.arm + " · " + r.model + " @ " + r.frameworkVersion +
-      " · " + r.timestamp;
+      " · bench " + r.benchmarkVersion + " · " + r.timestamp;
     var h4s = body.querySelectorAll(".dim-group h4");
     var glosses = body.querySelectorAll(".dim-group .gloss");
     for (var i = 0; i < h4s.length; i++) {
@@ -616,7 +676,9 @@ const SCRIPT = `
   }
   function cohortValues(cohort, arm) {
     return ROWS.filter(function (r) {
-      return r.arm === arm && r.model === cohort.model && r.frameworkVersion === cohort.version;
+      return r.arm === arm && r.model === cohort.model &&
+        r.frameworkVersion === cohort.version &&
+        r.benchmarkVersion === cohort.benchmarkVersion;
     }).map(function (r) { return r[selectedMetric]; });
   }
 
@@ -673,14 +735,19 @@ const SCRIPT = `
       var cy = (padT + plotH / 2).toFixed(1);
       svg += "<text x='14' y='" + cy + "' fill='#9aa3b2' font-size='10' text-anchor='middle' transform='rotate(-90 14 " + cy + ")'>" + dirTxt + "</text>";
     }
-    // x ticks: version (+ model line when more than one model is in view)
+    // x ticks: framework version, plus a benchmark-version sub-line when more
+    // than one benchmark version is in view (so distinct-bench cohorts sharing
+    // a framework version read apart), plus a model sub-line when multi-model.
     var multiModel = uniq(cohorts.map(function (c) { return c.model; })).length > 1;
+    var multiBench = uniq(cohorts.map(function (c) { return c.benchmarkVersion; })).length > 1;
     data.forEach(function (d, i) {
       var px = x(i).toFixed(1);
-      svg += "<text x='" + px + "' y='" + (padT + plotH + 18) + "' fill='#9aa3b2' font-size='10' text-anchor='middle'>" + d.cohort.version + "</text>";
-      if (multiModel) svg += "<text x='" + px + "' y='" + (padT + plotH + 32) + "' fill='#6b7280' font-size='9' text-anchor='middle'>" + d.cohort.model + "</text>";
+      var yb = padT + plotH + 18;
+      svg += "<text x='" + px + "' y='" + yb + "' fill='#9aa3b2' font-size='10' text-anchor='middle'>" + d.cohort.version + "</text>";
+      if (multiBench) { yb += 12; svg += "<text x='" + px + "' y='" + yb + "' fill='#6b7280' font-size='9' text-anchor='middle'>bench " + d.cohort.benchmarkVersion + "</text>"; }
+      if (multiModel) { yb += 12; svg += "<text x='" + px + "' y='" + yb + "' fill='#6b7280' font-size='9' text-anchor='middle'>" + d.cohort.model + "</text>"; }
     });
-    svg += "<text x='" + (padL + plotW / 2).toFixed(1) + "' y='" + (H - 6) + "' fill='#6b7280' font-size='10' text-anchor='middle'>framework version" + (multiModel ? " / model" : "") + "</text>";
+    svg += "<text x='" + (padL + plotW / 2).toFixed(1) + "' y='" + (H - 6) + "' fill='#6b7280' font-size='10' text-anchor='middle'>framework version" + (multiBench ? " / benchmark version" : "") + (multiModel ? " / model" : "") + "</text>";
 
     // series: per-arm segmented line over medians (break when model changes) +
     // IQR whisker + median dot per cohort.
