@@ -307,6 +307,61 @@ export function planTopup(
   };
 }
 
+/**
+ * Reduce a top-up plan to the CI fan-out matrix (`{ include: [...] }`),
+ * allocating the invocation's `maxCostUsd` ceiling across the deficit cells
+ * PROPORTIONALLY to each cell's estimated cost rather than a flat
+ * `maxCostUsd / cells.length` split. The flat split starves an expensive
+ * epic-scope cell (which needs a large per-cell ceiling for its in-loop stop)
+ * while over-funding a cheap hello-world cell; a weighted split gives each cell
+ * a ceiling scaled to what it is actually expected to spend. Each cell's share
+ * is floored at `minCellCostUsd` so a zero-estimate cell still carries a usable
+ * (non-zero) ceiling. When no cell carries a positive estimate the ceiling is
+ * split evenly. PURE — no I/O, no clock.
+ *
+ * @param {ReturnType<typeof planTopup>} plan
+ * @param {number|null} [maxCostUsd]  Ceiling to split; falls back to
+ *   `plan.maxCostUsd` when null/non-finite.
+ * @param {object} [opts]
+ * @param {number} [opts.minCellCostUsd=0.01]  Per-cell allocation floor (USD).
+ * @returns {{ include: Array<{ scenario: string, arm: string, deficit: number, allocatedCostUsd: number }> }}
+ */
+export function allocateMatrix(
+  plan,
+  maxCostUsd = null,
+  { minCellCostUsd = 0.01 } = {},
+) {
+  const cells = Array.isArray(plan?.deficitCells) ? plan.deficitCells : [];
+  const requested = Number(maxCostUsd);
+  const ceiling =
+    maxCostUsd != null && Number.isFinite(requested)
+      ? requested
+      : Number(plan?.maxCostUsd) || 0;
+
+  const totalWeight = cells.reduce(
+    (a, c) => a + (Number(c.estimatedCostUsd) || 0),
+    0,
+  );
+
+  const include = cells.map((c) => {
+    const weight = Number(c.estimatedCostUsd) || 0;
+    const share =
+      totalWeight > 0
+        ? ceiling * (weight / totalWeight)
+        : cells.length > 0
+          ? ceiling / cells.length
+          : 0;
+    return {
+      scenario: c.scenario,
+      arm: c.arm,
+      deficit: c.deficit,
+      allocatedCostUsd: roundUsd(Math.max(minCellCostUsd, share)),
+    };
+  });
+
+  return { include };
+}
+
 // ---------------------------------------------------------------------------
 // CLI ports + entry (each real effect injectable; no run.js coupling)
 // ---------------------------------------------------------------------------

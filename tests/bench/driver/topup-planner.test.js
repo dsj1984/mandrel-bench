@@ -28,6 +28,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
+  allocateMatrix,
   DEFAULT_ARMS,
   defaultLoadScenarios,
   main,
@@ -466,4 +467,129 @@ test('the planner source imports no run-loop code (no coupling to bench/run.js)'
   );
   assert.doesNotMatch(src, /from ['"][.]{2}\/run\.js['"]/);
   assert.doesNotMatch(src, /runFirstBenchmark|runOneRun/);
+});
+
+// ---------------------------------------------------------------------------
+// allocateMatrix — weighted per-cell cost allocation (M5)
+// ---------------------------------------------------------------------------
+
+test('allocateMatrix: splits the ceiling PROPORTIONALLY to each cell estimatedCostUsd, not flat', () => {
+  const plan = {
+    maxCostUsd: 100,
+    deficitCells: [
+      {
+        scenario: 'hello-world',
+        arm: 'mandrel',
+        deficit: 1,
+        estimatedCostUsd: 1,
+      },
+      {
+        scenario: 'epic-scope',
+        arm: 'mandrel',
+        deficit: 3,
+        estimatedCostUsd: 9,
+      },
+    ],
+  };
+  const { include } = allocateMatrix(plan);
+  // Total weight = 10; cheap cell gets 100 * 1/10 = 10, expensive gets 90.
+  assert.equal(include[0].allocatedCostUsd, 10);
+  assert.equal(include[1].allocatedCostUsd, 90);
+  // The whole ceiling is distributed, and the expensive cell is NOT starved by
+  // a flat 50/50 split.
+  assert.equal(include[0].allocatedCostUsd + include[1].allocatedCostUsd, 100);
+  assert.notEqual(include[0].allocatedCostUsd, include[1].allocatedCostUsd);
+});
+
+test('allocateMatrix: carries scenario, arm and deficit through unchanged', () => {
+  const plan = {
+    maxCostUsd: 50,
+    deficitCells: [
+      {
+        scenario: 'story-scope',
+        arm: 'control',
+        deficit: 2,
+        estimatedCostUsd: 5,
+      },
+    ],
+  };
+  const { include } = allocateMatrix(plan);
+  assert.equal(include.length, 1);
+  assert.deepEqual(
+    {
+      scenario: include[0].scenario,
+      arm: include[0].arm,
+      deficit: include[0].deficit,
+    },
+    { scenario: 'story-scope', arm: 'control', deficit: 2 },
+  );
+});
+
+test('allocateMatrix: an explicit maxCostUsd arg overrides plan.maxCostUsd', () => {
+  const plan = {
+    maxCostUsd: 100,
+    deficitCells: [
+      {
+        scenario: 'hello-world',
+        arm: 'mandrel',
+        deficit: 1,
+        estimatedCostUsd: 2,
+      },
+      {
+        scenario: 'epic-scope',
+        arm: 'mandrel',
+        deficit: 1,
+        estimatedCostUsd: 2,
+      },
+    ],
+  };
+  const { include } = allocateMatrix(plan, 20);
+  // Even weights ⇒ even split of the overriding ceiling (20), not 100.
+  assert.equal(include[0].allocatedCostUsd, 10);
+  assert.equal(include[1].allocatedCostUsd, 10);
+});
+
+test('allocateMatrix: falls back to an even split when no cell has a positive estimate', () => {
+  const plan = {
+    maxCostUsd: 30,
+    deficitCells: [
+      { scenario: 'a', arm: 'mandrel', deficit: 1, estimatedCostUsd: 0 },
+      { scenario: 'b', arm: 'mandrel', deficit: 1, estimatedCostUsd: 0 },
+      { scenario: 'c', arm: 'mandrel', deficit: 1, estimatedCostUsd: 0 },
+    ],
+  };
+  const { include } = allocateMatrix(plan);
+  for (const cell of include) assert.equal(cell.allocatedCostUsd, 10);
+});
+
+test('allocateMatrix: floors a tiny share at the per-cell minimum (never zero)', () => {
+  const plan = {
+    maxCostUsd: 100,
+    deficitCells: [
+      {
+        scenario: 'tiny',
+        arm: 'mandrel',
+        deficit: 1,
+        estimatedCostUsd: 0.0001,
+      },
+      {
+        scenario: 'huge',
+        arm: 'mandrel',
+        deficit: 1,
+        estimatedCostUsd: 1000000,
+      },
+    ],
+  };
+  const { include } = allocateMatrix(plan);
+  assert.ok(
+    include[0].allocatedCostUsd >= 0.01,
+    'the near-zero-weight cell is floored, never allocated 0',
+  );
+});
+
+test('allocateMatrix: an empty deficit list yields an empty include', () => {
+  assert.deepEqual(allocateMatrix({ maxCostUsd: 100, deficitCells: [] }), {
+    include: [],
+  });
+  assert.deepEqual(allocateMatrix({}), { include: [] });
 });
