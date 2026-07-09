@@ -51,6 +51,7 @@ import {
   overheadFloor,
 } from '../score/differential.js';
 import { computeFingerprint } from './fingerprint.js';
+import { joinMarkdownBlocks } from './markdown.js';
 
 /** The finding-envelope schema version (bumped on a breaking envelope change). */
 export const FINDING_ENVELOPE_SCHEMA_VERSION = 1;
@@ -752,8 +753,5 @@ export function renderFindingsMarkdown(envelope) {
     lines.push('');
   }
 
-  return `${lines
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trimEnd()}\n`;
+  return joinMarkdownBlocks(lines);
 }

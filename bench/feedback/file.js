@@ -45,6 +45,7 @@ import { readFileSync } from 'node:fs';
 import { defaultCliLogger, runIfMain } from '../driver/cli-shell.js';
 import { sanitizeFeedbackTokenEnv } from '../driver/token-env.js';
 import { cohortTripleKey } from './derive.js';
+import { joinMarkdownBlocks } from './markdown.js';
 
 /** The repo the feedback loop files against. */
 export const DEFAULT_FEEDBACK_REPO = 'dsj1984/mandrel';
@@ -209,10 +210,7 @@ export function renderFindingBody(finding, envelope) {
     '',
   );
 
-  return `${lines
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trimEnd()}\n`;
+  return joinMarkdownBlocks(lines);
 }
 
 /**
@@ -248,10 +246,7 @@ export function renderCohortComment(finding, envelope) {
   }
   lines.push(`Noise-band method: \`${envelope?.method ?? 'iqr'}\`.`, '');
 
-  return `${lines
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trimEnd()}\n`;
+  return joinMarkdownBlocks(lines);
 }
 
 /**
@@ -353,6 +348,20 @@ export function threadHasMarker(thread, marker) {
 }
 
 /**
+ * Parse the issue number from a `gh issue create` result — it prints the new
+ * issue's URL (e.g. `https://github.com/dsj1984/mandrel/issues/123`). Returns
+ * the trailing number, or null when the output carries no `/issues/<n>` URL.
+ * Pure.
+ *
+ * @param {unknown} output  `gh issue create` stdout.
+ * @returns {number|null}
+ */
+export function parseCreatedIssueNumber(output) {
+  const match = /\/issues\/(\d+)\b/.exec(String(output ?? ''));
+  return match ? Number(match[1]) : null;
+}
+
+/**
  * File one finding: comment-on-hit, create-on-miss, no-op when this cohort is
  * already recorded on the hit thread. Returns the action taken. Throws only on a
  * scope error (surfaced to the caller, which degrades gracefully).
@@ -401,7 +410,10 @@ function fileOneFinding(finding, envelope, { gh, repo, openIssues, logger }) {
       action: 'created',
       fingerprint: finding.fingerprint,
       cohort: cohortKey,
-      issue: hit?.number ?? null,
+      // `hit` is falsy on this create-miss branch, so the old `hit?.number`
+      // was always null (dead) — report the NUMBER of the issue we just created
+      // by parsing the `gh issue create` result URL (M1).
+      issue: parseCreatedIssueNumber(created),
     };
   }
 

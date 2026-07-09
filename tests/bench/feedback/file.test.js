@@ -22,6 +22,7 @@ import {
   hasFeedbackToken,
   isScopeError,
   main,
+  parseCreatedIssueNumber,
   parseFileCliArgs,
   renderCohortComment,
   renderFindingBody,
@@ -189,6 +190,22 @@ describe('fileFindings — create-on-miss', () => {
     assert.ok(body.includes('noiseFloor'));
     assert.ok(body.includes('report-x.md'));
     assert.equal(result.actions[0].action, 'created');
+    // M1: a create reports the NUMBER of the issue it just created (parsed from
+    // the `gh issue create` URL), not the dead always-null `hit?.number`.
+    assert.equal(result.actions[0].issue, 123);
+  });
+
+  it('parseCreatedIssueNumber extracts the issue number from a create URL', () => {
+    assert.equal(
+      parseCreatedIssueNumber('https://github.com/dsj1984/mandrel/issues/123'),
+      123,
+    );
+    assert.equal(
+      parseCreatedIssueNumber('https://github.com/dsj1984/mandrel/issues/7\n'),
+      7,
+    );
+    assert.equal(parseCreatedIssueNumber('no url here'), null);
+    assert.equal(parseCreatedIssueNumber(undefined), null);
   });
 });
 
