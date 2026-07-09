@@ -115,6 +115,31 @@ function cohortKeysOf(run) {
 }
 
 /**
+ * Whether a single run internally spans MORE THAN ONE `benchmarkVersion`. Such
+ * a run is non-inferential: the benchmark harness itself changed between its
+ * records, so pooling them into one band would confound a benchmark change with
+ * a framework/model signal. This mirrors `groupCells`'s "no band at the
+ * grouping seam" contract (bench/report/render.js) — a mixed-benchmarkVersion
+ * run gets its bands suppressed (null centers) rather than a flagged-but-shown
+ * pooled band. Pure.
+ *
+ * @param {Array<object>} run
+ * @returns {boolean}
+ */
+function spansMultipleBenchmarkVersions(run) {
+  const versions = new Set();
+  for (const sc of run) {
+    if (
+      typeof sc?.benchmarkVersion === 'string' &&
+      sc.benchmarkVersion.length > 0
+    ) {
+      versions.add(sc.benchmarkVersion);
+    }
+  }
+  return versions.size > 1;
+}
+
+/**
  * The named component fields of the cohort key, in the same order `cohortKey`
  * concatenates them (model | frameworkVersion | benchmarkVersion | env.node |
  * env.os). Used to attribute a cross-cohort comparison to the exact key(s) that
@@ -218,6 +243,8 @@ function compareCenters({ baselineBand, candidateBand, higherIsBetter }) {
  *   cohortMatch: boolean,
  *   baselineCohorts: string[],
  *   candidateCohorts: string[],
+ *   baselineNonInferential: boolean,
+ *   candidateNonInferential: boolean,
  *   changedCohortKeys?: string[],
  *   confounded?: boolean,
  *   cohortMismatchWarning?: string,
@@ -253,6 +280,15 @@ export function compareRuns({
     candidateCohorts.length === 1 &&
     baselineCohorts[0] === candidateCohorts[0];
 
+  // A run that internally mixes benchmark versions is non-inferential: suppress
+  // its bands (null centers) so NO band forms at the grouping seam, matching
+  // groupCells's contract. This never pools a mixed-benchmark run into a shown
+  // band. (Cross-run cohort mismatch — a single-cohort baseline vs a different
+  // single-cohort candidate — is a separate concern, surfaced via cohortMatch
+  // below.)
+  const baselineNonInferential = spansMultipleBenchmarkVersions(baseline);
+  const candidateNonInferential = spansMultipleBenchmarkVersions(candidate);
+
   const baseCells = cellsByScenario(baseline);
   const candCells = cellsByScenario(candidate);
   const scenarioNames = new Set([...baseCells.keys(), ...candCells.keys()]);
@@ -263,12 +299,20 @@ export function compareRuns({
     const metrics = COMPARABLE_METRICS.map(
       ({ metric, accessor, higherIsBetter }) => {
         const mandrel = compareCenters({
-          baselineBand: bandOrNull(baseCell.mandrel, accessor, method),
-          candidateBand: bandOrNull(candCell.mandrel, accessor, method),
+          baselineBand: baselineNonInferential
+            ? null
+            : bandOrNull(baseCell.mandrel, accessor, method),
+          candidateBand: candidateNonInferential
+            ? null
+            : bandOrNull(candCell.mandrel, accessor, method),
           higherIsBetter,
         });
-        const controlBaseBand = bandOrNull(baseCell.control, accessor, method);
-        const controlCandBand = bandOrNull(candCell.control, accessor, method);
+        const controlBaseBand = baselineNonInferential
+          ? null
+          : bandOrNull(baseCell.control, accessor, method);
+        const controlCandBand = candidateNonInferential
+          ? null
+          : bandOrNull(candCell.control, accessor, method);
         return {
           metric,
           mandrel,
@@ -294,6 +338,11 @@ export function compareRuns({
     cohortMatch,
     baselineCohorts,
     candidateCohorts,
+    // Surfaced, never hidden: a run whose bands were suppressed because it
+    // internally mixes benchmark versions (D-014). A renderer can note WHY the
+    // centers are null rather than silently showing empty cells.
+    baselineNonInferential,
+    candidateNonInferential,
     scenarios,
   };
 
@@ -368,6 +417,22 @@ export function renderComparison(
     `Baseline: **${baselineLabel}** → Candidate: **${candidateLabel}** · band = ${comparison.method}`,
     '',
   ];
+
+  if (comparison.baselineNonInferential || comparison.candidateNonInferential) {
+    const which = [
+      comparison.baselineNonInferential ? baselineLabel : null,
+      comparison.candidateNonInferential ? candidateLabel : null,
+    ]
+      .filter(Boolean)
+      .join(' and ');
+    lines.push(
+      `> ⛔ **Non-inferential run(s):** ${which} internally mix more than ` +
+        'one benchmark version, so their bands are suppressed (no centers) — ' +
+        'the harness itself changed within the run and no like-to-like band ' +
+        'can form. Re-compare within a single benchmark version.',
+      '',
+    );
+  }
 
   if (comparison.cohortMatch) {
     lines.push(`Cohort: \`${comparison.baselineCohorts[0]}\` (matched).`, '');

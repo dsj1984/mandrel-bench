@@ -269,6 +269,52 @@ describe('compareRuns — cohort safety', () => {
   });
 });
 
+describe('compareRuns — internally multi-cohort runs are non-inferential (M7)', () => {
+  it('suppresses a baseline run’s bands (null centers) when it mixes benchmark versions', () => {
+    // A single run that internally spans >1 benchmarkVersion must NOT pool into
+    // a shown band — matching groupCells’s "no band at the grouping seam"
+    // contract. Its centers are nulled, not flagged-but-shown.
+    const baseline = [
+      ...run({ quality: 0.9, bv: '0.5.0', n: 2 }),
+      ...run({ quality: 0.9, bv: '0.6.0', n: 2 }),
+    ];
+    const candidate = run({ quality: 0.9, bv: '0.6.0' });
+    const cmp = compareRuns({ baseline, candidate });
+    assert.equal(cmp.baselineNonInferential, true);
+    assert.equal(cmp.candidateNonInferential, false);
+    const quality = cmp.scenarios[0].metrics.find(
+      (m) => m.metric === 'quality',
+    );
+    assert.equal(quality.mandrel.baselineCenter, null);
+    assert.equal(quality.mandrel.comparable, false);
+    assert.equal(quality.mandrel.verdict, 'incomparable');
+    assert.equal(quality.controlBaselineCenter, null);
+  });
+
+  it('leaves single-benchmark-version runs fully comparable', () => {
+    const cmp = compareRuns({
+      baseline: run({ quality: 0.9, bv: '0.5.0' }),
+      candidate: run({ quality: 0.9, bv: '0.5.0' }),
+    });
+    assert.equal(cmp.baselineNonInferential, false);
+    assert.equal(cmp.candidateNonInferential, false);
+    const quality = cmp.scenarios[0].metrics.find(
+      (m) => m.metric === 'quality',
+    );
+    assert.equal(quality.mandrel.comparable, true);
+  });
+
+  it('notes the suppression in the rendered Markdown', () => {
+    const baseline = [
+      ...run({ quality: 0.9, bv: '0.5.0', n: 2 }),
+      ...run({ quality: 0.9, bv: '0.6.0', n: 2 }),
+    ];
+    const candidate = run({ quality: 0.9, bv: '0.6.0' });
+    const md = renderComparison(compareRuns({ baseline, candidate }));
+    assert.match(md, /Non-inferential run/);
+  });
+});
+
 describe('compareRuns — scenario presence', () => {
   it('marks a scenario present in only one run as not cross-comparable', () => {
     const baseline = run({ quality: 0.9 }); // hello-world only

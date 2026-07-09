@@ -212,6 +212,47 @@ export function toRow(sc) {
  * @param {Array<object>} scorecards
  * @returns {{ rows: object[], metrics: Array<object>, guardrail: Array<object>, trapAxis: Array<{ scenario: string, rows: Array<object> }> }}
  */
+/**
+ * The cohort discriminant (D-014): the (model, frameworkVersion,
+ * benchmarkVersion) triple, joined with a NUL separator that cannot occur in
+ * any field so distinct triples never collide.
+ *
+ * @param {object} sc
+ * @returns {string}
+ */
+function cohortTripleKey(sc) {
+  return [
+    sc?.model?.id ?? '',
+    sc?.frameworkVersion ?? '',
+    sc?.benchmarkVersion ?? '',
+  ].join(' ');
+}
+
+/**
+ * The subset of a corpus belonging to the MOST RECENT cohort — the cohort of
+ * the latest-timestamp record (ISO-8601 timestamps sort lexically). This mirrors
+ * how the client delta badge picks the most recent cohort, and is what the
+ * server-rendered guardrail + trap-axis panels scope to so a second recorded
+ * benchmarkVersion never blanks them. An empty corpus yields an empty subset.
+ * Pure.
+ *
+ * @param {Array<object>} scorecards
+ * @returns {Array<object>}
+ */
+function mostRecentCohortScorecards(scorecards) {
+  if (scorecards.length === 0) return [];
+  let latestKey = null;
+  let latestTs = null;
+  for (const sc of scorecards) {
+    const ts = typeof sc?.timestamp === 'string' ? sc.timestamp : '';
+    if (latestTs === null || ts > latestTs) {
+      latestTs = ts;
+      latestKey = cohortTripleKey(sc);
+    }
+  }
+  return scorecards.filter((sc) => cohortTripleKey(sc) === latestKey);
+}
+
 export function buildDashboardModel(scorecards) {
   if (!Array.isArray(scorecards)) {
     throw new TypeError('buildDashboardModel: scorecards must be an array');
@@ -233,7 +274,15 @@ export function buildDashboardModel(scorecards) {
       ...(deltaExempt ? { deltaExempt: true } : {}),
     }),
   );
-  const cells = groupCells(scorecards);
+  // Scope the server-rendered guardrail + trap-axis panels to the MOST RECENT
+  // cohort (the same one the client delta badge picks) before grouping. Feeding
+  // the whole multi-cohort corpus to groupCells would mark every cell
+  // non-inferential — and blank both panels permanently — the moment a second
+  // benchmarkVersion is recorded, because groupCells suppresses any cell that
+  // mixes benchmark versions. Scoping to one cohort keeps measurement-validity
+  // intact (records never pool across benchmarkVersion within a cell) while the
+  // panels keep rendering the current cohort.
+  const cells = groupCells(mostRecentCohortScorecards(scorecards));
   const guardrail = autonomyGuardrailRows(cells);
   const trapAxis = cells
     .map((cell) => ({

@@ -343,4 +343,41 @@ describe('buildDashboardModel — guardrail + trap axis (Epic #66, Story #79)', 
     const model = buildDashboardModel([card(), CONTROL]);
     assert.deepEqual(model.trapAxis, []);
   });
+
+  it('keeps the guardrail panel populated once a SECOND benchmarkVersion is recorded (M6)', () => {
+    // Before the fix, feeding the whole multi-cohort corpus to groupCells
+    // marked every cell non-inferential and BLANKED the guardrail permanently
+    // the moment a second benchmarkVersion landed. The panel must scope to the
+    // most-recent cohort and keep rendering.
+    const olderCohort = [
+      card({ runId: 'old-m', benchmarkVersion: '0.5.0' }),
+      card({
+        runId: 'old-c',
+        arm: 'control',
+        benchmarkVersion: '0.5.0',
+        timestamp: '2026-06-16T17:00:00.000Z',
+      }),
+    ];
+    const newerCohort = [
+      card({
+        runId: 'new-m',
+        benchmarkVersion: '0.6.0',
+        timestamp: '2026-07-09T19:42:11.000Z',
+      }),
+      card({
+        runId: 'new-c',
+        arm: 'control',
+        benchmarkVersion: '0.6.0',
+        timestamp: '2026-07-09T19:00:00.000Z',
+      }),
+    ];
+    const model = buildDashboardModel([...olderCohort, ...newerCohort]);
+    const row = model.guardrail.find((r) => r.scenario === 'hello-world');
+    assert.ok(row, 'the guardrail must still render a hello-world row');
+    // Scoped to the most-recent (0.6.0) cohort's single mandrel run — not
+    // blanked, and not pooled across the two benchmark versions.
+    assert.equal(row.n, 1);
+    // The full index-table rows still reflect the WHOLE corpus.
+    assert.equal(model.rows.length, 4);
+  });
 });
