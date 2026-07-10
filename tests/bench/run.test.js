@@ -553,7 +553,15 @@ function benchDeps(record) {
         envelope: fakeEnvelope(),
       };
     },
-    gitFn: (args) => record.git.push(args.join(' ')),
+    gitFn: (args) => {
+      record.git.push(args.join(' '));
+      // `rev-parse` must return DISTINCT pre/post SHAs so the touch-2
+      // materialization guard reads a successful merge (origin/main advanced).
+      if (args[0] === 'rev-parse') {
+        return args[1] === 'HEAD' ? 'postsha0\n' : 'presha00\n';
+      }
+      return '';
+    },
     // no ledger on disk (keeps the test free of NDJSON fixtures)
     discoverDeps: { existsImpl: () => false },
     // no standalone Story either (Story #48): ghJson returns no issues, so the
@@ -2599,6 +2607,52 @@ test('runTouch2 (mandrel): runs a fresh session against the full-pipeline tree a
     ['regression-hashing'],
   );
   assert.equal(block.regression.cleanRate, 1);
+});
+
+test('runTouch2 (mandrel): flags materialized=false + null outcome when the change-request PR never lands (origin/main unchanged)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  deps.runSessionFn = (o) => ({
+    arm: o.arm,
+    scenarioId: o.scenario.id,
+    model: o.model,
+    prompt: 'p',
+    status: 0,
+    envelope: fakeEnvelope(),
+  });
+  // Auto-merge did NOT land: origin/main (pre) === HEAD (post) after the reset,
+  // so the workspace still holds the STALE touch-1 tree.
+  deps.gitFn = (args) => {
+    record.git.push(args.join(' '));
+    if (args[0] === 'rev-parse') return 'samesha0\n'; // pre === post
+    return '';
+  };
+
+  const block = await runTouch2(
+    {
+      scenario: FAKE_SCENARIO_WITH_CR,
+      touch2Evaluate: fakeTouch2Evaluate,
+      scenarioDir: '/repo/bench/scenarios/story-scope',
+      arm: 'mandrel',
+      runIndex: 1,
+      model: 'claude-opus-4-8',
+      sandbox: { owner: 'o', repo: 'r', repoUrl: 'u' },
+      handle: { workspacePath: '/ws-mandrel' },
+      frameworkVersion: '1.70.0',
+      benchmarkVersion: '0.5.0',
+      env: { node: 'v24.16.0', os: 'darwin' },
+      timeoutMs: 1000,
+    },
+    deps,
+  );
+
+  assert.equal(block.materialized, false);
+  // The KEY guard: a stale-tree score must NOT fabricate a 0 — outcome is null
+  // (unmeasured) so the cell is excluded from the continuity delta.
+  assert.equal(block.outcome, null);
+  // The session's real spend is still recorded (it ran and cost money).
+  assert.equal(block.cost, 0.42);
+  assert.equal(typeof block.totalTokens, 'number');
 });
 
 test('runTouch2 (control): reduces the workspace to delivered code only and scores the change request there', async () => {
