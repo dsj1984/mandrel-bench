@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.6.0...mandrel-bench-v0.7.0) (2026-07-10)
+
+
+### Added
+
+* **bench:** finish target architecture (feedback phase tags, version override, shim cleanup) ([#102](https://github.com/dsj1984/mandrel-bench/issues/102)) ([93bc58e](https://github.com/dsj1984/mandrel-bench/commit/93bc58e4786f330cc61ae74af66a02affca59eac))
+
 ## [0.6.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.5.0...mandrel-bench-v0.6.0) (2026-07-10)
 
 
