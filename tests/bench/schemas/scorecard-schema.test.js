@@ -340,3 +340,55 @@ describe('scorecard schema — control-arm nullable dimensions', () => {
     );
   });
 });
+
+describe('scorecard schema — per-phase envelopes (D-019, Epic #86 Story #94)', () => {
+  const validate = buildValidator();
+
+  it('accepts a mandrel-arm record carrying a phases[] block', () => {
+    const rec = clone(fixture);
+    rec.arm = 'mandrel';
+    rec.phases = [
+      { phase: 'plan', costUsd: 0.4, tokens: 40000, wallClockMs: 120000 },
+      { phase: 'deliver', costUsd: 1.1, tokens: 140000, wallClockMs: 480000 },
+    ];
+    const ok = validate(rec);
+    assert.ok(
+      ok,
+      `phases record failed: ${JSON.stringify(validate.errors, null, 2)}`,
+    );
+  });
+
+  it('accepts a null per-phase costUsd', () => {
+    const rec = clone(fixture);
+    rec.phases = [
+      { phase: 'plan', costUsd: null, tokens: 1, wallClockMs: 1 },
+      { phase: 'deliver', costUsd: null, tokens: 1, wallClockMs: 1 },
+    ];
+    assert.equal(validate(rec), true);
+  });
+
+  it('a control record remains valid WITHOUT a phases block', () => {
+    const control = clone(fixture);
+    control.arm = 'control';
+    delete control.phases;
+    assert.equal(validate(control), true);
+  });
+
+  it('rejects an unknown phase name', () => {
+    const rec = clone(fixture);
+    rec.phases = [{ phase: 'refactor', tokens: 1, wallClockMs: 1 }];
+    assert.equal(validate(rec), false);
+  });
+
+  it('rejects a phase entry missing a required field', () => {
+    const rec = clone(fixture);
+    rec.phases = [{ phase: 'plan', costUsd: 0.1 }];
+    assert.equal(validate(rec), false);
+  });
+
+  it('rejects an unknown property on a phase entry (additionalProperties:false)', () => {
+    const rec = clone(fixture);
+    rec.phases = [{ phase: 'plan', tokens: 1, wallClockMs: 1, extra: true }];
+    assert.equal(validate(rec), false);
+  });
+});

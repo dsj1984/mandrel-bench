@@ -129,6 +129,68 @@ per-class scores plus `cleanRate` as distributions — mean, spread
 (noise-band width), and worst-case (min) — per arm, in a section clearly
 separate from the seven-dimension table.
 
+## `phases[]` block (D-019, Epic #86 Story #94)
+
+Per-phase `claude -p` session envelopes for the **mandrel arm's ordered
+two-session run**. Under D-019 (which amends D-008) the mandrel arm no longer
+runs as one session: it runs `/plan` (session 1) and then `/deliver`
+(session 2) as **separate** headless sessions, each with its own
+cost/tokens/wall-clock, so a finding can be attributed to the planning half vs
+the delivery half rather than to "Mandrel" at large. The **control arm stays a
+single session** and carries **no** `phases` block — a control record is valid
+without it.
+
+```json
+"phases": [
+  { "phase": "plan",    "costUsd": 0.40, "tokens": 40000,  "wallClockMs": 120000 },
+  { "phase": "deliver", "costUsd": 1.10, "tokens": 140000, "wallClockMs": 480000 }
+]
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `phases` | array (min 1) | Mandrel-arm only. One entry per pipeline phase, in order (`plan`, then `deliver`). Absent for the control arm and for any record with no per-phase split. |
+| `phases[].phase` | `"plan"` \| `"deliver"` | Which pipeline phase this session drove. |
+| `phases[].costUsd` | number \| `null` | USD cost of this phase's session, or `null` when the envelope reported none. |
+| `phases[].tokens` | integer `≥ 0` | Total tokens (input + output + cache) for this phase's session. |
+| `phases[].wallClockMs` | number `≥ 0` | This phase session's own `claude -p` duration. Distinct from the record's ledger-derived `dimensions.efficiency.wallClockMs`. |
+
+**Sum invariant.** The run envelope is the SUM of the phase envelopes
+(`bench/driver/run-session.js#aggregateEnvelopes`), so the per-phase `costUsd`
+and `tokens` sum to `dimensions.efficiency.costUsd` and
+`dimensions.efficiency.totalTokens` by construction. (Per-phase `wallClockMs`
+is the envelope session duration; the record's `efficiency.wallClockMs` remains
+ledger-derived, so those are NOT required to match.)
+
+**Between-session seam (id-discovery + plan snapshot).** After session 1 exits,
+`bench/run.js` (via `runSession`'s injected `betweenPhases` hook) recovers the
+id(s) the plan session created on the ephemeral repo — the **Epic id** for
+epic-routed scenarios (`discoverPlannedEpicId`, the newest `type::epic` created
+at/after the run start) or the **standalone Story id** for story-routed ones
+(`discoverStandaloneStory` conventions) — over the **sanitized `gh`
+environment** (`sanitizeGitHubTokenEnv`, no new credential surface). The
+discovered id is threaded into the deliver-session prompt so `/deliver` enters
+at the artifact the plan session produced.
+
+### Plan snapshot layout — `.raw/<run-stamp>/plan/`
+
+Before the deliver session starts, `snapshotPlanArtifacts` freezes the plan
+artifacts into the run's provenance directory, so delivery can never
+retroactively alter what the plan is scored on. `<run-stamp>` is the same
+`<scenario>-<arm>-r<runIndex>` key used for the cost envelope, under the
+cohort's `.raw/`.
+
+| Path | Contents |
+| --- | --- |
+| `.raw/<run-stamp>/plan/epic-<n>.json` | The Epic body (`number`, `title`, `body` incl. the folded tech-spec sections, `labels`) — epic-routed runs only. |
+| `.raw/<run-stamp>/plan/story-<n>.json` | Each child Story body (with its inline `acceptance[]` / `verify[]`) for epic-routed runs; the single standalone Story body for story-routed runs. |
+| `.raw/<run-stamp>/plan/manifest.json` | `{ routing, epicId, storyNumber, storyNumbers[], capturedAt }` — the routing verdict and the captured ids. |
+
+**Consumption.** `bench/report/render.js`'s `phaseCostRows` /
+`renderPhaseCostSection` and `bench/report/html.js`'s per-phase cost panel
+render the mandrel arm's `/plan` vs `/deliver` cost per scenario; the control
+arm carries no per-phase split, so it is omitted by construction.
+
 ## `dimensions.autonomy.guardrail` (Epic #66, Story #77)
 
 ```json
@@ -165,7 +227,9 @@ meaningful comparison.
 Provenance breadcrumbs (workspace-relative paths) to the on-disk artifacts a
 scorecard was derived from — `lifecycleNdjson`, `signalsNdjson[]`,
 `costEnvelope`, `acceptanceEvalVerdict` — for traceability and re-scoring,
-even though the ephemeral workspace is torn down after each run.
+even though the ephemeral workspace is torn down after each run. The mandrel
+arm's plan snapshot (`.raw/<run-stamp>/plan/`, see the `phases[]` section
+above) lives alongside these under the same `.raw/<run-stamp>/` directory.
 
 ## Finding envelope (Epic #85, Story #91)
 

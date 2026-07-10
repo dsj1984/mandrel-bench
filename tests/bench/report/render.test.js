@@ -21,9 +21,11 @@ import {
   deriveCohort,
   dimensionRows,
   groupCells,
+  phaseCostRows,
   recommendImprovements,
   renderFloorCalibrationNote,
   renderMismatchNote,
+  renderPhaseCostSection,
   renderReport,
   renderScalingView,
   trapAxisRows,
@@ -62,6 +64,7 @@ function card({
   benchmarkVersion = BV,
   env = ENV,
   trap = null,
+  phases = null,
 } = {}) {
   const sc = {
     schemaVersion: 1,
@@ -95,6 +98,7 @@ function card({
     },
   };
   if (trap) sc.trap = trap;
+  if (phases) sc.phases = phases;
   return sc;
 }
 
@@ -850,5 +854,67 @@ describe('renderFloorCalibrationNote — direct coverage (Epic #66 audit remedia
     const note = renderFloorCalibrationNote({ floorCalibration: true });
     assert.match(note, /🧭 \*\*Floor\/calibration rung\*\*/);
     assert.match(note, /instrumentation, not a value rung/);
+  });
+});
+
+describe('per-phase cost (D-019, Epic #86 Story #94)', () => {
+  const PHASES = [
+    { phase: 'plan', costUsd: 0.4, tokens: 40000, wallClockMs: 120000 },
+    { phase: 'deliver', costUsd: 1.0, tokens: 140000, wallClockMs: 480000 },
+  ];
+
+  function corpus() {
+    const cards = [];
+    for (let i = 0; i < 3; i += 1) {
+      cards.push(
+        card({
+          scenario: 'story-scope',
+          arm: 'mandrel',
+          runId: `ss-m-${i}`,
+          phases: PHASES,
+        }),
+      );
+      // Control carries NO phases block.
+      cards.push(
+        card({ scenario: 'story-scope', arm: 'control', runId: `ss-c-${i}` }),
+      );
+    }
+    return cards;
+  }
+
+  it('phaseCostRows: reports mean plan/deliver cost for the mandrel arm, omitting control', () => {
+    const rows = phaseCostRows(groupCells(corpus()));
+    assert.equal(rows.length, 1);
+    const [r] = rows;
+    assert.equal(r.scenario, 'story-scope');
+    assert.ok(Math.abs(r.planCostUsd - 0.4) < 1e-9);
+    assert.ok(Math.abs(r.deliverCostUsd - 1.0) < 1e-9);
+    assert.ok(Math.abs(r.totalCostUsd - 1.4) < 1e-9);
+  });
+
+  it('phaseCostRows: returns [] when no record carries a phases block (control-only/legacy)', () => {
+    const cards = [
+      card({ scenario: 'story-scope', arm: 'mandrel', runId: 'm1' }),
+      card({ scenario: 'story-scope', arm: 'control', runId: 'c1' }),
+    ];
+    assert.deepEqual(phaseCostRows(groupCells(cards)), []);
+  });
+
+  it('renderPhaseCostSection: renders a mandrel-only per-phase cost table', () => {
+    const md = renderPhaseCostSection(groupCells(corpus()));
+    assert.match(md, /Per-phase cost \(mandrel arm\)/);
+    assert.match(md, /Plan cost \(USD\)/);
+    assert.match(md, /Deliver cost \(USD\)/);
+    assert.match(md, /`story-scope`/);
+    assert.match(md, /0\.4/);
+  });
+
+  it('renderPhaseCostSection: empty string when there is no phase data', () => {
+    assert.equal(renderPhaseCostSection([]), '');
+  });
+
+  it('renderReport: includes the per-phase cost section when phases are present', () => {
+    const md = renderReport({ scorecards: corpus() });
+    assert.match(md, /Per-phase cost \(mandrel arm\)/);
   });
 });
