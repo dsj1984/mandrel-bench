@@ -41,7 +41,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { hostname } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildScorecard, parseNdjson } from './collect/normalize.js';
@@ -59,7 +59,9 @@ import {
 import {
   DEFAULT_BENCH_MODEL,
   DEFAULT_SESSION_TIMEOUT_MS,
+  defaultInvokeClaudeSession,
   runSession as defaultRunSession,
+  parseSessionEnvelope,
 } from './driver/run-session.js';
 import {
   createEphemeralRepo,
@@ -2194,6 +2196,63 @@ function runJanitorSweep(env, owner, deps) {
  *   into its own running totals.
  * @returns {Promise<{ cellResult: object, created: { repoFullName: string } }>}
  */
+/**
+ * Real production transport for the Maintainability/Security LLM judge.
+ *
+ * The dimension-judge-adapter ships a no-op `defaultJudgeTransport` (returns
+ * null) and documents that "the production harness wires a real LLM transport
+ * here" — but nothing did, so every real run recorded
+ * `maintainability-judge-absent` / `security-judge-absent` and both dimensions
+ * silently collapsed to spine-only. This factory IS that wiring: it shells one
+ * additional `claude -p --output-format json` completion with the batched judge
+ * prompt and returns the model's raw text answer for `parseJudgeResponse`.
+ *
+ * It runs in a neutral temp dir (no project files → a clean completion, not an
+ * agentic session over the delivered tree) and degrades to `null` on any
+ * non-zero exit or parse failure, so a judge hiccup simply folds the 0.3 judge
+ * weight back into the objective spine — it never fails the run.
+ *
+ * @param {object} [args]
+ * @param {string} [args.model=DEFAULT_BENCH_MODEL]  Same pinned model as the run.
+ * @param {(input: object) => { status: number, stdout: string, stderr: string }} [args.invokeFn]
+ *   Injected `claude -p` invoker (defaults to the real one; tests never reach
+ *   here because they inject `dimensionJudgeDeps` / `runDimensionJudgeFn`).
+ * @param {{ warn?: Function }} [args.logger]
+ * @returns {(prompt: string) => Promise<string|null>}
+ */
+export function makeClaudeJudgeTransport({
+  model = DEFAULT_BENCH_MODEL,
+  invokeFn = defaultInvokeClaudeSession,
+  logger,
+} = {}) {
+  return async (prompt) => {
+    try {
+      const { status, stdout, stderr } = invokeFn({
+        prompt,
+        model,
+        cwd: tmpdir(),
+        timeoutMs: DEFAULT_SESSION_TIMEOUT_MS,
+      });
+      if (status !== 0) {
+        logger?.warn?.(
+          `[run] dimension judge: claude -p exited ${status} — judge folded into spine: ${
+            stderr || '<no stderr>'
+          }`,
+        );
+        return null;
+      }
+      return parseSessionEnvelope(stdout).result ?? null;
+    } catch (err) {
+      logger?.warn?.(
+        `[run] dimension judge transport failed — judge folded into spine: ${
+          err?.message ?? err
+        }`,
+      );
+      return null;
+    }
+  };
+}
+
 async function runCell({ scenarioId, arm, ctx, deps }) {
   const { logger } = deps;
   const createEphemeralRepoFn =
@@ -2269,7 +2328,16 @@ async function runCell({ scenarioId, arm, ctx, deps }) {
         : {}),
     };
 
-    const cellResult = await runFirstBenchmarkFn(cellOpts, { logger });
+    const cellResult = await runFirstBenchmarkFn(cellOpts, {
+      logger,
+      // Wire the real LLM-judge transport (the adapter's no-op default's
+      // long-missing production caller). runFirstBenchmark forwards `deps`
+      // to runOneRun and runTouch2, so both touches get the judge; tests call
+      // those functions directly with their own deps and never hit this.
+      dimensionJudgeDeps: {
+        judgeTransport: makeClaudeJudgeTransport({ logger }),
+      },
+    });
     return { cellResult, created };
   } finally {
     // Best-effort: a failed delete must never abort/mask the cell's own
