@@ -33,7 +33,7 @@ scorecards.ndjson` (one per line), validated against the schema on emit.
 
 A **cohort** is the unit of statistical comparison — the harness only ever
 pools, bands, and diffs records that match on the full stamp. Per D-014
-(`docs/target-architecture.md` § 3.1) that stamp is the triple:
+(see [`decisions.md`](decisions.md)) that stamp is the triple:
 
 ```text
 cohort = (model, frameworkVersion, benchmarkVersion)   [+ env guard]

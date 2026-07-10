@@ -7,7 +7,7 @@ and tracks that verdict across framework versions and model generations.**
 mandrel-bench is a **consumer of Mandrel**, not part of it. It installs a
 *pinned, published* `mandrel` version, materializes the framework via
 `mandrel sync`, then drives Mandrel's own `/plan`→`/deliver` pipeline (and a
-bare-model control) over a set of scenarios, scores each run across five
+bare-model control) over a set of scenarios, scores each run across seven
 dimensions, and emits a value-add report. Because the harness is held fixed
 while the `mandrel` dependency version varies, it answers the standing
 question: **"is Mandrel still worth its tax at the current frontier?"**
@@ -47,12 +47,25 @@ gaming).
 | Side | Dimension | Question it answers | Primary signal |
 | --- | --- | --- | --- |
 | Value | **Quality** | Is the delivered software correct & on-intent? | frozen per-scenario acceptance suite + `acceptance-eval` cross-check |
-| Value | **Planning fidelity** | Did the plan match the work actually required? | decomposition accuracy, re-plan count, plan-vs-actual drift |
-| Value | **Autonomy** | How little human intervention did it need? | HITL stops, `agent::blocked`, manual rescues |
+| Value | **Planning fidelity** | Did the plan match the work actually required? | decomposition accuracy, re-plan count, plan-vs-actual drift (proportional to plan size) |
+| Value | **Maintainability** | Is the delivered code base healthy? | static-analysis spine (linter density, complexity, maintainability index) + LLM judge cross-check |
+| Value | **Security** | Is the delivered posture sound? | secret-scan + dependency-CVE + severity-count spine + LLM judge cross-check |
 | Cost | **Efficiency** | What did it cost absolutely? | wall-clock, tokens, dispatches |
 | Cost | **Overhead ratio** | Ceremony tax vs. shippable output | ceremony ÷ codegen (tokens & time) |
 
-**Variance is the reporting method**, not a sixth dimension: every score is
+**Autonomy is reported separately, as a guardrail** (not a delta row): the bare
+control has no gates to get stuck at (autonomy 1.0 by construction), so diffing
+it against Mandrel was never a meaningful comparison. Every mandrel-arm record
+instead carries a pass/fail verdict against a fixed threshold (default 0.99),
+rendered in its own section; a drop below it is itself a finding.
+
+**The trap axis is a separate differential signal**, never folded into the seven
+dimensions: the `story-scope` and `epic-scope` rungs declare planted defect
+classes (plaintext passwords, IDOR, hardcoded secrets, …) that a dedicated
+oracle source-scans the delivered tree for — the corner-cutting a behavioural
+suite both arms pass cannot see.
+
+**Variance is the reporting method**, not an eighth dimension: every score is
 reported as a distribution across N runs with a computed **noise-band**, and a
 Mandrel-vs-control delta is only called *real* when it clears that band.
 
@@ -125,7 +138,7 @@ For each `(scenario × arm × run)`:
    (`temp/epic-<id>/lifecycle.ndjson` + per-Story `signals.ndjson`, written by
    `/deliver`) plus the cost envelope into one per-run record conforming to
    `bench/schemas/scorecard.schema.json`.
-4. **Score** (`bench/score/`) the five dimensions, the Mandrel-vs-control
+4. **Score** (`bench/score/`) the seven dimensions, the Mandrel-vs-control
    differential, the noise-band, and the cross-scenario derived metrics.
 5. **Report & persist** (`bench/report/`) the value-add report (distributions,
    deltas, scaling view, Recommended improvements), append the stamped
@@ -145,7 +158,7 @@ ever like-model to like-model — this is **not** a model benchmark.
 ```text
 mandrel-bench/
 ├── bench/
-│   ├── metrics/      # five-dimension formulas (README.md) + variance/noise-band
+│   ├── metrics/      # seven-dimension formulas (README.md) + variance/noise-band
 │   ├── schemas/      # scorecard.schema.json (the per-run record contract)
 │   ├── driver/       # claude -p run launcher + ephemeral sandbox lifecycle + unattended.md
 │   ├── scenarios/    # hello-world/ + story-scope/ + epic-scope/ defs, frozen oracles (touch-1 + touch-2), traps/ + traps-touch2/ oracles
@@ -155,7 +168,7 @@ mandrel-bench/
 │   └── fixtures/     # sample scorecard + sample lifecycle ndjson (test fixtures)
 ├── tests/bench/      # node:test suites mirroring bench/ (pure-logic units)
 ├── results/          # committed longitudinal scorecard store (the over-time record)
-├── docs/             # architecture.md (run model) + decisions.md (rationale)
+├── docs/             # architecture.md (run model) + decisions.md (rationale) + data-dictionary.md (scorecard fields)
 └── package.json      # pins `mandrel` — the version under test
 ```
 
@@ -187,46 +200,37 @@ the dashboard automatically.
 
 ## Status
 
-**Wired and exercised end to end.** The full component set (metrics model +
-scorecard schema, scenarios + frozen oracles, run driver + sandbox lifecycle,
-collector, scoring + control differential + derived metrics, report +
-persistence + cross-run compare) is tied together by a top-level **orchestrator
-(`bench/run.js`)**, a **framework-under-test overlay (`bench/driver/overlay.js`)**,
-and an **app-runner (`bench/driver/app-runner.js`)**, all with `node:test` unit
-suites.
+**Complete and ready to run.** All five phases of the target architecture are
+delivered against the pinned `mandrel@1.88.0`, each with `node:test` unit
+coverage (see [`docs/decisions.md`](docs/decisions.md) D-013–D-021):
 
-The **first benchmark result** has landed — `hello-world`, both arms, N=1 on
-`mandrel@1.70.0` / `claude-opus-4-8`. The mandrel arm drove `/plan`→`/deliver`
-fully headless and unattended against a throwaway sandbox repo (that early
-cohort predates the ephemeral per-cell lifecycle — see
-[`docs/decisions.md`](docs/decisions.md) D-013 for the retirement of the old
-standing sandbox repo it used); see [`results/`](results/) for the scorecards
-and the value-add report.
+- **Self-contained sandbox** — ephemeral per-cell GitHub repos from an in-repo
+  template, with a `bench-sbx-` prefix + TTL janitor; no standing repo to
+  provision (D-013).
+- **The 3-rung scenario matrix** — `hello-world`, `story-scope`, `epic-scope`,
+  with real un-stubbed gates and per-class trap oracles on the value rungs
+  (D-015).
+- **On-demand CI** — a `workflow_dispatch` pipeline (plan → canary → per-cell
+  matrix → aggregate → results PR) with cohort top-up intelligence, so a
+  complete cohort is a near-zero-cost no-op (D-017), plus GitHub Pages publish
+  on merge (D-021).
+- **The merge-gated feedback loop** — cohort findings fingerprinted and
+  auto-filed on the mandrel repo only after a results PR merges (D-016).
+- **Phase attribution + second touch** — phase-scoped `/plan` + `/deliver`
+  sessions with a plan-quality axis, and a frozen change request on the value
+  rungs measured as a continuity delta (D-019, D-020).
 
-**Done this cycle:**
+The full pipeline (`bench/run.js`) wires provision → run → collect → score →
+report → teardown end to end, behind an orchestrator, a framework-under-test
+overlay (`bench/driver/overlay.js`), and an app-runner
+(`bench/driver/app-runner.js`).
 
-- [x] A top-level run orchestrator (`bench/run.js`) that loops
-      `N × scenarios × arms`, runs overlay → driver → app-runner → collect →
-      score → report, and writes to `results/`.
-- [x] The driver's "framework under test" is the *installed* `mandrel` version:
-      `overlay.js` copies this repo's materialized `.agents/` (+ `node_modules`)
-      into the mandrel-arm clone and repoints it at the sandbox repo.
-- [x] An app-runner that starts the delivered app and probes it for the frozen
-      Quality oracle.
-- [x] The first live N=1 smoke result, persisted to `results/`.
-
-**Still open (deferred, separately planned):**
-
-- [ ] Scale to N≈8–10 across the `story-scope`/`epic-scope` rungs for a
-      statistically meaningful verdict (the N=1 result is non-inferential —
-      see [`results/`](results/)).
-- [ ] CI for this repo (run the unit suites; the full benchmark is a periodic,
-      manually-triggered capability report, not a per-PR gate).
-- [ ] A first-class `/plan` headless flag and an auto-merge gate that does not
-      block a clean trivial run (both surfaced as findings by the first result).
-
-The unit suites under `tests/bench/` run standalone via `npm test`; the
-scenario/acceptance-eval pieces additionally use the materialized `.agents/`.
+**The one remaining step is the first live cohort** — a cost-bearing,
+operator-gated run (`npm run bench` or the CI `workflow_dispatch`) that needs the
+two sandbox secrets described under [Sandbox setup](#sandbox-setup). The unit
+suites under `tests/bench/` run standalone via `npm test`; the scenario /
+acceptance-eval pieces additionally need `npx mandrel sync` to materialize
+`.agents/` for the pinned version.
 
 ---
 
