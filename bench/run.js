@@ -1938,6 +1938,12 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
         completed += 1;
         const cellCost = scorecard?.dimensions?.efficiency?.costUsd;
         if (typeof cellCost === 'number') costUsd += cellCost;
+        // A mandrel cell runs FOUR sessions (touch-1 plan+deliver, touch-2
+        // plan+deliver), but efficiency.costUsd counts only touch 1. Fold the
+        // second-touch session spend in too, or a BENCH_MAX_COST_USD ceiling is
+        // undercounted by ~2× on change-request scenarios (audit H2).
+        const cellTouch2Cost = scorecard?.touch2?.cost;
+        if (typeof cellTouch2Cost === 'number') costUsd += cellTouch2Cost;
 
         // Ceiling check fires AFTER the cell is fully persisted + checkpointed,
         // so the loop stops cleanly between cells.
@@ -2440,6 +2446,10 @@ export async function main(env = process.env, deps = {}) {
       for (const sc of cellResult.scorecards) {
         const c = sc?.dimensions?.efficiency?.costUsd;
         if (typeof c === 'number') costTotal += c;
+        // Fold in the second-touch session spend too (audit H2) — see the
+        // matching accumulator in runFirstBenchmark.
+        const t2 = sc?.touch2?.cost;
+        if (typeof t2 === 'number') costTotal += t2;
       }
       if (cellResult.stopped) {
         overallStopped = {

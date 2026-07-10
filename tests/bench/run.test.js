@@ -1470,6 +1470,62 @@ test('runFirstBenchmark: maxCostUsd ceiling stops after the cell that crosses it
   assert.equal(record.checkpointed.length, 2);
 });
 
+test('runFirstBenchmark: the touch-2 session spend counts against maxCostUsd (audit H2)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  // A scenario WITH a change request → the second touch runs and carries its
+  // own session cost. touch-1 costs 0.42 (fakeEnvelope); the touch-2 session
+  // costs another 0.42, so the cell's total is ~0.84.
+  deps.loadDeps = {
+    readFileImpl: () =>
+      JSON.stringify({
+        ...FAKE_SCENARIO,
+        changeRequest: {
+          id: 'cr-1',
+          prompt: 'Evolve it',
+          acceptanceSuite: './acceptance.touch2.test.js',
+        },
+      }),
+    importImpl: async () => ({
+      evaluate: async () => ({
+        scenario: 'hello-world',
+        passed: true,
+        criteria: [{ met: true }, { met: true }],
+      }),
+    }),
+  };
+
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel'],
+      n: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+      // A single cell. touch-1 alone (0.42) would NOT cross a 0.60 ceiling;
+      // only folding the touch-2 spend (another 0.42 → 0.84) crosses it. So a
+      // stop here PROVES touch-2 is counted against the ceiling.
+      maxCostUsd: 0.6,
+    },
+    deps,
+  );
+
+  assert.equal(result.scorecards.length, 1);
+  // The cell recorded a touch-2 block with a real cost.
+  const sc = result.scorecards[0];
+  assert.equal(typeof sc.touch2.cost, 'number');
+  assert.ok(sc.touch2.cost > 0);
+  // The ceiling stopped the batch, and the accumulated cost includes touch 2
+  // (touch-1 0.42 alone is below the 0.60 ceiling).
+  assert.equal(result.stopped.reason, 'maxCostUsd');
+  assert.ok(
+    result.stopped.costUsd >=
+      sc.dimensions.efficiency.costUsd + sc.touch2.cost - 1e-9,
+    `accumulated cost ${result.stopped.costUsd} should include touch-2 spend ${sc.touch2.cost}`,
+  );
+  assert.ok(result.stopped.costUsd > 0.6);
+});
+
 test('runFirstBenchmark: with no explicit n, resolves per-scenario run count from each scenario.targetN (Epic #66 audit remediation, H1)', async () => {
   const record = freshRecord();
   const deps = benchDeps(record);
