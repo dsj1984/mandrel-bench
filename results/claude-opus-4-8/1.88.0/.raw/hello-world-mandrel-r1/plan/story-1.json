@@ -1,0 +1,19 @@
+{
+  "body": "# Minimal Node.js HTTP server returning \"Hello, World!\" on GET /\n\n## Context\n\nWe need a minimal HTTP server implemented in plain Node.js — ESM modules, no\nexternal web framework (no Express/Fastify/Koa) — built entirely on the\nbuilt-in `node:http` module. This is a self-contained deliverable: a single\nsource file plus a `package.json`.\n\nBehaviour contract:\n\n- The server binds to the port given by the `PORT` environment variable,\n  defaulting to `3000` when `PORT` is unset.\n- A `GET` request to path `/` returns HTTP `200` with a `Content-Type` header\n  of `text/html` and a response body containing the exact text\n  `Hello, World!`.\n- The project exposes an npm `start` script that launches the server.\n\nThe implementation must stay small and dependency-free: one source file\n(e.g. `server.mjs` or `src/server.js` with `\"type\": \"module\"`) and\n`package.json`, nothing more.\n\n## Acceptance Criteria\n\n- [ ] `package.json` exists with `\"type\": \"module\"` and a `\"start\"` script that\n      launches the single server source file via `node`.\n- [ ] The server is implemented in a single ESM source file using only the\n      built-in `node:http` module — no external web-framework dependency is\n      added to `package.json`.\n- [ ] The server listens on `process.env.PORT` when set, and on `3000` when\n      `PORT` is unset.\n- [ ] A `GET` request to `/` responds with status `200`.\n- [ ] The response to `GET /` sets `Content-Type: text/html`.\n- [ ] The response body for `GET /` contains the exact text `Hello, World!`.\n- [ ] `npm start` boots the server without error and it accepts connections on\n      the resolved port.\n\n## Out of Scope\n\n- Any external web framework or HTTP library (Express, Fastify, Koa, etc.).\n- Routing beyond `GET /` (other paths/methods may return a default response but\n  are not specified here).\n- TLS/HTTPS, HTTP/2, clustering, or process managers (PM2, systemd).\n- Request logging, metrics, health-check endpoints, or graceful-shutdown\n  handling beyond what a minimal server needs.\n- Dockerfiles, CI pipelines, or deployment configuration.\n- A test framework/dependency — verification is done by exercising the running\n  server (see Notes).\n\n## Notes\n\n- Suggested layout: a single `server.mjs` (or `src/server.js`) plus\n  `package.json` with `\"type\": \"module\"` and `\"scripts\": { \"start\": \"node\n  server.mjs\" }`.\n- Resolve the port as `const PORT = process.env.PORT || 3000;` and pass it to\n  `server.listen(PORT)`.\n- Use `http.createServer((req, res) => …)`; for `GET /` write\n  `res.writeHead(200, { 'Content-Type': 'text/html' })` then\n  `res.end('Hello, World!')` (the body may be wrapped in minimal HTML as long\n  as it contains the exact substring `Hello, World!`).\n- Verification (no test dependency required): start the server with\n  `npm start`, then `curl -i http://localhost:3000/` and confirm the `200`\n  status, the `Content-Type: text/html` header, and the `Hello, World!` body;\n  repeat with `PORT=4000 npm start` to confirm the env-var override.\n- Standalone Story — no parent Epic. Next step after planning:\n  `/deliver <storyId>`.\n",
+  "labels": [
+    {
+      "id": "LA_kwDOTUeKlc8AAAACrITa8w",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTUeKlc8AAAACrITa9g",
+      "name": "persona::engineer",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 1,
+  "title": "Minimal Node.js HTTP server returning \"Hello, World!\" on GET /"
+}
