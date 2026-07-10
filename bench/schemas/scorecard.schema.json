@@ -357,6 +357,10 @@
           "enum": ["full-pipeline", "delivered-code-only"],
           "description": "Arm-appropriate inheritance the second touch ran under: 'full-pipeline' (mandrel — the delivered tree with its `.agents` overlay + tickets/plan state intact) or 'delivered-code-only' (control — a fresh copy reduced to the shipped code, with framework/session artifacts stripped)."
         },
+        "materialized": {
+          "type": "boolean",
+          "description": "Whether the change-request code actually LANDED before scoring. The mandrel arm pulls the merged change via `git reset --hard origin/main`; when its PR does not auto-merge, `origin/main` is unchanged and the reset restores the touch-1 tree. `false` means the change never materialized — `outcome` is `null` (unmeasured, NOT a fabricated 0 from a stale tree) and this cell is excluded from the continuity outcome delta; the failed unattended landing is itself an autonomy signal. Absent/`true` means the delivered change was scored normally (the control arm commits directly, so it always materializes)."
+        },
         "outcome": {
           "type": ["number", "null"],
           "minimum": 0,

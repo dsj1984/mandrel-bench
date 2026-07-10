@@ -1070,16 +1070,86 @@ export async function runTouch2(opts, deps = {}) {
     // Materialize the delivered second-touch code. The mandrel arm's clean
     // /deliver auto-merged onto the sandbox default branch, so pull it into the
     // touch-2 workspace; the control arm committed directly in `touch2Cwd`.
+    //
+    // GUARD (baseline autopsy): auto-merge is flaky. When the change-request PR
+    // does NOT land, `origin/main` still points at the touch-1 HEAD, so the reset
+    // below silently restores touch-1 code and the frozen touch-2 suite scores a
+    // STALE tree — a fabricated 0 indistinguishable from a genuine failure.
+    // Capture the pre-touch-2 HEAD and compare: an unchanged SHA means the change
+    // never materialized, surfaced as `materialized:false` + a null outcome (the
+    // honest autonomy signal that the unattended PR failed to land) rather than a
+    // false quality score on stale code.
+    let materialized = true;
     if (arm === 'mandrel') {
+      let preSha = null;
+      try {
+        preSha = gitFn(['rev-parse', 'origin/main'], touch2Cwd).trim();
+      } catch {
+        // No comparable baseline ref — leave materialized true and fall back to
+        // the prior best-effort behaviour.
+      }
       try {
         gitFn(['fetch', 'origin', 'main'], touch2Cwd);
         gitFn(['checkout', 'main'], touch2Cwd);
         gitFn(['reset', '--hard', 'origin/main'], touch2Cwd);
+        const postSha = gitFn(['rev-parse', 'HEAD'], touch2Cwd).trim();
+        if (preSha && postSha === preSha) {
+          materialized = false;
+          logger?.warn?.(
+            `[run] touch2: change-request PR did not land — origin/main unchanged at ${postSha.slice(0, 8)}; scoring touch-2 outcome as null (stale touch-1 tree), not a false 0.`,
+          );
+        }
       } catch (err) {
+        materialized = false;
         logger?.warn?.(
           `[run] touch2: could not materialize merged code (run may have blocked): ${err?.message ?? err}`,
         );
       }
+    }
+
+    // An unmaterialized change: record the session's real spend but leave the
+    // outcome + behavioural dimensions unmeasured — scoring the stale tree would
+    // fabricate a 0. (Control always materializes: it commits directly.)
+    if (!materialized) {
+      const run = buildRunIdentity({
+        scenario: scenario.id,
+        arm,
+        runIndex,
+        timestamp: nowIso(),
+        modelId: resolveModelId(session.envelope, model),
+        frameworkVersion,
+        benchmarkVersion,
+        env,
+      });
+      const subCard = buildScorecard({
+        run: { ...run, runId: sanitizeRunId(`${run.runId}-touch2`) },
+        lifecycle: [],
+        signals: [],
+        envelope: session.envelope,
+        quality: {},
+        planning: {},
+        maintainabilityInputs: {},
+        securityInputs: {},
+        trap: null,
+        phases: null,
+        scenarioRouting:
+          typeof scenario?.routing === 'string' ? scenario.routing : null,
+      });
+      return {
+        changeRequestId:
+          typeof scenario.changeRequest.id === 'string'
+            ? scenario.changeRequest.id
+            : null,
+        inheritance,
+        outcome: null,
+        materialized: false,
+        cost: subCard.dimensions.efficiency.costUsd ?? null,
+        frozenSuitePassed: 0,
+        frozenSuiteTotal: 0,
+        totalTokens: subCard.dimensions.efficiency.totalTokens,
+        wallClockMs: subCard.dimensions.efficiency.wallClockMs,
+        dimensions: subCard.dimensions,
+      };
     }
 
     // Score touch-2 Quality by booting the delivered app and driving the frozen
@@ -1211,6 +1281,7 @@ export async function runTouch2(opts, deps = {}) {
           ? scenario.changeRequest.id
           : null,
       inheritance,
+      materialized: true,
       outcome,
       cost,
       frozenSuitePassed: quality.frozenSuitePassed,
