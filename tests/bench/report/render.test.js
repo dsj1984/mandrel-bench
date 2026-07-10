@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  attributionRows,
   autonomyGuardrailFindings,
   autonomyGuardrailRows,
   buildReportModel,
@@ -23,6 +24,7 @@ import {
   groupCells,
   phaseCostRows,
   recommendImprovements,
+  renderAttributionSection,
   renderFloorCalibrationNote,
   renderMismatchNote,
   renderPhaseCostSection,
@@ -916,5 +918,115 @@ describe('per-phase cost (D-019, Epic #86 Story #94)', () => {
   it('renderReport: includes the per-phase cost section when phases are present', () => {
     const md = renderReport({ scorecards: corpus() });
     assert.match(md, /Per-phase cost \(mandrel arm\)/);
+  });
+});
+
+describe('plan-vs-deliver attribution table (Epic #86, Story #95)', () => {
+  // Attach a planQuality block to a card so the attribution table has data.
+  const withPlanQuality = (opts, planQuality) => {
+    const sc = card(opts);
+    sc.planQuality = planQuality;
+    return sc;
+  };
+
+  it('attributionRows tallies each mandrel run computed from planQuality × outcome × adherence', () => {
+    const scorecards = [
+      // good plan + good outcome → working-as-intended
+      withPlanQuality(
+        {
+          scenario: 'epic-scope',
+          arm: 'mandrel',
+          runId: 'e1',
+          quality: 0.95,
+          planningFidelity: 0.9,
+        },
+        { score: 0.9 },
+      ),
+      // good plan + weak outcome + adhered → plan-phase-gap
+      withPlanQuality(
+        {
+          scenario: 'epic-scope',
+          arm: 'mandrel',
+          runId: 'e2',
+          quality: 0.3,
+          planningFidelity: 0.9,
+        },
+        { score: 0.9 },
+      ),
+      // weak plan + good outcome → model-compensating
+      withPlanQuality(
+        {
+          scenario: 'epic-scope',
+          arm: 'mandrel',
+          runId: 'e3',
+          quality: 0.95,
+          planningFidelity: 0.9,
+        },
+        { score: 0.2 },
+      ),
+      // control arm has no planQuality → skipped
+      card({ scenario: 'epic-scope', arm: 'control', runId: 'e-c' }),
+    ];
+    const rows = attributionRows(groupCells(scorecards));
+    assert.equal(rows.length, 1);
+    const row = rows[0];
+    assert.equal(row.scenario, 'epic-scope');
+    assert.equal(
+      row.n,
+      3,
+      'only the three mandrel runs with planQuality are counted',
+    );
+    assert.equal(row.counts['working-as-intended'], 1);
+    assert.equal(row.counts['plan-phase-gap'], 1);
+    assert.equal(row.counts['model-compensating'], 1);
+    assert.equal(row.counts['deliver-phase-gap'], 0);
+  });
+
+  it('honours a persisted attribution.classification when present', () => {
+    const scorecards = [
+      withPlanQuality(
+        {
+          scenario: 'epic-scope',
+          arm: 'mandrel',
+          runId: 'e1',
+          quality: 0.95,
+          planningFidelity: 0.9,
+        },
+        { score: 0.9, attribution: { classification: 'deliver-phase-gap' } },
+      ),
+    ];
+    const rows = attributionRows(groupCells(scorecards));
+    assert.equal(rows[0].counts['deliver-phase-gap'], 1);
+    assert.equal(rows[0].counts['working-as-intended'], 0);
+  });
+
+  it('renderAttributionSection renders the table and is wired into renderReport', () => {
+    const scorecards = [
+      withPlanQuality(
+        {
+          scenario: 'epic-scope',
+          arm: 'mandrel',
+          runId: 'e1',
+          quality: 0.95,
+          planningFidelity: 0.9,
+        },
+        { score: 0.9 },
+      ),
+    ];
+    const cells = groupCells(scorecards);
+    const section = renderAttributionSection(cells);
+    assert.match(section, /Plan-vs-deliver attribution \(mandrel arm\)/);
+    assert.match(section, /Working as intended/);
+    const md = renderReport({ scorecards });
+    assert.match(md, /Plan-vs-deliver attribution \(mandrel arm\)/);
+  });
+
+  it('renders nothing for a corpus with no planQuality blocks', () => {
+    const scorecards = [
+      card({ scenario: 'epic-scope', arm: 'mandrel', runId: 'e1' }),
+      card({ scenario: 'epic-scope', arm: 'control', runId: 'e-c' }),
+    ];
+    assert.equal(renderAttributionSection(groupCells(scorecards)), '');
+    assert.equal(attributionRows(groupCells(scorecards)).length, 0);
   });
 });

@@ -40,6 +40,10 @@ import {
   SCALAR_DIMENSIONS,
   scoreCorpus,
 } from '../score/differential.js';
+import {
+  ATTRIBUTION_CLASSES,
+  computeAttribution,
+} from '../score/plan-quality.js';
 import { groupCells } from './cells.js';
 
 /**
@@ -699,6 +703,105 @@ export function renderPhaseCostSection(cells) {
   return lines.join('\n');
 }
 
+/**
+ * Human-readable labels for the attribution classes.
+ */
+const ATTRIBUTION_LABELS = Object.freeze({
+  'working-as-intended': 'Working as intended',
+  'deliver-phase-gap': 'Deliver-phase gap',
+  'plan-phase-gap': 'Plan-phase gap',
+  'model-compensating': 'Model compensating',
+});
+
+/**
+ * Per-scenario attribution counts for the mandrel arm (Epic #86, Story #95;
+ * D-019 §3.4). For each mandrel-arm run that carries a `planQuality` block, the
+ * attribution decision table is computed per run — crossing the intrinsic plan
+ * quality (`planQuality.score`) with the delivered OUTCOME
+ * (`dimensions.quality.score`) and plan-adherence
+ * (`dimensions.planningFidelity.score`) — and the run's classification is
+ * tallied. A run's persisted `planQuality.attribution.classification` is
+ * honoured when present; otherwise it is recomputed here from the same fields
+ * (single source of truth: `computeAttribution`). Runs with no `planQuality`
+ * block (control arm, legacy corpora) are skipped, so a corpus that predates
+ * this axis renders no attribution table.
+ *
+ * @param {Array<object>} cells
+ * @returns {Array<{
+ *   scenario: string,
+ *   n: number,
+ *   counts: Record<string, number>,
+ *   unattributed: number
+ * }>}
+ */
+export function attributionRows(cells) {
+  const rows = [];
+  for (const cell of cells ?? []) {
+    const runs = cell?.mandrelRuns ?? [];
+    const counts = {};
+    for (const cls of ATTRIBUTION_CLASSES) counts[cls] = 0;
+    let n = 0;
+    let unattributed = 0;
+    for (const sc of runs) {
+      const pq = sc?.planQuality;
+      if (!pq || typeof pq !== 'object') continue;
+      n += 1;
+      const stored = pq.attribution?.classification;
+      const classification = ATTRIBUTION_CLASSES.includes(stored)
+        ? stored
+        : computeAttribution({
+            planQualityScore: pq.score,
+            outcomeScore: sc?.dimensions?.quality?.score,
+            planAdherenceScore: sc?.dimensions?.planningFidelity?.score,
+          }).classification;
+      if (classification && counts[classification] !== undefined) {
+        counts[classification] += 1;
+      } else {
+        unattributed += 1;
+      }
+    }
+    if (n === 0) continue;
+    rows.push({ scenario: cell.scenario, n, counts, unattributed });
+  }
+  return rows;
+}
+
+/**
+ * Render the attribution decision-table section (Epic #86, Story #95; D-019
+ * §3.4): a mandrel-only table tallying how each scenario's runs attribute a
+ * result to the plan phase vs the deliver phase (or working-as-intended /
+ * model-compensating). Returns '' when no cell carries a `planQuality` block,
+ * so control-only / legacy corpora render nothing.
+ *
+ * @param {Array<object>} cells
+ * @returns {string}
+ */
+export function renderAttributionSection(cells) {
+  const rows = attributionRows(cells);
+  if (rows.length === 0) return '';
+  const lines = [
+    '## Plan-vs-deliver attribution (mandrel arm)',
+    '',
+    'Each mandrel-arm run crosses its intrinsic PLAN quality with the delivered',
+    'OUTCOME and plan-adherence (D-019 §3.4), attributing a result to the plan',
+    'phase vs the deliver phase rather than lumping both into one number.',
+    'Crossing all three inputs is the Goodhart backstop — a plan cannot read as',
+    '“working as intended” without a matching outcome.',
+    '',
+    `| Scenario | n | ${ATTRIBUTION_CLASSES.map((c) => ATTRIBUTION_LABELS[c]).join(' | ')} | Unattributed |`,
+    `| --- | --- | ${ATTRIBUTION_CLASSES.map(() => '---').join(' | ')} | --- |`,
+  ];
+  for (const r of rows) {
+    const cellVals = ATTRIBUTION_CLASSES.map((c) => r.counts[c] ?? 0).join(
+      ' | ',
+    );
+    lines.push(
+      `| \`${r.scenario}\` | ${r.n} | ${cellVals} | ${r.unattributed} |`,
+    );
+  }
+  return lines.join('\n');
+}
+
 function renderScenarioSection(cell, diff, method) {
   const rows = dimensionRows(cell, diff, method);
   const routingNote = renderRoutingNote(cell.mandrelRuns);
@@ -976,6 +1079,9 @@ export function renderReport({ scorecards, method = 'iqr' } = {}) {
 
   const phaseCostSection = renderPhaseCostSection(cells);
   if (phaseCostSection) sections.push(phaseCostSection, '');
+
+  const attributionSection = renderAttributionSection(cells);
+  if (attributionSection) sections.push(attributionSection, '');
 
   sections.push(renderScalingView(cells, corpus, method), '');
 

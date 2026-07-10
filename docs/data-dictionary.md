@@ -191,6 +191,63 @@ cohort's `.raw/`.
 render the mandrel arm's `/plan` vs `/deliver` cost per scenario; the control
 arm carries no per-phase split, so it is omitted by construction.
 
+## `planQuality` block (Epic #86, Story #95)
+
+The intrinsic PLAN-QUALITY axis — a **top-level** scorecard block (a sibling of
+`dimensions`, like `trap`), scored by `bench/score/plan-quality.js` against the
+frozen plan snapshot above. It scores the pre-delivery plan the mandrel arm's
+`/plan` session produced so a bad OUTCOME can be attributed to the **plan
+phase** vs the **deliver phase** (D-019 §3.4), rather than lumped into one
+opaque quality number.
+
+**Mandrel-only.** The control arm authors no plan, so `planQuality` is `null`
+(or absent) for control records — and, exactly like `planningFidelity` and
+`autonomy`, the axis is **deliberately excluded** from the Mandrel-vs-control
+differential (`SCALAR_DIMENSIONS` in `bench/score/differential.js`): diffing a
+measured mandrel plan against a non-existent control plan is not a meaningful
+comparison, so the differential table **never** carries a plan-quality delta
+row.
+
+**Composite.** `score = 0.7 · spine + 0.3 · judge`, folding the judge weight
+into the spine when the judge is `null` (the same two-oracle convention as
+`computeMaintainability` / `computeSecurity`). The spine is the mean of the
+three deterministic sub-scores that were measured (a `null` sub-score folds out
+of the mean):
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `planQuality.score` | number `[0,1]` | Composite plan quality. Spine 0.7 + judge 0.3 (judge folds into spine when null). |
+| `planQuality.coverage` | number `[0,1]` \| `null` | Fraction of the scenario's FROZEN acceptance criteria (`seed.acceptance`) traceable to a Story AC in the plan snapshot. |
+| `planQuality.decompositionSanity` | number `[0,1]` \| `null` | Story count/sizing vs the scenario's machine-readable `storyCountContract` (epic-scope 4-6 Stories; the story-routed rungs a single standalone Story). `null` when no contract was supplied. |
+| `planQuality.constraintSurfacing` | number `[0,1]` \| `null` | Fraction of the security-baseline obligations the scenario's trap classes probe that are surfaced in the plan artifacts. `1` for a scenario with no trap obligations (e.g. hello-world). |
+| `planQuality.judgeScore` | number `[0,1]` \| `null` | LLM-judge cross-check score, or `null` when the judge did not run (the 0.3 weight then folds into the spine). |
+| `planQuality.plannedStoryCount` | integer `≥ 0` | Number of Stories the plan snapshot recorded. |
+| `planQuality.warnings` | string[] | Loud-null markers: `plan-quality-decomposition-contract-absent`, `plan-quality-judge-absent`. |
+| `planQuality.attribution.classification` | enum \| `null` | The D-019 §3.4 attribution verdict (see below), or `null` when plan quality or outcome was unmeasured. |
+| `planQuality.attribution.planGood` / `outcomeGood` / `adhered` | boolean \| `null` | The three threshold crossings (default `0.7`) the classification is derived from. |
+
+**Attribution decision table** (`computeAttribution`, computed per run and
+rendered by `render.js`'s `renderAttributionSection`). Crossing the intrinsic
+plan quality with the delivered OUTCOME (`dimensions.quality.score`) and
+plan-adherence (`dimensions.planningFidelity.score`) is the **Goodhart
+backstop** — a plan that games the deterministic spine cannot read as
+`working-as-intended` without a matching outcome:
+
+| Outcome | Plan | Adherence | → Classification |
+| --- | --- | --- | --- |
+| good | good | — | `working-as-intended` |
+| good | weak | — | `model-compensating` (good outcome despite a weak plan) |
+| weak | good | adhered | `plan-phase-gap` (a good-looking plan was followed yet still failed) |
+| weak | good | diverged | `deliver-phase-gap` (delivery diverged from a good plan) |
+| weak | weak | — | `plan-phase-gap` |
+
+**Decomposition contract** — each `scenario.json` carries a machine-readable
+`storyCountContract` (`{ mode, minStories, maxStories }`), asserted in
+`tests/bench/scenarios/scenario-defs.test.js`: `epic-scope` →
+`{ mode: "epic", minStories: 4, maxStories: 6 }`; `story-scope` and
+`hello-world` → `{ mode: "standalone", minStories: 1, maxStories: 1 }`. This is
+the sole source for decomposition sanity — never prose.
+
 ## `dimensions.autonomy.guardrail` (Epic #66, Story #77)
 
 ```json

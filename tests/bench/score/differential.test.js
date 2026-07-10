@@ -16,6 +16,7 @@ import { describe, it } from 'node:test';
 import {
   computeDifferential,
   difficultyMonotonicity,
+  EFFICIENCY_COMPONENTS,
   overheadFloor,
   SCALAR_DIMENSIONS,
   scoreCorpus,
@@ -86,6 +87,18 @@ describe('SCALAR_DIMENSIONS — dimension registry', () => {
   it('excludes autonomy — reclassified as a mandrel-arm guardrail, not a delta (Epic #66, Story #77/#79)', () => {
     const names = SCALAR_DIMENSIONS.map((d) => d.name);
     assert.ok(!names.includes('autonomy'));
+  });
+
+  it('NEVER includes planQuality — a mandrel-only intrinsic axis, not a delta (Epic #86, Story #95)', () => {
+    const names = SCALAR_DIMENSIONS.map((d) => d.name);
+    assert.ok(
+      !names.includes('planQuality'),
+      'plan-quality is mandrel-only; the control arm authors no plan, so a delta row is never meaningful',
+    );
+    // It is also not folded into the efficiency component registry.
+    assert.ok(
+      !EFFICIENCY_COMPONENTS.map((d) => d.name).includes('planQuality'),
+    );
   });
 });
 
