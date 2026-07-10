@@ -421,6 +421,256 @@ describe('frozen change requests — the second touch (Epic #86, Story #96)', ()
   });
 });
 
+// ---------------------------------------------------------------------------
+// Touch-2 oracle DISCRIMINATION (audit H6). The touch-2 acceptance oracles'
+// evaluate(baseUrl, {fetchImpl}) bodies (~150 lines of real fetch
+// orchestration each) are the scoring instrument the persistence thesis rides
+// on (touch2.outcome → continuity delta), but were previously covered only by
+// shape/import checks + a STRING assertion on the criteria text. A bug (wrong
+// criterion index, an always-met probe, a mis-mapped status) would silently
+// mis-score touch-2 for BOTH arms with no failing test. These drive the real
+// bodies against a COMPLIANT stub (all criteria met) and a REGRESSED stub
+// (the touch-1 property broken), mirroring the touch-1 hello-world pattern.
+// ---------------------------------------------------------------------------
+
+/** A minimal JSON `Response` double the frozen touch-2 oracles consume. */
+function jsonResponse(status, payload) {
+  return {
+    status,
+    headers: { get: () => 'application/json' },
+    async text() {
+      return JSON.stringify(payload ?? {});
+    },
+    async json() {
+      if (payload === undefined) throw new Error('no json');
+      return payload;
+    },
+  };
+}
+
+/** Extract a Bearer token from a request init's headers, or null. */
+function bearerToken(init) {
+  const auth = init?.headers?.authorization;
+  return typeof auth === 'string' && auth.startsWith('Bearer ')
+    ? auth.slice(7)
+    : null;
+}
+
+/**
+ * A stateful stub of the story-scope touch-2 app (password change + session
+ * invalidation). `invalidateOnChange:false` regresses the touch-1 property —
+ * the pre-change session keeps authenticating after the password change.
+ */
+function makeStoryScopeTouch2Fetch({ invalidateOnChange = true } = {}) {
+  const users = new Map(); // username → password
+  const sessions = new Map(); // token → username
+  let seq = 0;
+  return async (url, init = {}) => {
+    const path = new URL(String(url)).pathname;
+    const method = init.method ?? 'GET';
+    const body = init.body ? JSON.parse(init.body) : {};
+    const token = bearerToken(init);
+
+    if (path.endsWith('/signup') && method === 'POST') {
+      users.set(body.username, body.password);
+      return jsonResponse(201, { ok: true });
+    }
+    if (path.endsWith('/login') && method === 'POST') {
+      if (users.get(body.username) !== body.password) {
+        return jsonResponse(401, { error: 'invalid credentials' });
+      }
+      const t = `sess-${seq++}`;
+      sessions.set(t, body.username);
+      return jsonResponse(200, { session: t });
+    }
+    if (path.endsWith('/password') && method === 'POST') {
+      if (!token || !sessions.has(token)) {
+        return jsonResponse(401, { error: 'no credential' });
+      }
+      if (!body.newPassword) return jsonResponse(400, { error: 'empty' });
+      const username = sessions.get(token);
+      users.set(username, body.newPassword);
+      if (invalidateOnChange) {
+        for (const [t, un] of [...sessions.entries()]) {
+          if (un === username) sessions.delete(t);
+        }
+      }
+      return jsonResponse(200, { ok: true });
+    }
+    if (path.endsWith('/me') && method === 'GET') {
+      if (!token || !sessions.has(token)) {
+        return jsonResponse(401, { error: 'no session' });
+      }
+      return jsonResponse(200, { username: sessions.get(token) });
+    }
+    throw new Error(`story-scope touch-2 stub: no route for ${method} ${path}`);
+  };
+}
+
+describe('story-scope frozen touch-2 oracle behavior (audit H6)', () => {
+  it('passes with all criteria met against a compliant password-change app', async () => {
+    const mod = await import(
+      '../../../bench/scenarios/story-scope/acceptance.touch2.test.js'
+    );
+    const result = await mod.evaluate('http://127.0.0.1:3000', {
+      fetchImpl: makeStoryScopeTouch2Fetch({ invalidateOnChange: true }),
+      uniqueSuffix: () => 'fixed',
+    });
+    assert.equal(result.scenario, 'story-scope');
+    assert.equal(result.passed, true);
+    assert.ok(
+      result.criteria.every((c) => c.met),
+      `unmet: ${result.criteria
+        .filter((c) => !c.met)
+        .map((c) => c.evidence)
+        .join('; ')}`,
+    );
+  });
+
+  it('fails the session-invalidation criterion when the old session still authenticates', async () => {
+    const mod = await import(
+      '../../../bench/scenarios/story-scope/acceptance.touch2.test.js'
+    );
+    const result = await mod.evaluate('http://127.0.0.1:3000', {
+      fetchImpl: makeStoryScopeTouch2Fetch({ invalidateOnChange: false }),
+      uniqueSuffix: () => 'fixed',
+    });
+    assert.equal(result.passed, false);
+    // Criterion 1 is the behavioural session-invalidation probe (old
+    // credential must be rejected on GET /me).
+    const invalidation = result.criteria.find((c) => c.index === 1);
+    assert.equal(invalidation.met, false);
+    assert.ok(
+      invalidation.evidence.includes('401'),
+      'the regression evidence should name the expected 401',
+    );
+  });
+});
+
+/**
+ * A stateful stub of the epic-scope touch-2 app (project sharing + role-based
+ * access). `enforceViewerWrite:false` regresses the touch-1 property — a
+ * viewer can create a task on the shared project.
+ */
+function makeEpicScopeTouch2Fetch({ enforceViewerWrite = true } = {}) {
+  const users = new Map(); // username → { id, password }
+  const tokens = new Map(); // token → userId
+  const projects = new Map(); // projectId → ownerId
+  const shares = new Map(); // projectId → Map(userId → role)
+  let uid = 0;
+  let tok = 0;
+  let pid = 0;
+  const relationship = (projectId, userId) => {
+    if (projects.get(projectId) === userId) return 'owner';
+    return shares.get(projectId)?.get(userId) ?? null;
+  };
+  return async (url, init = {}) => {
+    const parts = new URL(String(url)).pathname.split('/').filter(Boolean);
+    const method = init.method ?? 'GET';
+    const body = init.body ? JSON.parse(init.body) : {};
+    const userId = tokens.get(bearerToken(init) ?? '') ?? null;
+
+    if (parts[0] === 'auth' && parts[1] === 'register' && method === 'POST') {
+      const id = ++uid;
+      users.set(body.username, { id, password: body.password });
+      return jsonResponse(201, { id, username: body.username });
+    }
+    if (parts[0] === 'auth' && parts[1] === 'login' && method === 'POST') {
+      const rec = users.get(body.username);
+      if (!rec || rec.password !== body.password) {
+        return jsonResponse(401, { error: 'invalid' });
+      }
+      const t = `tok-${tok++}`;
+      tokens.set(t, rec.id);
+      return jsonResponse(200, { token: t });
+    }
+    if (parts[0] === 'projects' && parts.length === 1 && method === 'POST') {
+      const id = ++pid;
+      projects.set(id, userId);
+      return jsonResponse(201, { id, name: body.name, ownerId: userId });
+    }
+    if (parts[0] === 'projects' && parts.length >= 2) {
+      const projectId = Number(parts[1]);
+      const rel = relationship(projectId, userId);
+      // POST /projects/:id/shares — owner only.
+      if (parts[2] === 'shares' && method === 'POST') {
+        if (rel !== 'owner') return jsonResponse(404, { error: 'not found' });
+        if (!shares.has(projectId)) shares.set(projectId, new Map());
+        shares.get(projectId).set(body.userId, body.role);
+        return jsonResponse(201, { ok: true });
+      }
+      // /projects/:id/tasks
+      if (parts[2] === 'tasks') {
+        if (method === 'GET') {
+          return rel
+            ? jsonResponse(200, { items: [], total: 0, page: 1, pageSize: 20 })
+            : jsonResponse(404, { error: 'not found' });
+        }
+        if (method === 'POST') {
+          if (rel === 'owner' || rel === 'editor') {
+            return jsonResponse(201, { id: 1, title: body.title });
+          }
+          if (rel === 'viewer') {
+            return enforceViewerWrite
+              ? jsonResponse(403, { error: 'forbidden' })
+              : jsonResponse(201, { id: 1, title: body.title });
+          }
+          return jsonResponse(404, { error: 'not found' });
+        }
+      }
+      // GET /projects/:id
+      if (parts.length === 2 && method === 'GET') {
+        return rel
+          ? jsonResponse(200, { id: projectId })
+          : jsonResponse(404, { error: 'not found' });
+      }
+    }
+    throw new Error(
+      `epic-scope touch-2 stub: no route for ${method} /${parts.join('/')}`,
+    );
+  };
+}
+
+describe('epic-scope frozen touch-2 oracle behavior (audit H6)', () => {
+  let suffix = 0;
+  const uniqueSuffix = () => `u${suffix++}`;
+
+  it('passes with all criteria met against a compliant role-based-access app', async () => {
+    suffix = 0;
+    const mod = await import(
+      '../../../bench/scenarios/epic-scope/acceptance.touch2.test.js'
+    );
+    const result = await mod.evaluate('http://127.0.0.1:3000', {
+      fetchImpl: makeEpicScopeTouch2Fetch({ enforceViewerWrite: true }),
+      uniqueSuffix,
+    });
+    assert.equal(result.scenario, 'epic-scope');
+    assert.equal(result.passed, true);
+    assert.ok(
+      result.criteria.every((c) => c.met),
+      `unmet: ${result.criteria
+        .filter((c) => !c.met)
+        .map((c) => c.evidence)
+        .join('; ')}`,
+    );
+  });
+
+  it('fails the viewer-write criterion when a viewer can create a task', async () => {
+    suffix = 0;
+    const mod = await import(
+      '../../../bench/scenarios/epic-scope/acceptance.touch2.test.js'
+    );
+    const result = await mod.evaluate('http://127.0.0.1:3000', {
+      fetchImpl: makeEpicScopeTouch2Fetch({ enforceViewerWrite: false }),
+      uniqueSuffix,
+    });
+    assert.equal(result.passed, false);
+    // Criterion 2 is the viewer-may-NOT-write probe (a non-2xx denial).
+    const viewerWrite = result.criteria.find((c) => c.index === 2);
+    assert.equal(viewerWrite.met, false);
+  });
+});
+
 describe('hello-world frozen oracle behavior', () => {
   it('passes when the delivered page returns 200 text/html with the text', async () => {
     const fetchImpl = stubFetch([
