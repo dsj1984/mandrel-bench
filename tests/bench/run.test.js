@@ -50,6 +50,7 @@ import {
   validateSandboxEnv,
 } from '../../bench/run.js';
 import { computeSecurity } from '../../bench/score/dimensions.js';
+import { ATTRIBUTION_CLASSES } from '../../bench/score/plan-quality.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, '..', '..');
@@ -2306,6 +2307,159 @@ test('runOneRun (control): carries no phases block', async () => {
     deps,
   );
   assert.equal('phases' in scorecard, false);
+});
+
+// ---------------------------------------------------------------------------
+// The intrinsic PLAN-QUALITY axis (Epic #86, Story #95; D-019) — populated on a
+// real mandrel run (audit H1). Before the wire-up, computePlanQuality had zero
+// non-test callers and buildScorecard had no planQuality param, so the axis was
+// ALWAYS null on real runs (the attribution table rendered empty). These prove
+// the between-session plan snapshot flows through to scorecard.planQuality for
+// the mandrel arm, and stays null for the control arm.
+// ---------------------------------------------------------------------------
+
+test('runOneRun (mandrel): populates scorecard.planQuality from the plan snapshot AND stamps the attribution classification (audit H1)', async () => {
+  const record = freshRecord({ betweenResults: [] });
+  const deps = benchDeps(record);
+
+  // A scenario carrying a FROZEN spec (seed.acceptance + storyCountContract)
+  // the plan-quality scorer measures the plan snapshot against.
+  const scenario = {
+    ...FAKE_SCENARIO,
+    routing: 'epic',
+    epicId: 900,
+    storyCountContract: { mode: 'epic', minStories: 4, maxStories: 6 },
+    seed: {
+      prompt: 'Build a multi-user API',
+      acceptance: [
+        'POST /auth/register with valid credentials returns 201 and persists the user',
+        'POST /auth/login returns 200 with a bearer token',
+      ],
+    },
+  };
+  const evaluate = async () => ({
+    scenario: 'hello-world',
+    passed: true,
+    criteria: [{ met: true }, { met: true }],
+  });
+
+  // In-memory FS shared between the snapshot WRITE (writeFileFn) and the
+  // plan-quality READ (readFileImpl), so the scorer reads the real bodies the
+  // snapshot persisted rather than a disk stub.
+  const fsMap = new Map();
+  deps.writeFileFn = (p, data) => {
+    fsMap.set(p, data);
+    record.writes.push({ p, data });
+  };
+  deps.readFileImpl = (p) => fsMap.get(p) ?? '';
+
+  // Five child Stories (within the 4-6 contract) whose ACs trace the frozen
+  // criteria — a conforming plan → a high plan-quality score.
+  const storyBodies = {
+    901: '## Acceptance\n- POST /auth/register with valid credentials returns 201 and persists the user',
+    902: '## Acceptance\n- POST /auth/login returns 200 with a bearer token; wrong password returns 401',
+    903: '## Acceptance\n- POST /projects with a valid name returns 201',
+    904: '## Acceptance\n- GET /projects returns only the authenticated user projects',
+    905: '## Acceptance\n- DELETE /projects/:id removes the project and returns 204',
+  };
+  deps.ghJson = (args) => {
+    const key = `${args[0]} ${args[1]}`;
+    const labelIdx = args.indexOf('--label');
+    const label = labelIdx >= 0 ? args[labelIdx + 1] : '';
+    if (key === 'issue view') {
+      const number = Number(args[2]);
+      if (storyBodies[number]) {
+        return { number, title: `S${number}`, body: storyBodies[number] };
+      }
+      return { number, title: 'Epic', body: 'Tech spec body', labels: [] };
+    }
+    if (key === 'issue list' && label === 'type::story') {
+      return Object.entries(storyBodies).map(([number, body]) => ({
+        number: Number(number),
+        title: `S${number}`,
+        body,
+        createdAt: '2026-06-16T20:00:02.000Z',
+      }));
+    }
+    return [];
+  };
+
+  // The stubbed session runs the injected betweenPhases hook, as the real
+  // runSession does, so the plan snapshot is written before delivery.
+  deps.runSessionFn = (o, d) => {
+    if (typeof d.betweenPhases === 'function') {
+      record.betweenResults.push(
+        d.betweenPhases({ scenario: o.scenario, planEnvelope: fakeEnvelope() }),
+      );
+    }
+    return {
+      arm: o.arm,
+      scenarioId: o.scenario.id,
+      model: o.model,
+      prompt: 'p',
+      status: 0,
+      envelope: fakeEnvelope(),
+    };
+  };
+
+  const scorecard = await runOneRun(
+    {
+      scenario,
+      evaluate,
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'https://github.com/dsj1984/bench-sbx-abc.git',
+        owner: 'dsj1984',
+        repo: 'bench-sbx-abc',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.ok(
+    validateScorecard(scorecard),
+    JSON.stringify(validateScorecard.errors),
+  );
+  // The axis is populated with a numeric score …
+  assert.ok(
+    scorecard.planQuality && typeof scorecard.planQuality === 'object',
+    'planQuality block present',
+  );
+  assert.equal(typeof scorecard.planQuality.score, 'number');
+  // … a conforming plan scores high (coverage 1, decomposition 1 within 4-6) …
+  assert.equal(scorecard.planQuality.plannedStoryCount, 5);
+  assert.ok(scorecard.planQuality.score >= 0.9);
+  // … and the attribution decision-table classification is stamped.
+  assert.ok(
+    ATTRIBUTION_CLASSES.includes(
+      scorecard.planQuality.attribution.classification,
+    ),
+    `attribution classification set, got ${scorecard.planQuality.attribution?.classification}`,
+  );
+});
+
+test('runOneRun (control): leaves scorecard.planQuality null — the control arm authors no plan (audit H1)', async () => {
+  const record = freshRecord({ betweenResults: [] });
+  const deps = benchDeps(record);
+  const { scenario, evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario,
+      evaluate,
+      arm: 'control',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'https://github.com/dsj1984/bench-sbx-abc.git',
+        owner: 'dsj1984',
+        repo: 'bench-sbx-abc',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+  assert.equal('planQuality' in scorecard, false);
 });
 
 // ---------------------------------------------------------------------------

@@ -31,6 +31,7 @@
 import { readFileSync } from 'node:fs';
 
 import { computeDimensions } from '../score/dimensions.js';
+import { computeAttribution } from '../score/plan-quality.js';
 
 /** Scorecard-record schema version this normalizer emits. */
 export const SCORECARD_SCHEMA_VERSION = 1;
@@ -604,6 +605,21 @@ function resolveTokenSplit({
  *   block reported apart from touch 1 (a sibling of `trap`/`phases`, never
  *   folded into the seven composite dimensions). Absent for touch-1-only
  *   scenarios (e.g. hello-world).
+ * @param {object} [args.planQuality]      Intrinsic PLAN-QUALITY block (Epic
+ *   #86, Story #95; D-019 §3.4), the `bench/score/plan-quality.js#computePlanQuality`
+ *   result the driver scores off the mandrel arm's plan snapshot: `{ score,
+ *   coverage, decompositionSanity, constraintSurfacing, judgeScore,
+ *   plannedStoryCount, warnings, detail }`. MANDREL-ONLY — the control arm
+ *   authors no plan, so its plan-quality is null and the axis is excluded from
+ *   the Mandrel-vs-control differential. Present only when supplied AND the arm
+ *   is mandrel; recorded under `scorecard.planQuality` as a SEPARATE block
+ *   (a sibling of `trap`/`phases`/`touch2`, never folded into the seven
+ *   composite dimensions). This function ALSO stamps `planQuality.attribution`
+ *   — the §3.4 decision-table verdict (`computeAttribution`) crossing the plan
+ *   score with the delivered OUTCOME (`dimensions.quality.score`) and
+ *   plan-adherence (`dimensions.planningFidelity.score`) — so the renderer reads
+ *   a stored classification instead of recomputing it. Absent/null ⇒ the block
+ *   is omitted, so control + legacy corpora stay valid without it.
  * @param {object} [args.rawRefs]          Provenance breadcrumbs for `rawRefs`.
  * @param {object} [args.standalone]       Standalone-path telemetry (Story #48;
  *   phase-split added Epic #66 Story #77), present only when the mandrel arm
@@ -640,6 +656,7 @@ export function buildScorecard({
   trap = null,
   phases = null,
   touch2 = null,
+  planQuality = null,
   rawRefs,
   standalone = null,
   scenarioRouting = null,
@@ -956,6 +973,33 @@ export function buildScorecard({
           }
         : {}),
     };
+  }
+
+  // Intrinsic PLAN-QUALITY axis (Epic #86, Story #95; D-019 §3.4). MANDREL-arm
+  // ONLY: the plan the /plan session authored, scored against the scenario's
+  // frozen spec — recorded as a SEPARATE block (a sibling of trap/phases/touch2,
+  // never folded into the seven composite dimensions). We ALSO stamp the §3.4
+  // attribution decision-table verdict here, crossing the plan score with the
+  // delivered OUTCOME (`dimensions.quality.score`) and plan-adherence
+  // (`dimensions.planningFidelity.score`) THIS function just computed, so the
+  // renderer honours a stored classification instead of recomputing it. A
+  // null/absent planQuality, or the control arm, leaves the block off entirely.
+  if (
+    run.arm === 'mandrel' &&
+    planQuality &&
+    typeof planQuality === 'object' &&
+    typeof planQuality.score === 'number'
+  ) {
+    const attribution = computeAttribution({
+      planQualityScore: planQuality.score,
+      outcomeScore: dimensions.quality?.score ?? null,
+      planAdherenceScore: dimensions.planningFidelity?.score ?? null,
+    });
+    // Drop the scorer's internal `detail` spine breakdown — the persisted
+    // planQualityBlock schema (additionalProperties:false) enumerates only the
+    // headline sub-scores + attribution, not the intermediate detail object.
+    const { detail: _detail, ...persisted } = planQuality;
+    scorecard.planQuality = { ...persisted, attribution };
   }
 
   if (rawRefs && typeof rawRefs === 'object') {

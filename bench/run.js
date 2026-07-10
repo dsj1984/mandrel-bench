@@ -96,6 +96,10 @@ import {
   runTrapOracles as defaultRunTrapOracles,
   TOUCH2_TRAPS_SUBDIR,
 } from './scenarios/trap-runner.js';
+import {
+  computePlanQuality,
+  obligationsForTrapClasses,
+} from './score/plan-quality.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -652,6 +656,112 @@ export function snapshotPlanArtifacts(
 
   writeJson('manifest.json', manifest);
   return { planDir, files, manifest };
+}
+
+/**
+ * Extract candidate acceptance-criterion strings from a Story body's markdown.
+ * Returns the body's list-item lines (bullets `-`/`*`/`+` or numbered `1.`),
+ * stripped of their markers and inline bold/backtick emphasis; when the body
+ * carries no list items at all, the whole trimmed body is returned as a single
+ * entry so coverage still has text to trace against. Pure.
+ *
+ * @param {string} body  A Story body (markdown), e.g. from a plan snapshot.
+ * @returns {string[]}
+ */
+export function extractStoryAcceptance(body) {
+  const text = typeof body === 'string' ? body : '';
+  const items = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const m = line.match(/^(?:[-*+]|\d+[.)])\s+(.*\S)/);
+    if (m) items.push(m[1].replace(/[`*]/g, '').trim());
+  }
+  if (items.length > 0) return items;
+  const trimmed = text.trim();
+  return trimmed ? [trimmed] : [];
+}
+
+/**
+ * Build the intrinsic PLAN-QUALITY block (Epic #86, Story #95; D-019) for one
+ * MANDREL-arm run from the plan snapshot `snapshotPlanArtifacts` wrote between
+ * the /plan and /deliver sessions. Reads the snapshot's Story/Epic bodies off
+ * disk, assembles the `computePlanQuality` input from the scenario's frozen
+ * spec (`seed.acceptance`), routing contract (`storyCountContract`), and trap
+ * classes (→ security-baseline obligations), and returns the scorer's block.
+ *
+ * Returns null when there is no usable snapshot (e.g. the plan-phase discovery
+ * failed and left `planSnapshot` null), so the caller threads null into
+ * `buildScorecard` and the scorecard's plan-quality axis stays absent — exactly
+ * the control-arm / legacy-corpus shape the renderer already tolerates.
+ *
+ * The attribution decision table is NOT computed here: it crosses the plan
+ * score with the delivered OUTCOME and plan-adherence, which are only known once
+ * `buildScorecard` has computed the dimensions, so `buildScorecard` attaches
+ * `planQuality.attribution` from the same dimension scores the renderer reads.
+ *
+ * @param {object} args
+ * @param {{ planDir: string, files: string[], manifest: object }|null} args.snapshot
+ * @param {object} args.scenario   The scenario.json object (frozen spec).
+ * @param {string[]} [args.trapClasses]  The scenario's declared trap classes.
+ * @param {number|null} [args.judgeScore]  Optional LLM-judge cross-check.
+ * @param {object} [deps]
+ * @param {(p: string, enc: string) => string} [deps.readFileImpl]
+ * @returns {object|null} the `computePlanQuality` block, or null.
+ */
+export function buildPlanQualityBlock(
+  { snapshot, scenario, trapClasses = [], judgeScore = null },
+  deps = {},
+) {
+  if (
+    !snapshot ||
+    typeof snapshot !== 'object' ||
+    !Array.isArray(snapshot.files) ||
+    snapshot.files.length === 0
+  ) {
+    return null;
+  }
+  const readFile = deps.readFileImpl ?? readFileSync;
+  const storyAcceptance = [];
+  const planTextParts = [];
+  let plannedStoryCount = 0;
+  for (const fp of snapshot.files) {
+    const base = path.basename(String(fp));
+    const isStory = /^story-.*\.json$/.test(base);
+    const isEpic = /^epic-.*\.json$/.test(base);
+    if (!isStory && !isEpic) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(readFile(fp, 'utf8'));
+    } catch {
+      continue;
+    }
+    const body = typeof parsed?.body === 'string' ? parsed.body : '';
+    if (isStory) {
+      plannedStoryCount += 1;
+      for (const ac of extractStoryAcceptance(body)) storyAcceptance.push(ac);
+    }
+    if (body) planTextParts.push(body);
+  }
+
+  const frozenAcceptance = Array.isArray(scenario?.seed?.acceptance)
+    ? scenario.seed.acceptance
+    : [];
+  const storyCountContract =
+    scenario?.storyCountContract &&
+    typeof scenario.storyCountContract === 'object'
+      ? scenario.storyCountContract
+      : undefined;
+
+  return computePlanQuality({
+    arm: 'mandrel',
+    frozenAcceptance,
+    storyAcceptance,
+    storyCountContract,
+    plannedStoryCount,
+    obligations: obligationsForTrapClasses(trapClasses),
+    planText: planTextParts.join('\n'),
+    judgeScore,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1262,6 +1372,13 @@ export async function runOneRun(opts, deps = {}) {
     // discovery/snapshot failure logs and lets delivery fall back to in-session
     // Epic discovery rather than aborting the run.
     const planGhJson = deps.ghJson ?? defaultPlanGhJson;
+    // The plan snapshot `snapshotPlanArtifacts` writes between the /plan and
+    // /deliver sessions (D-019, Story #94). Surfaced out of the between-phases
+    // hook into this run-scoped closure so the MANDREL arm can score the
+    // intrinsic PLAN-QUALITY axis (Story #95) off it after delivery — the hook
+    // itself keeps returning only `{ deliverTarget }`. Stays null for the
+    // control arm and on any plan-phase discovery/snapshot failure.
+    let planSnapshot = null;
     const betweenPhases =
       arm === 'mandrel'
         ? ({ planEnvelope }) => {
@@ -1308,7 +1425,7 @@ export async function runOneRun(opts, deps = {}) {
                 }
                 deliverTarget = epicId;
               }
-              snapshotPlanArtifacts(
+              planSnapshot = snapshotPlanArtifacts(
                 {
                   owner: sandbox.owner,
                   repo: sandbox.repo,
@@ -1604,6 +1721,30 @@ export async function runOneRun(opts, deps = {}) {
       env,
     });
 
+    // Intrinsic PLAN-QUALITY axis (Epic #86, Story #95; D-019). MANDREL arm
+    // ONLY: score the plan the /plan session authored — captured as
+    // `planSnapshot` between the two phase sessions — against the scenario's
+    // frozen spec. The control arm authors no plan, so its plan-quality is null
+    // and the axis is excluded from the differential. A null snapshot (plan
+    // discovery/snapshot failed) leaves the axis absent, exactly the shape the
+    // renderer's attribution table already tolerates. The attribution decision
+    // table itself is attached downstream by `buildScorecard`, which crosses
+    // this score with the delivered dimensions it computes.
+    const planQuality =
+      arm === 'mandrel'
+        ? buildPlanQualityBlock(
+            {
+              snapshot: planSnapshot,
+              scenario,
+              trapClasses: Array.isArray(trap?.classes)
+                ? trap.classes.map((c) => c.class)
+                : [],
+              judgeScore: null,
+            },
+            { readFileImpl: deps.readFileImpl },
+          )
+        : null;
+
     const scorecard = buildScorecard({
       run,
       lifecycle,
@@ -1619,6 +1760,9 @@ export async function runOneRun(opts, deps = {}) {
       // summing to the run totals. `session.phases` is null for the control arm.
       phases: session.phases ?? null,
       touch2,
+      // Intrinsic plan-quality axis (D-019, Story #95); mandrel-only, null for
+      // the control arm and when no plan snapshot was captured.
+      planQuality,
       rawRefs,
       standalone,
       scenarioRouting:
