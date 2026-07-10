@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.8.0...mandrel-bench-v0.9.0) (2026-07-10)
+
+
+### Fixed
+
+* **bench:** abort a cell on a transient session failure instead of degrading it ([#111](https://github.com/dsj1984/mandrel-bench/issues/111)) ([7248247](https://github.com/dsj1984/mandrel-bench/commit/724824789c07eee465d55747e3bc6d4637a6aa4a))
+* **bench:** pre-trust throwaway workspaces so headless claude -p runs clean ([#109](https://github.com/dsj1984/mandrel-bench/issues/109)) ([3eae098](https://github.com/dsj1984/mandrel-bench/commit/3eae098eb80b8b1954a5fbff7c6f20eed20f4b7f))
+
 ## [0.8.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.7.0...mandrel-bench-v0.8.0) (2026-07-10)
 
 
