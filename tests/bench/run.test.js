@@ -29,6 +29,7 @@ import {
   discoverPlannedEpicId,
   loadScenario,
   main,
+  makeClaudeJudgeTransport,
   parseOptionalNumericEnv,
   planningInputs,
   prepareTouch2Workspace,
@@ -2749,4 +2750,66 @@ test('runOneRun: no changeRequest ⇒ no touch2 block on the scorecard', async (
     deps,
   );
   assert.equal('touch2' in scorecard, false);
+});
+
+// ---------------------------------------------------------------------------
+// makeClaudeJudgeTransport — the production wiring for the dimension judge
+// (the adapter's no-op default's long-missing caller). Injects a fake `claude
+// -p` invoker so no real process is spawned.
+// ---------------------------------------------------------------------------
+
+test('makeClaudeJudgeTransport — real dimension-judge transport', async (t) => {
+  await t.test(
+    'returns the model result text on a clean (status 0) session',
+    async () => {
+      let seen = null;
+      const transport = makeClaudeJudgeTransport({
+        invokeFn: (input) => {
+          seen = input;
+          return {
+            status: 0,
+            stdout: JSON.stringify({
+              type: 'result',
+              result: '{"maintainability": 0.8, "security": 0.7}',
+              usage: {},
+            }),
+            stderr: '',
+          };
+        },
+      });
+      const raw = await transport('judge this workspace');
+      assert.equal(raw, '{"maintainability": 0.8, "security": 0.7}');
+      // Prompt forwarded; judge runs with a real model id in a neutral cwd
+      // (a temp dir, never a project tree it could pick up context from).
+      assert.equal(seen.prompt, 'judge this workspace');
+      assert.ok(typeof seen.model === 'string' && seen.model.length > 0);
+      assert.ok(typeof seen.cwd === 'string' && seen.cwd.length > 0);
+    },
+  );
+
+  await t.test(
+    'degrades to null on a non-zero exit (judge folds into spine)',
+    async () => {
+      const transport = makeClaudeJudgeTransport({
+        invokeFn: () => ({ status: 1, stdout: '', stderr: 'boom' }),
+        logger: { warn() {} },
+      });
+      assert.equal(await transport('p'), null);
+    },
+  );
+
+  await t.test(
+    'degrades to null when the session envelope is unparseable',
+    async () => {
+      const transport = makeClaudeJudgeTransport({
+        invokeFn: () => ({
+          status: 0,
+          stdout: 'not a json envelope',
+          stderr: '',
+        }),
+        logger: { warn() {} },
+      });
+      assert.equal(await transport('p'), null);
+    },
+  );
 });
