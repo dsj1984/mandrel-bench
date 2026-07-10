@@ -36,6 +36,7 @@
 
 import { noiseBand } from '../metrics/variance.js';
 import {
+  computeContinuityDelta,
   EFFICIENCY_COMPONENTS,
   SCALAR_DIMENSIONS,
   scoreCorpus,
@@ -506,6 +507,83 @@ export function renderTrapAxisSection(cell, method) {
 }
 
 /**
+ * Build the structured second-touch CONTINUITY rows for one scenario cell
+ * (Epic #86, Story #96): one row for the continuity OUTCOME delta and one for
+ * the continuity COST delta, each with the mandrel/control band centers and the
+ * mandrel-minus-control delta (with its real/within-noise verdict). Returns
+ * `[]` when the cell carries no `touch2` data at all (a touch-1-only scenario,
+ * e.g. hello-world).
+ *
+ * Deliberately SEPARATE from `dimensionRows` and `trapAxisRows` — the
+ * continuity axis is the second-touch persistence measurement, never folded
+ * into the seven composite dimensions or the touch-1 trap axis.
+ *
+ * @param {object} cell  A `groupCells` entry.
+ * @param {'iqr'|'ci'} method
+ * @returns {Array<{
+ *   metric: string,
+ *   label: string,
+ *   mandrelCenter: number|null,
+ *   controlCenter: number|null,
+ *   delta: number|null,
+ *   verdict: string
+ * }>}
+ */
+export function continuityRows(cell, method) {
+  const delta = computeContinuityDelta({
+    mandrelRuns: cell.mandrelRuns,
+    controlRuns: cell.controlRuns,
+    method,
+    scenario: cell.scenario,
+  });
+  if (!delta.present) return [];
+  const labels = {
+    'touch2.outcome': 'outcome (quality of the 2nd change; higher is better)',
+    'touch2.cost': 'cost (USD for the 2nd change; lower is better)',
+  };
+  return Object.entries(delta.metrics).map(([metric, cmp]) => ({
+    metric,
+    label: labels[metric] ?? metric,
+    mandrelCenter: cmp.mandrelCenter,
+    controlCenter: cmp.controlCenter,
+    delta: cmp.delta,
+    verdict: cmp.verdict,
+  }));
+}
+
+/**
+ * Render one scenario's second-touch CONTINUITY section (Epic #86, Story #96):
+ * the mandrel-vs-control delta of the second change's outcome and cost — the
+ * persistence-thesis measurement (does inheriting Mandrel's artifacts make the
+ * NEXT change cheaper and better than inheriting code alone?). Returns '' when
+ * the cell carries no touch-2 data.
+ *
+ * @param {object} cell
+ * @param {'iqr'|'ci'} method
+ * @returns {string}
+ */
+export function renderContinuitySection(cell, method) {
+  const rows = continuityRows(cell, method);
+  if (rows.length === 0) return '';
+  const lines = [
+    '#### Continuity delta (the second touch — separate from the seven dimensions)',
+    '',
+    'Mandrel-vs-control delta of the FROZEN change request scored against the',
+    'delivered tree (mandrel inherits its full pipeline output; control inherits',
+    'delivered code only). Positive outcome delta / negative cost delta favour Mandrel.',
+    '',
+    '| Metric | Mandrel | Control | Δ (mandrel − control) | Verdict |',
+    '| --- | --- | --- | --- | --- |',
+  ];
+  for (const r of rows) {
+    lines.push(
+      `| ${r.label} | ${fmt(r.mandrelCenter, 3)} | ${fmt(r.controlCenter, 3)} | ${fmt(r.delta, 3)} | ${r.verdict} |`,
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
  * Build the per-scenario autonomy-guardrail summary (Epic #66, Story #77):
  * autonomy is a mandrel-arm pass/fail GUARDRAIL against a cohort threshold,
  * never a mandrel-vs-control delta (see `differential.js` `SCALAR_DIMENSIONS`
@@ -834,9 +912,13 @@ function renderScenarioSection(cell, diff, method) {
     return `| ${r.label} | ${fmtBand(r.mandrelBand, digits)} | ${fmtBand(r.controlBand, digits)} | ${fmt(r.delta, digits)} | ${fmt(r.noiseFloor, digits)} | ${VERDICT_BADGE[r.verdict]} |`;
   });
   const trapSection = renderTrapAxisSection(cell, method);
-  return [...header, ...body, ...(trapSection ? ['', trapSection] : [])].join(
-    '\n',
-  );
+  const continuitySection = renderContinuitySection(cell, method);
+  return [
+    ...header,
+    ...body,
+    ...(trapSection ? ['', trapSection] : []),
+    ...(continuitySection ? ['', continuitySection] : []),
+  ].join('\n');
 }
 
 /**
@@ -1137,6 +1219,7 @@ export function buildReportModel({ scorecards, method = 'iqr' } = {}) {
       difficulty: cell.difficulty,
       rows: dimensionRows(cell, corpus.perScenario[i], method),
       trap: trapAxisRows(cell, method),
+      continuity: continuityRows(cell, method),
     })),
     monotonicity: corpus.difficultyMonotonicity,
     overheadFloor: corpus.overheadFloor,

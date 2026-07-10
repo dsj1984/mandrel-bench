@@ -47,5 +47,11 @@
     "defaultPort": 3000,
     "portEnvVar": "PORT"
   },
-  "acceptanceSuite": "./acceptance.test.js"
+  "acceptanceSuite": "./acceptance.test.js",
+  "changeRequest": {
+    "id": "project-sharing",
+    "title": "Share a project with another user with a role",
+    "prompt": "Let a project's owner share a project with another user and give them a role. Add POST /projects/:id/shares: it accepts a JSON body {\"userId\": ..., \"role\": \"viewer\"|\"editor\"}, may be called only by the project's owner, and returns 201 on success (400 for a missing/unknown user or an unrecognised role, 404 when the caller is not the owner). A user a project has been shared with can now reach it according to their role: a viewer may read the project and list its tasks but may not create, update, or delete tasks; an editor may read it and also create, update, and delete its tasks. A user with no relationship to the project (neither owner nor shared-with) still gets 404 for the project and its tasks, exactly as before.",
+    "acceptanceSuite": "./acceptance.touch2.test.js"
+  }
 }

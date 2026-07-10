@@ -42,6 +42,7 @@
 import { cohortSegments } from './cohort-path.js';
 import {
   autonomyGuardrailRows,
+  continuityRows,
   formatTrapStat,
   groupCells,
   phaseCostRows,
@@ -298,7 +299,17 @@ export function buildDashboardModel(scorecards) {
   // scenario, reusing render.js's `phaseCostRows` so the dashboard and the
   // Markdown report share one interpretation.
   const phaseCost = phaseCostRows(cells);
-  return { rows, metrics, guardrail, trapAxis, phaseCost };
+  // Second-touch continuity panel (Epic #86, Story #96): mandrel-vs-control
+  // delta of the second change's outcome + cost per scenario, reusing
+  // render.js's `continuityRows` so the dashboard and the Markdown report share
+  // one interpretation. Only scenarios carrying touch-2 data appear.
+  const continuity = cells
+    .map((cell) => ({
+      scenario: cell.scenario,
+      rows: continuityRows(cell, 'iqr'),
+    }))
+    .filter((s) => s.rows.length > 0);
+  return { rows, metrics, guardrail, trapAxis, phaseCost, continuity };
 }
 
 /**
@@ -983,6 +994,39 @@ ${
 }
 
 /**
+ * Server-rendered, static "Continuity delta" panel (Epic #86, Story #96): the
+ * mandrel-vs-control delta of the second change's outcome + cost per scenario —
+ * the persistence-thesis measurement. Reuses `render.js`'s `continuityRows` so
+ * the dashboard and the Markdown report share one interpretation. Only
+ * scenarios carrying touch-2 data appear.
+ *
+ * @param {Array<{ scenario: string, rows: Array<object> }>} continuity
+ * @returns {string}
+ */
+function renderContinuitySectionHtml(continuity) {
+  const num = (v) =>
+    typeof v === 'number' && Number.isFinite(v) ? Number(v.toFixed(3)) : '—';
+  const scenarioBlocks = (continuity ?? [])
+    .map((s) => {
+      const rows = s.rows
+        .map(
+          (r) =>
+            `<tr><td>${esc(r.label)}</td><td>${num(r.mandrelCenter)}</td><td>${num(r.controlCenter)}</td><td>${num(r.delta)}</td><td>${esc(r.verdict)}</td></tr>`,
+        )
+        .join('');
+      return `<h3>${esc(s.scenario)}</h3><table><thead><tr><th>Metric</th><th>Mandrel</th><th>Control</th><th>&Delta; (M&minus;C)</th><th>Verdict</th></tr></thead><tbody>${rows}</tbody></table>`;
+    })
+    .join('');
+  return `<section>
+<h2>Continuity delta (the second touch)</h2>
+<div class="sub">Mandrel-vs-control delta of the FROZEN change request scored against the delivered tree — mandrel inherits its full pipeline output, control inherits delivered code only. Positive outcome delta / negative cost delta favour Mandrel. The persistence-thesis measurement (Epic #86, Story #96); never folded into the seven composite dimensions.</div>
+<div class="panel continuity">
+${continuity && continuity.length ? scenarioBlocks : '<div class="empty">No scenario in this corpus carries a scored second touch.</div>'}
+</div>
+</section>`;
+}
+
+/**
  * Render the self-contained dashboard HTML for the aggregated scorecard corpus.
  *
  * @param {object} args
@@ -1068,6 +1112,7 @@ export function renderDashboard({ scorecards } = {}) {
 ${renderGuardrailSection(model.guardrail)}
 ${renderPhaseCostSectionHtml(model.phaseCost)}
 ${renderTrapAxisSectionHtml(model.trapAxis)}
+${renderContinuitySectionHtml(model.continuity)}
 </main>
 <div class="modal-backdrop" id="modal-backdrop">
 <div class="modal" id="modal" role="dialog" aria-modal="true"><div id="modal-body"></div></div>

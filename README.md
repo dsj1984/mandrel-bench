@@ -67,6 +67,32 @@ Mandrel-vs-control delta is only called *real* when it clears that band.
   direct "ceremony-lite path for trivial scopes" signal. Feeds the report's
   **Recommended improvements** section.
 
+### The second touch — continuity delta
+
+The persistence thesis (D-020) is that inheriting Mandrel's artifacts makes the
+**next** change cheaper and safer than inheriting code alone. To measure it,
+each value rung declares a **frozen change request** in its `scenario.json`
+(`changeRequest`): story-scope's is *password change + session invalidation*,
+epic-scope's is *project sharing with role-based access*. hello-world declares
+none, so the driver skips its second touch.
+
+After touch 1 is scored, the driver runs the change request as a **fresh
+session against the delivered tree**, with **arm-appropriate inheritance**:
+the mandrel arm keeps its full pipeline output (the `.agents/` overlay and the
+tickets/plan state); the control workspace is reduced to *delivered code only*.
+The second touch is scored with the full dimension set plus its **own frozen
+behavioural suite** (`acceptance.touch2.test.js`) — session invalidation and
+role-based access are asserted *behaviourally* over HTTP, never by a source
+scan — and by **phase-scoped regression oracles**. Those regression oracles
+(*hashing preservation*, *per-user isolation preservation*) live under a
+**separate `traps-touch2/` directory** discovered only by the touch-2 scan, so
+they can never pollute the touch-1 trap `cleanRate`.
+
+The scorecard carries a `touch2` block reported separately from touch 1, and
+the report + dashboard render the **continuity delta** — mandrel touch-2
+outcome/cost minus control touch-2 outcome/cost — as its own section: a
+positive outcome delta / negative cost delta favours Mandrel.
+
 ---
 
 ## How it works
@@ -112,7 +138,7 @@ mandrel-bench/
 │   ├── metrics/      # five-dimension formulas (README.md) + variance/noise-band
 │   ├── schemas/      # scorecard.schema.json (the per-run record contract)
 │   ├── driver/       # claude -p run launcher + ephemeral sandbox lifecycle + unattended.md
-│   ├── scenarios/    # hello-world/ + story-scope/ + epic-scope/ defs, frozen oracles, trap oracles
+│   ├── scenarios/    # hello-world/ + story-scope/ + epic-scope/ defs, frozen oracles (touch-1 + touch-2), traps/ + traps-touch2/ oracles
 │   ├── collect/      # lifecycle + signals + cost-envelope → normalized per-run record
 │   ├── score/        # dimensions + Mandrel-vs-control differential + derived metrics
 │   ├── report/       # value-add report renderer + stamped persistence + cross-run compare

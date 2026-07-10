@@ -19,12 +19,14 @@ import {
   autonomyGuardrailFindings,
   autonomyGuardrailRows,
   buildReportModel,
+  continuityRows,
   deriveCohort,
   dimensionRows,
   groupCells,
   phaseCostRows,
   recommendImprovements,
   renderAttributionSection,
+  renderContinuitySection,
   renderFloorCalibrationNote,
   renderMismatchNote,
   renderPhaseCostSection,
@@ -67,6 +69,7 @@ function card({
   env = ENV,
   trap = null,
   phases = null,
+  touch2 = null,
 } = {}) {
   const sc = {
     schemaVersion: 1,
@@ -101,6 +104,7 @@ function card({
   };
   if (trap) sc.trap = trap;
   if (phases) sc.phases = phases;
+  if (touch2) sc.touch2 = touch2;
   return sc;
 }
 
@@ -1028,5 +1032,61 @@ describe('plan-vs-deliver attribution table (Epic #86, Story #95)', () => {
     ];
     assert.equal(renderAttributionSection(groupCells(scorecards)), '');
     assert.equal(attributionRows(groupCells(scorecards)).length, 0);
+  });
+});
+
+describe('continuity delta — the second touch (Epic #86, Story #96)', () => {
+  const contMandrel = card({
+    scenario: 'story-scope',
+    arm: 'mandrel',
+    runId: 'cont-m-1',
+    touch2: { outcome: 0.9, cost: 0.2 },
+  });
+  const contControl = card({
+    scenario: 'story-scope',
+    arm: 'control',
+    runId: 'cont-c-1',
+    touch2: { outcome: 0.6, cost: 0.5 },
+  });
+
+  it('returns [] for a cell with no touch2 data (a touch-1-only scenario)', () => {
+    const cells = groupCells([card({ scenario: 'hello-world' })]);
+    assert.deepEqual(continuityRows(cells[0], 'iqr'), []);
+  });
+
+  it('builds outcome + cost delta rows with the mandrel-minus-control delta', () => {
+    const cells = groupCells([contMandrel, contControl]);
+    const rows = continuityRows(cells[0], 'iqr');
+    const outcome = rows.find((r) => r.metric === 'touch2.outcome');
+    const cost = rows.find((r) => r.metric === 'touch2.cost');
+    assert.ok(outcome && cost);
+    assert.ok(Math.abs(outcome.delta - 0.3) < 1e-9);
+    assert.ok(Math.abs(cost.delta - -0.3) < 1e-9);
+    assert.equal(outcome.mandrelCenter, 0.9);
+    assert.equal(cost.controlCenter, 0.5);
+  });
+
+  it('renders a continuity section separate from the seven dimensions and the trap axis', () => {
+    const md = renderReport({
+      scorecards: [contMandrel, contControl],
+      method: 'iqr',
+    });
+    assert.match(md, /Continuity delta \(the second touch/);
+    assert.match(md, /outcome \(quality of the 2nd change/);
+    assert.match(md, /cost \(USD for the 2nd change/);
+  });
+
+  it('buildReportModel exposes the continuity rows per scenario', () => {
+    const model = buildReportModel({
+      scorecards: [contMandrel, contControl],
+      method: 'iqr',
+    });
+    const s = model.scenarios.find((x) => x.scenario === 'story-scope');
+    assert.ok(Array.isArray(s.continuity) && s.continuity.length === 2);
+  });
+
+  it('renderContinuitySection returns "" for a touch-1-only cell', () => {
+    const cells = groupCells([card({ scenario: 'hello-world' })]);
+    assert.equal(renderContinuitySection(cells[0], 'iqr'), '');
   });
 });
