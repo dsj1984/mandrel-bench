@@ -424,7 +424,7 @@ test('main(): sweeps using BENCH_SANDBOX_OWNER and the default TTL when no flags
   const code = await main(
     [],
     { BENCH_SANDBOX_OWNER: OWNER },
-    { logger, ghFn, destroyFn },
+    { logger, ghFn, destroyFn, now: NOW },
   );
   assert.equal(code, 0);
   assert.deepEqual(destroyCalls, [`${OWNER}/bench-sbx-old`]);
@@ -445,7 +445,7 @@ test('main(): the env-var TTL override is honored when no --ttl-hours flag is gi
   const code = await main(
     [],
     { BENCH_SANDBOX_OWNER: OWNER, [TTL_HOURS_ENV_VAR]: '5' },
-    { logger, ghFn, destroyFn },
+    { logger, ghFn, destroyFn, now: NOW },
   );
   assert.equal(code, 0);
   assert.deepEqual(destroyCalls, [`${OWNER}/bench-sbx-mid`]);
@@ -466,7 +466,7 @@ test('main(): --ttl-hours flag takes precedence over the env var', async () => {
   const code = await main(
     ['--ttl-hours', '24'],
     { BENCH_SANDBOX_OWNER: OWNER, [TTL_HOURS_ENV_VAR]: '5' },
-    { logger, ghFn, destroyFn },
+    { logger, ghFn, destroyFn, now: NOW },
   );
   assert.equal(code, 0);
   assert.equal(destroyCalled, false); // 10h old, 24h flag TTL wins over 5h env var — not expired.
@@ -487,7 +487,7 @@ test('main(): --dry-run deletes nothing and exits 0', async () => {
   const code = await main(
     ['--dry-run'],
     { BENCH_SANDBOX_OWNER: OWNER },
-    { logger, ghFn, destroyFn },
+    { logger, ghFn, destroyFn, now: NOW },
   );
   assert.equal(code, 0);
   assert.equal(destroyCalled, false);
@@ -498,7 +498,11 @@ test('main(): a gh-list failure exits non-zero with a FATAL message', async () =
     throw new Error('gh: rate limited');
   };
   const { logger, messages } = makeLogger();
-  const code = await main([], { BENCH_SANDBOX_OWNER: OWNER }, { logger, ghFn });
+  const code = await main(
+    [],
+    { BENCH_SANDBOX_OWNER: OWNER },
+    { logger, ghFn, now: NOW },
+  );
   assert.equal(code, 1);
   assert.match(messages.error[0], /FATAL/);
 });
