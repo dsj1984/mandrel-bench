@@ -442,6 +442,68 @@ describe('buildScorecard — control arm efficiency/overhead', () => {
   });
 });
 
+describe('buildScorecard — per-phase envelopes (D-019, Epic #86 Story #94)', () => {
+  it('attaches phases[] on the mandrel arm; per-phase cost/tokens SUM to the efficiency totals', () => {
+    // The run envelope is the SUM of the phase envelopes (aggregateEnvelopes),
+    // so the phases[] block sums to efficiency.costUsd / totalTokens.
+    const phases = [
+      { phase: 'plan', costUsd: 0.4, tokens: 40000, wallClockMs: 120000 },
+      { phase: 'deliver', costUsd: 1.1, tokens: 140000, wallClockMs: 480000 },
+    ];
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel', scenario: 'story-scope' }),
+      lifecycle: [],
+      envelope: {
+        usage: {
+          totalTokens: 180000,
+          inputTokens: 150000,
+          outputTokens: 30000,
+        },
+        cost: { totalUsd: 1.5 },
+        durationMs: 600000,
+      },
+      quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
+      phases,
+    });
+    assert.ok(Array.isArray(sc.phases));
+    assert.deepEqual(
+      sc.phases.map((p) => p.phase),
+      ['plan', 'deliver'],
+    );
+    // The binding sum-invariant (Story #94 AC4).
+    const sumCost = sc.phases.reduce((a, p) => a + p.costUsd, 0);
+    const sumTokens = sc.phases.reduce((a, p) => a + p.tokens, 0);
+    assert.equal(sumCost, sc.dimensions.efficiency.costUsd);
+    assert.equal(sumTokens, sc.dimensions.efficiency.totalTokens);
+  });
+
+  it('omits phases[] entirely for the control arm (single session)', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'control', scenario: 'story-scope' }),
+      lifecycle: [],
+      envelope: {
+        usage: { totalTokens: 100000, inputTokens: 80000, outputTokens: 20000 },
+        cost: { totalUsd: 0.5 },
+        durationMs: 300000,
+      },
+      quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
+      // Even if phases are (wrongly) supplied, a control record must not carry them.
+      phases: [{ phase: 'plan', costUsd: 0.5, tokens: 100000, wallClockMs: 1 }],
+    });
+    assert.equal('phases' in sc, false);
+  });
+
+  it('leaves phases[] off when none are supplied (a control record stays valid)', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.equal('phases' in sc, false);
+  });
+});
+
 describe('buildScorecard — standalone fallback (Story #48)', () => {
   it('measures planning + autonomy from standalone telemetry when no ledger exists', () => {
     const sc = buildScorecard({
@@ -849,6 +911,64 @@ describe('buildScorecard — routing contract enforcement (Epic #66, Story #76)'
     });
     assert.equal(clean.routingMismatch, false);
     assert.equal(validate(clean), true, JSON.stringify(validate.errors));
+  });
+});
+
+describe('buildScorecard — second-touch continuity block (Epic #86, Story #96)', () => {
+  it('attaches a schema-valid touch2 block reported separately from touch 1', () => {
+    const validate = buildValidator();
+    // Reuse a touch-1 scorecard's dimensions object as the touch-2 full
+    // dimension set (the same seven-dimension shape).
+    const base = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 2, frozenSuiteTotal: 2 },
+    });
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 2, frozenSuiteTotal: 2 },
+      touch2: {
+        changeRequestId: 'password-change',
+        inheritance: 'full-pipeline',
+        outcome: 0.9,
+        cost: 0.21,
+        frozenSuitePassed: 4,
+        frozenSuiteTotal: 4,
+        totalTokens: 5000,
+        wallClockMs: 12000,
+        dimensions: base.dimensions,
+        regression: {
+          classes: [
+            { class: 'regression-hashing', score: 1, defectPresent: false },
+          ],
+          cleanRate: 1,
+        },
+      },
+    });
+    assert.ok(sc.touch2, 'the scorecard carries a touch2 block');
+    assert.equal(sc.touch2.outcome, 0.9);
+    assert.equal(sc.touch2.cost, 0.21);
+    assert.equal(sc.touch2.inheritance, 'full-pipeline');
+    assert.equal(sc.touch2.regression.cleanRate, 1);
+    // touch2 lives at the top level, a sibling of dimensions — never nested in it.
+    assert.equal('touch2' in sc.dimensions, false);
+    assert.equal(validate(sc), true, JSON.stringify(validate.errors));
+  });
+
+  it('omits the touch2 block entirely for a touch-1-only record (e.g. hello-world)', () => {
+    const validate = buildValidator();
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'control' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+      touch2: null,
+    });
+    assert.equal('touch2' in sc, false);
+    assert.equal(validate(sc), true, JSON.stringify(validate.errors));
   });
 });
 

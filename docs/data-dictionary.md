@@ -129,6 +129,192 @@ per-class scores plus `cleanRate` as distributions — mean, spread
 (noise-band width), and worst-case (min) — per arm, in a section clearly
 separate from the seven-dimension table.
 
+## `phases[]` block (D-019, Epic #86 Story #94)
+
+Per-phase `claude -p` session envelopes for the **mandrel arm's ordered
+two-session run**. Under D-019 (which amends D-008) the mandrel arm no longer
+runs as one session: it runs `/plan` (session 1) and then `/deliver`
+(session 2) as **separate** headless sessions, each with its own
+cost/tokens/wall-clock, so a finding can be attributed to the planning half vs
+the delivery half rather than to "Mandrel" at large. The **control arm stays a
+single session** and carries **no** `phases` block — a control record is valid
+without it.
+
+```json
+"phases": [
+  { "phase": "plan",    "costUsd": 0.40, "tokens": 40000,  "wallClockMs": 120000 },
+  { "phase": "deliver", "costUsd": 1.10, "tokens": 140000, "wallClockMs": 480000 }
+]
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `phases` | array (min 1) | Mandrel-arm only. One entry per pipeline phase, in order (`plan`, then `deliver`). Absent for the control arm and for any record with no per-phase split. |
+| `phases[].phase` | `"plan"` \| `"deliver"` | Which pipeline phase this session drove. |
+| `phases[].costUsd` | number \| `null` | USD cost of this phase's session, or `null` when the envelope reported none. |
+| `phases[].tokens` | integer `≥ 0` | Total tokens (input + output + cache) for this phase's session. |
+| `phases[].wallClockMs` | number `≥ 0` | This phase session's own `claude -p` duration. Distinct from the record's ledger-derived `dimensions.efficiency.wallClockMs`. |
+
+**Sum invariant.** The run envelope is the SUM of the phase envelopes
+(`bench/driver/run-session.js#aggregateEnvelopes`), so the per-phase `costUsd`
+and `tokens` sum to `dimensions.efficiency.costUsd` and
+`dimensions.efficiency.totalTokens` by construction. (Per-phase `wallClockMs`
+is the envelope session duration; the record's `efficiency.wallClockMs` remains
+ledger-derived, so those are NOT required to match.)
+
+**Between-session seam (id-discovery + plan snapshot).** After session 1 exits,
+`bench/run.js` (via `runSession`'s injected `betweenPhases` hook) recovers the
+id(s) the plan session created on the ephemeral repo — the **Epic id** for
+epic-routed scenarios (`discoverPlannedEpicId`, the newest `type::epic` created
+at/after the run start) or the **standalone Story id** for story-routed ones
+(`discoverStandaloneStory` conventions) — over the **sanitized `gh`
+environment** (`sanitizeGitHubTokenEnv`, no new credential surface). The
+discovered id is threaded into the deliver-session prompt so `/deliver` enters
+at the artifact the plan session produced.
+
+## `touch2` block (Epic #86, Story #96)
+
+The **second-touch continuity** block — a SEPARATE top-level scorecard block (a
+sibling of `dimensions`, like `trap`/`phases`), never folded into the seven
+composite `dimensions`. Present only when the scenario declares a frozen
+`changeRequest` in its `scenario.json` (`story-scope`, `epic-scope`) AND the
+second touch was scored; absent (no `touch2` key) for `hello-world`, which
+declares no change request (the driver skips its second touch).
+
+After touch 1 is scored, `bench/run.js#runTouch2` runs the change request as a
+**fresh session against the delivered tree**, with **arm-appropriate
+inheritance** (`bench/run.js#prepareTouch2Workspace`): the mandrel arm keeps its
+FULL pipeline output (the `.agents/` overlay + tickets/plan state) in place; the
+control workspace is reduced to DELIVERED CODE ONLY (a fresh copy with
+framework/session artifacts stripped). The second touch is scored with the full
+dimension set, its own frozen behavioural suite (`acceptance.touch2.test.js`),
+and the phase-scoped regression oracles.
+
+```json
+"touch2": {
+  "changeRequestId": "password-change",
+  "inheritance": "full-pipeline",
+  "outcome": 0.9,
+  "cost": 0.21,
+  "frozenSuitePassed": 4,
+  "frozenSuiteTotal": 4,
+  "totalTokens": 5000,
+  "wallClockMs": 12000,
+  "dimensions": { "quality": { "score": 0.9, "frozenSuitePassRate": 1 }, "...": "the full seven-dimension set" },
+  "regression": {
+    "classes": [{ "class": "regression-hashing", "score": 1, "defectPresent": false }],
+    "cleanRate": 1
+  }
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `touch2.changeRequestId` | string (optional) | Stable id of the frozen change request (`scenario.json` `changeRequest.id`, e.g. `password-change`, `project-sharing`). |
+| `touch2.inheritance` | `"full-pipeline"` \| `"delivered-code-only"` | Arm-appropriate inheritance the second touch ran under: full pipeline (mandrel) or delivered code only (control). |
+| `touch2.outcome` | number `[0,1]` \| `null` | Continuity OUTCOME scalar — the second touch's composite quality (`touch2.dimensions.quality.score`). |
+| `touch2.cost` | number \| `null` | Continuity COST scalar in USD — the second touch's session cost (`touch2.dimensions.efficiency.costUsd`), or `null` when the envelope reported none. |
+| `touch2.frozenSuitePassed` / `frozenSuiteTotal` | integer `≥ 0` | Passing / total frozen touch-2-suite assertions. |
+| `touch2.totalTokens` | integer `≥ 0` | Total tokens for the second-touch session. |
+| `touch2.wallClockMs` | number `≥ 0` | The second-touch session's wall-clock duration. |
+| `touch2.dimensions` | object | The FULL seven-dimension set scored for the second touch — the same shape as touch 1's `dimensions`. |
+| `touch2.regression` | object (optional) | The phase-scoped regression verdict (same shape as `trap`), present only when the scenario declares `traps-touch2/` oracles. |
+
+**Phase-scoped regression oracles.** The regression oracles live under a
+DEDICATED `bench/scenarios/<id>/traps-touch2/` directory — DISJOINT from the
+touch-1 `traps/` directory — and are discovered ONLY by the touch-2 scan
+(`bench/scenarios/trap-runner.js#runTrapOracles` with `trapsSubdir:
+'traps-touch2'`). This separation is load-bearing: the touch-1 trap scan globs
+`traps/` only, so the touch-1 `cleanRate` is provably unaffected by the presence
+of touch-2 oracles. The regression classes are *hashing preservation*
+(`story-scope`) and *per-user isolation preservation* (`epic-scope`), each with
+a discrimination unit test over hand-crafted clean/vulnerable samples. Their
+behavioural counterparts (session invalidation; role-based access) are asserted
+by the frozen touch-2 suite over HTTP, NOT by a source scan.
+
+**Consumption.** `bench/score/differential.js#computeContinuityDelta` derives
+the **continuity delta** — mandrel `touch2.outcome`/`touch2.cost` minus control
+— using the same noise-band + real-delta machinery as the dimension differential.
+`bench/report/render.js#renderContinuitySection` and `bench/report/html.js`'s
+continuity panel render it as its own section (positive outcome delta / negative
+cost delta favours Mandrel).
+
+### Plan snapshot layout — `.raw/<run-stamp>/plan/`
+
+Before the deliver session starts, `snapshotPlanArtifacts` freezes the plan
+artifacts into the run's provenance directory, so delivery can never
+retroactively alter what the plan is scored on. `<run-stamp>` is the same
+`<scenario>-<arm>-r<runIndex>` key used for the cost envelope, under the
+cohort's `.raw/`.
+
+| Path | Contents |
+| --- | --- |
+| `.raw/<run-stamp>/plan/epic-<n>.json` | The Epic body (`number`, `title`, `body` incl. the folded tech-spec sections, `labels`) — epic-routed runs only. |
+| `.raw/<run-stamp>/plan/story-<n>.json` | Each child Story body (with its inline `acceptance[]` / `verify[]`) for epic-routed runs; the single standalone Story body for story-routed runs. |
+| `.raw/<run-stamp>/plan/manifest.json` | `{ routing, epicId, storyNumber, storyNumbers[], capturedAt }` — the routing verdict and the captured ids. |
+
+**Consumption.** `bench/report/render.js`'s `phaseCostRows` /
+`renderPhaseCostSection` and `bench/report/html.js`'s per-phase cost panel
+render the mandrel arm's `/plan` vs `/deliver` cost per scenario; the control
+arm carries no per-phase split, so it is omitted by construction.
+
+## `planQuality` block (Epic #86, Story #95)
+
+The intrinsic PLAN-QUALITY axis — a **top-level** scorecard block (a sibling of
+`dimensions`, like `trap`), scored by `bench/score/plan-quality.js` against the
+frozen plan snapshot above. It scores the pre-delivery plan the mandrel arm's
+`/plan` session produced so a bad OUTCOME can be attributed to the **plan
+phase** vs the **deliver phase** (D-019 §3.4), rather than lumped into one
+opaque quality number.
+
+**Mandrel-only.** The control arm authors no plan, so `planQuality` is `null`
+(or absent) for control records — and, exactly like `planningFidelity` and
+`autonomy`, the axis is **deliberately excluded** from the Mandrel-vs-control
+differential (`SCALAR_DIMENSIONS` in `bench/score/differential.js`): diffing a
+measured mandrel plan against a non-existent control plan is not a meaningful
+comparison, so the differential table **never** carries a plan-quality delta
+row.
+
+**Composite.** `score = 0.7 · spine + 0.3 · judge`, folding the judge weight
+into the spine when the judge is `null` (the same two-oracle convention as
+`computeMaintainability` / `computeSecurity`). The spine is the mean of the
+three deterministic sub-scores that were measured (a `null` sub-score folds out
+of the mean):
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `planQuality.score` | number `[0,1]` | Composite plan quality. Spine 0.7 + judge 0.3 (judge folds into spine when null). |
+| `planQuality.coverage` | number `[0,1]` \| `null` | Fraction of the scenario's FROZEN acceptance criteria (`seed.acceptance`) traceable to a Story AC in the plan snapshot. |
+| `planQuality.decompositionSanity` | number `[0,1]` \| `null` | Story count/sizing vs the scenario's machine-readable `storyCountContract` (epic-scope 4-6 Stories; the story-routed rungs a single standalone Story). `null` when no contract was supplied. |
+| `planQuality.constraintSurfacing` | number `[0,1]` \| `null` | Fraction of the security-baseline obligations the scenario's trap classes probe that are surfaced in the plan artifacts. `1` for a scenario with no trap obligations (e.g. hello-world). |
+| `planQuality.judgeScore` | number `[0,1]` \| `null` | LLM-judge cross-check score, or `null` when the judge did not run (the 0.3 weight then folds into the spine). |
+| `planQuality.plannedStoryCount` | integer `≥ 0` | Number of Stories the plan snapshot recorded. |
+| `planQuality.warnings` | string[] | Loud-null markers: `plan-quality-decomposition-contract-absent`, `plan-quality-judge-absent`. |
+| `planQuality.attribution.classification` | enum \| `null` | The D-019 §3.4 attribution verdict (see below), or `null` when plan quality or outcome was unmeasured. |
+| `planQuality.attribution.planGood` / `outcomeGood` / `adhered` | boolean \| `null` | The three threshold crossings (default `0.7`) the classification is derived from. |
+
+**Attribution decision table** (`computeAttribution`, computed per run and
+rendered by `render.js`'s `renderAttributionSection`). Crossing the intrinsic
+plan quality with the delivered OUTCOME (`dimensions.quality.score`) and
+plan-adherence (`dimensions.planningFidelity.score`) is the **Goodhart
+backstop** — a plan that games the deterministic spine cannot read as
+`working-as-intended` without a matching outcome:
+
+| Outcome | Plan | Adherence | → Classification |
+| --- | --- | --- | --- |
+| good | good | — | `working-as-intended` |
+| good | weak | — | `model-compensating` (good outcome despite a weak plan) |
+| weak | good | adhered | `plan-phase-gap` (a good-looking plan was followed yet still failed) |
+| weak | good | diverged | `deliver-phase-gap` (delivery diverged from a good plan) |
+| weak | weak | — | `plan-phase-gap` |
+
+**Decomposition contract** — each `scenario.json` carries a machine-readable
+`storyCountContract` (`{ mode, minStories, maxStories }`), asserted in
+`tests/bench/scenarios/scenario-defs.test.js`: `epic-scope` →
+`{ mode: "epic", minStories: 4, maxStories: 6 }`; `story-scope` and
+`hello-world` → `{ mode: "standalone", minStories: 1, maxStories: 1 }`. This is
+the sole source for decomposition sanity — never prose.
+
 ## `dimensions.autonomy.guardrail` (Epic #66, Story #77)
 
 ```json
@@ -165,7 +351,9 @@ meaningful comparison.
 Provenance breadcrumbs (workspace-relative paths) to the on-disk artifacts a
 scorecard was derived from — `lifecycleNdjson`, `signalsNdjson[]`,
 `costEnvelope`, `acceptanceEvalVerdict` — for traceability and re-scoring,
-even though the ephemeral workspace is torn down after each run.
+even though the ephemeral workspace is torn down after each run. The mandrel
+arm's plan snapshot (`.raw/<run-stamp>/plan/`, see the `phases[]` section
+above) lives alongside these under the same `.raw/<run-stamp>/` directory.
 
 ## Finding envelope (Epic #85, Story #91)
 
@@ -226,3 +414,75 @@ on the finding (and envelope), it is simply not part of the identity key.
 Derivation is deterministic, so deriving twice from one corpus yields
 byte-identical fingerprints. Contract:
 [`../bench/feedback/fingerprint.js`](../bench/feedback/fingerprint.js).
+
+## Phase tag + class-5 attribution findings (Epic #86, Story #97)
+
+The attribution module
+([`../bench/feedback/attribution.js`](../bench/feedback/attribution.js)) routes
+every feedback finding to the HALF of Mandrel that owns it — `/plan`,
+`/deliver`, or the persistent artifacts — and derives a NET-NEW **fifth**
+finding class beside the four in `derive.js`. It is a PURE, deterministic,
+data-in/data-out module: it imports no other `bench/feedback` module and does no
+I/O, so the Epic #85 feedback stage can compose it LATER without this module
+ever reaching back into that stage's stateful surfaces. Same fixture corpus in,
+same tags and class-5 findings out.
+
+Its inputs are PLAIN DATA per scenario: the §3.4 `computeAttribution` verdict
+([`../bench/score/plan-quality.js`](../bench/score/plan-quality.js)) and the
+§4.5 continuity read distilled from `computeContinuityDelta`
+([`../bench/score/differential.js`](../bench/score/differential.js)).
+
+### Phase tag
+
+Every finding carries a `phaseTag` — one of `phase::plan`, `phase::deliver`,
+`phase::artifacts`, or `null` — derived from its scenario's attribution inputs:
+
+| Signal | `phaseTag` |
+| --- | --- |
+| §3.4 verdict `plan-phase-gap` or `model-compensating` | `phase::plan` |
+| §3.4 verdict `deliver-phase-gap` | `phase::deliver` |
+| §4.5 continuity read present and NOT helped (touch-1 ceremony did not pay out in touch 2) | `phase::artifacts` |
+| §3.4 verdict `working-as-intended` with a helpful (or absent) touch-2 | `null` (no gap to route) |
+| **Neither a usable §3.4 verdict NOR a touch-2 read** (the finding predates attribution data) | `null` (degrade — never a WRONG tag) |
+
+The §3.4 verdict takes precedence over the continuity read when both are
+present. The **degrade rule is load-bearing**: a finding whose records carry no
+plan-quality verdict (a `classification: null`) and no touch-2 block
+(`present: false` / absent) must degrade to `null` rather than guess — a
+mis-routed finding is worse than an un-routed one.
+
+### Class-5 (attribution & continuity) finding shape
+
+`deriveAttributionFindings` emits, signal-gated per scenario (a scenario with no
+gap derives ZERO findings), the class-5 findings. Each mirrors the `derive.js`
+finding shape plus the `phaseTag` this class introduces:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `fingerprint` | string | Stable 16-hex-char SHA-1 of `class ␟ scenario ␟ subject` (cohort-independent — same contract as `derive.js`, computed in-module so there is no `fingerprint.js` dependency). |
+| `class` | string (`attribution`) | The net-new fifth finding class. |
+| `scenario` | string | Scenario id the gap was observed on. |
+| `subject` | string | One of the three class-5 subjects (below). |
+| `phaseTag` | string | The fixed phase tag for the subject (`plan-phase-gap` → `phase::plan`, `deliver-phase-gap` → `phase::deliver`, `artifact-continuity-gap` → `phase::artifacts`). |
+| `summary` | string | Human-readable one-line description. |
+| `cohort` | object | The D-014 cohort triple `{ model, frameworkVersion, benchmarkVersion }`. |
+| `evidence` | object | For the §3.4 gaps: `{ classification, planGood, outcomeGood, adhered }`. For the continuity gap: `{ present, helped, outcomeDelta, costDelta }`. |
+| `links` | object | `{ report, scorecards }` — results-root-relative links. |
+
+The envelope wraps them as `{ schemaVersion, generatedAt, cohort, counts,
+findings }`, where `counts` is keyed by the three class-5 subjects.
+
+### The three class-5 subjects
+
+| Subject | Signal (gate) | `phaseTag` | Source |
+| --- | --- | --- | --- |
+| `plan-phase-gap` | §3.4 verdict `plan-phase-gap` — the obligation the delivered outcome missed is owned by `/plan`. | `phase::plan` | `computeAttribution` (§3.4). |
+| `deliver-phase-gap` | §3.4 verdict `deliver-phase-gap` — delivery diverged from a good-looking plan and missed it. | `phase::deliver` | `computeAttribution` (§3.4). |
+| `artifact-continuity-gap` | §4.5 continuity read `present` and `helped === false` — ceremony paid in touch 1 that failed to pay out in the fresh touch-2 session. | `phase::artifacts` | `computeContinuityDelta` (§4.5). |
+
+`model-compensating` is a §3.4 verdict that routes an existing finding's
+`phaseTag` to `phase::plan` (the ceremony was not load-bearing — "a finding in
+itself"), but it is deliberately NOT a class-5 subject: the class-5 finding
+types are exactly the plan-phase / deliver-phase gaps and the touch-2
+continuity gap. Contract:
+[`../bench/feedback/attribution.js`](../bench/feedback/attribution.js).

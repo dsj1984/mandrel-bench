@@ -31,6 +31,7 @@
 import { readFileSync } from 'node:fs';
 
 import { computeDimensions } from '../score/dimensions.js';
+import { computeAttribution } from '../score/plan-quality.js';
 
 /** Scorecard-record schema version this normalizer emits. */
 export const SCORECARD_SCHEMA_VERSION = 1;
@@ -585,6 +586,40 @@ function resolveTokenSplit({
  *   `classes[]`); null/absent (or an empty `classes[]`) for every other
  *   scenario. Recorded under `scorecard.trap` as a SEPARATE differential
  *   signal — never folded into the seven composite dimensions.
+ * @param {Array<object>} [args.phases]    Per-phase session envelopes for the
+ *   mandrel arm's ordered two-session run (D-019, Epic #86 Story #94):
+ *   `[{ phase: 'plan'|'deliver', costUsd, tokens, wallClockMs }, …]`. Each
+ *   phase's own `claude -p` cost/tokens; the per-phase `costUsd`/`tokens` sum to
+ *   the record's `efficiency.costUsd`/`efficiency.totalTokens` by construction
+ *   (the run envelope is the sum of the phase envelopes — see
+ *   `aggregateEnvelopes` in bench/driver/run-session.js). Attached to the
+ *   scorecard as `phases[]` for the mandrel arm only; omitted entirely for the
+ *   control arm (single session) and when absent, so control records stay valid
+ *   without the block.
+ * @param {object} [args.touch2]           Second-touch continuity block
+ *   (Epic #86, Story #96): `{ changeRequestId?, inheritance?, outcome, cost,
+ *   frozenSuitePassed, frozenSuiteTotal, totalTokens, wallClockMs, dimensions,
+ *   regression? }`, the compact scored second touch `bench/run.js#runTouch2`
+ *   produces. Present only when the scenario declares a `changeRequest` AND the
+ *   second touch was scored; recorded under `scorecard.touch2` as a SEPARATE
+ *   block reported apart from touch 1 (a sibling of `trap`/`phases`, never
+ *   folded into the seven composite dimensions). Absent for touch-1-only
+ *   scenarios (e.g. hello-world).
+ * @param {object} [args.planQuality]      Intrinsic PLAN-QUALITY block (Epic
+ *   #86, Story #95; D-019 §3.4), the `bench/score/plan-quality.js#computePlanQuality`
+ *   result the driver scores off the mandrel arm's plan snapshot: `{ score,
+ *   coverage, decompositionSanity, constraintSurfacing, judgeScore,
+ *   plannedStoryCount, warnings, detail }`. MANDREL-ONLY — the control arm
+ *   authors no plan, so its plan-quality is null and the axis is excluded from
+ *   the Mandrel-vs-control differential. Present only when supplied AND the arm
+ *   is mandrel; recorded under `scorecard.planQuality` as a SEPARATE block
+ *   (a sibling of `trap`/`phases`/`touch2`, never folded into the seven
+ *   composite dimensions). This function ALSO stamps `planQuality.attribution`
+ *   — the §3.4 decision-table verdict (`computeAttribution`) crossing the plan
+ *   score with the delivered OUTCOME (`dimensions.quality.score`) and
+ *   plan-adherence (`dimensions.planningFidelity.score`) — so the renderer reads
+ *   a stored classification instead of recomputing it. Absent/null ⇒ the block
+ *   is omitted, so control + legacy corpora stay valid without it.
  * @param {object} [args.rawRefs]          Provenance breadcrumbs for `rawRefs`.
  * @param {object} [args.standalone]       Standalone-path telemetry (Story #48;
  *   phase-split added Epic #66 Story #77), present only when the mandrel arm
@@ -619,6 +654,9 @@ export function buildScorecard({
   maintainabilityInputs = {},
   securityInputs = {},
   trap = null,
+  phases = null,
+  touch2 = null,
+  planQuality = null,
   rawRefs,
   standalone = null,
   scenarioRouting = null,
@@ -840,6 +878,128 @@ export function buildScorecard({
       })),
       cleanRate: trap.cleanRate,
     };
+  }
+
+  // Per-phase session envelopes (D-019, Epic #86 Story #94). Mandrel-arm ONLY:
+  // the ordered /plan + /deliver sessions each carry their own cost/tokens/
+  // wall-clock, whose costUsd/tokens sum to this record's efficiency totals (the
+  // run envelope is their sum). The control arm is a single session, so it
+  // carries no `phases` block — and an absent/empty array leaves the block off
+  // entirely, keeping control records valid without it.
+  if (run.arm === 'mandrel' && Array.isArray(phases) && phases.length > 0) {
+    scorecard.phases = phases.map((p) => ({
+      phase: p.phase,
+      costUsd:
+        typeof p.costUsd === 'number' && Number.isFinite(p.costUsd)
+          ? p.costUsd
+          : null,
+      tokens:
+        typeof p.tokens === 'number' &&
+        Number.isFinite(p.tokens) &&
+        p.tokens >= 0
+          ? Math.trunc(p.tokens)
+          : 0,
+      wallClockMs:
+        typeof p.wallClockMs === 'number' &&
+        Number.isFinite(p.wallClockMs) &&
+        p.wallClockMs >= 0
+          ? p.wallClockMs
+          : 0,
+    }));
+  }
+
+  // Second-touch continuity block (Epic #86, Story #96). Present only when the
+  // scenario declared a `changeRequest` AND the driver scored the second touch;
+  // reported SEPARATELY from touch 1 (a sibling of `trap`/`phases` at the
+  // scorecard's top level, never folded into the seven composite dimensions).
+  // The continuity delta (mandrel touch-2 outcome/cost − control) is derived
+  // downstream by bench/score/differential.js from `touch2.outcome` /
+  // `touch2.cost`. An absent/malformed touch2 leaves the block off entirely, so
+  // touch-1-only scenarios (hello-world) stay valid without it.
+  if (
+    touch2 &&
+    typeof touch2 === 'object' &&
+    touch2.dimensions &&
+    typeof touch2.dimensions === 'object'
+  ) {
+    scorecard.touch2 = {
+      ...(typeof touch2.changeRequestId === 'string'
+        ? { changeRequestId: touch2.changeRequestId }
+        : {}),
+      ...(typeof touch2.inheritance === 'string'
+        ? { inheritance: touch2.inheritance }
+        : {}),
+      outcome:
+        typeof touch2.outcome === 'number' && Number.isFinite(touch2.outcome)
+          ? touch2.outcome
+          : null,
+      cost:
+        typeof touch2.cost === 'number' && Number.isFinite(touch2.cost)
+          ? touch2.cost
+          : null,
+      frozenSuitePassed:
+        typeof touch2.frozenSuitePassed === 'number'
+          ? Math.trunc(touch2.frozenSuitePassed)
+          : 0,
+      frozenSuiteTotal:
+        typeof touch2.frozenSuiteTotal === 'number'
+          ? Math.trunc(touch2.frozenSuiteTotal)
+          : 0,
+      totalTokens:
+        typeof touch2.totalTokens === 'number'
+          ? Math.trunc(touch2.totalTokens)
+          : 0,
+      wallClockMs:
+        typeof touch2.wallClockMs === 'number' &&
+        Number.isFinite(touch2.wallClockMs)
+          ? touch2.wallClockMs
+          : 0,
+      dimensions: touch2.dimensions,
+      ...(touch2.regression &&
+      Array.isArray(touch2.regression.classes) &&
+      touch2.regression.classes.length > 0
+        ? {
+            regression: {
+              classes: touch2.regression.classes.map((entry) => ({
+                class: entry.class,
+                score: entry.score,
+                defectPresent: Boolean(entry.defectPresent),
+                ...(Array.isArray(entry.evidence)
+                  ? { evidence: entry.evidence }
+                  : {}),
+              })),
+              cleanRate: touch2.regression.cleanRate,
+            },
+          }
+        : {}),
+    };
+  }
+
+  // Intrinsic PLAN-QUALITY axis (Epic #86, Story #95; D-019 §3.4). MANDREL-arm
+  // ONLY: the plan the /plan session authored, scored against the scenario's
+  // frozen spec — recorded as a SEPARATE block (a sibling of trap/phases/touch2,
+  // never folded into the seven composite dimensions). We ALSO stamp the §3.4
+  // attribution decision-table verdict here, crossing the plan score with the
+  // delivered OUTCOME (`dimensions.quality.score`) and plan-adherence
+  // (`dimensions.planningFidelity.score`) THIS function just computed, so the
+  // renderer honours a stored classification instead of recomputing it. A
+  // null/absent planQuality, or the control arm, leaves the block off entirely.
+  if (
+    run.arm === 'mandrel' &&
+    planQuality &&
+    typeof planQuality === 'object' &&
+    typeof planQuality.score === 'number'
+  ) {
+    const attribution = computeAttribution({
+      planQualityScore: planQuality.score,
+      outcomeScore: dimensions.quality?.score ?? null,
+      planAdherenceScore: dimensions.planningFidelity?.score ?? null,
+    });
+    // Drop the scorer's internal `detail` spine breakdown — the persisted
+    // planQualityBlock schema (additionalProperties:false) enumerates only the
+    // headline sub-scores + attribution, not the intermediate detail object.
+    const { detail: _detail, ...persisted } = planQuality;
+    scorecard.planQuality = { ...persisted, attribution };
   }
 
   if (rawRefs && typeof rawRefs === 'object') {

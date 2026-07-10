@@ -5,6 +5,11 @@
   "rung": "floor",
   "routing": "story",
   "targetN": 4,
+  "storyCountContract": {
+    "mode": "standalone",
+    "minStories": 1,
+    "maxStories": 1
+  },
   "description": "The overhead floor and end-to-end smoke scenario. A single tiny capability with no decomposition surface — its only job is to expose Mandrel's fixed ceremony tax on near-zero work versus the bare-model control. Instrumentation rung (Epic #66, Story #76): routes as a single standalone Story, runs at reduced targetN (4), and reports under the floor/calibration framing rather than the value-delta tables.",
   "seed": {
     "title": "Hello-world HTTP server",

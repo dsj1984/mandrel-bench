@@ -67,6 +67,32 @@ Mandrel-vs-control delta is only called *real* when it clears that band.
   direct "ceremony-lite path for trivial scopes" signal. Feeds the report's
   **Recommended improvements** section.
 
+### The second touch — continuity delta
+
+The persistence thesis (D-020) is that inheriting Mandrel's artifacts makes the
+**next** change cheaper and safer than inheriting code alone. To measure it,
+each value rung declares a **frozen change request** in its `scenario.json`
+(`changeRequest`): story-scope's is *password change + session invalidation*,
+epic-scope's is *project sharing with role-based access*. hello-world declares
+none, so the driver skips its second touch.
+
+After touch 1 is scored, the driver runs the change request as a **fresh
+session against the delivered tree**, with **arm-appropriate inheritance**:
+the mandrel arm keeps its full pipeline output (the `.agents/` overlay and the
+tickets/plan state); the control workspace is reduced to *delivered code only*.
+The second touch is scored with the full dimension set plus its **own frozen
+behavioural suite** (`acceptance.touch2.test.js`) — session invalidation and
+role-based access are asserted *behaviourally* over HTTP, never by a source
+scan — and by **phase-scoped regression oracles**. Those regression oracles
+(*hashing preservation*, *per-user isolation preservation*) live under a
+**separate `traps-touch2/` directory** discovered only by the touch-2 scan, so
+they can never pollute the touch-1 trap `cleanRate`.
+
+The scorecard carries a `touch2` block reported separately from touch 1, and
+the report + dashboard render the **continuity delta** — mandrel touch-2
+outcome/cost minus control touch-2 outcome/cost — as its own section: a
+positive outcome delta / negative cost delta favours Mandrel.
+
 ---
 
 ## How it works
@@ -80,11 +106,21 @@ For each `(scenario × arm × run)`:
    `.agents/` stripped so the bare model gets no scaffolding. Crash-leaked
    repos are swept by a `bench-sbx-` prefix + TTL janitor
    (`bench/driver/janitor.js`) at the start of every invocation.
-2. **Run** a headless Claude Code session (`bench/driver/run-session.js` →
-   `claude -p --output-format json`). The **mandrel arm** drives `/plan` then
-   `/deliver` (real authoring — never pre-staged plans); the **control arm**
-   gets the bare task. The JSON envelope yields the real usage/cost actuals —
-   the *only* cost source, measured identically for both arms.
+2. **Run** headless Claude Code sessions (`bench/driver/run-session.js` →
+   `claude -p --output-format json`). The **mandrel arm** runs as **two
+   phase-scoped sessions** (D-019) — session 1 `/plan`, session 2 `/deliver`
+   (real authoring — never pre-staged plans) — each with its own cost envelope,
+   so the per-phase envelopes sum to the run total. Between the two sessions the
+   harness snapshots the authored plan and scores it as an intrinsic,
+   mandrel-only **plan-quality** axis (coverage, decomposition sanity,
+   constraint surfacing), which the report crosses with the delivered outcome to
+   attribute a result to the plan phase vs the deliver phase. The **control
+   arm** is a single session that gets the bare task. The JSON envelope(s) yield
+   the real usage/cost actuals — the *only* cost source, measured identically
+   for both arms. On rungs 2–3 a **second touch** — the scenario's frozen change
+   request, run as a fresh session against the delivered tree — then runs,
+   roughly doubling the cell's cost; its session spend counts against the cost
+   ceiling too.
 3. **Collect** (`bench/collect/normalize.js`) the run's lifecycle telemetry
    (`temp/epic-<id>/lifecycle.ndjson` + per-Story `signals.ndjson`, written by
    `/deliver`) plus the cost envelope into one per-run record conforming to
@@ -112,7 +148,7 @@ mandrel-bench/
 │   ├── metrics/      # five-dimension formulas (README.md) + variance/noise-band
 │   ├── schemas/      # scorecard.schema.json (the per-run record contract)
 │   ├── driver/       # claude -p run launcher + ephemeral sandbox lifecycle + unattended.md
-│   ├── scenarios/    # hello-world/ + story-scope/ + epic-scope/ defs, frozen oracles, trap oracles
+│   ├── scenarios/    # hello-world/ + story-scope/ + epic-scope/ defs, frozen oracles (touch-1 + touch-2), traps/ + traps-touch2/ oracles
 │   ├── collect/      # lifecycle + signals + cost-envelope → normalized per-run record
 │   ├── score/        # dimensions + Mandrel-vs-control differential + derived metrics
 │   ├── report/       # value-add report renderer + stamped persistence + cross-run compare

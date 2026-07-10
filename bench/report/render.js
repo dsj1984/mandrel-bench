@@ -36,10 +36,15 @@
 
 import { noiseBand } from '../metrics/variance.js';
 import {
+  computeContinuityDelta,
   EFFICIENCY_COMPONENTS,
   SCALAR_DIMENSIONS,
   scoreCorpus,
 } from '../score/differential.js';
+import {
+  ATTRIBUTION_CLASSES,
+  computeAttribution,
+} from '../score/plan-quality.js';
 import { groupCells } from './cells.js';
 
 /**
@@ -502,6 +507,83 @@ export function renderTrapAxisSection(cell, method) {
 }
 
 /**
+ * Build the structured second-touch CONTINUITY rows for one scenario cell
+ * (Epic #86, Story #96): one row for the continuity OUTCOME delta and one for
+ * the continuity COST delta, each with the mandrel/control band centers and the
+ * mandrel-minus-control delta (with its real/within-noise verdict). Returns
+ * `[]` when the cell carries no `touch2` data at all (a touch-1-only scenario,
+ * e.g. hello-world).
+ *
+ * Deliberately SEPARATE from `dimensionRows` and `trapAxisRows` — the
+ * continuity axis is the second-touch persistence measurement, never folded
+ * into the seven composite dimensions or the touch-1 trap axis.
+ *
+ * @param {object} cell  A `groupCells` entry.
+ * @param {'iqr'|'ci'} method
+ * @returns {Array<{
+ *   metric: string,
+ *   label: string,
+ *   mandrelCenter: number|null,
+ *   controlCenter: number|null,
+ *   delta: number|null,
+ *   verdict: string
+ * }>}
+ */
+export function continuityRows(cell, method) {
+  const delta = computeContinuityDelta({
+    mandrelRuns: cell.mandrelRuns,
+    controlRuns: cell.controlRuns,
+    method,
+    scenario: cell.scenario,
+  });
+  if (!delta.present) return [];
+  const labels = {
+    'touch2.outcome': 'outcome (quality of the 2nd change; higher is better)',
+    'touch2.cost': 'cost (USD for the 2nd change; lower is better)',
+  };
+  return Object.entries(delta.metrics).map(([metric, cmp]) => ({
+    metric,
+    label: labels[metric] ?? metric,
+    mandrelCenter: cmp.mandrelCenter,
+    controlCenter: cmp.controlCenter,
+    delta: cmp.delta,
+    verdict: cmp.verdict,
+  }));
+}
+
+/**
+ * Render one scenario's second-touch CONTINUITY section (Epic #86, Story #96):
+ * the mandrel-vs-control delta of the second change's outcome and cost — the
+ * persistence-thesis measurement (does inheriting Mandrel's artifacts make the
+ * NEXT change cheaper and better than inheriting code alone?). Returns '' when
+ * the cell carries no touch-2 data.
+ *
+ * @param {object} cell
+ * @param {'iqr'|'ci'} method
+ * @returns {string}
+ */
+export function renderContinuitySection(cell, method) {
+  const rows = continuityRows(cell, method);
+  if (rows.length === 0) return '';
+  const lines = [
+    '#### Continuity delta (the second touch — separate from the seven dimensions)',
+    '',
+    'Mandrel-vs-control delta of the FROZEN change request scored against the',
+    'delivered tree (mandrel inherits its full pipeline output; control inherits',
+    'delivered code only). Positive outcome delta / negative cost delta favour Mandrel.',
+    '',
+    '| Metric | Mandrel | Control | Δ (mandrel − control) | Verdict |',
+    '| --- | --- | --- | --- | --- |',
+  ];
+  for (const r of rows) {
+    lines.push(
+      `| ${r.label} | ${fmt(r.mandrelCenter, 3)} | ${fmt(r.controlCenter, 3)} | ${fmt(r.delta, 3)} | ${r.verdict} |`,
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
  * Build the per-scenario autonomy-guardrail summary (Epic #66, Story #77):
  * autonomy is a mandrel-arm pass/fail GUARDRAIL against a cohort threshold,
  * never a mandrel-vs-control delta (see `differential.js` `SCALAR_DIMENSIONS`
@@ -616,6 +698,188 @@ export function autonomyGuardrailFindings(cells) {
   return findings;
 }
 
+/**
+ * Build the per-phase cost rows (D-019, Epic #86 Story #94): one row per
+ * scenario whose mandrel-arm records carry a `phases[]` block, with the mean
+ * `/plan` and `/deliver` USD cost across the cell's mandrel runs plus their
+ * total. The control arm never carries `phases`, so it contributes nothing —
+ * the per-phase cost view is mandrel-only by construction. Returns `[]` when no
+ * cell has any phase data (older corpora / control-only).
+ *
+ * @param {Array<object>} cells  `groupCells` entries.
+ * @returns {Array<{
+ *   scenario: string,
+ *   n: number,
+ *   planCostUsd: number|null,
+ *   deliverCostUsd: number|null,
+ *   totalCostUsd: number|null
+ * }>}
+ */
+export function phaseCostRows(cells) {
+  const mean = (arr) =>
+    arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+  const rows = [];
+  for (const cell of cells ?? []) {
+    const runs = cell.mandrelRuns ?? [];
+    const planVals = [];
+    const deliverVals = [];
+    for (const sc of runs) {
+      for (const ph of sc?.phases ?? []) {
+        if (typeof ph?.costUsd !== 'number' || !Number.isFinite(ph.costUsd)) {
+          continue;
+        }
+        if (ph.phase === 'plan') planVals.push(ph.costUsd);
+        else if (ph.phase === 'deliver') deliverVals.push(ph.costUsd);
+      }
+    }
+    if (planVals.length === 0 && deliverVals.length === 0) continue;
+    const planCostUsd = mean(planVals);
+    const deliverCostUsd = mean(deliverVals);
+    const totalCostUsd =
+      planCostUsd === null && deliverCostUsd === null
+        ? null
+        : (planCostUsd ?? 0) + (deliverCostUsd ?? 0);
+    rows.push({
+      scenario: cell.scenario,
+      n: runs.length,
+      planCostUsd,
+      deliverCostUsd,
+      totalCostUsd,
+    });
+  }
+  return rows;
+}
+
+/**
+ * Render the per-phase cost section (D-019): a mandrel-only table of `/plan` vs
+ * `/deliver` cost per scenario, so a reader sees which half of the pipeline the
+ * cost went to. Returns '' when no cell carries phase data (so control-only /
+ * legacy corpora render nothing).
+ *
+ * @param {Array<object>} cells
+ * @returns {string}
+ */
+export function renderPhaseCostSection(cells) {
+  const rows = phaseCostRows(cells);
+  if (rows.length === 0) return '';
+  const lines = [
+    '## Per-phase cost (mandrel arm)',
+    '',
+    'The mandrel arm runs `/plan` and `/deliver` as two separate headless',
+    'sessions (D-019), so cost is attributable to the planning half vs the',
+    'delivery half. Mean USD cost per phase across the cell’s mandrel runs; the',
+    'control arm is a single session and carries no per-phase split.',
+    '',
+    '| Scenario | n | Plan cost (USD) | Deliver cost (USD) | Total (USD) |',
+    '| --- | --- | --- | --- | --- |',
+  ];
+  for (const r of rows) {
+    lines.push(
+      `| \`${r.scenario}\` | ${r.n} | ${fmt(r.planCostUsd, 4)} | ${fmt(r.deliverCostUsd, 4)} | ${fmt(r.totalCostUsd, 4)} |`,
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Human-readable labels for the attribution classes.
+ */
+const ATTRIBUTION_LABELS = Object.freeze({
+  'working-as-intended': 'Working as intended',
+  'deliver-phase-gap': 'Deliver-phase gap',
+  'plan-phase-gap': 'Plan-phase gap',
+  'model-compensating': 'Model compensating',
+});
+
+/**
+ * Per-scenario attribution counts for the mandrel arm (Epic #86, Story #95;
+ * D-019 §3.4). For each mandrel-arm run that carries a `planQuality` block, the
+ * attribution decision table is computed per run — crossing the intrinsic plan
+ * quality (`planQuality.score`) with the delivered OUTCOME
+ * (`dimensions.quality.score`) and plan-adherence
+ * (`dimensions.planningFidelity.score`) — and the run's classification is
+ * tallied. A run's persisted `planQuality.attribution.classification` is
+ * honoured when present; otherwise it is recomputed here from the same fields
+ * (single source of truth: `computeAttribution`). Runs with no `planQuality`
+ * block (control arm, legacy corpora) are skipped, so a corpus that predates
+ * this axis renders no attribution table.
+ *
+ * @param {Array<object>} cells
+ * @returns {Array<{
+ *   scenario: string,
+ *   n: number,
+ *   counts: Record<string, number>,
+ *   unattributed: number
+ * }>}
+ */
+export function attributionRows(cells) {
+  const rows = [];
+  for (const cell of cells ?? []) {
+    const runs = cell?.mandrelRuns ?? [];
+    const counts = {};
+    for (const cls of ATTRIBUTION_CLASSES) counts[cls] = 0;
+    let n = 0;
+    let unattributed = 0;
+    for (const sc of runs) {
+      const pq = sc?.planQuality;
+      if (!pq || typeof pq !== 'object') continue;
+      n += 1;
+      const stored = pq.attribution?.classification;
+      const classification = ATTRIBUTION_CLASSES.includes(stored)
+        ? stored
+        : computeAttribution({
+            planQualityScore: pq.score,
+            outcomeScore: sc?.dimensions?.quality?.score,
+            planAdherenceScore: sc?.dimensions?.planningFidelity?.score,
+          }).classification;
+      if (classification && counts[classification] !== undefined) {
+        counts[classification] += 1;
+      } else {
+        unattributed += 1;
+      }
+    }
+    if (n === 0) continue;
+    rows.push({ scenario: cell.scenario, n, counts, unattributed });
+  }
+  return rows;
+}
+
+/**
+ * Render the attribution decision-table section (Epic #86, Story #95; D-019
+ * §3.4): a mandrel-only table tallying how each scenario's runs attribute a
+ * result to the plan phase vs the deliver phase (or working-as-intended /
+ * model-compensating). Returns '' when no cell carries a `planQuality` block,
+ * so control-only / legacy corpora render nothing.
+ *
+ * @param {Array<object>} cells
+ * @returns {string}
+ */
+export function renderAttributionSection(cells) {
+  const rows = attributionRows(cells);
+  if (rows.length === 0) return '';
+  const lines = [
+    '## Plan-vs-deliver attribution (mandrel arm)',
+    '',
+    'Each mandrel-arm run crosses its intrinsic PLAN quality with the delivered',
+    'OUTCOME and plan-adherence (D-019 §3.4), attributing a result to the plan',
+    'phase vs the deliver phase rather than lumping both into one number.',
+    'Crossing all three inputs is the Goodhart backstop — a plan cannot read as',
+    '“working as intended” without a matching outcome.',
+    '',
+    `| Scenario | n | ${ATTRIBUTION_CLASSES.map((c) => ATTRIBUTION_LABELS[c]).join(' | ')} | Unattributed |`,
+    `| --- | --- | ${ATTRIBUTION_CLASSES.map(() => '---').join(' | ')} | --- |`,
+  ];
+  for (const r of rows) {
+    const cellVals = ATTRIBUTION_CLASSES.map((c) => r.counts[c] ?? 0).join(
+      ' | ',
+    );
+    lines.push(
+      `| \`${r.scenario}\` | ${r.n} | ${cellVals} | ${r.unattributed} |`,
+    );
+  }
+  return lines.join('\n');
+}
+
 function renderScenarioSection(cell, diff, method) {
   const rows = dimensionRows(cell, diff, method);
   const routingNote = renderRoutingNote(cell.mandrelRuns);
@@ -648,9 +912,13 @@ function renderScenarioSection(cell, diff, method) {
     return `| ${r.label} | ${fmtBand(r.mandrelBand, digits)} | ${fmtBand(r.controlBand, digits)} | ${fmt(r.delta, digits)} | ${fmt(r.noiseFloor, digits)} | ${VERDICT_BADGE[r.verdict]} |`;
   });
   const trapSection = renderTrapAxisSection(cell, method);
-  return [...header, ...body, ...(trapSection ? ['', trapSection] : [])].join(
-    '\n',
-  );
+  const continuitySection = renderContinuitySection(cell, method);
+  return [
+    ...header,
+    ...body,
+    ...(trapSection ? ['', trapSection] : []),
+    ...(continuitySection ? ['', continuitySection] : []),
+  ].join('\n');
 }
 
 /**
@@ -891,6 +1159,12 @@ export function renderReport({ scorecards, method = 'iqr' } = {}) {
 
   sections.push(renderAutonomyGuardrailSection(cells), '');
 
+  const phaseCostSection = renderPhaseCostSection(cells);
+  if (phaseCostSection) sections.push(phaseCostSection, '');
+
+  const attributionSection = renderAttributionSection(cells);
+  if (attributionSection) sections.push(attributionSection, '');
+
   sections.push(renderScalingView(cells, corpus, method), '');
 
   const findings = [
@@ -945,10 +1219,12 @@ export function buildReportModel({ scorecards, method = 'iqr' } = {}) {
       difficulty: cell.difficulty,
       rows: dimensionRows(cell, corpus.perScenario[i], method),
       trap: trapAxisRows(cell, method),
+      continuity: continuityRows(cell, method),
     })),
     monotonicity: corpus.difficultyMonotonicity,
     overheadFloor: corpus.overheadFloor,
     autonomyGuardrail: autonomyGuardrailRows(cells),
+    phaseCost: phaseCostRows(cells),
     recommendations: [
       ...recommendImprovements(corpus),
       ...autonomyGuardrailFindings(cells),

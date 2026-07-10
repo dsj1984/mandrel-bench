@@ -17,8 +17,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  aggregateEnvelopes,
   buildArmPrompt,
   buildClaudeArgs,
+  buildControlPrompt,
+  buildMandrelDeliverPrompt,
+  buildMandrelPlanPrompt,
   DEFAULT_BENCH_MODEL,
   parseSessionEnvelope,
   runSession,
@@ -69,6 +73,27 @@ function fakeInvoke(result = {}) {
       status: result.status ?? 0,
       stdout: result.stdout ?? JSON.stringify(realEnvelope()),
       stderr: result.stderr ?? '',
+    };
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+/**
+ * Build an injected invoke that returns a QUEUED result per call (falling back
+ * to the last one), so a two-session mandrel run can hand the plan session and
+ * the deliver session distinct envelopes.
+ * @param {Array<{ status?: number, stdout?: string, stderr?: string }>} results
+ */
+function queuedInvoke(results) {
+  const calls = [];
+  const fn = (input) => {
+    calls.push(input);
+    const r = results[Math.min(calls.length - 1, results.length - 1)] ?? {};
+    return {
+      status: r.status ?? 0,
+      stdout: r.stdout ?? JSON.stringify(realEnvelope()),
+      stderr: r.stderr ?? '',
     };
   };
   fn.calls = calls;
@@ -233,24 +258,126 @@ test('parseSessionEnvelope: throws on non-JSON stdout', () => {
 // runSession (injected invoke — NEVER spawns a real process)
 // ---------------------------------------------------------------------------
 
-test('runSession: drives the injected invokeFn and returns the parsed envelope', () => {
+test('runSession (mandrel): drives TWO ordered sessions (plan → deliver) and SUMS the envelopes', () => {
   const invoke = fakeInvoke();
   const out = runSession(
     { arm: 'mandrel', scenario: SCENARIO, cwd: '/tmp/sandbox-xyz' },
     { invokeFn: invoke },
   );
 
-  assert.equal(invoke.calls.length, 1);
+  // Two ordered sessions: the plan prompt first, then the deliver prompt.
+  assert.equal(invoke.calls.length, 2);
   assert.equal(invoke.calls[0].cwd, '/tmp/sandbox-xyz');
   assert.equal(invoke.calls[0].model, DEFAULT_BENCH_MODEL);
-  assert.match(invoke.calls[0].prompt, /\/deliver/);
+  assert.match(invoke.calls[0].prompt, /\/plan/);
+  assert.doesNotMatch(invoke.calls[0].prompt, /\/deliver/);
+  assert.match(invoke.calls[1].prompt, /\/deliver/);
 
   assert.equal(out.arm, 'mandrel');
   assert.equal(out.scenarioId, 'hello-world');
   assert.equal(out.model, DEFAULT_BENCH_MODEL);
   assert.equal(out.status, 0);
+
+  // Both phases return the same fixture envelope, so the run total is 2×.
+  const oneTokens = 4942 + 4 + 31340 + 15626;
+  assert.equal(out.envelope.cost.totalUsd, 0.346588 * 2);
+  assert.equal(out.envelope.usage.totalTokens, oneTokens * 2);
+
+  // phases[] carries the per-phase split; costUsd/tokens SUM to the run totals.
+  assert.equal(out.phases.length, 2);
+  assert.deepEqual(
+    out.phases.map((p) => p.phase),
+    ['plan', 'deliver'],
+  );
+  const sumCost = out.phases.reduce((a, p) => a + p.costUsd, 0);
+  const sumTokens = out.phases.reduce((a, p) => a + p.tokens, 0);
+  assert.equal(sumCost, out.envelope.cost.totalUsd);
+  assert.equal(sumTokens, out.envelope.usage.totalTokens);
+  for (const p of out.phases) {
+    assert.equal(p.tokens, oneTokens);
+    assert.equal(p.wallClockMs, 4952);
+  }
+});
+
+test('runSession (mandrel): SUMS distinct per-phase envelopes into the run total', () => {
+  const invoke = queuedInvoke([
+    {
+      stdout: JSON.stringify(
+        realEnvelope({
+          total_cost_usd: 0.1,
+          duration_ms: 1000,
+          usage: {
+            input_tokens: 100,
+            output_tokens: 10,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        }),
+      ),
+    },
+    {
+      stdout: JSON.stringify(
+        realEnvelope({
+          total_cost_usd: 0.9,
+          duration_ms: 5000,
+          usage: {
+            input_tokens: 900,
+            output_tokens: 90,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        }),
+      ),
+    },
+  ]);
+  const out = runSession(
+    { arm: 'mandrel', scenario: SCENARIO, cwd: '/tmp/s' },
+    { invokeFn: invoke },
+  );
+  assert.equal(out.envelope.cost.totalUsd, 1.0);
+  assert.equal(out.envelope.usage.totalTokens, 110 + 990);
+  assert.equal(out.envelope.durationMs, 6000);
+  assert.deepEqual(
+    out.phases.map((p) => ({ phase: p.phase, costUsd: p.costUsd })),
+    [
+      { phase: 'plan', costUsd: 0.1 },
+      { phase: 'deliver', costUsd: 0.9 },
+    ],
+  );
+});
+
+test('runSession (control): drives a SINGLE session with no phases block', () => {
+  const invoke = fakeInvoke();
+  const out = runSession(
+    { arm: 'control', scenario: SCENARIO, cwd: '/tmp/s' },
+    { invokeFn: invoke },
+  );
+  assert.equal(invoke.calls.length, 1);
+  assert.doesNotMatch(invoke.calls[0].prompt, /\/plan|\/deliver/);
+  assert.equal(out.phases, null);
   assert.equal(out.envelope.cost.totalUsd, 0.346588);
-  assert.equal(out.envelope.usage.totalTokens, 4942 + 4 + 31340 + 15626);
+});
+
+test('runSession (mandrel): the betweenPhases hook threads deliverTarget into the deliver prompt', () => {
+  const invoke = fakeInvoke();
+  const hookCalls = [];
+  const out = runSession(
+    { arm: 'mandrel', scenario: SCENARIO, cwd: '/tmp/s' },
+    {
+      invokeFn: invoke,
+      betweenPhases: (ctx) => {
+        hookCalls.push(ctx);
+        return { deliverTarget: 777 };
+      },
+    },
+  );
+  // Hook runs exactly once, AFTER the plan session, BEFORE the deliver session.
+  assert.equal(hookCalls.length, 1);
+  assert.equal(hookCalls[0].scenario.id, 'hello-world');
+  assert.ok(hookCalls[0].planEnvelope);
+  // The discovered id lands in the deliver prompt.
+  assert.match(invoke.calls[1].prompt, /\/deliver 777 --yes/);
+  assert.equal(out.phases.length, 2);
 });
 
 test('runSession: forwards model, extraArgs, and timeoutMs to the invoker', () => {
@@ -304,8 +431,108 @@ test('runSession: clean exit + is_error envelope warns but still returns the rec
   );
   assert.equal(out.envelope.isError, true);
   assert.equal(out.envelope.result, 'boom');
-  assert.equal(warnings.length, 1);
+  // Both mandrel phases report is_error, so the warn fires once per phase.
+  assert.equal(warnings.length, 2);
   assert.match(warnings[0], /is_error=true/);
+});
+
+// ---------------------------------------------------------------------------
+// Per-phase prompt builders + aggregateEnvelopes (D-019, Epic #86 Story #94)
+// ---------------------------------------------------------------------------
+
+test('buildMandrelPlanPrompt: drives ONLY /plan (never /deliver)', () => {
+  const idea = buildMandrelPlanPrompt({ scenario: SCENARIO });
+  assert.match(idea, /\/plan --idea[\s\S]*--yes/);
+  assert.doesNotMatch(idea, /\/deliver/);
+  assert.match(idea, /never block|implicit approval/i);
+
+  const seeded = buildMandrelPlanPrompt({
+    scenario: { ...SCENARIO, epicId: 42 },
+  });
+  assert.match(seeded, /\/plan 42 --yes/);
+  assert.doesNotMatch(seeded, /\/deliver/);
+});
+
+test('buildMandrelDeliverPrompt: drives /deliver at the discovered id, never /plan', () => {
+  const withId = buildMandrelDeliverPrompt({
+    scenario: SCENARIO,
+    deliverTarget: 108,
+  });
+  assert.match(withId, /\/deliver 108 --yes/);
+  assert.doesNotMatch(withId, /\/plan\b/);
+
+  // Null target ⇒ a fallback that still drives /deliver (discover-in-session).
+  const noId = buildMandrelDeliverPrompt({ scenario: SCENARIO });
+  assert.match(noId, /\/deliver/);
+  assert.doesNotMatch(noId, /\/plan\b/);
+});
+
+test('buildControlPrompt: bare task, no pipeline commands', () => {
+  const p = buildControlPrompt({ scenario: SCENARIO });
+  assert.doesNotMatch(p, /\/plan|\/deliver/);
+  assert.match(p, /autonomously/i);
+});
+
+test('buildArmPrompt: phase selector routes to the per-phase builders', () => {
+  assert.equal(
+    buildArmPrompt({ arm: 'mandrel', scenario: SCENARIO, phase: 'plan' }),
+    buildMandrelPlanPrompt({ scenario: SCENARIO }),
+  );
+  assert.equal(
+    buildArmPrompt({
+      arm: 'mandrel',
+      scenario: SCENARIO,
+      phase: 'deliver',
+      deliverTarget: 5,
+    }),
+    buildMandrelDeliverPrompt({ scenario: SCENARIO, deliverTarget: 5 }),
+  );
+});
+
+test('aggregateEnvelopes: sums cost/tokens/duration and folds nulls', () => {
+  const e1 = parseSessionEnvelope(
+    JSON.stringify(
+      realEnvelope({
+        total_cost_usd: 0.2,
+        duration_ms: 1000,
+        usage: {
+          input_tokens: 10,
+          output_tokens: 1,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+      }),
+    ),
+  );
+  const e2 = parseSessionEnvelope(
+    JSON.stringify(
+      realEnvelope({
+        total_cost_usd: 0.3,
+        duration_ms: 2000,
+        usage: {
+          input_tokens: 20,
+          output_tokens: 2,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+      }),
+    ),
+  );
+  const agg = aggregateEnvelopes([e1, e2]);
+  assert.equal(agg.cost.totalUsd, 0.5);
+  assert.equal(agg.usage.totalTokens, 11 + 22);
+  assert.equal(agg.durationMs, 3000);
+  assert.equal(agg.raw.aggregatedFromPhases, true);
+  assert.equal(agg.raw.phases.length, 2);
+
+  // All-null costs ⇒ null total (no signal), not a faked 0.
+  const n1 = parseSessionEnvelope(
+    JSON.stringify(realEnvelope({ total_cost_usd: undefined })),
+  );
+  const n2 = parseSessionEnvelope(
+    JSON.stringify(realEnvelope({ total_cost_usd: undefined })),
+  );
+  assert.equal(aggregateEnvelopes([n1, n2]).cost.totalUsd, null);
 });
 
 test('runSession: rejects bad arm and empty cwd', () => {

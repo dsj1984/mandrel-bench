@@ -50,6 +50,17 @@ import { noiseBand } from '../metrics/variance.js';
  * separately (`bench/report/render.js` `renderAutonomyGuardrailSection`,
  * `bench/report/html.js`'s guardrail panel).
  *
+ * `planQuality` is ALSO deliberately excluded (Epic #86, Story #95 / D-019):
+ * it is a MANDREL-ONLY intrinsic axis — the control arm authors no plan, so its
+ * plan-quality is null by construction, not a measurement. Diffing a measured
+ * mandrel plan against a non-existent control plan is not a meaningful
+ * comparison (identical reasoning to planningFidelity and autonomy). The axis
+ * is scored per run by `bench/score/plan-quality.js` and rendered via the
+ * attribution table (`bench/report/render.js` `renderAttributionSection`),
+ * never as a delta row here. It lives at the scorecard's top level
+ * (`scorecard.planQuality`), not under `dimensions`, so it can never leak into
+ * this registry accidentally.
+ *
  * The accessor pulls the scalar out of a scorecard's `dimensions.<name>`
  * sub-object, returning `null` when the value is null (e.g. planningFidelity on
  * the control arm) so it is filtered out of the band by `noiseBand`.
@@ -224,6 +235,75 @@ export function computeDifferential({
     n: { mandrel: mandrelRuns.length, control: controlRuns.length },
     dimensions,
     efficiency,
+  };
+}
+
+/**
+ * The second-touch CONTINUITY metrics (Epic #86, Story #96), each differenced
+ * mandrel-vs-control independently. Unlike {@link SCALAR_DIMENSIONS}, the
+ * accessor pulls from the SCORECARD's top-level `touch2` block (continuity
+ * lives beside `trap`, not under `dimensions`):
+ *
+ *   - `touch2.outcome` — the second touch's composite quality in [0,1].
+ *   - `touch2.cost`    — the second touch's session USD cost.
+ *
+ * The continuity delta answers the persistence thesis directly: does
+ * inheriting Mandrel's artifacts make the NEXT change cheaper (cost delta < 0)
+ * and safer/better (outcome delta > 0) than inheriting code alone?
+ */
+export const CONTINUITY_METRICS = Object.freeze([
+  { name: 'touch2.outcome', accessor: (sc) => sc?.touch2?.outcome ?? null },
+  { name: 'touch2.cost', accessor: (sc) => sc?.touch2?.cost ?? null },
+]);
+
+/**
+ * Compute the second-touch CONTINUITY DELTA for ONE scenario cell — the
+ * mandrel-vs-control difference of the second touch's outcome and cost, using
+ * the same noise-band + real-delta machinery as {@link computeDifferential}.
+ *
+ * `present` is false when NEITHER arm carries any `touch2` block for the cell
+ * (a touch-1-only scenario such as hello-world) — the caller renders no
+ * continuity section for such a cell rather than an all-incomparable table.
+ *
+ * @param {object} args
+ * @param {Array<object>} args.mandrelRuns  Scorecards for the Mandrel arm.
+ * @param {Array<object>} args.controlRuns  Scorecards for the control arm.
+ * @param {'iqr'|'ci'} [args.method='iqr']
+ * @param {string} [args.scenario]
+ * @returns {{
+ *   scenario: string|undefined,
+ *   method: 'iqr'|'ci',
+ *   present: boolean,
+ *   n: { mandrel: number, control: number },
+ *   metrics: Record<string, object>
+ * }}
+ */
+export function computeContinuityDelta({
+  mandrelRuns,
+  controlRuns,
+  method = 'iqr',
+  scenario,
+}) {
+  if (!Array.isArray(mandrelRuns) || !Array.isArray(controlRuns)) {
+    throw new TypeError(
+      'computeContinuityDelta: mandrelRuns and controlRuns must be arrays',
+    );
+  }
+  const metrics = {};
+  for (const { name, accessor } of CONTINUITY_METRICS) {
+    const mandrelBand = bandOrNull(mandrelRuns.map(accessor), method);
+    const controlBand = bandOrNull(controlRuns.map(accessor), method);
+    metrics[name] = compareBands({ name, mandrelBand, controlBand });
+  }
+  const present =
+    mandrelRuns.some((sc) => sc?.touch2 != null) ||
+    controlRuns.some((sc) => sc?.touch2 != null);
+  return {
+    scenario,
+    method,
+    present,
+    n: { mandrel: mandrelRuns.length, control: controlRuns.length },
+    metrics,
   };
 }
 

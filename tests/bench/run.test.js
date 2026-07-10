@@ -26,10 +26,12 @@ import {
   cellKey,
   derivedSecurityInputs,
   discoverLedger,
+  discoverPlannedEpicId,
   loadScenario,
   main,
   parseOptionalNumericEnv,
   planningInputs,
+  prepareTouch2Workspace,
   qualityInputs,
   REQUIRED_SANDBOX_ENV_VARS,
   RETIRED_SANDBOX_ENV_VARS,
@@ -41,11 +43,14 @@ import {
   retiredSandboxEnvWarnings,
   runFirstBenchmark,
   runOneRun,
+  runTouch2,
   sanitizeRunId,
   scenarioEnvSuffix,
+  snapshotPlanArtifacts,
   validateSandboxEnv,
 } from '../../bench/run.js';
 import { computeSecurity } from '../../bench/score/dimensions.js';
+import { ATTRIBUTION_CLASSES } from '../../bench/score/plan-quality.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, '..', '..');
@@ -1465,6 +1470,62 @@ test('runFirstBenchmark: maxCostUsd ceiling stops after the cell that crosses it
   assert.equal(record.checkpointed.length, 2);
 });
 
+test('runFirstBenchmark: the touch-2 session spend counts against maxCostUsd (audit H2)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  // A scenario WITH a change request → the second touch runs and carries its
+  // own session cost. touch-1 costs 0.42 (fakeEnvelope); the touch-2 session
+  // costs another 0.42, so the cell's total is ~0.84.
+  deps.loadDeps = {
+    readFileImpl: () =>
+      JSON.stringify({
+        ...FAKE_SCENARIO,
+        changeRequest: {
+          id: 'cr-1',
+          prompt: 'Evolve it',
+          acceptanceSuite: './acceptance.touch2.test.js',
+        },
+      }),
+    importImpl: async () => ({
+      evaluate: async () => ({
+        scenario: 'hello-world',
+        passed: true,
+        criteria: [{ met: true }, { met: true }],
+      }),
+    }),
+  };
+
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel'],
+      n: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+      // A single cell. touch-1 alone (0.42) would NOT cross a 0.60 ceiling;
+      // only folding the touch-2 spend (another 0.42 → 0.84) crosses it. So a
+      // stop here PROVES touch-2 is counted against the ceiling.
+      maxCostUsd: 0.6,
+    },
+    deps,
+  );
+
+  assert.equal(result.scorecards.length, 1);
+  // The cell recorded a touch-2 block with a real cost.
+  const sc = result.scorecards[0];
+  assert.equal(typeof sc.touch2.cost, 'number');
+  assert.ok(sc.touch2.cost > 0);
+  // The ceiling stopped the batch, and the accumulated cost includes touch 2
+  // (touch-1 0.42 alone is below the 0.60 ceiling).
+  assert.equal(result.stopped.reason, 'maxCostUsd');
+  assert.ok(
+    result.stopped.costUsd >=
+      sc.dimensions.efficiency.costUsd + sc.touch2.cost - 1e-9,
+    `accumulated cost ${result.stopped.costUsd} should include touch-2 spend ${sc.touch2.cost}`,
+  );
+  assert.ok(result.stopped.costUsd > 0.6);
+});
+
 test('runFirstBenchmark: with no explicit n, resolves per-scenario run count from each scenario.targetN (Epic #66 audit remediation, H1)', async () => {
   const record = freshRecord();
   const deps = benchDeps(record);
@@ -2021,4 +2082,722 @@ test('main(): BENCH_JANITOR_TTL_HOURS overrides the default janitor TTL', async 
   );
 
   assert.equal(seenTtlHours, 48);
+});
+
+// ---------------------------------------------------------------------------
+// Phase-scoped sessions: id-discovery seam + plan snapshot (D-019, Epic #86
+// Story #94)
+// ---------------------------------------------------------------------------
+
+test('discoverPlannedEpicId: picks the newest type::epic created at/after the run start', () => {
+  const calls = [];
+  const ghJson = (args) => {
+    calls.push(args);
+    return [
+      { number: 10, createdAt: '2026-06-16T19:59:00.000Z' }, // before start — excluded
+      { number: 12, createdAt: '2026-06-16T20:00:05.000Z' },
+      { number: 11, createdAt: '2026-06-16T20:00:01.000Z' },
+    ];
+  };
+  const id = discoverPlannedEpicId(
+    { owner: 'o', repo: 'r', sinceIso: '2026-06-16T20:00:00.000Z' },
+    { ghJson },
+  );
+  assert.equal(id, 12);
+  // Queried the epic label on the right repo.
+  assert.ok(calls[0].includes('type::epic'));
+  assert.ok(calls[0].includes('o/r'));
+});
+
+test('discoverPlannedEpicId: returns null when no epic matches / gh errors', () => {
+  assert.equal(
+    discoverPlannedEpicId(
+      { owner: 'o', repo: 'r', sinceIso: '2026-06-16T20:00:00.000Z' },
+      { ghJson: () => [] },
+    ),
+    null,
+  );
+  assert.equal(
+    discoverPlannedEpicId(
+      { owner: 'o', repo: 'r', sinceIso: '2026-06-16T20:00:00.000Z' },
+      {
+        ghJson: () => {
+          throw new Error('gh down');
+        },
+      },
+    ),
+    null,
+  );
+});
+
+test('snapshotPlanArtifacts (epic routing): writes the Epic body, child Story bodies, and a manifest', () => {
+  const writes = [];
+  const ghJson = (args) => {
+    const key = `${args[0]} ${args[1]}`;
+    if (key === 'issue view') {
+      return {
+        number: Number(args[2]),
+        title: 'E',
+        body: 'epic body + tech spec',
+        labels: [],
+      };
+    }
+    if (key === 'issue list') {
+      return [
+        {
+          number: 200,
+          title: 'S1',
+          body: 'acceptance[]/verify[]',
+          createdAt: '2026-06-16T20:00:02.000Z',
+        },
+        {
+          number: 5,
+          title: 'old',
+          body: 'stale',
+          createdAt: '2026-06-16T19:00:00.000Z',
+        }, // before start — excluded
+      ];
+    }
+    return [];
+  };
+  const out = snapshotPlanArtifacts(
+    {
+      owner: 'o',
+      repo: 'r',
+      routing: 'epic',
+      epicId: 123,
+      planDir: '/results/.raw/story-scope-mandrel-r1/plan',
+      sinceIso: '2026-06-16T20:00:00.000Z',
+      capturedAt: '2026-06-16T20:00:00.000Z',
+    },
+    {
+      ghJson,
+      mkdirImpl: () => {},
+      writeFileImpl: (p, data) => writes.push({ p, data }),
+    },
+  );
+  const names = writes.map((w) => path.basename(w.p));
+  assert.ok(names.includes('epic-123.json'));
+  assert.ok(names.includes('story-200.json'));
+  assert.ok(names.includes('manifest.json'));
+  // The stale (pre-start) Story is excluded from the snapshot.
+  assert.ok(!names.includes('story-5.json'));
+  const manifest = JSON.parse(
+    writes.find((w) => w.p.endsWith('manifest.json')).data,
+  );
+  assert.equal(manifest.routing, 'epic');
+  assert.equal(manifest.epicId, 123);
+  assert.deepEqual(manifest.storyNumbers, [200]);
+  assert.equal(out.manifest.epicId, 123);
+});
+
+test('snapshotPlanArtifacts (story routing): writes the standalone Story body + a manifest', () => {
+  const writes = [];
+  const ghJson = (args) => {
+    if (`${args[0]} ${args[1]}` === 'issue view') {
+      return {
+        number: Number(args[2]),
+        title: 'Standalone',
+        body: 'story body',
+        labels: [],
+      };
+    }
+    return [];
+  };
+  snapshotPlanArtifacts(
+    {
+      owner: 'o',
+      repo: 'r',
+      routing: 'story',
+      storyNumber: 456,
+      planDir: '/results/.raw/story-scope-mandrel-r1/plan',
+      sinceIso: '2026-06-16T20:00:00.000Z',
+    },
+    {
+      ghJson,
+      mkdirImpl: () => {},
+      writeFileImpl: (p, data) => writes.push({ p, data }),
+    },
+  );
+  const names = writes.map((w) => path.basename(w.p));
+  assert.deepEqual(names.sort(), ['manifest.json', 'story-456.json']);
+  const manifest = JSON.parse(
+    writes.find((w) => w.p.endsWith('manifest.json')).data,
+  );
+  assert.equal(manifest.routing, 'story');
+  assert.equal(manifest.storyNumber, 456);
+});
+
+test('runOneRun (mandrel): threads session.phases onto the scorecard AND runs the between-session id-discovery + snapshot', async () => {
+  const record = freshRecord({ betweenResults: [] });
+  const deps = benchDeps(record);
+
+  // A scenario that routes epic but carries NO seed Epic id ⇒ the plan-phase
+  // hook must DISCOVER the id created in-session.
+  const { evaluate } = await loadScenarioFake();
+  const scenario = { ...FAKE_SCENARIO, routing: 'epic' };
+  delete scenario.epicId;
+
+  // gh stub answering the plan-phase discovery + snapshot reads.
+  deps.ghJson = (args) => {
+    const key = `${args[0]} ${args[1]}`;
+    const labelIdx = args.indexOf('--label');
+    const label = labelIdx >= 0 ? args[labelIdx + 1] : '';
+    if (key === 'issue list' && label === 'type::epic') {
+      return [{ number: 321, createdAt: '2026-06-16T20:00:01.000Z' }];
+    }
+    if (key === 'issue list' && label === 'type::story') {
+      return [
+        {
+          number: 400,
+          title: 'S',
+          body: 'b',
+          createdAt: '2026-06-16T20:00:02.000Z',
+        },
+      ];
+    }
+    if (key === 'issue view') {
+      return { number: Number(args[2]), title: 'T', body: 'B', labels: [] };
+    }
+    return [];
+  };
+
+  // The stubbed session runs the injected betweenPhases hook (as the real
+  // runSession does) and returns a phases split summing to the run envelope.
+  deps.runSessionFn = (o, d) => {
+    let between = {};
+    if (typeof d.betweenPhases === 'function') {
+      between = d.betweenPhases({
+        scenario: o.scenario,
+        planEnvelope: fakeEnvelope(),
+        cwd: o.cwd,
+      });
+      record.betweenResults.push(between);
+    }
+    return {
+      arm: o.arm,
+      scenarioId: o.scenario.id,
+      model: o.model,
+      prompt: 'p',
+      status: 0,
+      envelope: fakeEnvelope(), // cost 0.42, totalTokens 12000
+      phases:
+        o.arm === 'mandrel'
+          ? [
+              { phase: 'plan', costUsd: 0.21, tokens: 6000, wallClockMs: 1000 },
+              {
+                phase: 'deliver',
+                costUsd: 0.21,
+                tokens: 6000,
+                wallClockMs: 2000,
+              },
+            ]
+          : null,
+    };
+  };
+
+  const scorecard = await runOneRun(
+    {
+      scenario,
+      evaluate,
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'https://github.com/dsj1984/bench-sbx-abc.git',
+        owner: 'dsj1984',
+        repo: 'bench-sbx-abc',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  // The record is schema-valid WITH the phases block.
+  assert.ok(
+    validateScorecard(scorecard),
+    JSON.stringify(validateScorecard.errors),
+  );
+  assert.ok(Array.isArray(scorecard.phases));
+  assert.deepEqual(
+    scorecard.phases.map((p) => p.phase),
+    ['plan', 'deliver'],
+  );
+  // Sum-invariant against the run efficiency totals.
+  const sumCost = scorecard.phases.reduce((a, p) => a + p.costUsd, 0);
+  const sumTokens = scorecard.phases.reduce((a, p) => a + p.tokens, 0);
+  assert.ok(Math.abs(sumCost - scorecard.dimensions.efficiency.costUsd) < 1e-9);
+  assert.equal(sumTokens, scorecard.dimensions.efficiency.totalTokens);
+
+  // The hook discovered the in-session Epic id (321) and threaded it as the
+  // deliver target.
+  assert.equal(record.betweenResults.length, 1);
+  assert.equal(record.betweenResults[0].deliverTarget, 321);
+
+  // The plan snapshot landed under this cell's .raw/<stamp>/plan/ dir.
+  const planWrites = record.writes.filter((w) =>
+    w.p.includes(path.join('.raw', 'hello-world-mandrel-r1', 'plan')),
+  );
+  const names = planWrites.map((w) => path.basename(w.p));
+  assert.ok(names.includes('epic-321.json'));
+  assert.ok(names.includes('story-400.json'));
+  assert.ok(names.includes('manifest.json'));
+});
+
+test('runOneRun (control): carries no phases block', async () => {
+  const record = freshRecord({ betweenResults: [] });
+  const deps = benchDeps(record);
+  const { scenario, evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario,
+      evaluate,
+      arm: 'control',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'https://github.com/dsj1984/bench-sbx-abc.git',
+        owner: 'dsj1984',
+        repo: 'bench-sbx-abc',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+  assert.equal('phases' in scorecard, false);
+});
+
+// ---------------------------------------------------------------------------
+// The intrinsic PLAN-QUALITY axis (Epic #86, Story #95; D-019) — populated on a
+// real mandrel run (audit H1). Before the wire-up, computePlanQuality had zero
+// non-test callers and buildScorecard had no planQuality param, so the axis was
+// ALWAYS null on real runs (the attribution table rendered empty). These prove
+// the between-session plan snapshot flows through to scorecard.planQuality for
+// the mandrel arm, and stays null for the control arm.
+// ---------------------------------------------------------------------------
+
+test('runOneRun (mandrel): populates scorecard.planQuality from the plan snapshot AND stamps the attribution classification (audit H1)', async () => {
+  const record = freshRecord({ betweenResults: [] });
+  const deps = benchDeps(record);
+
+  // A scenario carrying a FROZEN spec (seed.acceptance + storyCountContract)
+  // the plan-quality scorer measures the plan snapshot against.
+  const scenario = {
+    ...FAKE_SCENARIO,
+    routing: 'epic',
+    epicId: 900,
+    storyCountContract: { mode: 'epic', minStories: 4, maxStories: 6 },
+    seed: {
+      prompt: 'Build a multi-user API',
+      acceptance: [
+        'POST /auth/register with valid credentials returns 201 and persists the user',
+        'POST /auth/login returns 200 with a bearer token',
+      ],
+    },
+  };
+  const evaluate = async () => ({
+    scenario: 'hello-world',
+    passed: true,
+    criteria: [{ met: true }, { met: true }],
+  });
+
+  // In-memory FS shared between the snapshot WRITE (writeFileFn) and the
+  // plan-quality READ (readFileImpl), so the scorer reads the real bodies the
+  // snapshot persisted rather than a disk stub.
+  const fsMap = new Map();
+  deps.writeFileFn = (p, data) => {
+    fsMap.set(p, data);
+    record.writes.push({ p, data });
+  };
+  deps.readFileImpl = (p) => fsMap.get(p) ?? '';
+
+  // Five child Stories (within the 4-6 contract) whose ACs trace the frozen
+  // criteria — a conforming plan → a high plan-quality score.
+  const storyBodies = {
+    901: '## Acceptance\n- POST /auth/register with valid credentials returns 201 and persists the user',
+    902: '## Acceptance\n- POST /auth/login returns 200 with a bearer token; wrong password returns 401',
+    903: '## Acceptance\n- POST /projects with a valid name returns 201',
+    904: '## Acceptance\n- GET /projects returns only the authenticated user projects',
+    905: '## Acceptance\n- DELETE /projects/:id removes the project and returns 204',
+  };
+  deps.ghJson = (args) => {
+    const key = `${args[0]} ${args[1]}`;
+    const labelIdx = args.indexOf('--label');
+    const label = labelIdx >= 0 ? args[labelIdx + 1] : '';
+    if (key === 'issue view') {
+      const number = Number(args[2]);
+      if (storyBodies[number]) {
+        return { number, title: `S${number}`, body: storyBodies[number] };
+      }
+      return { number, title: 'Epic', body: 'Tech spec body', labels: [] };
+    }
+    if (key === 'issue list' && label === 'type::story') {
+      return Object.entries(storyBodies).map(([number, body]) => ({
+        number: Number(number),
+        title: `S${number}`,
+        body,
+        createdAt: '2026-06-16T20:00:02.000Z',
+      }));
+    }
+    return [];
+  };
+
+  // The stubbed session runs the injected betweenPhases hook, as the real
+  // runSession does, so the plan snapshot is written before delivery.
+  deps.runSessionFn = (o, d) => {
+    if (typeof d.betweenPhases === 'function') {
+      record.betweenResults.push(
+        d.betweenPhases({ scenario: o.scenario, planEnvelope: fakeEnvelope() }),
+      );
+    }
+    return {
+      arm: o.arm,
+      scenarioId: o.scenario.id,
+      model: o.model,
+      prompt: 'p',
+      status: 0,
+      envelope: fakeEnvelope(),
+    };
+  };
+
+  const scorecard = await runOneRun(
+    {
+      scenario,
+      evaluate,
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'https://github.com/dsj1984/bench-sbx-abc.git',
+        owner: 'dsj1984',
+        repo: 'bench-sbx-abc',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.ok(
+    validateScorecard(scorecard),
+    JSON.stringify(validateScorecard.errors),
+  );
+  // The axis is populated with a numeric score …
+  assert.ok(
+    scorecard.planQuality && typeof scorecard.planQuality === 'object',
+    'planQuality block present',
+  );
+  assert.equal(typeof scorecard.planQuality.score, 'number');
+  // … a conforming plan scores high (coverage 1, decomposition 1 within 4-6) …
+  assert.equal(scorecard.planQuality.plannedStoryCount, 5);
+  assert.ok(scorecard.planQuality.score >= 0.9);
+  // … and the attribution decision-table classification is stamped.
+  assert.ok(
+    ATTRIBUTION_CLASSES.includes(
+      scorecard.planQuality.attribution.classification,
+    ),
+    `attribution classification set, got ${scorecard.planQuality.attribution?.classification}`,
+  );
+});
+
+test('runOneRun (control): leaves scorecard.planQuality null — the control arm authors no plan (audit H1)', async () => {
+  const record = freshRecord({ betweenResults: [] });
+  const deps = benchDeps(record);
+  const { scenario, evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario,
+      evaluate,
+      arm: 'control',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'https://github.com/dsj1984/bench-sbx-abc.git',
+        owner: 'dsj1984',
+        repo: 'bench-sbx-abc',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+  assert.equal('planQuality' in scorecard, false);
+});
+
+// ---------------------------------------------------------------------------
+// The second touch (Epic #86, Story #96) — prepareTouch2Workspace + runTouch2
+// + runOneRun integration. Every real effect is injected; no live process.
+// ---------------------------------------------------------------------------
+
+const FAKE_SCENARIO_WITH_CR = {
+  ...FAKE_SCENARIO,
+  routing: 'story',
+  changeRequest: {
+    id: 'password-change',
+    title: 'Change password',
+    prompt:
+      'Add a way for a signed-in user to change their password and invalidate old sessions.',
+    acceptanceSuite: './acceptance.touch2.test.js',
+  },
+};
+
+/** A frozen touch-2 oracle fake — control path calls it directly. */
+async function fakeTouch2Evaluate() {
+  return {
+    scenario: 'story-scope',
+    passed: true,
+    criteria: [{ met: true }, { met: true }, { met: true }, { met: true }],
+  };
+}
+
+test('prepareTouch2Workspace (mandrel): keeps the FULL pipeline output — same cwd, no copy', () => {
+  let copied = false;
+  const result = prepareTouch2Workspace(
+    { arm: 'mandrel', workspacePath: '/ws-mandrel' },
+    {
+      cpFn: () => {
+        copied = true;
+      },
+      mkdirFn: () => {},
+    },
+  );
+  assert.deepEqual(result, {
+    touch2Cwd: '/ws-mandrel',
+    inheritance: 'full-pipeline',
+  });
+  assert.equal(copied, false, 'the mandrel arm inherits its tree in place');
+});
+
+test('prepareTouch2Workspace (control): reduces to DELIVERED CODE ONLY — fresh dir, framework artifacts stripped', () => {
+  const cpCalls = [];
+  const mkdirCalls = [];
+  const result = prepareTouch2Workspace(
+    { arm: 'control', workspacePath: '/ws-control' },
+    {
+      cpFn: (src, dest, opts) => cpCalls.push({ src, dest, opts }),
+      mkdirFn: (p) => mkdirCalls.push(p),
+    },
+  );
+  assert.equal(result.inheritance, 'delivered-code-only');
+  assert.equal(result.touch2Cwd, '/ws-control--touch2-delivered');
+  assert.deepEqual(mkdirCalls, ['/ws-control--touch2-delivered']);
+  assert.equal(cpCalls.length, 1);
+  // The copy filter strips framework/session artifacts so the control arm
+  // inherits ONLY the code it shipped.
+  const { filter } = cpCalls[0].opts;
+  assert.equal(filter('/ws-control/.agents'), false);
+  assert.equal(filter('/ws-control/.git'), false);
+  assert.equal(filter('/ws-control/.claude'), false);
+  assert.equal(filter('/ws-control/CLAUDE.md'), false);
+  assert.equal(filter('/ws-control/server.js'), true);
+  assert.equal(filter('/ws-control/package.json'), true);
+});
+
+test('runTouch2 (mandrel): runs a fresh session against the full-pipeline tree and returns a touch2 block with the full dimension set + regression', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  const touch2SessionCwds = [];
+  deps.runSessionFn = (o) => {
+    touch2SessionCwds.push({ arm: o.arm, cwd: o.cwd });
+    return {
+      arm: o.arm,
+      scenarioId: o.scenario.id,
+      model: o.model,
+      prompt: 'p',
+      status: 0,
+      envelope: fakeEnvelope(),
+    };
+  };
+  const trapRunnerArgs = [];
+  deps.runTrapOraclesFn = async (o) => {
+    trapRunnerArgs.push(o);
+    return {
+      classes: [
+        { class: 'regression-hashing', score: 1, defectPresent: false },
+      ],
+      cleanRate: 1,
+    };
+  };
+
+  const block = await runTouch2(
+    {
+      scenario: FAKE_SCENARIO_WITH_CR,
+      touch2Evaluate: fakeTouch2Evaluate,
+      scenarioDir: '/repo/bench/scenarios/story-scope',
+      arm: 'mandrel',
+      runIndex: 1,
+      model: 'claude-opus-4-8',
+      sandbox: { owner: 'o', repo: 'r', repoUrl: 'u' },
+      handle: { workspacePath: '/ws-mandrel' },
+      frameworkVersion: '1.70.0',
+      benchmarkVersion: '0.5.0',
+      env: { node: 'v24.16.0', os: 'darwin' },
+      timeoutMs: 1000,
+    },
+    deps,
+  );
+
+  // The touch-2 session ran against the FULL pipeline tree (same workspace).
+  assert.deepEqual(touch2SessionCwds, [{ arm: 'mandrel', cwd: '/ws-mandrel' }]);
+  assert.equal(block.inheritance, 'full-pipeline');
+  assert.equal(block.changeRequestId, 'password-change');
+  // Full dimension set is present.
+  assert.ok(block.dimensions && typeof block.dimensions.quality === 'object');
+  assert.ok(typeof block.dimensions.efficiency === 'object');
+  assert.equal(typeof block.outcome, 'number');
+  assert.equal(block.cost, 0.42);
+  assert.equal(block.frozenSuiteTotal, 2); // scoreScenarioQualityFn fake → 2 criteria
+  // Regression scan used the phase-scoped traps-touch2 subdir, NOT traps/.
+  assert.equal(trapRunnerArgs[0].trapsSubdir, 'traps-touch2');
+  assert.equal(trapRunnerArgs[0].deliveredTreePath, '/ws-mandrel');
+  assert.deepEqual(
+    block.regression.classes.map((c) => c.class),
+    ['regression-hashing'],
+  );
+  assert.equal(block.regression.cleanRate, 1);
+});
+
+test('runTouch2 (control): reduces the workspace to delivered code only and scores the change request there', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  const touch2SessionCwds = [];
+  deps.runSessionFn = (o) => {
+    touch2SessionCwds.push({ arm: o.arm, cwd: o.cwd });
+    return {
+      arm: o.arm,
+      scenarioId: o.scenario.id,
+      model: o.model,
+      prompt: 'p',
+      status: 0,
+      envelope: fakeEnvelope(),
+    };
+  };
+  deps.runTrapOraclesFn = async () => ({ classes: [], cleanRate: null });
+  // Capture the reduced-workspace teardown (audit M2).
+  const removed = [];
+  deps.rmFn = (p) => removed.push(p);
+
+  const block = await runTouch2(
+    {
+      scenario: FAKE_SCENARIO_WITH_CR,
+      touch2Evaluate: fakeTouch2Evaluate,
+      scenarioDir: '/repo/bench/scenarios/story-scope',
+      arm: 'control',
+      runIndex: 1,
+      model: 'claude-opus-4-8',
+      sandbox: { owner: 'o', repo: 'r', repoUrl: 'u' },
+      handle: { workspacePath: '/ws-control' },
+      frameworkVersion: '1.70.0',
+      benchmarkVersion: '0.5.0',
+      env: { node: 'v24.16.0', os: 'darwin' },
+      timeoutMs: 1000,
+    },
+    deps,
+  );
+
+  // The control arm's touch-2 session ran against the REDUCED (delivered-code-
+  // only) workspace, not the original.
+  assert.deepEqual(touch2SessionCwds, [
+    { arm: 'control', cwd: '/ws-control--touch2-delivered' },
+  ]);
+  assert.equal(block.inheritance, 'delivered-code-only');
+  // Its frozen touch-2 suite (4 criteria) was scored directly (no cross-check).
+  assert.equal(block.frozenSuiteTotal, 4);
+  assert.equal(block.frozenSuitePassed, 4);
+  // No traps-touch2 verdict ⇒ no regression sub-block.
+  assert.equal('regression' in block, false);
+  // M2: the reduced sibling workspace is torn down in the finally so it does
+  // not leak under the ephemeral root.
+  assert.deepEqual(removed, ['/ws-control--touch2-delivered']);
+});
+
+test('runTouch2 (mandrel): does NOT remove any workspace — the full pipeline tree travels forward untouched (audit M2)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  deps.runTrapOraclesFn = async () => ({ classes: [], cleanRate: null });
+  const removed = [];
+  deps.rmFn = (p) => removed.push(p);
+
+  const block = await runTouch2(
+    {
+      scenario: FAKE_SCENARIO_WITH_CR,
+      touch2Evaluate: fakeTouch2Evaluate,
+      scenarioDir: '/repo/bench/scenarios/story-scope',
+      arm: 'mandrel',
+      runIndex: 1,
+      model: 'claude-opus-4-8',
+      sandbox: { owner: 'o', repo: 'r', repoUrl: 'u' },
+      handle: { workspacePath: '/ws-mandrel' },
+      frameworkVersion: '1.70.0',
+      benchmarkVersion: '0.5.0',
+      env: { node: 'v24.16.0', os: 'darwin' },
+      timeoutMs: 1000,
+    },
+    deps,
+  );
+
+  assert.equal(block.inheritance, 'full-pipeline');
+  // The mandrel arm runs touch 2 in the SAME workspace (no copy), so there is
+  // no reduced sibling to remove.
+  assert.deepEqual(removed, []);
+});
+
+test('runTouch2: a scenario with no changeRequest returns null (touch 2 skipped, e.g. hello-world)', async () => {
+  const block = await runTouch2(
+    {
+      scenario: FAKE_SCENARIO, // no changeRequest
+      touch2Evaluate: null,
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: { owner: 'o', repo: 'r', repoUrl: 'u' },
+      handle: { workspacePath: '/ws-mandrel' },
+      frameworkVersion: '1.70.0',
+      benchmarkVersion: '0.5.0',
+      env: { node: 'v24.16.0', os: 'darwin' },
+    },
+    {},
+  );
+  assert.equal(block, null);
+});
+
+test('runOneRun: attaches a touch2 block when the scenario declares a changeRequest', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  deps.runTrapOraclesFn = async () => ({
+    classes: [{ class: 'regression-hashing', score: 1, defectPresent: false }],
+    cleanRate: 1,
+  });
+  const scorecard = await runOneRun(
+    {
+      scenario: FAKE_SCENARIO_WITH_CR,
+      evaluate: async () => ({ passed: true, criteria: [{ met: true }] }),
+      scenarioDir: '/repo/bench/scenarios/story-scope',
+      touch2Evaluate: fakeTouch2Evaluate,
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: { owner: 'o', repo: 'r', repoUrl: 'u', baselineSha: 's' },
+      resultsDir: '/results',
+      ephemeralRoot: '/tmp/e',
+    },
+    deps,
+  );
+  assert.ok(scorecard.touch2, 'the scorecard carries a touch2 block');
+  assert.equal(scorecard.touch2.changeRequestId, 'password-change');
+  assert.equal(scorecard.touch2.inheritance, 'full-pipeline');
+  assert.ok(scorecard.touch2.dimensions);
+  assert.equal(scorecard.touch2.regression.cleanRate, 1);
+});
+
+test('runOneRun: no changeRequest ⇒ no touch2 block on the scorecard', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  const { scenario, evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario, // FAKE_SCENARIO, no changeRequest
+      evaluate,
+      scenarioDir: '/repo/bench/scenarios/hello-world',
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: { owner: 'o', repo: 'r', repoUrl: 'u', baselineSha: 's' },
+      resultsDir: '/results',
+      ephemeralRoot: '/tmp/e',
+    },
+    deps,
+  );
+  assert.equal('touch2' in scorecard, false);
 });

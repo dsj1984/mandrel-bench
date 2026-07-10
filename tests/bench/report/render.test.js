@@ -15,15 +15,21 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  attributionRows,
   autonomyGuardrailFindings,
   autonomyGuardrailRows,
   buildReportModel,
+  continuityRows,
   deriveCohort,
   dimensionRows,
   groupCells,
+  phaseCostRows,
   recommendImprovements,
+  renderAttributionSection,
+  renderContinuitySection,
   renderFloorCalibrationNote,
   renderMismatchNote,
+  renderPhaseCostSection,
   renderReport,
   renderScalingView,
   trapAxisRows,
@@ -62,6 +68,8 @@ function card({
   benchmarkVersion = BV,
   env = ENV,
   trap = null,
+  phases = null,
+  touch2 = null,
 } = {}) {
   const sc = {
     schemaVersion: 1,
@@ -95,6 +103,8 @@ function card({
     },
   };
   if (trap) sc.trap = trap;
+  if (phases) sc.phases = phases;
+  if (touch2) sc.touch2 = touch2;
   return sc;
 }
 
@@ -850,5 +860,233 @@ describe('renderFloorCalibrationNote — direct coverage (Epic #66 audit remedia
     const note = renderFloorCalibrationNote({ floorCalibration: true });
     assert.match(note, /🧭 \*\*Floor\/calibration rung\*\*/);
     assert.match(note, /instrumentation, not a value rung/);
+  });
+});
+
+describe('per-phase cost (D-019, Epic #86 Story #94)', () => {
+  const PHASES = [
+    { phase: 'plan', costUsd: 0.4, tokens: 40000, wallClockMs: 120000 },
+    { phase: 'deliver', costUsd: 1.0, tokens: 140000, wallClockMs: 480000 },
+  ];
+
+  function corpus() {
+    const cards = [];
+    for (let i = 0; i < 3; i += 1) {
+      cards.push(
+        card({
+          scenario: 'story-scope',
+          arm: 'mandrel',
+          runId: `ss-m-${i}`,
+          phases: PHASES,
+        }),
+      );
+      // Control carries NO phases block.
+      cards.push(
+        card({ scenario: 'story-scope', arm: 'control', runId: `ss-c-${i}` }),
+      );
+    }
+    return cards;
+  }
+
+  it('phaseCostRows: reports mean plan/deliver cost for the mandrel arm, omitting control', () => {
+    const rows = phaseCostRows(groupCells(corpus()));
+    assert.equal(rows.length, 1);
+    const [r] = rows;
+    assert.equal(r.scenario, 'story-scope');
+    assert.ok(Math.abs(r.planCostUsd - 0.4) < 1e-9);
+    assert.ok(Math.abs(r.deliverCostUsd - 1.0) < 1e-9);
+    assert.ok(Math.abs(r.totalCostUsd - 1.4) < 1e-9);
+  });
+
+  it('phaseCostRows: returns [] when no record carries a phases block (control-only/legacy)', () => {
+    const cards = [
+      card({ scenario: 'story-scope', arm: 'mandrel', runId: 'm1' }),
+      card({ scenario: 'story-scope', arm: 'control', runId: 'c1' }),
+    ];
+    assert.deepEqual(phaseCostRows(groupCells(cards)), []);
+  });
+
+  it('renderPhaseCostSection: renders a mandrel-only per-phase cost table', () => {
+    const md = renderPhaseCostSection(groupCells(corpus()));
+    assert.match(md, /Per-phase cost \(mandrel arm\)/);
+    assert.match(md, /Plan cost \(USD\)/);
+    assert.match(md, /Deliver cost \(USD\)/);
+    assert.match(md, /`story-scope`/);
+    assert.match(md, /0\.4/);
+  });
+
+  it('renderPhaseCostSection: empty string when there is no phase data', () => {
+    assert.equal(renderPhaseCostSection([]), '');
+  });
+
+  it('renderReport: includes the per-phase cost section when phases are present', () => {
+    const md = renderReport({ scorecards: corpus() });
+    assert.match(md, /Per-phase cost \(mandrel arm\)/);
+  });
+});
+
+describe('plan-vs-deliver attribution table (Epic #86, Story #95)', () => {
+  // Attach a planQuality block to a card so the attribution table has data.
+  const withPlanQuality = (opts, planQuality) => {
+    const sc = card(opts);
+    sc.planQuality = planQuality;
+    return sc;
+  };
+
+  it('attributionRows tallies each mandrel run computed from planQuality × outcome × adherence', () => {
+    const scorecards = [
+      // good plan + good outcome → working-as-intended
+      withPlanQuality(
+        {
+          scenario: 'epic-scope',
+          arm: 'mandrel',
+          runId: 'e1',
+          quality: 0.95,
+          planningFidelity: 0.9,
+        },
+        { score: 0.9 },
+      ),
+      // good plan + weak outcome + adhered → plan-phase-gap
+      withPlanQuality(
+        {
+          scenario: 'epic-scope',
+          arm: 'mandrel',
+          runId: 'e2',
+          quality: 0.3,
+          planningFidelity: 0.9,
+        },
+        { score: 0.9 },
+      ),
+      // weak plan + good outcome → model-compensating
+      withPlanQuality(
+        {
+          scenario: 'epic-scope',
+          arm: 'mandrel',
+          runId: 'e3',
+          quality: 0.95,
+          planningFidelity: 0.9,
+        },
+        { score: 0.2 },
+      ),
+      // control arm has no planQuality → skipped
+      card({ scenario: 'epic-scope', arm: 'control', runId: 'e-c' }),
+    ];
+    const rows = attributionRows(groupCells(scorecards));
+    assert.equal(rows.length, 1);
+    const row = rows[0];
+    assert.equal(row.scenario, 'epic-scope');
+    assert.equal(
+      row.n,
+      3,
+      'only the three mandrel runs with planQuality are counted',
+    );
+    assert.equal(row.counts['working-as-intended'], 1);
+    assert.equal(row.counts['plan-phase-gap'], 1);
+    assert.equal(row.counts['model-compensating'], 1);
+    assert.equal(row.counts['deliver-phase-gap'], 0);
+  });
+
+  it('honours a persisted attribution.classification when present', () => {
+    const scorecards = [
+      withPlanQuality(
+        {
+          scenario: 'epic-scope',
+          arm: 'mandrel',
+          runId: 'e1',
+          quality: 0.95,
+          planningFidelity: 0.9,
+        },
+        { score: 0.9, attribution: { classification: 'deliver-phase-gap' } },
+      ),
+    ];
+    const rows = attributionRows(groupCells(scorecards));
+    assert.equal(rows[0].counts['deliver-phase-gap'], 1);
+    assert.equal(rows[0].counts['working-as-intended'], 0);
+  });
+
+  it('renderAttributionSection renders the table and is wired into renderReport', () => {
+    const scorecards = [
+      withPlanQuality(
+        {
+          scenario: 'epic-scope',
+          arm: 'mandrel',
+          runId: 'e1',
+          quality: 0.95,
+          planningFidelity: 0.9,
+        },
+        { score: 0.9 },
+      ),
+    ];
+    const cells = groupCells(scorecards);
+    const section = renderAttributionSection(cells);
+    assert.match(section, /Plan-vs-deliver attribution \(mandrel arm\)/);
+    assert.match(section, /Working as intended/);
+    const md = renderReport({ scorecards });
+    assert.match(md, /Plan-vs-deliver attribution \(mandrel arm\)/);
+  });
+
+  it('renders nothing for a corpus with no planQuality blocks', () => {
+    const scorecards = [
+      card({ scenario: 'epic-scope', arm: 'mandrel', runId: 'e1' }),
+      card({ scenario: 'epic-scope', arm: 'control', runId: 'e-c' }),
+    ];
+    assert.equal(renderAttributionSection(groupCells(scorecards)), '');
+    assert.equal(attributionRows(groupCells(scorecards)).length, 0);
+  });
+});
+
+describe('continuity delta — the second touch (Epic #86, Story #96)', () => {
+  const contMandrel = card({
+    scenario: 'story-scope',
+    arm: 'mandrel',
+    runId: 'cont-m-1',
+    touch2: { outcome: 0.9, cost: 0.2 },
+  });
+  const contControl = card({
+    scenario: 'story-scope',
+    arm: 'control',
+    runId: 'cont-c-1',
+    touch2: { outcome: 0.6, cost: 0.5 },
+  });
+
+  it('returns [] for a cell with no touch2 data (a touch-1-only scenario)', () => {
+    const cells = groupCells([card({ scenario: 'hello-world' })]);
+    assert.deepEqual(continuityRows(cells[0], 'iqr'), []);
+  });
+
+  it('builds outcome + cost delta rows with the mandrel-minus-control delta', () => {
+    const cells = groupCells([contMandrel, contControl]);
+    const rows = continuityRows(cells[0], 'iqr');
+    const outcome = rows.find((r) => r.metric === 'touch2.outcome');
+    const cost = rows.find((r) => r.metric === 'touch2.cost');
+    assert.ok(outcome && cost);
+    assert.ok(Math.abs(outcome.delta - 0.3) < 1e-9);
+    assert.ok(Math.abs(cost.delta - -0.3) < 1e-9);
+    assert.equal(outcome.mandrelCenter, 0.9);
+    assert.equal(cost.controlCenter, 0.5);
+  });
+
+  it('renders a continuity section separate from the seven dimensions and the trap axis', () => {
+    const md = renderReport({
+      scorecards: [contMandrel, contControl],
+      method: 'iqr',
+    });
+    assert.match(md, /Continuity delta \(the second touch/);
+    assert.match(md, /outcome \(quality of the 2nd change/);
+    assert.match(md, /cost \(USD for the 2nd change/);
+  });
+
+  it('buildReportModel exposes the continuity rows per scenario', () => {
+    const model = buildReportModel({
+      scorecards: [contMandrel, contControl],
+      method: 'iqr',
+    });
+    const s = model.scenarios.find((x) => x.scenario === 'story-scope');
+    assert.ok(Array.isArray(s.continuity) && s.continuity.length === 2);
+  });
+
+  it('renderContinuitySection returns "" for a touch-1-only cell', () => {
+    const cells = groupCells([card({ scenario: 'hello-world' })]);
+    assert.equal(renderContinuitySection(cells[0], 'iqr'), '');
   });
 });

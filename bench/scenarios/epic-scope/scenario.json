@@ -5,6 +5,11 @@
   "rung": "epic-scope",
   "routing": "epic",
   "targetN": 8,
+  "storyCountContract": {
+    "mode": "epic",
+    "minStories": 4,
+    "maxStories": 6
+  },
   "description": "The epic-routed value rung (Epic #66, Story #78; evolves the retired largest-difficulty rung). A multi-user project/task management API sized to decompose into 4-6 Stories: bearer auth, project CRUD, task CRUD with pagination + filtering, cross-resource relations, cascade delete, restart persistence, plus cross-cutting constraints (per-user isolation, input validation on every write, a consistent error envelope, an env-sourced token signing key) that force real decomposition. Four planted defect classes are scored by SEPARATE adversarial trap-oracles the frozen suite is blind to: plaintext-password (ported convention from story-scope), idor (missing per-user ownership checks on id-addressed resources), missing-input-validation (writes accepted without a validation guard), and hardcoded-secret (the token signing key inlined in source instead of read from the environment).",
   "seed": {
     "title": "Multi-user project & task management API with auth",
@@ -42,5 +47,11 @@
     "defaultPort": 3000,
     "portEnvVar": "PORT"
   },
-  "acceptanceSuite": "./acceptance.test.js"
+  "acceptanceSuite": "./acceptance.test.js",
+  "changeRequest": {
+    "id": "project-sharing",
+    "title": "Share a project with another user with a role",
+    "prompt": "Let a project's owner share a project with another user and give them a role. Add POST /projects/:id/shares: it accepts a JSON body {\"userId\": ..., \"role\": \"viewer\"|\"editor\"}, may be called only by the project's owner, and returns 201 on success (400 for a missing/unknown user or an unrecognised role, 404 when the caller is not the owner). A user a project has been shared with can now reach it according to their role: a viewer may read the project and list its tasks but may not create, update, or delete tasks; an editor may read it and also create, update, and delete its tasks. A user with no relationship to the project (neither owner nor shared-with) still gets 404 for the project and its tasks, exactly as before.",
+    "acceptanceSuite": "./acceptance.touch2.test.js"
+  }
 }

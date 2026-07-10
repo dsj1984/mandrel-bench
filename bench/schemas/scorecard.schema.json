@@ -148,6 +148,18 @@
     "trap": {
       "$ref": "#/$defs/trapBlock"
     },
+    "touch2": {
+      "$ref": "#/$defs/touch2Block"
+    },
+    "planQuality": {
+      "$ref": "#/$defs/planQualityBlock"
+    },
+    "phases": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/phaseEnvelope" },
+      "description": "Per-phase session envelopes for the mandrel arm's ordered two-session run (D-019, Epic #86 Story #94, docs/target-architecture.md §8). The mandrel arm runs `/plan` (session 1) then `/deliver` (session 2) as separate headless `claude -p` sessions, each with its own cost/tokens/wall-clock, so a finding can be attributed to the planning half vs the delivery half. The per-phase `costUsd` and `tokens` SUM to this record's `dimensions.efficiency.costUsd` and `dimensions.efficiency.totalTokens` by construction (the run envelope is the sum of the phase envelopes). Present on mandrel-arm records only; ABSENT for the control arm (a single session) — a control record is valid without it."
+    },
     "rawRefs": {
       "type": "object",
       "additionalProperties": true,
@@ -174,6 +186,113 @@
     }
   },
   "$defs": {
+    "phaseEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "tokens", "wallClockMs"],
+      "description": "One phase-scoped `claude -p` session envelope for the mandrel arm's ordered two-session run (D-019). `costUsd`/`tokens` across the phases sum to the record's efficiency totals.",
+      "properties": {
+        "phase": {
+          "type": "string",
+          "enum": ["plan", "deliver"],
+          "description": "Which pipeline phase this session drove: 'plan' (session 1, `/plan`) or 'deliver' (session 2, `/deliver`)."
+        },
+        "costUsd": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "USD cost of this phase's session from its `claude -p` envelope, or null when the envelope reported none."
+        },
+        "tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total tokens (input + output + cache) for this phase's session."
+        },
+        "wallClockMs": {
+          "type": "number",
+          "minimum": 0,
+          "description": "This phase session's own `claude -p` duration in milliseconds. Distinct from the record's ledger-derived `efficiency.wallClockMs`; the per-phase wall-clocks are the envelope session durations."
+        }
+      }
+    },
+    "planQualityBlock": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["score"],
+      "description": "Intrinsic PLAN-QUALITY axis (Epic #86, Story #95; D-019, docs/target-architecture.md §8). Scores the pre-delivery plan the mandrel arm's `/plan` session produced — the frozen snapshot under `.raw/<run-stamp>/plan/` — against the scenario's frozen spec, so a bad outcome can be attributed to the plan phase vs the deliver phase. A MANDREL-ONLY axis: the control arm authors no plan, so its plan-quality is null (or the block is absent), and — like planning-fidelity and autonomy — it is DELIBERATELY excluded from the Mandrel-vs-control differential (`SCALAR_DIMENSIONS` in bench/score/differential.js). It lives at the scorecard's top level (a sibling of `dimensions`, like `trap`), never under `dimensions`. Composite = 0.7 deterministic spine (mean of coverage, decompositionSanity, constraintSurfacing) + 0.3 LLM-judge cross-check, with the judge weight folding into the spine when the judge is null.",
+      "properties": {
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Composite plan quality in [0,1]. Deterministic spine weighted 0.7; LLM-judge cross-check weighted 0.3 (judge weight folds into the spine when the cross-check is null)."
+        },
+        "coverage": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Fraction of the scenario's FROZEN acceptance criteria traceable to a Story AC in the plan snapshot."
+        },
+        "decompositionSanity": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Story count/sizing vs the scenario's machine-readable `storyCountContract` (epic-scope 4-6 Stories; the story-routed rungs a single standalone Story). Null when no contract was supplied (the sub-score folds out of the spine mean)."
+        },
+        "constraintSurfacing": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Fraction of the security-baseline obligations the scenario's trap classes probe that are surfaced in the plan artifacts. 1 for a scenario with no trap obligations (e.g. hello-world)."
+        },
+        "judgeScore": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "LLM-judge cross-check score in [0,1], or null when the judge did not run (the 0.3 judge weight then folds into the spine)."
+        },
+        "plannedStoryCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of Stories the plan snapshot recorded (the decomposition-sanity input)."
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Loud-null markers: 'plan-quality-decomposition-contract-absent' when the scenario supplied no storyCountContract, 'plan-quality-judge-absent' when the judge cross-check did not run."
+        },
+        "attribution": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["classification"],
+          "description": "The D-019 §3.4 attribution decision table computed for this run — plan quality × delivered outcome × plan-adherence → one of the four classes. Crossing all three inputs is the Goodhart backstop: a plan that games the spine cannot classify as working-as-intended without a matching outcome.",
+          "properties": {
+            "classification": {
+              "type": ["string", "null"],
+              "enum": [
+                "working-as-intended",
+                "deliver-phase-gap",
+                "plan-phase-gap",
+                "model-compensating",
+                null
+              ],
+              "description": "The attribution verdict, or null when plan quality or outcome was unmeasured (the table cannot attribute without both)."
+            },
+            "planGood": {
+              "type": ["boolean", "null"],
+              "description": "True when planQuality.score ≥ the plan threshold (default 0.7)."
+            },
+            "outcomeGood": {
+              "type": ["boolean", "null"],
+              "description": "True when the delivered outcome (frozen quality score) ≥ the outcome threshold (default 0.7)."
+            },
+            "adhered": {
+              "type": ["boolean", "null"],
+              "description": "True when plan-adherence (planningFidelity.score) ≥ the adherence threshold (default 0.7); null when unmeasured."
+            }
+          }
+        }
+      }
+    },
     "trapBlock": {
       "type": "object",
       "additionalProperties": false,
@@ -219,6 +338,62 @@
           "type": "array",
           "items": { "type": "string" },
           "description": "Human-readable justification lines for the verdict. Never echoes a captured password or secret value — derived signals only."
+        }
+      }
+    },
+    "touch2Block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "cost", "dimensions"],
+      "description": "Second-touch continuity block (Epic #86, Story #96). After touch 1 is scored, the driver runs the scenario's FROZEN change request as a fresh session against the delivered tree with arm-appropriate inheritance (mandrel keeps its full pipeline output; the control workspace is reduced to delivered code only), then scores the second touch with the full dimension set plus its own frozen behavioural suite and the phase-scoped `traps-touch2/` regression oracles. Present only when the scenario declares a `changeRequest` AND the second touch was scored; ABSENT for touch-1-only scenarios (e.g. hello-world). Lives at the scorecard's top level (a sibling of `trap`/`phases`), never folded into the seven composite dimensions. The report/dashboard render the CONTINUITY DELTA (mandrel `outcome`/`cost` − control `outcome`/`cost`) from this block.",
+      "properties": {
+        "changeRequestId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable id of the frozen change request this second touch exercised (scenario.json `changeRequest.id`, e.g. 'password-change', 'project-sharing')."
+        },
+        "inheritance": {
+          "type": "string",
+          "enum": ["full-pipeline", "delivered-code-only"],
+          "description": "Arm-appropriate inheritance the second touch ran under: 'full-pipeline' (mandrel — the delivered tree with its `.agents` overlay + tickets/plan state intact) or 'delivered-code-only' (control — a fresh copy reduced to the shipped code, with framework/session artifacts stripped)."
+        },
+        "outcome": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Continuity OUTCOME scalar in [0,1] — the second touch's composite quality (its `dimensions.quality.score`). The mandrel-minus-control difference of this value is the continuity outcome delta."
+        },
+        "cost": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Continuity COST scalar in USD — the second touch's session cost (its `dimensions.efficiency.costUsd`), or null when the envelope reported none. The mandrel-minus-control difference of this value is the continuity cost delta."
+        },
+        "frozenSuitePassed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Count of passing frozen touch-2-suite assertions."
+        },
+        "frozenSuiteTotal": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total frozen touch-2-suite assertions."
+        },
+        "totalTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total tokens (input + output + cache) for the second-touch session."
+        },
+        "wallClockMs": {
+          "type": "number",
+          "minimum": 0,
+          "description": "The second-touch session's wall-clock duration in milliseconds."
+        },
+        "dimensions": {
+          "$ref": "#/properties/dimensions",
+          "description": "The FULL dimension set scored for the second touch — the same seven-dimension shape as touch 1's `dimensions`, computed over the second-touch delivered tree."
+        },
+        "regression": {
+          "$ref": "#/$defs/trapBlock"
         }
       }
     },

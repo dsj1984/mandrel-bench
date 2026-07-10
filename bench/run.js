@@ -69,6 +69,7 @@ import {
   resetSandboxBaseline,
   SANDBOX_DIR_PREFIX,
   sandboxRepoName,
+  sanitizeGitHubTokenEnv,
   seedFromTemplate,
   teardownSandbox,
 } from './driver/sandbox.js';
@@ -91,7 +92,14 @@ import {
   defaultGhJson,
   discoverStandaloneStory,
 } from './scenarios/standalone-telemetry-adapter.js';
-import { runTrapOracles as defaultRunTrapOracles } from './scenarios/trap-runner.js';
+import {
+  runTrapOracles as defaultRunTrapOracles,
+  TOUCH2_TRAPS_SUBDIR,
+} from './scenarios/trap-runner.js';
+import {
+  computePlanQuality,
+  obligationsForTrapClasses,
+} from './score/plan-quality.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -412,6 +420,351 @@ export function discoverLedger({ workspacePath }, deps = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Phase-scoped sessions: between-session id-discovery + plan snapshot (D-019,
+// Epic #86 Story #94)
+// ---------------------------------------------------------------------------
+
+/**
+ * Default `gh --json` port for the plan-phase seam, running `gh <args>` with the
+ * SANITIZED GitHub-token environment (`sanitizeGitHubTokenEnv` — BENCH_GITHUB_TOKEN
+ * wins over ambient GH_TOKEN, whitespace-stripped) so the id-discovery and
+ * snapshot reads use the same credential surface as the rest of the sandbox
+ * lifecycle and add NO new one (Epic #86 security note). The child's stderr is
+ * discarded. Injectable `execFileSync` so tests never spawn `gh`.
+ *
+ * @param {string[]} args  Arguments to `gh` (must include a `--json` selector).
+ * @param {{ execFileSync?: typeof execFileSync }} [ports]
+ * @returns {unknown} Parsed JSON.
+ */
+export function defaultPlanGhJson(args, ports = {}) {
+  const exec = ports.execFileSync ?? execFileSync;
+  const out = exec('gh', args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    env: sanitizeGitHubTokenEnv(),
+  });
+  return JSON.parse(out);
+}
+
+/**
+ * Discover the Epic id the mandrel arm's PLAN session created on the ephemeral
+ * repo (the id-discovery seam, F1 from Epic #86's pre-mortem). In the default
+ * `--idea` drive the Epic is opened INSIDE the plan session, so the harness
+ * never learns its id from stdout; after the plan session exits we recover it
+ * the same deterministic way `discoverStandaloneStory` recovers a Story: the
+ * newest `type::epic` issue created at/after the run's start (runs are
+ * sequential and the sandbox is reset to baseline before each). Returns null
+ * when none is found.
+ *
+ * @param {object} args
+ * @param {string} args.owner
+ * @param {string} args.repo
+ * @param {string} args.sinceIso  Run-start timestamp (ISO-8601); only Epics
+ *   created at/after this are considered.
+ * @param {{ ghJson?: typeof defaultPlanGhJson }} [ports]
+ * @returns {number|null} The Epic issue number, or null when none is found.
+ */
+export function discoverPlannedEpicId({ owner, repo, sinceIso }, ports = {}) {
+  const ghJson = ports.ghJson ?? defaultPlanGhJson;
+  const since = Date.parse(sinceIso);
+  let issues;
+  try {
+    issues = ghJson(
+      [
+        'issue',
+        'list',
+        '--repo',
+        `${owner}/${repo}`,
+        '--label',
+        'type::epic',
+        '--state',
+        'all',
+        '--json',
+        'number,createdAt',
+        '--limit',
+        '50',
+      ],
+      ports,
+    );
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(issues)) return null;
+  const fresh = issues
+    .filter(
+      (i) =>
+        Number.isInteger(i?.number) &&
+        Number.isFinite(Date.parse(i?.createdAt)) &&
+        (!Number.isFinite(since) || Date.parse(i.createdAt) >= since),
+    )
+    .sort((a, b) => b.number - a.number);
+  return fresh.length > 0 ? fresh[0].number : null;
+}
+
+/**
+ * Snapshot the plan artifacts the mandrel arm's PLAN session produced into
+ * `.raw/<run-stamp>/plan/` BEFORE the deliver session starts (D-019). This
+ * freezes what the plan is scored on so delivery can never retroactively alter
+ * it. For epic-routed runs the Epic body (which carries the folded tech-spec
+ * sections) plus every child Story body (with its inline `acceptance[]` /
+ * `verify[]`) are captured; for story-routed runs the standalone Story body is.
+ * A `manifest.json` records the routing + the captured ids. All GitHub reads run
+ * through the injected `ghJson` port (sanitized env by default) so unit tests
+ * stub every read with no network. Best-effort per-artifact: an unreadable
+ * ticket is skipped, not fatal.
+ *
+ * @param {object} args
+ * @param {string} args.owner
+ * @param {string} args.repo
+ * @param {'epic'|'story'|null} args.routing
+ * @param {number|null} [args.epicId]      Discovered/seed Epic id (epic routing).
+ * @param {number|null} [args.storyNumber] Discovered Story id (story routing).
+ * @param {string} args.planDir            Absolute `.raw/<stamp>/plan/` path.
+ * @param {string} args.sinceIso           Run-start; bounds child-Story discovery.
+ * @param {string|null} [args.capturedAt]  Stamp recorded in the manifest.
+ * @param {object} [deps]
+ * @param {typeof defaultPlanGhJson} [deps.ghJson]
+ * @param {(p: string, opts?: object) => void} [deps.mkdirImpl]
+ * @param {(p: string, data: string) => void} [deps.writeFileImpl]
+ * @param {{ warn?: Function }} [deps.logger]
+ * @returns {{ planDir: string, files: string[], manifest: object }}
+ */
+export function snapshotPlanArtifacts(
+  {
+    owner,
+    repo,
+    routing,
+    epicId = null,
+    storyNumber = null,
+    planDir,
+    sinceIso,
+    capturedAt = null,
+  },
+  deps = {},
+) {
+  const ghJson = deps.ghJson ?? defaultPlanGhJson;
+  const mkdir = deps.mkdirImpl ?? ((p) => mkdirSync(p, { recursive: true }));
+  const writeFile = deps.writeFileImpl ?? writeFileSync;
+  const logger = deps.logger;
+  const repoFlag = `${owner}/${repo}`;
+  const files = [];
+
+  mkdir(planDir);
+
+  const writeJson = (name, obj) => {
+    const fp = path.join(planDir, name);
+    writeFile(fp, `${JSON.stringify(obj, null, 2)}\n`);
+    files.push(fp);
+  };
+
+  const manifest = {
+    routing: routing ?? null,
+    epicId: epicId ?? null,
+    storyNumber: storyNumber ?? null,
+    storyNumbers: [],
+    capturedAt: capturedAt ?? null,
+  };
+
+  if (epicId != null) {
+    // Epic-routed: capture the Epic body (tech-spec sections travel with it)
+    // and every child Story body (its inline acceptance[]/verify[]).
+    try {
+      const epic = ghJson(
+        [
+          'issue',
+          'view',
+          String(epicId),
+          '--repo',
+          repoFlag,
+          '--json',
+          'number,title,body,labels',
+        ],
+        deps,
+      );
+      if (epic && typeof epic === 'object')
+        writeJson(`epic-${epicId}.json`, epic);
+    } catch (err) {
+      logger?.warn?.(
+        `[run] plan snapshot: could not read Epic #${epicId}: ${err?.message ?? err}`,
+      );
+    }
+    let stories = [];
+    try {
+      stories = ghJson(
+        [
+          'issue',
+          'list',
+          '--repo',
+          repoFlag,
+          '--label',
+          'type::story',
+          '--state',
+          'all',
+          '--json',
+          'number,title,body,createdAt',
+          '--limit',
+          '100',
+        ],
+        deps,
+      );
+    } catch (err) {
+      logger?.warn?.(
+        `[run] plan snapshot: could not list child Stories: ${err?.message ?? err}`,
+      );
+    }
+    const since = Date.parse(sinceIso);
+    const fresh = (Array.isArray(stories) ? stories : []).filter(
+      (s) =>
+        Number.isInteger(s?.number) &&
+        (!Number.isFinite(since) ||
+          !s?.createdAt ||
+          !Number.isFinite(Date.parse(s.createdAt)) ||
+          Date.parse(s.createdAt) >= since),
+    );
+    for (const s of fresh) {
+      writeJson(`story-${s.number}.json`, {
+        number: s.number,
+        title: s.title,
+        body: s.body,
+      });
+    }
+    manifest.storyNumbers = fresh.map((s) => s.number);
+  } else if (storyNumber != null) {
+    // Story-routed: the standalone Story body IS the plan.
+    try {
+      const story = ghJson(
+        [
+          'issue',
+          'view',
+          String(storyNumber),
+          '--repo',
+          repoFlag,
+          '--json',
+          'number,title,body,labels',
+        ],
+        deps,
+      );
+      if (story && typeof story === 'object') {
+        writeJson(`story-${storyNumber}.json`, story);
+      }
+    } catch (err) {
+      logger?.warn?.(
+        `[run] plan snapshot: could not read Story #${storyNumber}: ${err?.message ?? err}`,
+      );
+    }
+  }
+
+  writeJson('manifest.json', manifest);
+  return { planDir, files, manifest };
+}
+
+/**
+ * Extract candidate acceptance-criterion strings from a Story body's markdown.
+ * Returns the body's list-item lines (bullets `-`/`*`/`+` or numbered `1.`),
+ * stripped of their markers and inline bold/backtick emphasis; when the body
+ * carries no list items at all, the whole trimmed body is returned as a single
+ * entry so coverage still has text to trace against. Pure.
+ *
+ * @param {string} body  A Story body (markdown), e.g. from a plan snapshot.
+ * @returns {string[]}
+ */
+export function extractStoryAcceptance(body) {
+  const text = typeof body === 'string' ? body : '';
+  const items = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const m = line.match(/^(?:[-*+]|\d+[.)])\s+(.*\S)/);
+    if (m) items.push(m[1].replace(/[`*]/g, '').trim());
+  }
+  if (items.length > 0) return items;
+  const trimmed = text.trim();
+  return trimmed ? [trimmed] : [];
+}
+
+/**
+ * Build the intrinsic PLAN-QUALITY block (Epic #86, Story #95; D-019) for one
+ * MANDREL-arm run from the plan snapshot `snapshotPlanArtifacts` wrote between
+ * the /plan and /deliver sessions. Reads the snapshot's Story/Epic bodies off
+ * disk, assembles the `computePlanQuality` input from the scenario's frozen
+ * spec (`seed.acceptance`), routing contract (`storyCountContract`), and trap
+ * classes (→ security-baseline obligations), and returns the scorer's block.
+ *
+ * Returns null when there is no usable snapshot (e.g. the plan-phase discovery
+ * failed and left `planSnapshot` null), so the caller threads null into
+ * `buildScorecard` and the scorecard's plan-quality axis stays absent — exactly
+ * the control-arm / legacy-corpus shape the renderer already tolerates.
+ *
+ * The attribution decision table is NOT computed here: it crosses the plan
+ * score with the delivered OUTCOME and plan-adherence, which are only known once
+ * `buildScorecard` has computed the dimensions, so `buildScorecard` attaches
+ * `planQuality.attribution` from the same dimension scores the renderer reads.
+ *
+ * @param {object} args
+ * @param {{ planDir: string, files: string[], manifest: object }|null} args.snapshot
+ * @param {object} args.scenario   The scenario.json object (frozen spec).
+ * @param {string[]} [args.trapClasses]  The scenario's declared trap classes.
+ * @param {number|null} [args.judgeScore]  Optional LLM-judge cross-check.
+ * @param {object} [deps]
+ * @param {(p: string, enc: string) => string} [deps.readFileImpl]
+ * @returns {object|null} the `computePlanQuality` block, or null.
+ */
+export function buildPlanQualityBlock(
+  { snapshot, scenario, trapClasses = [], judgeScore = null },
+  deps = {},
+) {
+  if (
+    !snapshot ||
+    typeof snapshot !== 'object' ||
+    !Array.isArray(snapshot.files) ||
+    snapshot.files.length === 0
+  ) {
+    return null;
+  }
+  const readFile = deps.readFileImpl ?? readFileSync;
+  const storyAcceptance = [];
+  const planTextParts = [];
+  let plannedStoryCount = 0;
+  for (const fp of snapshot.files) {
+    const base = path.basename(String(fp));
+    const isStory = /^story-.*\.json$/.test(base);
+    const isEpic = /^epic-.*\.json$/.test(base);
+    if (!isStory && !isEpic) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(readFile(fp, 'utf8'));
+    } catch {
+      continue;
+    }
+    const body = typeof parsed?.body === 'string' ? parsed.body : '';
+    if (isStory) {
+      plannedStoryCount += 1;
+      for (const ac of extractStoryAcceptance(body)) storyAcceptance.push(ac);
+    }
+    if (body) planTextParts.push(body);
+  }
+
+  const frozenAcceptance = Array.isArray(scenario?.seed?.acceptance)
+    ? scenario.seed.acceptance
+    : [];
+  const storyCountContract =
+    scenario?.storyCountContract &&
+    typeof scenario.storyCountContract === 'object'
+      ? scenario.storyCountContract
+      : undefined;
+
+  return computePlanQuality({
+    arm: 'mandrel',
+    frozenAcceptance,
+    storyAcceptance,
+    storyCountContract,
+    plannedStoryCount,
+    obligations: obligationsForTrapClasses(trapClasses),
+    planText: planTextParts.join('\n'),
+    judgeScore,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Batch resume + ceiling (Story #22)
 // ---------------------------------------------------------------------------
 
@@ -513,11 +866,18 @@ export function appendCheckpoint({ checkpointPath, cell }, deps = {}) {
  * tree for planted defects. A scenario with no `traps/` directory is scored
  * exactly as before (the runner yields an empty `classes[]`).
  *
+ * When the scenario declares a frozen `changeRequest` (Epic #86, Story #96 —
+ * the "second touch"), its own frozen behavioural suite
+ * (`changeRequest.acceptanceSuite`, default `./acceptance.touch2.test.js`) is
+ * resolved too and returned as `touch2Evaluate`. A scenario with no
+ * `changeRequest` (e.g. hello-world) resolves `touch2Evaluate` to `null`, and
+ * the driver skips touch 2 for it.
+ *
  * @param {string} scenarioId
  * @param {object} [deps]
  * @param {(p: string, enc: string) => string} [deps.readFileImpl]
  * @param {(spec: string) => Promise<object>} [deps.importImpl]
- * @returns {Promise<{ scenario: object, evaluate: Function, scenarioDir: string }>}
+ * @returns {Promise<{ scenario: object, evaluate: Function, scenarioDir: string, touch2Evaluate: Function|null }>}
  */
 export async function loadScenario(scenarioId, deps = {}) {
   const read = deps.readFileImpl ?? readFileSync;
@@ -526,7 +886,371 @@ export async function loadScenario(scenarioId, deps = {}) {
   const scenario = JSON.parse(read(path.join(dir, 'scenario.json'), 'utf8'));
   const suiteRel = scenario.acceptanceSuite ?? './acceptance.test.js';
   const mod = await importImpl(path.join(dir, suiteRel));
-  return { scenario, evaluate: mod.evaluate, scenarioDir: dir };
+  let touch2Evaluate = null;
+  if (scenario.changeRequest && typeof scenario.changeRequest === 'object') {
+    const touch2Rel =
+      scenario.changeRequest.acceptanceSuite ?? './acceptance.touch2.test.js';
+    const touch2Mod = await importImpl(path.join(dir, touch2Rel));
+    touch2Evaluate = touch2Mod.evaluate;
+  }
+  return { scenario, evaluate: mod.evaluate, scenarioDir: dir, touch2Evaluate };
+}
+
+// ---------------------------------------------------------------------------
+// The second touch (Epic #86, Story #96): after touch 1 is scored, the driver
+// runs the scenario's frozen CHANGE REQUEST as a FRESH session against the
+// delivered tree, with arm-appropriate inheritance, then scores it with the
+// full dimension set + the frozen touch-2 behavioural suite + the phase-scoped
+// regression oracles. The continuity delta (mandrel touch-2 outcome/cost −
+// control touch-2 outcome/cost) is the actual persistence-thesis measurement.
+// ---------------------------------------------------------------------------
+
+/**
+ * Prepare the workspace the touch-2 session runs against, with
+ * ARM-APPROPRIATE inheritance (Epic #86 pre-mortem, F2 point 3):
+ *
+ * - **mandrel** keeps its FULL pipeline output — the delivered tree with the
+ *   `.agents` overlay and the tickets/plan state intact — so the second touch
+ *   inherits everything Mandrel produced on the first. The touch-2 session
+ *   runs in the SAME workspace directory (no copy).
+ * - **control** is reduced to DELIVERED CODE ONLY — a fresh copy of the
+ *   workspace with any framework/session artifacts (dot-dirs such as `.git` /
+ *   `.agents` / `.claude`, and the `CLAUDE.md` overlay file) stripped — so it
+ *   inherits nothing but the code it shipped, exactly the asymmetry the
+ *   persistence thesis is testing.
+ *
+ * Every filesystem effect is injectable so the unit suite exercises the seam
+ * without touching disk.
+ *
+ * @param {object} args
+ * @param {'mandrel'|'control'} args.arm
+ * @param {string} args.workspacePath  The touch-1 delivered workspace.
+ * @param {object} [deps]
+ * @param {(src: string, dest: string, opts: object) => void} [deps.cpFn]
+ * @param {(p: string, opts?: object) => void} [deps.mkdirFn]
+ * @returns {{ touch2Cwd: string, inheritance: 'full-pipeline'|'delivered-code-only' }}
+ */
+export function prepareTouch2Workspace({ arm, workspacePath }, deps = {}) {
+  if (arm === 'mandrel') {
+    // Full pipeline output travels forward untouched.
+    return { touch2Cwd: workspacePath, inheritance: 'full-pipeline' };
+  }
+  // Control: reduce to delivered code only in a fresh sibling directory.
+  const cp = deps.cpFn ?? cpSync;
+  const mkdir = deps.mkdirFn ?? ((p) => mkdirSync(p, { recursive: true }));
+  const reducedDir = `${workspacePath}--touch2-delivered`;
+  mkdir(reducedDir);
+  // Skip framework/session artifacts so the control arm inherits ONLY the code
+  // it delivered — the same skip set the trap-oracle scanner uses (dot-dirs are
+  // the overlaid framework tree; CLAUDE.md is the overlay file artifact).
+  const STRIP = new Set(['.git', '.agents', '.claude', 'CLAUDE.md']);
+  cp(workspacePath, reducedDir, {
+    recursive: true,
+    filter: (src) => !STRIP.has(path.basename(src)),
+  });
+  return { touch2Cwd: reducedDir, inheritance: 'delivered-code-only' };
+}
+
+/**
+ * Run the scenario's frozen change request as the SECOND TOUCH against the
+ * touch-1 delivered tree, and score it with the full dimension set, its own
+ * frozen behavioural suite, and the phase-scoped (`traps-touch2/`) regression
+ * oracles. Returns the compact `touch2` scorecard block (or `null` when the
+ * scenario declares no change request / no touch-2 suite is available).
+ *
+ * The regression scan is run with `trapsSubdir: TOUCH2_TRAPS_SUBDIR` so it
+ * discovers ONLY `traps-touch2/` — the touch-1 `traps/` scan is untouched, and
+ * this scan never sees the touch-1 oracles.
+ *
+ * Every real effect (session, app boot, git, collectors, judge, trap-runner)
+ * is injected via the same `deps` shape `runOneRun` uses, so the whole touch-2
+ * path is unit-proven with fixtures and no live process.
+ *
+ * @param {object} opts
+ * @param {object} opts.scenario
+ * @param {Function} opts.touch2Evaluate  The frozen touch-2 oracle's `evaluate`.
+ * @param {string|null} opts.scenarioDir
+ * @param {'mandrel'|'control'} opts.arm
+ * @param {number} opts.runIndex
+ * @param {string} opts.model
+ * @param {object} opts.sandbox
+ * @param {{ workspacePath: string }} opts.handle
+ * @param {string} opts.frameworkVersion
+ * @param {string} opts.benchmarkVersion
+ * @param {{ node: string, os: string, host?: string }} opts.env
+ * @param {number} opts.timeoutMs
+ * @param {object} [deps]
+ * @returns {Promise<object|null>} the `touch2` scorecard block, or null.
+ */
+export async function runTouch2(opts, deps = {}) {
+  const {
+    scenario,
+    touch2Evaluate,
+    scenarioDir = null,
+    arm,
+    runIndex,
+    model = DEFAULT_BENCH_MODEL,
+    handle,
+    frameworkVersion,
+    benchmarkVersion,
+    env,
+    timeoutMs = DEFAULT_SESSION_TIMEOUT_MS,
+  } = opts;
+
+  if (
+    !scenario?.changeRequest ||
+    typeof scenario.changeRequest !== 'object' ||
+    typeof touch2Evaluate !== 'function'
+  ) {
+    // No frozen change request declared (e.g. hello-world) — skip touch 2.
+    return null;
+  }
+
+  const logger = deps.logger;
+  const prepareWorkspace =
+    deps.prepareTouch2WorkspaceFn ?? prepareTouch2Workspace;
+  const runSessionFn = deps.runSessionFn ?? defaultRunSession;
+  const withRunningAppFn = deps.withRunningAppFn ?? defaultWithRunningApp;
+  const scoreQualityFn =
+    deps.scoreScenarioQualityFn ?? defaultScoreScenarioQuality;
+  const collectMaintainabilityFn =
+    deps.collectMaintainabilityFn ?? defaultCollectMaintainabilitySignals;
+  const collectSecurityFn =
+    deps.collectSecurityFn ?? defaultCollectSecuritySignals;
+  const runDimensionJudgeFn =
+    deps.runDimensionJudgeFn ?? defaultRunDimensionJudge;
+  const runTrapOraclesFn = deps.runTrapOraclesFn ?? defaultRunTrapOracles;
+  const gitFn =
+    deps.gitFn ??
+    ((args, cwd) =>
+      execFileSync('git', args, { cwd, stdio: 'pipe', encoding: 'utf8' }));
+  const nowIso = deps.nowFn ?? (() => new Date().toISOString());
+
+  // Prepare the arm-appropriate touch-2 workspace.
+  const { touch2Cwd, inheritance } = prepareWorkspace(
+    { arm, workspacePath: handle.workspacePath },
+    { cpFn: deps.cpFn, mkdirFn: deps.mkdirFn },
+  );
+  // The control arm's reduced touch-2 tree is a fresh sibling directory under
+  // the ephemeral root (`${workspacePath}--touch2-delivered`). teardownSandbox
+  // removes only `handle.workspacePath`, and the janitor sweeps only leaked
+  // GitHub repos — so this sibling would leak and fill the ephemeral root
+  // across a batch (audit M2). Clean it up in the finally below.
+  const reducedDir =
+    inheritance === 'delivered-code-only' && touch2Cwd !== handle.workspacePath
+      ? touch2Cwd
+      : null;
+  const rmDir =
+    deps.rmFn ?? ((p) => rmSync(p, { recursive: true, force: true }));
+
+  try {
+    // A fresh session drives the CHANGE REQUEST. The bridged scenario carries the
+    // change-request prompt as its task; no `epicId` is threaded (the second
+    // touch discovers/authors its own plan in-session for the mandrel arm).
+    const bridged = {
+      id: scenario.id,
+      taskPrompt: scenario.changeRequest.prompt,
+    };
+    const extraArgs = [...SESSION_EXTRA_ARGS];
+    const session = runSessionFn(
+      {
+        arm,
+        scenario: bridged,
+        cwd: touch2Cwd,
+        model,
+        extraArgs,
+        timeoutMs,
+      },
+      { invokeFn: deps.invokeFn, logger },
+    );
+
+    // Materialize the delivered second-touch code. The mandrel arm's clean
+    // /deliver auto-merged onto the sandbox default branch, so pull it into the
+    // touch-2 workspace; the control arm committed directly in `touch2Cwd`.
+    if (arm === 'mandrel') {
+      try {
+        gitFn(['fetch', 'origin', 'main'], touch2Cwd);
+        gitFn(['checkout', 'main'], touch2Cwd);
+        gitFn(['reset', '--hard', 'origin/main'], touch2Cwd);
+      } catch (err) {
+        logger?.warn?.(
+          `[run] touch2: could not materialize merged code (run may have blocked): ${err?.message ?? err}`,
+        );
+      }
+    }
+
+    // Score touch-2 Quality by booting the delivered app and driving the frozen
+    // touch-2 behavioural suite (session invalidation / role-based access are
+    // asserted HERE, behaviourally — never by a source-scan oracle).
+    const quality = await withRunningAppFn(
+      { workspacePath: touch2Cwd, app: scenario.app },
+      async (baseUrl) => {
+        if (arm === 'mandrel') {
+          const r = await scoreQualityFn({
+            evaluate: touch2Evaluate,
+            baseUrl,
+            storyId: 1,
+            epicId: null,
+            transport: 'in-process',
+          });
+          return qualityInputs({
+            frozen: r.frozen,
+            crossCheckDecision: r.crossCheck?.decision ?? null,
+          });
+        }
+        const frozen = await touch2Evaluate(baseUrl);
+        return qualityInputs({ frozen, crossCheckDecision: null });
+      },
+      deps.appRunnerDeps,
+    );
+
+    // Full dimension set: collect maintainability + security over the delivered
+    // touch-2 tree (best-effort, same as touch 1).
+    let maintainabilitySignals = {};
+    try {
+      maintainabilitySignals = collectMaintainabilityFn(
+        touch2Cwd,
+        deps.collectMaintainabilityPorts,
+      );
+    } catch (err) {
+      logger?.warn?.(
+        `[run] touch2: maintainability collector failed (scoring 0): ${err?.message ?? err}`,
+      );
+    }
+    let securitySignals = {};
+    try {
+      securitySignals = collectSecurityFn(touch2Cwd, deps.collectSecurityPorts);
+    } catch (err) {
+      logger?.warn?.(
+        `[run] touch2: security collector failed (scoring 0): ${err?.message ?? err}`,
+      );
+    }
+
+    // Phase-scoped regression oracles: source-scan the touch-2 tree ONLY under
+    // traps-touch2/. Best-effort: a runner error leaves the regression block off.
+    let regression = null;
+    if (typeof scenarioDir === 'string' && scenarioDir.length > 0) {
+      try {
+        const verdict = await runTrapOraclesFn(
+          {
+            scenarioDir,
+            deliveredTreePath: touch2Cwd,
+            trapsSubdir: TOUCH2_TRAPS_SUBDIR,
+          },
+          deps.trapRunnerDeps,
+        );
+        if (verdict.classes.length > 0) regression = verdict;
+      } catch (err) {
+        logger?.warn?.(
+          `[run] touch2: regression trap-runner failed (no regression signal recorded): ${err?.message ?? err}`,
+        );
+      }
+    }
+
+    let judgeScores = null;
+    try {
+      judgeScores = await runDimensionJudgeFn(
+        { maintainabilitySignals, securitySignals },
+        deps.dimensionJudgeDeps,
+      );
+    } catch (err) {
+      logger?.warn?.(
+        `[run] touch2: dimension judge failed (judge weight folded into spine): ${err?.message ?? err}`,
+      );
+    }
+
+    const maintainabilityInputs = {
+      objectiveMaintainabilityScore:
+        maintainabilitySignals.objectiveMaintainabilityScore ?? null,
+      maintainabilityJudgeScore: judgeScores?.maintainability ?? null,
+      lintWarnings: maintainabilitySignals.lintErrorCount ?? 0,
+      complexityScore: maintainabilitySignals.complexityScore ?? null,
+      maintainabilityIndex: null,
+    };
+    const securityInputs = derivedSecurityInputs(securitySignals, judgeScores);
+
+    // Build a full touch-2 sub-scorecard (the "full dimension set") and trim it
+    // to the compact continuity block. The touch-2 run carries its own identity
+    // stamp so its runId never collides with the touch-1 record.
+    const run = buildRunIdentity({
+      scenario: scenario.id,
+      arm,
+      runIndex,
+      timestamp: nowIso(),
+      modelId: resolveModelId(session.envelope, model),
+      frameworkVersion,
+      benchmarkVersion,
+      env,
+    });
+    const subCard = buildScorecard({
+      run: { ...run, runId: sanitizeRunId(`${run.runId}-touch2`) },
+      lifecycle: [],
+      signals: [],
+      envelope: session.envelope,
+      quality,
+      planning: {},
+      maintainabilityInputs,
+      securityInputs,
+      trap: null,
+      phases: null,
+      scenarioRouting:
+        typeof scenario?.routing === 'string' ? scenario.routing : null,
+    });
+
+    const outcome = subCard.dimensions.quality.score;
+    const cost = subCard.dimensions.efficiency.costUsd ?? null;
+    return {
+      changeRequestId:
+        typeof scenario.changeRequest.id === 'string'
+          ? scenario.changeRequest.id
+          : null,
+      inheritance,
+      outcome,
+      cost,
+      frozenSuitePassed: quality.frozenSuitePassed,
+      frozenSuiteTotal: quality.frozenSuiteTotal,
+      totalTokens: subCard.dimensions.efficiency.totalTokens,
+      wallClockMs: subCard.dimensions.efficiency.wallClockMs,
+      dimensions: subCard.dimensions,
+      ...(regression
+        ? {
+            regression: {
+              classes: regression.classes.map((entry) => ({
+                class: entry.class,
+                score: entry.score,
+                defectPresent: Boolean(entry.defectPresent),
+                ...(Array.isArray(entry.evidence)
+                  ? { evidence: entry.evidence }
+                  : {}),
+              })),
+              cleanRate: regression.cleanRate,
+            },
+          }
+        : {}),
+    };
+  } finally {
+    // M3 (audit): the touch-2 mandrel arm calls runSessionFn with NO
+    // betweenPhases, so its /deliver session gets deliverTarget=null and
+    // self-discovers the plan it authored in-session via the fallback prompt.
+    // This is a DELIBERATE, sane degradation for the second touch (the fallback
+    // is designed for exactly this) — threading a full touch-2 id-discovery +
+    // plan-snapshot seam for parity was judged higher-risk than its narrow
+    // reliability benefit here, so it is intentionally left to the in-session
+    // fallback rather than the touch-1 between-phases discovery path.
+    //
+    // M2 (audit): tear down the control arm's reduced touch-2 sibling so it
+    // does not leak under the ephemeral root. Best-effort — a cleanup failure
+    // must not mask the touch-2 result.
+    if (reducedDir) {
+      try {
+        rmDir(reducedDir);
+      } catch (err) {
+        logger?.warn?.(
+          `[run] touch2: could not remove the reduced control workspace ${reducedDir}: ${err?.message ?? err}`,
+        );
+      }
+    }
+  }
 }
 
 /**
@@ -543,6 +1267,9 @@ export async function runOneRun(opts, deps = {}) {
     scenarioDir = null, // absolute path to bench/scenarios/<id> (Story #74);
     // threaded into the trap-runner so both arms' delivered trees are scanned
     // for every declared trap class. null ⇒ no trap scan (e.g. legacy fakes).
+    touch2Evaluate = null, // the frozen touch-2 oracle (Story #96); present only
+    // when the scenario declares a `changeRequest`. null ⇒ the driver skips
+    // touch 2 for this scenario (e.g. hello-world).
     arm,
     runIndex,
     model = DEFAULT_BENCH_MODEL,
@@ -667,6 +1394,99 @@ export async function runOneRun(opts, deps = {}) {
     // across the per-run baseline reset).
     const runStartedAt = nowIso();
 
+    // The `.raw/<stamp>/` subdir key for this cell's provenance artifacts (the
+    // cost envelope, the lifecycle ledger, and the plan snapshot all land here).
+    const idStampForRaw = sanitizeRunId(`${scenario.id}-${arm}-r${runIndex}`);
+
+    // Between-session seam (D-019, Epic #86 Story #94), mandrel arm only. After
+    // the PLAN session exits, discover the id(s) it created on the ephemeral
+    // repo and snapshot the plan artifacts BEFORE the DELIVER session starts,
+    // then thread the discovered id into the deliver prompt. All GitHub reads
+    // run through the sanitized `gh` env (deps.ghJson in tests). Best-effort: a
+    // discovery/snapshot failure logs and lets delivery fall back to in-session
+    // Epic discovery rather than aborting the run.
+    const planGhJson = deps.ghJson ?? defaultPlanGhJson;
+    // The plan snapshot `snapshotPlanArtifacts` writes between the /plan and
+    // /deliver sessions (D-019, Story #94). Surfaced out of the between-phases
+    // hook into this run-scoped closure so the MANDREL arm can score the
+    // intrinsic PLAN-QUALITY axis (Story #95) off it after delivery — the hook
+    // itself keeps returning only `{ deliverTarget }`. Stays null for the
+    // control arm and on any plan-phase discovery/snapshot failure.
+    let planSnapshot = null;
+    const betweenPhases =
+      arm === 'mandrel'
+        ? ({ planEnvelope }) => {
+            try {
+              const modelForRaw = resolveModelId(planEnvelope, model);
+              const planDir = path.join(
+                cohortDir({
+                  resultsDir,
+                  scorecard: { model: { id: modelForRaw }, frameworkVersion },
+                }),
+                '.raw',
+                idStampForRaw,
+                'plan',
+              );
+              const routing =
+                typeof scenario?.routing === 'string'
+                  ? scenario.routing
+                  : scenario.epicId != null
+                    ? 'epic'
+                    : null;
+              let epicId = scenario.epicId ?? null;
+              let storyNumber = null;
+              let deliverTarget = null;
+              if (routing === 'story' && epicId == null) {
+                storyNumber = discoverStandaloneStory(
+                  {
+                    owner: sandbox.owner,
+                    repo: sandbox.repo,
+                    sinceIso: runStartedAt,
+                  },
+                  { ghJson: planGhJson },
+                );
+                deliverTarget = storyNumber;
+              } else {
+                if (epicId == null) {
+                  epicId = discoverPlannedEpicId(
+                    {
+                      owner: sandbox.owner,
+                      repo: sandbox.repo,
+                      sinceIso: runStartedAt,
+                    },
+                    { ghJson: planGhJson },
+                  );
+                }
+                deliverTarget = epicId;
+              }
+              planSnapshot = snapshotPlanArtifacts(
+                {
+                  owner: sandbox.owner,
+                  repo: sandbox.repo,
+                  routing,
+                  epicId,
+                  storyNumber,
+                  planDir,
+                  sinceIso: runStartedAt,
+                  capturedAt: runStartedAt,
+                },
+                {
+                  ghJson: planGhJson,
+                  mkdirImpl: mkdir,
+                  writeFileImpl: writeFile,
+                  logger,
+                },
+              );
+              return { deliverTarget };
+            } catch (err) {
+              logger?.warn?.(
+                `[run] plan-phase id-discovery/snapshot failed (continuing): ${err?.message ?? err}`,
+              );
+              return { deliverTarget: scenario.epicId ?? null };
+            }
+          }
+        : undefined;
+
     const session = runSessionFn(
       {
         arm,
@@ -676,7 +1496,7 @@ export async function runOneRun(opts, deps = {}) {
         extraArgs,
         timeoutMs,
       },
-      { invokeFn: deps.invokeFn, logger },
+      { invokeFn: deps.invokeFn, logger, betweenPhases },
     );
 
     // Materialize the delivered code into the working tree. For the mandrel arm
@@ -715,7 +1535,7 @@ export async function runOneRun(opts, deps = {}) {
     // recovered. Stays null for the control arm and for Epic-routed cells.
     let standalone = null;
     const rawDir = path.join(cohortDirPath, '.raw');
-    const idStampForRaw = sanitizeRunId(`${scenario.id}-${arm}-r${runIndex}`);
+    // idStampForRaw was resolved before the session (the plan snapshot needs it).
     if (arm === 'mandrel') {
       const found = discoverLedger(
         { workspacePath: handle.workspacePath },
@@ -891,6 +1711,39 @@ export async function runOneRun(opts, deps = {}) {
 
     const securityInputs = derivedSecurityInputs(securitySignals, judgeScores);
 
+    // The second touch (Epic #86, Story #96). AFTER touch 1 is scored, run the
+    // scenario's frozen change request as a fresh session against the delivered
+    // tree (arm-appropriate inheritance) and score its continuity outcome/cost.
+    // Skipped for a scenario with no `changeRequest` (e.g. hello-world). Best-
+    // effort: a touch-2 failure leaves the block off the scorecard rather than
+    // aborting the touch-1 record.
+    let touch2 = null;
+    if (scenario?.changeRequest && typeof touch2Evaluate === 'function') {
+      try {
+        touch2 = await runTouch2(
+          {
+            scenario,
+            touch2Evaluate,
+            scenarioDir,
+            arm,
+            runIndex,
+            model,
+            sandbox,
+            handle,
+            frameworkVersion,
+            benchmarkVersion,
+            env,
+            timeoutMs,
+          },
+          deps,
+        );
+      } catch (err) {
+        logger?.warn?.(
+          `[run] touch2 failed (no touch2 block recorded): ${err?.message ?? err}`,
+        );
+      }
+    }
+
     const run = buildRunIdentity({
       scenario: scenario.id,
       arm,
@@ -902,6 +1755,30 @@ export async function runOneRun(opts, deps = {}) {
       env,
     });
 
+    // Intrinsic PLAN-QUALITY axis (Epic #86, Story #95; D-019). MANDREL arm
+    // ONLY: score the plan the /plan session authored — captured as
+    // `planSnapshot` between the two phase sessions — against the scenario's
+    // frozen spec. The control arm authors no plan, so its plan-quality is null
+    // and the axis is excluded from the differential. A null snapshot (plan
+    // discovery/snapshot failed) leaves the axis absent, exactly the shape the
+    // renderer's attribution table already tolerates. The attribution decision
+    // table itself is attached downstream by `buildScorecard`, which crosses
+    // this score with the delivered dimensions it computes.
+    const planQuality =
+      arm === 'mandrel'
+        ? buildPlanQualityBlock(
+            {
+              snapshot: planSnapshot,
+              scenario,
+              trapClasses: Array.isArray(trap?.classes)
+                ? trap.classes.map((c) => c.class)
+                : [],
+              judgeScore: null,
+            },
+            { readFileImpl: deps.readFileImpl },
+          )
+        : null;
+
     const scorecard = buildScorecard({
       run,
       lifecycle,
@@ -912,6 +1789,14 @@ export async function runOneRun(opts, deps = {}) {
       maintainabilityInputs,
       securityInputs,
       trap,
+      // Per-phase session envelopes (D-019): the mandrel arm's ordered
+      // /plan + /deliver sessions each carry their own cost/tokens/wall-clock,
+      // summing to the run totals. `session.phases` is null for the control arm.
+      phases: session.phases ?? null,
+      touch2,
+      // Intrinsic plan-quality axis (D-019, Story #95); mandrel-only, null for
+      // the control arm and when no plan snapshot was captured.
+      planQuality,
       rawRefs,
       standalone,
       scenarioRouting:
@@ -1037,10 +1922,8 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
   };
 
   outer: for (const scenarioId of scenarios) {
-    const { scenario, evaluate, scenarioDir } = await loadScenario(
-      scenarioId,
-      deps.loadDeps,
-    );
+    const { scenario, evaluate, scenarioDir, touch2Evaluate } =
+      await loadScenario(scenarioId, deps.loadDeps);
     if (epicIds[scenarioId] != null) scenario.epicId = epicIds[scenarioId];
     // Per-scenario run count (H1): an explicit operator override
     // (`opts.n`/`BENCH_N`) applies uniformly to every scenario; absent that,
@@ -1072,6 +1955,7 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
             scenario,
             evaluate,
             scenarioDir,
+            touch2Evaluate,
             arm,
             runIndex,
             model,
@@ -1088,6 +1972,12 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
         completed += 1;
         const cellCost = scorecard?.dimensions?.efficiency?.costUsd;
         if (typeof cellCost === 'number') costUsd += cellCost;
+        // A mandrel cell runs FOUR sessions (touch-1 plan+deliver, touch-2
+        // plan+deliver), but efficiency.costUsd counts only touch 1. Fold the
+        // second-touch session spend in too, or a BENCH_MAX_COST_USD ceiling is
+        // undercounted by ~2× on change-request scenarios (audit H2).
+        const cellTouch2Cost = scorecard?.touch2?.cost;
+        if (typeof cellTouch2Cost === 'number') costUsd += cellTouch2Cost;
 
         // Ceiling check fires AFTER the cell is fully persisted + checkpointed,
         // so the loop stops cleanly between cells.
@@ -1590,6 +2480,10 @@ export async function main(env = process.env, deps = {}) {
       for (const sc of cellResult.scorecards) {
         const c = sc?.dimensions?.efficiency?.costUsd;
         if (typeof c === 'number') costTotal += c;
+        // Fold in the second-touch session spend too (audit H2) — see the
+        // matching accumulator in runFirstBenchmark.
+        const t2 = sc?.touch2?.cost;
+        if (typeof t2 === 'number') costTotal += t2;
       }
       if (cellResult.stopped) {
         overallStopped = {
