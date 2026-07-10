@@ -6,14 +6,18 @@
 // class 5). Internal tooling only — never shipped in the distributed `.agents/`
 // bundle, never run against the live repo.
 //
-// This is a PURE, deterministic, data-in/data-out module. It imports NO other
-// bench/feedback module (not derive.js, not file.js, not fingerprint.js) and
-// performs no I/O, no clock reads, and no randomness. Its purity is the whole
-// point of the cross-Epic seam (Epic #86 pre-mortem, the F7 point): the Epic
-// #85 feedback stage (derive.js / fingerprint.js / file.js) composes this
-// module LATER — feeding it finding envelopes plus attribution inputs as plain
-// data — without this module ever reaching back into that stage's stateful
-// surfaces. It therefore ships whether or not that wiring has landed.
+// This is a PURE, deterministic, data-in/data-out module. Beyond the shared
+// PURE `computeFingerprint` helper (bench/feedback/fingerprint.js — itself
+// I/O-free), it imports NO stateful bench/feedback module (not derive.js, not
+// file.js) and performs no I/O, no clock reads, and no randomness. Its purity is
+// the whole point of the cross-Epic seam (Epic #86 pre-mortem, the F7 point):
+// the Epic #85 feedback stage (derive.js / file.js) composes this module LATER —
+// feeding it finding envelopes plus attribution inputs as plain data — without
+// this module ever reaching back into that stage's stateful surfaces. Reusing
+// the pure fingerprint helper keeps the class-5 finding identity bit-identical
+// to derive.js's contract instead of re-deriving it (audit H5), and does not
+// compromise that F7 decoupling. It therefore ships whether or not that wiring
+// has landed.
 //
 // It answers the feedback loop's routing question (§7.1): every finding must be
 // routed to the HALF of Mandrel that owns it — `/plan`, `/deliver`, or the
@@ -45,7 +49,7 @@
 // fingerprint is a pure hash of identity fields. Deriving twice from one corpus
 // yields byte-identical output.
 
-import { createHash } from 'node:crypto';
+import { computeFingerprint } from './fingerprint.js';
 
 /** The net-new fifth finding class name (beside the four in derive.js). */
 export const ATTRIBUTION_FINDING_CLASS = 'attribution';
@@ -92,32 +96,17 @@ const DELIVER_CLASSIFICATIONS = new Set(['deliver-phase-gap']);
 export const ATTRIBUTION_ENVELOPE_SCHEMA_VERSION = 1;
 
 /**
- * Field separator for the fingerprint key — the same U+001F unit-separator
- * bench/feedback/fingerprint.js uses, replicated here so this module imports NO
- * bench/feedback dependency and stays a self-contained pure surface.
- */
-const FIELD_SEP = '';
-
-/** Hex length of the truncated SHA-1 fingerprint (16 hex chars = 64 bits). */
-const FINGERPRINT_HEX_LEN = 16;
-
-/**
- * Normalize one fingerprint field into a stable string. `null` / `undefined`
- * collapse to the empty string so a missing field stays positionally stable.
- *
- * @param {string|null|undefined} value
- * @returns {string}
- */
-function normalizeField(value) {
-  if (value === null || value === undefined) return '';
-  return String(value);
-}
-
-/**
  * The stable fingerprint for a class-5 finding — the truncated SHA-1 identity of
  * `class ␟ scenario ␟ subject`, matching derive.js's fingerprint contract
  * (cohort-independent, so a recurring gap collides across cohorts into a
- * time-series). Pure.
+ * time-series). A thin wrapper over the shared, PURE `computeFingerprint`
+ * (bench/feedback/fingerprint.js) rather than an inlined hash: the two once
+ * re-implemented the same key/hash independently, so a future fingerprint.js
+ * change (a different digest, separator, or hex length) would silently diverge
+ * and break the intended cross-cohort finding collision. Importing the pure
+ * fingerprint helper does NOT compromise this module's F7 purity —
+ * fingerprint.js performs no I/O and never reaches into the stateful
+ * derive.js/file.js surfaces the F7 decoupling exists to avoid. Pure.
  *
  * @param {object} args
  * @param {string|null} [args.scenario]
@@ -125,15 +114,11 @@ function normalizeField(value) {
  * @returns {string}  A 16-hex-char (64-bit) SHA-1 fingerprint.
  */
 export function attributionFingerprint({ scenario = null, subject }) {
-  const key = [
-    normalizeField(ATTRIBUTION_FINDING_CLASS),
-    normalizeField(scenario),
-    normalizeField(subject),
-  ].join(FIELD_SEP);
-  return createHash('sha1')
-    .update(key, 'utf8')
-    .digest('hex')
-    .slice(0, FINGERPRINT_HEX_LEN);
+  return computeFingerprint({
+    findingClass: ATTRIBUTION_FINDING_CLASS,
+    scenario,
+    subject,
+  });
 }
 
 /**
