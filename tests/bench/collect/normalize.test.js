@@ -706,8 +706,8 @@ describe('buildScorecard — standalone overhead phase-split (Epic #66, Story #7
   });
 });
 
-describe('buildScorecard — planning-footprint-unmeasured-epic-routed warning (Epic #66 audit remediation, M3)', () => {
-  it('fires when the mandrel arm is Epic-ledger-routed but the planning input carries no footprint signal', () => {
+describe('buildScorecard — planning-fidelity footprint DROPPED when unmeasurable (supersedes the M3 loud-null)', () => {
+  it('drops the footprint term (and emits no warning) when the Epic-routed run carries no footprint signal', () => {
     const sc = buildScorecard({
       run: runStamp({ arm: 'mandrel' }),
       lifecycle: [
@@ -729,12 +729,15 @@ describe('buildScorecard — planning-footprint-unmeasured-epic-routed warning (
       envelope: normalizedEnvelope(),
       quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
     });
+    // Unmeasurable footprint is DROPPED from the mean (not scored a fake 1.0),
+    // and the obsolete loud-null is gone — footprintDropped is the honest marker.
+    assert.equal(sc.dimensions.planningFidelity.footprintDropped, true);
     assert.ok(
-      sc.warnings.includes('planning-footprint-unmeasured-epic-routed'),
+      !sc.warnings.includes('planning-footprint-unmeasured-epic-routed'),
     );
   });
 
-  it('stays absent when the Epic-ledger-routed run carries a real footprint signal', () => {
+  it('measures (does not drop) the footprint when a real drift signal is threaded', () => {
     const sc = buildScorecard({
       run: runStamp({ arm: 'mandrel' }),
       lifecycle: [

@@ -137,7 +137,11 @@ launch a run that cannot provision its sandbox.
 
 1. Delegate to [`/git-deliver`](../../workflows/git-deliver.md) with a commit
    subject that preserves the established provenance convention, e.g.
-   `feat(results): cohort <id> — mandrel@<version> / <model> (refs #<id>)`.
+   `chore(results): cohort <id> — mandrel@<version> / <model> (refs #<id>)`.
+   Use the **`chore(results):`** type (NOT `feat`/`fix`): benchmark results are
+   data produced *by* the instrument, not changes *to* it, so committing a
+   cohort must never trip release-please into bumping `benchmarkVersion` — only
+   a real code change to the harness should move the version.
 2. `--no-pr` stops at the commit/push level; otherwise `/git-deliver` opens the
    PR to `main` and arms auto-merge per its own detection.
 
