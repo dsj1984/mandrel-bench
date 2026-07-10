@@ -44,6 +44,7 @@ import {
   autonomyGuardrailRows,
   formatTrapStat,
   groupCells,
+  phaseCostRows,
   trapAxisRows,
 } from './render.js';
 
@@ -183,6 +184,9 @@ export function toRow(sc) {
     totalTokens: num(dims?.efficiency?.totalTokens),
     costUsd: num(dims?.efficiency?.costUsd),
     overheadRatio: num(dims?.overheadRatio?.tokenRatio),
+    // Per-phase session envelopes (D-019, Epic #86 Story #94): the mandrel
+    // arm's /plan + /deliver phase cost/tokens/wall-clock; null for control.
+    phases: Array.isArray(sc?.phases) ? sc.phases : null,
     // Full per-dimension breakdown for the modal (the raw dimension objects).
     dimensions: {
       quality: dims?.quality ?? null,
@@ -290,7 +294,11 @@ export function buildDashboardModel(scorecards) {
       rows: trapAxisRows(cell, 'iqr'),
     }))
     .filter((s) => s.rows.length > 0);
-  return { rows, metrics, guardrail, trapAxis };
+  // Per-phase cost panel (D-019): mandrel-only /plan vs /deliver cost per
+  // scenario, reusing render.js's `phaseCostRows` so the dashboard and the
+  // Markdown report share one interpretation.
+  const phaseCost = phaseCostRows(cells);
+  return { rows, metrics, guardrail, trapAxis, phaseCost };
 }
 
 /**
@@ -942,6 +950,39 @@ ${trapAxis.length ? scenarioBlocks : '<div class="empty">No scenario in this cor
 }
 
 /**
+ * Server-rendered, static "Per-phase cost" panel (D-019, Epic #86 Story #94):
+ * the mandrel arm's `/plan` vs `/deliver` mean USD cost per scenario, so a
+ * reader sees which half of the pipeline the cost went to. Mandrel-only by
+ * construction (the control arm is a single session and carries no `phases`).
+ * Reuses `render.js`'s `phaseCostRows` so the dashboard and the Markdown report
+ * share one interpretation.
+ *
+ * @param {Array<{ scenario: string, n: number, planCostUsd: number|null, deliverCostUsd: number|null, totalCostUsd: number|null }>} rows
+ * @returns {string}
+ */
+function renderPhaseCostSectionHtml(rows) {
+  const usd = (v) =>
+    typeof v === 'number' && Number.isFinite(v) ? Number(v.toFixed(4)) : '—';
+  const body = (rows ?? [])
+    .map(
+      (r) =>
+        `<tr><td>${esc(r.scenario)}</td><td>${r.n}</td><td>${usd(r.planCostUsd)}</td><td>${usd(r.deliverCostUsd)}</td><td>${usd(r.totalCostUsd)}</td></tr>`,
+    )
+    .join('');
+  return `<section>
+<h2>Per-phase cost (mandrel arm)</h2>
+<div class="sub">The mandrel arm runs <code>/plan</code> and <code>/deliver</code> as two separate headless sessions (D-019), so cost is attributable to the planning half vs the delivery half. Mean USD cost per phase across the cell's mandrel runs; the control arm is a single session and carries no per-phase split.</div>
+<div class="panel">
+${
+  rows && rows.length
+    ? `<table><thead><tr><th>Scenario</th><th>n</th><th>Plan cost (USD)</th><th>Deliver cost (USD)</th><th>Total (USD)</th></tr></thead><tbody>${body}</tbody></table>`
+    : '<div class="empty">No mandrel-arm records carry a per-phase cost split.</div>'
+}
+</div>
+</section>`;
+}
+
+/**
  * Render the self-contained dashboard HTML for the aggregated scorecard corpus.
  *
  * @param {object} args
@@ -1025,6 +1066,7 @@ export function renderDashboard({ scorecards } = {}) {
 </div>
 </section>
 ${renderGuardrailSection(model.guardrail)}
+${renderPhaseCostSectionHtml(model.phaseCost)}
 ${renderTrapAxisSectionHtml(model.trapAxis)}
 </main>
 <div class="modal-backdrop" id="modal-backdrop">

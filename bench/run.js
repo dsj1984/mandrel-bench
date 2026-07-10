@@ -69,6 +69,7 @@ import {
   resetSandboxBaseline,
   SANDBOX_DIR_PREFIX,
   sandboxRepoName,
+  sanitizeGitHubTokenEnv,
   seedFromTemplate,
   teardownSandbox,
 } from './driver/sandbox.js';
@@ -412,6 +413,245 @@ export function discoverLedger({ workspacePath }, deps = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Phase-scoped sessions: between-session id-discovery + plan snapshot (D-019,
+// Epic #86 Story #94)
+// ---------------------------------------------------------------------------
+
+/**
+ * Default `gh --json` port for the plan-phase seam, running `gh <args>` with the
+ * SANITIZED GitHub-token environment (`sanitizeGitHubTokenEnv` — BENCH_GITHUB_TOKEN
+ * wins over ambient GH_TOKEN, whitespace-stripped) so the id-discovery and
+ * snapshot reads use the same credential surface as the rest of the sandbox
+ * lifecycle and add NO new one (Epic #86 security note). The child's stderr is
+ * discarded. Injectable `execFileSync` so tests never spawn `gh`.
+ *
+ * @param {string[]} args  Arguments to `gh` (must include a `--json` selector).
+ * @param {{ execFileSync?: typeof execFileSync }} [ports]
+ * @returns {unknown} Parsed JSON.
+ */
+export function defaultPlanGhJson(args, ports = {}) {
+  const exec = ports.execFileSync ?? execFileSync;
+  const out = exec('gh', args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    env: sanitizeGitHubTokenEnv(),
+  });
+  return JSON.parse(out);
+}
+
+/**
+ * Discover the Epic id the mandrel arm's PLAN session created on the ephemeral
+ * repo (the id-discovery seam, F1 from Epic #86's pre-mortem). In the default
+ * `--idea` drive the Epic is opened INSIDE the plan session, so the harness
+ * never learns its id from stdout; after the plan session exits we recover it
+ * the same deterministic way `discoverStandaloneStory` recovers a Story: the
+ * newest `type::epic` issue created at/after the run's start (runs are
+ * sequential and the sandbox is reset to baseline before each). Returns null
+ * when none is found.
+ *
+ * @param {object} args
+ * @param {string} args.owner
+ * @param {string} args.repo
+ * @param {string} args.sinceIso  Run-start timestamp (ISO-8601); only Epics
+ *   created at/after this are considered.
+ * @param {{ ghJson?: typeof defaultPlanGhJson }} [ports]
+ * @returns {number|null} The Epic issue number, or null when none is found.
+ */
+export function discoverPlannedEpicId({ owner, repo, sinceIso }, ports = {}) {
+  const ghJson = ports.ghJson ?? defaultPlanGhJson;
+  const since = Date.parse(sinceIso);
+  let issues;
+  try {
+    issues = ghJson(
+      [
+        'issue',
+        'list',
+        '--repo',
+        `${owner}/${repo}`,
+        '--label',
+        'type::epic',
+        '--state',
+        'all',
+        '--json',
+        'number,createdAt',
+        '--limit',
+        '50',
+      ],
+      ports,
+    );
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(issues)) return null;
+  const fresh = issues
+    .filter(
+      (i) =>
+        Number.isInteger(i?.number) &&
+        Number.isFinite(Date.parse(i?.createdAt)) &&
+        (!Number.isFinite(since) || Date.parse(i.createdAt) >= since),
+    )
+    .sort((a, b) => b.number - a.number);
+  return fresh.length > 0 ? fresh[0].number : null;
+}
+
+/**
+ * Snapshot the plan artifacts the mandrel arm's PLAN session produced into
+ * `.raw/<run-stamp>/plan/` BEFORE the deliver session starts (D-019). This
+ * freezes what the plan is scored on so delivery can never retroactively alter
+ * it. For epic-routed runs the Epic body (which carries the folded tech-spec
+ * sections) plus every child Story body (with its inline `acceptance[]` /
+ * `verify[]`) are captured; for story-routed runs the standalone Story body is.
+ * A `manifest.json` records the routing + the captured ids. All GitHub reads run
+ * through the injected `ghJson` port (sanitized env by default) so unit tests
+ * stub every read with no network. Best-effort per-artifact: an unreadable
+ * ticket is skipped, not fatal.
+ *
+ * @param {object} args
+ * @param {string} args.owner
+ * @param {string} args.repo
+ * @param {'epic'|'story'|null} args.routing
+ * @param {number|null} [args.epicId]      Discovered/seed Epic id (epic routing).
+ * @param {number|null} [args.storyNumber] Discovered Story id (story routing).
+ * @param {string} args.planDir            Absolute `.raw/<stamp>/plan/` path.
+ * @param {string} args.sinceIso           Run-start; bounds child-Story discovery.
+ * @param {string|null} [args.capturedAt]  Stamp recorded in the manifest.
+ * @param {object} [deps]
+ * @param {typeof defaultPlanGhJson} [deps.ghJson]
+ * @param {(p: string, opts?: object) => void} [deps.mkdirImpl]
+ * @param {(p: string, data: string) => void} [deps.writeFileImpl]
+ * @param {{ warn?: Function }} [deps.logger]
+ * @returns {{ planDir: string, files: string[], manifest: object }}
+ */
+export function snapshotPlanArtifacts(
+  {
+    owner,
+    repo,
+    routing,
+    epicId = null,
+    storyNumber = null,
+    planDir,
+    sinceIso,
+    capturedAt = null,
+  },
+  deps = {},
+) {
+  const ghJson = deps.ghJson ?? defaultPlanGhJson;
+  const mkdir = deps.mkdirImpl ?? ((p) => mkdirSync(p, { recursive: true }));
+  const writeFile = deps.writeFileImpl ?? writeFileSync;
+  const logger = deps.logger;
+  const repoFlag = `${owner}/${repo}`;
+  const files = [];
+
+  mkdir(planDir);
+
+  const writeJson = (name, obj) => {
+    const fp = path.join(planDir, name);
+    writeFile(fp, `${JSON.stringify(obj, null, 2)}\n`);
+    files.push(fp);
+  };
+
+  const manifest = {
+    routing: routing ?? null,
+    epicId: epicId ?? null,
+    storyNumber: storyNumber ?? null,
+    storyNumbers: [],
+    capturedAt: capturedAt ?? null,
+  };
+
+  if (epicId != null) {
+    // Epic-routed: capture the Epic body (tech-spec sections travel with it)
+    // and every child Story body (its inline acceptance[]/verify[]).
+    try {
+      const epic = ghJson(
+        [
+          'issue',
+          'view',
+          String(epicId),
+          '--repo',
+          repoFlag,
+          '--json',
+          'number,title,body,labels',
+        ],
+        deps,
+      );
+      if (epic && typeof epic === 'object')
+        writeJson(`epic-${epicId}.json`, epic);
+    } catch (err) {
+      logger?.warn?.(
+        `[run] plan snapshot: could not read Epic #${epicId}: ${err?.message ?? err}`,
+      );
+    }
+    let stories = [];
+    try {
+      stories = ghJson(
+        [
+          'issue',
+          'list',
+          '--repo',
+          repoFlag,
+          '--label',
+          'type::story',
+          '--state',
+          'all',
+          '--json',
+          'number,title,body,createdAt',
+          '--limit',
+          '100',
+        ],
+        deps,
+      );
+    } catch (err) {
+      logger?.warn?.(
+        `[run] plan snapshot: could not list child Stories: ${err?.message ?? err}`,
+      );
+    }
+    const since = Date.parse(sinceIso);
+    const fresh = (Array.isArray(stories) ? stories : []).filter(
+      (s) =>
+        Number.isInteger(s?.number) &&
+        (!Number.isFinite(since) ||
+          !s?.createdAt ||
+          !Number.isFinite(Date.parse(s.createdAt)) ||
+          Date.parse(s.createdAt) >= since),
+    );
+    for (const s of fresh) {
+      writeJson(`story-${s.number}.json`, {
+        number: s.number,
+        title: s.title,
+        body: s.body,
+      });
+    }
+    manifest.storyNumbers = fresh.map((s) => s.number);
+  } else if (storyNumber != null) {
+    // Story-routed: the standalone Story body IS the plan.
+    try {
+      const story = ghJson(
+        [
+          'issue',
+          'view',
+          String(storyNumber),
+          '--repo',
+          repoFlag,
+          '--json',
+          'number,title,body,labels',
+        ],
+        deps,
+      );
+      if (story && typeof story === 'object') {
+        writeJson(`story-${storyNumber}.json`, story);
+      }
+    } catch (err) {
+      logger?.warn?.(
+        `[run] plan snapshot: could not read Story #${storyNumber}: ${err?.message ?? err}`,
+      );
+    }
+  }
+
+  writeJson('manifest.json', manifest);
+  return { planDir, files, manifest };
+}
+
+// ---------------------------------------------------------------------------
 // Batch resume + ceiling (Story #22)
 // ---------------------------------------------------------------------------
 
@@ -667,6 +907,92 @@ export async function runOneRun(opts, deps = {}) {
     // across the per-run baseline reset).
     const runStartedAt = nowIso();
 
+    // The `.raw/<stamp>/` subdir key for this cell's provenance artifacts (the
+    // cost envelope, the lifecycle ledger, and the plan snapshot all land here).
+    const idStampForRaw = sanitizeRunId(`${scenario.id}-${arm}-r${runIndex}`);
+
+    // Between-session seam (D-019, Epic #86 Story #94), mandrel arm only. After
+    // the PLAN session exits, discover the id(s) it created on the ephemeral
+    // repo and snapshot the plan artifacts BEFORE the DELIVER session starts,
+    // then thread the discovered id into the deliver prompt. All GitHub reads
+    // run through the sanitized `gh` env (deps.ghJson in tests). Best-effort: a
+    // discovery/snapshot failure logs and lets delivery fall back to in-session
+    // Epic discovery rather than aborting the run.
+    const planGhJson = deps.ghJson ?? defaultPlanGhJson;
+    const betweenPhases =
+      arm === 'mandrel'
+        ? ({ planEnvelope }) => {
+            try {
+              const modelForRaw = resolveModelId(planEnvelope, model);
+              const planDir = path.join(
+                cohortDir({
+                  resultsDir,
+                  scorecard: { model: { id: modelForRaw }, frameworkVersion },
+                }),
+                '.raw',
+                idStampForRaw,
+                'plan',
+              );
+              const routing =
+                typeof scenario?.routing === 'string'
+                  ? scenario.routing
+                  : scenario.epicId != null
+                    ? 'epic'
+                    : null;
+              let epicId = scenario.epicId ?? null;
+              let storyNumber = null;
+              let deliverTarget = null;
+              if (routing === 'story' && epicId == null) {
+                storyNumber = discoverStandaloneStory(
+                  {
+                    owner: sandbox.owner,
+                    repo: sandbox.repo,
+                    sinceIso: runStartedAt,
+                  },
+                  { ghJson: planGhJson },
+                );
+                deliverTarget = storyNumber;
+              } else {
+                if (epicId == null) {
+                  epicId = discoverPlannedEpicId(
+                    {
+                      owner: sandbox.owner,
+                      repo: sandbox.repo,
+                      sinceIso: runStartedAt,
+                    },
+                    { ghJson: planGhJson },
+                  );
+                }
+                deliverTarget = epicId;
+              }
+              snapshotPlanArtifacts(
+                {
+                  owner: sandbox.owner,
+                  repo: sandbox.repo,
+                  routing,
+                  epicId,
+                  storyNumber,
+                  planDir,
+                  sinceIso: runStartedAt,
+                  capturedAt: runStartedAt,
+                },
+                {
+                  ghJson: planGhJson,
+                  mkdirImpl: mkdir,
+                  writeFileImpl: writeFile,
+                  logger,
+                },
+              );
+              return { deliverTarget };
+            } catch (err) {
+              logger?.warn?.(
+                `[run] plan-phase id-discovery/snapshot failed (continuing): ${err?.message ?? err}`,
+              );
+              return { deliverTarget: scenario.epicId ?? null };
+            }
+          }
+        : undefined;
+
     const session = runSessionFn(
       {
         arm,
@@ -676,7 +1002,7 @@ export async function runOneRun(opts, deps = {}) {
         extraArgs,
         timeoutMs,
       },
-      { invokeFn: deps.invokeFn, logger },
+      { invokeFn: deps.invokeFn, logger, betweenPhases },
     );
 
     // Materialize the delivered code into the working tree. For the mandrel arm
@@ -715,7 +1041,7 @@ export async function runOneRun(opts, deps = {}) {
     // recovered. Stays null for the control arm and for Epic-routed cells.
     let standalone = null;
     const rawDir = path.join(cohortDirPath, '.raw');
-    const idStampForRaw = sanitizeRunId(`${scenario.id}-${arm}-r${runIndex}`);
+    // idStampForRaw was resolved before the session (the plan snapshot needs it).
     if (arm === 'mandrel') {
       const found = discoverLedger(
         { workspacePath: handle.workspacePath },
@@ -912,6 +1238,10 @@ export async function runOneRun(opts, deps = {}) {
       maintainabilityInputs,
       securityInputs,
       trap,
+      // Per-phase session envelopes (D-019): the mandrel arm's ordered
+      // /plan + /deliver sessions each carry their own cost/tokens/wall-clock,
+      // summing to the run totals. `session.phases` is null for the control arm.
+      phases: session.phases ?? null,
       rawRefs,
       standalone,
       scenarioRouting:

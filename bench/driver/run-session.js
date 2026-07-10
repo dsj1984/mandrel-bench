@@ -40,66 +40,167 @@ export const DEFAULT_BENCH_MODEL = 'claude-opus-4-8';
 export const DEFAULT_SESSION_TIMEOUT_MS = 60 * 60 * 1000;
 
 /**
- * Compose the prompt sent to `claude -p` for a given arm + scenario.
+ * Validate the shared scenario contract every prompt builder needs (a string
+ * `id` and a non-empty `taskPrompt`). Throws the same `TypeError`s the public
+ * builders historically threw so callers/tests see an unchanged failure surface.
  *
- * - **mandrel** arm: drive the real Mandrel pipeline (`/plan` then `/deliver`)
- *   so planning fidelity is genuinely measured rather than pre-staged
- *   (Epic Non-Goal: "Pre-staged plans … would grade our own homework").
- * - **control** arm: hand the bare task straight to the model with no
- *   scaffolding.
- *
- * The unattended-mode preamble (auto-proceed through HITL gates) is documented
- * in `bench/driver/unattended.md` and injected here so every Mandrel-arm run
- * carries it. Exported so docs tooling and tests reference one canonical
- * builder.
- *
- * @param {object} input
- * @param {'mandrel'|'control'} input.arm
- * @param {{ id: string, taskPrompt: string, epicId?: number|string }} input.scenario
- * @returns {string}
+ * @param {{ id?: unknown, taskPrompt?: unknown }} scenario
+ * @param {string} who  The public builder name, for the error message.
+ * @returns {void}
  */
-export function buildArmPrompt(input) {
-  const { arm, scenario } = input ?? {};
+function assertScenario(scenario, who) {
   if (!scenario || typeof scenario.id !== 'string') {
-    throw new TypeError('buildArmPrompt requires a scenario with a string id');
+    throw new TypeError(`${who} requires a scenario with a string id`);
   }
   if (
     typeof scenario.taskPrompt !== 'string' ||
     scenario.taskPrompt.length === 0
   ) {
-    throw new TypeError('buildArmPrompt requires scenario.taskPrompt');
+    throw new TypeError(`${who} requires scenario.taskPrompt`);
   }
+}
+
+/**
+ * The unattended-mode preamble injected into every Mandrel-arm session (both
+ * the `/plan` and the `/deliver` phase). Auto-proceed through every HITL STOP /
+ * confirmation gate keeps the headless session from stalling (see
+ * `bench/driver/unattended.md`). Kept as one constant so the two phase builders
+ * can never drift on the directive.
+ */
+const MANDREL_UNATTENDED_PREAMBLE =
+  `You are operating Mandrel's pipeline non-interactively under a headless ` +
+  `benchmark driver. There is no human at the keyboard. At every ` +
+  `human-in-the-loop STOP / confirmation gate (one-pager confirm, spec ` +
+  `review, decomposition diff gate, and the auto-merge-else-operator-merge ` +
+  `step), treat the absence of an operator as implicit approval and proceed ` +
+  `with the best available interpretation — never block waiting for input. `;
+
+/**
+ * Bare-model control-arm prompt: the task, no Mandrel scaffolding, no pipeline
+ * ceremony. Exported so docs tooling and tests reference one canonical builder.
+ *
+ * @param {object} input
+ * @param {{ id: string, taskPrompt: string }} input.scenario
+ * @returns {string}
+ */
+export function buildControlPrompt(input) {
+  const { scenario } = input ?? {};
+  assertScenario(scenario, 'buildControlPrompt');
+  return (
+    `You are working in a fresh git checkout. Complete the following task ` +
+    `end to end, committing your work. Do not ask for confirmation — proceed ` +
+    `autonomously to completion.\n\nTask (${scenario.id}):\n${scenario.taskPrompt}`
+  );
+}
+
+/**
+ * Mandrel-arm PLAN-phase prompt (D-019). Session 1 of the ordered two-session
+ * mandrel run drives `/plan` to completion and STOPS — it does NOT deliver.
+ * Splitting `/plan` and `/deliver` into their own sessions makes each phase's
+ * `claude -p` envelope (cost/tokens/wall-clock) individually attributable, and
+ * a fresh `/deliver` session (session 2) is faithful to Mandrel's
+ * tickets-are-state design.
+ *
+ * Both drive paths pass `--yes` (v1.72.0+ headless flag, mandrel#4223): it
+ * deterministically auto-proceeds /plan's HITL stop gates (the ideation
+ * one-pager / scope-triage confirm and the Phase-7 review gate).
+ *   - With a seed Epic id: `/plan <id> --yes` (enters at the existing Epic).
+ *   - Without one (the default for N>1 cohorts, since each Epic-id run consumes
+ *     and closes its Epic): the `--idea` drive — the run self-authors a fresh
+ *     Epic from the task and runs the full /plan pipeline. The id it creates is
+ *     unknown to the harness until the between-session id-discovery seam recovers
+ *     it (see bench/run.js), so this prompt does not reference an id.
+ *
+ * @param {object} input
+ * @param {{ id: string, taskPrompt: string, epicId?: number|string }} input.scenario
+ * @returns {string}
+ */
+export function buildMandrelPlanPrompt(input) {
+  const { scenario } = input ?? {};
+  assertScenario(scenario, 'buildMandrelPlanPrompt');
+  const drive =
+    scenario.epicId !== undefined && scenario.epicId !== null
+      ? `An Epic issue (#${scenario.epicId}) capturing the task below has already ` +
+        `been opened in this repository. Plan it with \`/plan ${scenario.epicId} --yes\`. ` +
+        `Run ONLY the planning pipeline in this session — do NOT deliver; do not ` +
+        `re-author the Epic from an idea and do not pre-stage any planning artifact.`
+      : `Author the plan with \`/plan --idea "<the task described below>" --yes\` ` +
+        `(the --yes flag drives /plan headlessly through its HITL stop gates). ` +
+        `Run ONLY the planning pipeline in this session — do NOT deliver, and do ` +
+        `not pre-stage any planning artifact.`;
+  return `${MANDREL_UNATTENDED_PREAMBLE}${drive}\n\nTask (${scenario.id}):\n${scenario.taskPrompt}`;
+}
+
+/**
+ * Mandrel-arm DELIVER-phase prompt (D-019). Session 2 of the ordered
+ * two-session mandrel run delivers the plan session 1 authored, in a FRESH
+ * session (state lives in the tickets, not the transcript). `deliverTarget` is
+ * the id the between-session id-discovery seam recovered from the ephemeral
+ * repo (the Epic id for epic-routed scenarios; the standalone Story id for
+ * story-routed ones); it is threaded in so `/deliver` enters at the artifact
+ * the plan session created.
+ *
+ * @param {object} input
+ * @param {{ id: string, taskPrompt: string }} input.scenario
+ * @param {number|string|null} [input.deliverTarget]  The Epic/Story id to
+ *   deliver, discovered between the sessions. When null the prompt falls back to
+ *   instructing delivery of the Epic the plan session just produced.
+ * @returns {string}
+ */
+export function buildMandrelDeliverPrompt(input) {
+  const { scenario, deliverTarget = null } = input ?? {};
+  assertScenario(scenario, 'buildMandrelDeliverPrompt');
+  const drive =
+    deliverTarget !== undefined && deliverTarget !== null
+      ? `The planning pipeline has already run in a previous session and opened ` +
+        `the ticket(s) for the task below in this repository. Deliver it now with ` +
+        `\`/deliver ${deliverTarget} --yes\` (the --yes flag drives /deliver ` +
+        `headlessly through its HITL stop gates). Do NOT re-plan or re-author any ` +
+        `planning artifact — deliver the existing plan.`
+      : `The planning pipeline has already run in a previous session and opened ` +
+        `the ticket(s) for the task below in this repository. Discover the Epic it ` +
+        `created and deliver it with \`/deliver <epicId> --yes\`. Do NOT re-plan or ` +
+        `re-author any planning artifact — deliver the existing plan.`;
+  return `${MANDREL_UNATTENDED_PREAMBLE}${drive}\n\nTask (${scenario.id}):\n${scenario.taskPrompt}`;
+}
+
+/**
+ * Compose the prompt sent to `claude -p` for a given arm + scenario (+ phase).
+ * A thin phase-aware dispatcher over the per-phase builders above:
+ *
+ * - **control** arm: the bare task via `buildControlPrompt` (single session).
+ * - **mandrel** arm + `phase: 'plan'`  → `buildMandrelPlanPrompt`.
+ * - **mandrel** arm + `phase: 'deliver'` → `buildMandrelDeliverPrompt`.
+ * - **mandrel** arm with NO phase → the legacy combined `/plan then /deliver`
+ *   prompt (back-compat for callers that still want one prompt; `runSession`
+ *   itself now uses the per-phase builders).
+ *
+ * Exported so docs tooling and tests reference one canonical builder.
+ *
+ * @param {object} input
+ * @param {'mandrel'|'control'} input.arm
+ * @param {{ id: string, taskPrompt: string, epicId?: number|string }} input.scenario
+ * @param {'plan'|'deliver'} [input.phase]  Mandrel phase selector.
+ * @param {number|string|null} [input.deliverTarget]  Passed through to the
+ *   deliver-phase builder.
+ * @returns {string}
+ */
+export function buildArmPrompt(input) {
+  const { arm, scenario, phase, deliverTarget } = input ?? {};
 
   if (arm === 'control') {
-    // Bare-model baseline: no Mandrel scaffolding, no pipeline ceremony.
-    return (
-      `You are working in a fresh git checkout. Complete the following task ` +
-      `end to end, committing your work. Do not ask for confirmation — proceed ` +
-      `autonomously to completion.\n\nTask (${scenario.id}):\n${scenario.taskPrompt}`
-    );
+    return buildControlPrompt({ scenario });
   }
 
   if (arm === 'mandrel') {
-    // Mandrel pipeline arm. Auto-proceed directive keeps the HITL STOP gates
-    // from stalling the headless session (see unattended.md).
-    const preamble =
-      `You are operating Mandrel's pipeline non-interactively under a headless ` +
-      `benchmark driver. There is no human at the keyboard. At every ` +
-      `human-in-the-loop STOP / confirmation gate (one-pager confirm, spec ` +
-      `review, decomposition diff gate, and the auto-merge-else-operator-merge ` +
-      `step), treat the absence of an operator as implicit approval and proceed ` +
-      `with the best available interpretation — never block waiting for input. `;
-
-    // Both drive paths pass `--yes` to `/plan` (v1.72.0+ headless flag, mandrel#4223):
-    // it deterministically auto-proceeds /plan's HITL stop gates (the ideation
-    // one-pager / scope-triage confirm and the Phase-7 review gate) rather than
-    // relying on the best-effort prompt directive that predated the flag (D-011).
-    //   - With a seed Epic id: `/plan <id> --yes` → `/deliver <id> --yes` (enters at
-    //     the existing Epic; the one-pager is moot but --yes still clears Phase-7).
-    //   - Without one (the default for N>1 cohorts, since each Epic-id run consumes
-    //     and closes its Epic): the `--idea` drive — each run self-authors a fresh
-    //     Epic from the task and runs the full /plan pipeline, the most representative
-    //     consumer path. Planning fidelity is genuinely measured (never pre-staged).
+    if (phase === 'plan') return buildMandrelPlanPrompt({ scenario });
+    if (phase === 'deliver') {
+      return buildMandrelDeliverPrompt({ scenario, deliverTarget });
+    }
+    // Legacy combined single-prompt path (no phase): drive /plan then /deliver
+    // in one prompt. Retained for back-compat; the driver now runs the two
+    // phases as separate sessions via the per-phase builders above.
+    assertScenario(scenario, 'buildArmPrompt');
     const drive =
       scenario.epicId !== undefined && scenario.epicId !== null
         ? `An Epic issue (#${scenario.epicId}) capturing the task below has already ` +
@@ -110,8 +211,7 @@ export function buildArmPrompt(input) {
           `then deliver the resulting Epic with \`/deliver <epicId> --yes\` (the --yes ` +
           `flags drive /plan and /deliver headlessly through their HITL stop gates); do ` +
           `not pre-stage any planning artifact.`;
-
-    return `${preamble}${drive}\n\nTask (${scenario.id}):\n${scenario.taskPrompt}`;
+    return `${MANDREL_UNATTENDED_PREAMBLE}${drive}\n\nTask (${scenario.id}):\n${scenario.taskPrompt}`;
   }
 
   throw new TypeError(
@@ -285,8 +385,225 @@ export function parseSessionEnvelope(rawStdout) {
 }
 
 /**
- * Launch a headless `claude -p --output-format json` session for one arm and
- * scenario and return the parsed usage/cost envelope.
+ * Launch ONE headless `claude -p --output-format json` session, parse its
+ * envelope, and surface a non-zero exit / is_error as the callers expect.
+ * Shared by both arms; the mandrel arm calls it twice (plan, then deliver).
+ *
+ * @param {object} args
+ * @param {string} args.prompt
+ * @param {'mandrel'|'control'} args.arm
+ * @param {string} args.scenarioId
+ * @param {string} args.cwd
+ * @param {string} args.model
+ * @param {string[]} args.extraArgs
+ * @param {number} args.timeoutMs
+ * @param {(input: object) => { status: number, stdout: string, stderr: string }} args.invokeFn
+ * @param {{ info?: Function, warn?: Function }} [args.logger]
+ * @param {string} [args.phase]  Label for logging ('plan'|'deliver'|undefined).
+ * @returns {{ status: number, envelope: ReturnType<typeof parseSessionEnvelope> }}
+ */
+function invokeOneSession({
+  prompt,
+  arm,
+  scenarioId,
+  cwd,
+  model,
+  extraArgs,
+  timeoutMs,
+  invokeFn,
+  logger,
+  phase,
+}) {
+  const phaseTag = phase ? ` phase=${phase}` : '';
+  logger?.info?.(
+    `[run-session] Launching headless session: arm=${arm} scenario=${scenarioId}${phaseTag} model=${model}`,
+  );
+
+  const { status, stdout, stderr } = invokeFn({
+    prompt,
+    model,
+    cwd,
+    extraArgs,
+    timeoutMs,
+  });
+
+  if (status !== 0) {
+    throw new Error(
+      `[run-session] claude -p exited with status ${status} ` +
+        `(arm=${arm}, scenario=${scenarioId}${phaseTag}): ${
+          stderr || stdout || '<no output>'
+        }`,
+    );
+  }
+
+  const envelope = parseSessionEnvelope(stdout);
+
+  // A clean exit code with an error envelope is still a failed run — surface it
+  // rather than silently returning a zero-cost record the scorer would trust.
+  if (envelope.isError) {
+    logger?.warn?.(
+      `[run-session] Session reported is_error=true (arm=${arm}, scenario=${scenarioId}${phaseTag}): ${
+        envelope.result ?? '<no result text>'
+      }`,
+    );
+  }
+
+  logger?.info?.(
+    `[run-session] Session complete: arm=${arm} scenario=${scenarioId}${phaseTag} ` +
+      `cost=$${envelope.cost.totalUsd ?? '?'} tokens=${envelope.usage.totalTokens} turns=${
+        envelope.numTurns ?? '?'
+      }`,
+  );
+
+  return { status, envelope };
+}
+
+/**
+ * Sum a list of `costUsd` values into one total, treating a `null`/absent cost
+ * as "no signal": if EVERY phase reports null the total is null; otherwise the
+ * numeric costs are summed (a null phase contributes 0). This keeps the run
+ * total honest when only some phases report a cost.
+ *
+ * @param {Array<number|null>} costs
+ * @returns {number|null}
+ */
+function sumCostUsd(costs) {
+  const nums = costs.filter((c) => typeof c === 'number' && Number.isFinite(c));
+  if (nums.length === 0) return null;
+  return nums.reduce((a, b) => a + b, 0);
+}
+
+/**
+ * Merge two `modelUsage` maps additively (per model id), summing the common
+ * numeric token/cost fields so the aggregated envelope's `modelUsage` still
+ * lets `resolveModelId` pick the pinned model across BOTH phases.
+ *
+ * @param {Record<string, object>} a
+ * @param {Record<string, object>} b
+ * @returns {Record<string, object>}
+ */
+function mergeModelUsage(a = {}, b = {}) {
+  const out = {};
+  for (const src of [a, b]) {
+    if (!src || typeof src !== 'object') continue;
+    for (const [key, val] of Object.entries(src)) {
+      const prev = out[key] ?? {};
+      const cur = val && typeof val === 'object' ? val : {};
+      const merged = { ...prev };
+      for (const field of Object.keys(cur)) {
+        const cv = cur[field];
+        const pv = prev[field];
+        merged[field] =
+          typeof cv === 'number' && typeof pv === 'number' ? pv + cv : cv;
+      }
+      out[key] = merged;
+    }
+  }
+  return out;
+}
+
+/**
+ * Fold the ordered per-phase envelopes of a mandrel run into ONE run-level
+ * envelope whose cost/tokens/duration are the SUM of the phases — so every
+ * downstream consumer (`extractUsage`, `resolveModelId`, the persisted
+ * `cost-envelope.json`) sees the run total, exactly as it did before the
+ * session split. The per-phase envelopes are preserved separately in the
+ * `phases` array (`runSession`'s return) and on `raw.phases` for provenance.
+ *
+ * @param {Array<ReturnType<typeof parseSessionEnvelope>>} envelopes  Ordered.
+ * @returns {ReturnType<typeof parseSessionEnvelope>}
+ */
+export function aggregateEnvelopes(envelopes) {
+  const list = Array.isArray(envelopes) ? envelopes : [];
+  const last = list[list.length - 1] ?? {};
+  const usage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    totalTokens: 0,
+  };
+  let durationMs = 0;
+  let numTurns = 0;
+  let modelUsage = {};
+  const permissionDenials = [];
+  let isError = false;
+  for (const e of list) {
+    const u = e?.usage ?? {};
+    usage.inputTokens += toNonNegInt(u.inputTokens);
+    usage.outputTokens += toNonNegInt(u.outputTokens);
+    usage.cacheCreationInputTokens += toNonNegInt(u.cacheCreationInputTokens);
+    usage.cacheReadInputTokens += toNonNegInt(u.cacheReadInputTokens);
+    usage.totalTokens += toNonNegInt(u.totalTokens);
+    if (typeof e?.durationMs === 'number' && Number.isFinite(e.durationMs)) {
+      durationMs += e.durationMs;
+    }
+    if (typeof e?.numTurns === 'number' && Number.isFinite(e.numTurns)) {
+      numTurns += e.numTurns;
+    }
+    modelUsage = mergeModelUsage(modelUsage, e?.modelUsage);
+    if (Array.isArray(e?.permissionDenials)) {
+      permissionDenials.push(...e.permissionDenials);
+    }
+    if (e?.isError === true) isError = true;
+  }
+  const totalUsd = sumCostUsd(list.map((e) => e?.cost?.totalUsd ?? null));
+  return {
+    type: last.type,
+    subtype: last.subtype,
+    isError,
+    result: last.result,
+    sessionId: last.sessionId,
+    numTurns,
+    durationMs,
+    cost: { totalUsd },
+    usage,
+    modelUsage,
+    permissionDenials,
+    terminalReason: last.terminalReason,
+    raw: {
+      aggregatedFromPhases: true,
+      phases: list.map((e) => e?.raw ?? e),
+    },
+  };
+}
+
+/**
+ * Project one parsed phase envelope into the compact `phases[]` record the
+ * scorecard carries: `{ phase, costUsd, tokens, wallClockMs }`. The per-phase
+ * cost/tokens sum to the run totals (see `aggregateEnvelopes`); `wallClockMs`
+ * is the phase session's own `claude -p` duration.
+ *
+ * @param {string} phase
+ * @param {ReturnType<typeof parseSessionEnvelope>} envelope
+ * @returns {{ phase: string, costUsd: number|null, tokens: number, wallClockMs: number }}
+ */
+function phaseRecord(phase, envelope) {
+  return {
+    phase,
+    costUsd: envelope?.cost?.totalUsd ?? null,
+    tokens: toNonNegInt(envelope?.usage?.totalTokens),
+    wallClockMs:
+      typeof envelope?.durationMs === 'number' &&
+      Number.isFinite(envelope.durationMs)
+        ? envelope.durationMs
+        : 0,
+  };
+}
+
+/**
+ * Run a benchmark cell's arm as one (control) or two ordered (mandrel) headless
+ * `claude -p --output-format json` sessions and return the parsed usage/cost.
+ *
+ * - **control** — ONE session (`buildControlPrompt`); `phases` is null.
+ * - **mandrel** — TWO ordered sessions (D-019): session 1 drives `/plan`
+ *   (`buildMandrelPlanPrompt`), then the injected `deps.betweenPhases` hook runs
+ *   the between-session id-discovery + plan snapshot (see bench/run.js) and
+ *   returns the `deliverTarget` id; session 2 drives `/deliver`
+ *   (`buildMandrelDeliverPrompt`) in a fresh session. The returned `envelope` is
+ *   the SUM of both phase envelopes (via `aggregateEnvelopes`) so every
+ *   downstream consumer sees the run total unchanged; `phases` carries the
+ *   per-phase `{ phase, costUsd, tokens, wallClockMs }` breakdown.
  *
  * @param {object} opts
  * @param {'mandrel'|'control'} opts.arm
@@ -299,6 +616,11 @@ export function parseSessionEnvelope(rawStdout) {
  * @param {(input: object) => { status: number, stdout: string, stderr: string }} [deps.invokeFn]
  *   Injected session invoker. Defaults to `defaultInvokeClaudeSession`. Tests
  *   override this so no real `claude` process is spawned.
+ * @param {(ctx: { scenario: object, planEnvelope: object, cwd: string }) => { deliverTarget?: number|string|null }} [deps.betweenPhases]
+ *   Mandrel-only between-session hook (id-discovery + plan snapshot). Returns the
+ *   `deliverTarget` id threaded into the deliver prompt. A no-op default keeps
+ *   `runSession` runnable in isolation (the deliver prompt falls back to
+ *   discovering the Epic in-session).
  * @param {{ info?: Function, warn?: Function, error?: Function }} [deps.logger]
  * @returns {{
  *   arm: 'mandrel'|'control',
@@ -306,7 +628,8 @@ export function parseSessionEnvelope(rawStdout) {
  *   model: string,
  *   prompt: string,
  *   status: number,
- *   envelope: ReturnType<typeof parseSessionEnvelope>
+ *   envelope: ReturnType<typeof parseSessionEnvelope>,
+ *   phases: Array<{ phase: string, costUsd: number|null, tokens: number, wallClockMs: number }>|null
  * }}
  */
 export function runSession(opts = {}, deps = {}) {
@@ -333,55 +656,89 @@ export function runSession(opts = {}, deps = {}) {
   const invokeFn = deps.invokeFn ?? defaultInvokeClaudeSession;
   const logger = deps.logger;
 
-  const prompt = buildArmPrompt({ arm, scenario });
+  // Control arm: a single bare session.
+  if (arm === 'control') {
+    const prompt = buildControlPrompt({ scenario });
+    const { status, envelope } = invokeOneSession({
+      prompt,
+      arm,
+      scenarioId: scenario.id,
+      cwd,
+      model,
+      extraArgs,
+      timeoutMs,
+      invokeFn,
+      logger,
+    });
+    return {
+      arm,
+      scenarioId: scenario.id,
+      model,
+      prompt,
+      status,
+      envelope,
+      phases: null,
+    };
+  }
 
-  logger?.info?.(
-    `[run-session] Launching headless session: arm=${arm} scenario=${scenario.id} model=${model}`,
-  );
-
-  const { status, stdout, stderr } = invokeFn({
-    prompt,
-    model,
+  // Mandrel arm: two ordered sessions (plan → deliver), D-019.
+  const planPrompt = buildMandrelPlanPrompt({ scenario });
+  const plan = invokeOneSession({
+    prompt: planPrompt,
+    arm,
+    scenarioId: scenario.id,
     cwd,
+    model,
     extraArgs,
     timeoutMs,
+    invokeFn,
+    logger,
+    phase: 'plan',
   });
 
-  if (status !== 0) {
-    throw new Error(
-      `[run-session] claude -p exited with status ${status} ` +
-        `(arm=${arm}, scenario=${scenario.id}): ${
-          stderr || stdout || '<no output>'
-        }`,
-    );
+  // Between-session seam: id-discovery + plan snapshot (bench/run.js wires the
+  // real gh-backed hook; the default no-op leaves deliverTarget null so the
+  // deliver prompt falls back to in-session Epic discovery).
+  let deliverTarget = null;
+  if (typeof deps.betweenPhases === 'function') {
+    const between =
+      deps.betweenPhases({ scenario, planEnvelope: plan.envelope, cwd }) ?? {};
+    deliverTarget = between.deliverTarget ?? null;
+  } else if (scenario.epicId !== undefined && scenario.epicId !== null) {
+    // No hook, but a seed Epic id is known up front — deliver it directly.
+    deliverTarget = scenario.epicId;
   }
 
-  const envelope = parseSessionEnvelope(stdout);
+  const deliverPrompt = buildMandrelDeliverPrompt({ scenario, deliverTarget });
+  const deliver = invokeOneSession({
+    prompt: deliverPrompt,
+    arm,
+    scenarioId: scenario.id,
+    cwd,
+    model,
+    extraArgs,
+    timeoutMs,
+    invokeFn,
+    logger,
+    phase: 'deliver',
+  });
 
-  // A clean exit code with an error envelope is still a failed run — surface it
-  // rather than silently returning a zero-cost record the scorer would trust.
-  if (envelope.isError) {
-    logger?.warn?.(
-      `[run-session] Session reported is_error=true (arm=${arm}, scenario=${scenario.id}): ${
-        envelope.result ?? '<no result text>'
-      }`,
-    );
-  }
-
-  logger?.info?.(
-    `[run-session] Session complete: arm=${arm} scenario=${scenario.id} ` +
-      `cost=$${envelope.cost.totalUsd ?? '?'} tokens=${envelope.usage.totalTokens} turns=${
-        envelope.numTurns ?? '?'
-      }`,
-  );
+  const envelope = aggregateEnvelopes([plan.envelope, deliver.envelope]);
+  const phases = [
+    phaseRecord('plan', plan.envelope),
+    phaseRecord('deliver', deliver.envelope),
+  ];
 
   return {
     arm,
     scenarioId: scenario.id,
     model,
-    prompt,
-    status,
+    // The deliver-phase prompt is the run's "primary" prompt for provenance;
+    // both phase prompts are recoverable from the phase builders + scenario.
+    prompt: deliverPrompt,
+    status: deliver.status,
     envelope,
+    phases,
   };
 }
 

@@ -148,6 +148,12 @@
     "trap": {
       "$ref": "#/$defs/trapBlock"
     },
+    "phases": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/phaseEnvelope" },
+      "description": "Per-phase session envelopes for the mandrel arm's ordered two-session run (D-019, Epic #86 Story #94, docs/target-architecture.md §8). The mandrel arm runs `/plan` (session 1) then `/deliver` (session 2) as separate headless `claude -p` sessions, each with its own cost/tokens/wall-clock, so a finding can be attributed to the planning half vs the delivery half. The per-phase `costUsd` and `tokens` SUM to this record's `dimensions.efficiency.costUsd` and `dimensions.efficiency.totalTokens` by construction (the run envelope is the sum of the phase envelopes). Present on mandrel-arm records only; ABSENT for the control arm (a single session) — a control record is valid without it."
+    },
     "rawRefs": {
       "type": "object",
       "additionalProperties": true,
@@ -174,6 +180,34 @@
     }
   },
   "$defs": {
+    "phaseEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "tokens", "wallClockMs"],
+      "description": "One phase-scoped `claude -p` session envelope for the mandrel arm's ordered two-session run (D-019). `costUsd`/`tokens` across the phases sum to the record's efficiency totals.",
+      "properties": {
+        "phase": {
+          "type": "string",
+          "enum": ["plan", "deliver"],
+          "description": "Which pipeline phase this session drove: 'plan' (session 1, `/plan`) or 'deliver' (session 2, `/deliver`)."
+        },
+        "costUsd": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "USD cost of this phase's session from its `claude -p` envelope, or null when the envelope reported none."
+        },
+        "tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total tokens (input + output + cache) for this phase's session."
+        },
+        "wallClockMs": {
+          "type": "number",
+          "minimum": 0,
+          "description": "This phase session's own `claude -p` duration in milliseconds. Distinct from the record's ledger-derived `efficiency.wallClockMs`; the per-phase wall-clocks are the envelope session durations."
+        }
+      }
+    },
     "trapBlock": {
       "type": "object",
       "additionalProperties": false,

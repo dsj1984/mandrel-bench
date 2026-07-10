@@ -26,6 +26,7 @@ import {
   cellKey,
   derivedSecurityInputs,
   discoverLedger,
+  discoverPlannedEpicId,
   loadScenario,
   main,
   parseOptionalNumericEnv,
@@ -43,6 +44,7 @@ import {
   runOneRun,
   sanitizeRunId,
   scenarioEnvSuffix,
+  snapshotPlanArtifacts,
   validateSandboxEnv,
 } from '../../bench/run.js';
 import { computeSecurity } from '../../bench/score/dimensions.js';
@@ -2021,4 +2023,285 @@ test('main(): BENCH_JANITOR_TTL_HOURS overrides the default janitor TTL', async 
   );
 
   assert.equal(seenTtlHours, 48);
+});
+
+// ---------------------------------------------------------------------------
+// Phase-scoped sessions: id-discovery seam + plan snapshot (D-019, Epic #86
+// Story #94)
+// ---------------------------------------------------------------------------
+
+test('discoverPlannedEpicId: picks the newest type::epic created at/after the run start', () => {
+  const calls = [];
+  const ghJson = (args) => {
+    calls.push(args);
+    return [
+      { number: 10, createdAt: '2026-06-16T19:59:00.000Z' }, // before start — excluded
+      { number: 12, createdAt: '2026-06-16T20:00:05.000Z' },
+      { number: 11, createdAt: '2026-06-16T20:00:01.000Z' },
+    ];
+  };
+  const id = discoverPlannedEpicId(
+    { owner: 'o', repo: 'r', sinceIso: '2026-06-16T20:00:00.000Z' },
+    { ghJson },
+  );
+  assert.equal(id, 12);
+  // Queried the epic label on the right repo.
+  assert.ok(calls[0].includes('type::epic'));
+  assert.ok(calls[0].includes('o/r'));
+});
+
+test('discoverPlannedEpicId: returns null when no epic matches / gh errors', () => {
+  assert.equal(
+    discoverPlannedEpicId(
+      { owner: 'o', repo: 'r', sinceIso: '2026-06-16T20:00:00.000Z' },
+      { ghJson: () => [] },
+    ),
+    null,
+  );
+  assert.equal(
+    discoverPlannedEpicId(
+      { owner: 'o', repo: 'r', sinceIso: '2026-06-16T20:00:00.000Z' },
+      {
+        ghJson: () => {
+          throw new Error('gh down');
+        },
+      },
+    ),
+    null,
+  );
+});
+
+test('snapshotPlanArtifacts (epic routing): writes the Epic body, child Story bodies, and a manifest', () => {
+  const writes = [];
+  const ghJson = (args) => {
+    const key = `${args[0]} ${args[1]}`;
+    if (key === 'issue view') {
+      return {
+        number: Number(args[2]),
+        title: 'E',
+        body: 'epic body + tech spec',
+        labels: [],
+      };
+    }
+    if (key === 'issue list') {
+      return [
+        {
+          number: 200,
+          title: 'S1',
+          body: 'acceptance[]/verify[]',
+          createdAt: '2026-06-16T20:00:02.000Z',
+        },
+        {
+          number: 5,
+          title: 'old',
+          body: 'stale',
+          createdAt: '2026-06-16T19:00:00.000Z',
+        }, // before start — excluded
+      ];
+    }
+    return [];
+  };
+  const out = snapshotPlanArtifacts(
+    {
+      owner: 'o',
+      repo: 'r',
+      routing: 'epic',
+      epicId: 123,
+      planDir: '/results/.raw/story-scope-mandrel-r1/plan',
+      sinceIso: '2026-06-16T20:00:00.000Z',
+      capturedAt: '2026-06-16T20:00:00.000Z',
+    },
+    {
+      ghJson,
+      mkdirImpl: () => {},
+      writeFileImpl: (p, data) => writes.push({ p, data }),
+    },
+  );
+  const names = writes.map((w) => path.basename(w.p));
+  assert.ok(names.includes('epic-123.json'));
+  assert.ok(names.includes('story-200.json'));
+  assert.ok(names.includes('manifest.json'));
+  // The stale (pre-start) Story is excluded from the snapshot.
+  assert.ok(!names.includes('story-5.json'));
+  const manifest = JSON.parse(
+    writes.find((w) => w.p.endsWith('manifest.json')).data,
+  );
+  assert.equal(manifest.routing, 'epic');
+  assert.equal(manifest.epicId, 123);
+  assert.deepEqual(manifest.storyNumbers, [200]);
+  assert.equal(out.manifest.epicId, 123);
+});
+
+test('snapshotPlanArtifacts (story routing): writes the standalone Story body + a manifest', () => {
+  const writes = [];
+  const ghJson = (args) => {
+    if (`${args[0]} ${args[1]}` === 'issue view') {
+      return {
+        number: Number(args[2]),
+        title: 'Standalone',
+        body: 'story body',
+        labels: [],
+      };
+    }
+    return [];
+  };
+  snapshotPlanArtifacts(
+    {
+      owner: 'o',
+      repo: 'r',
+      routing: 'story',
+      storyNumber: 456,
+      planDir: '/results/.raw/story-scope-mandrel-r1/plan',
+      sinceIso: '2026-06-16T20:00:00.000Z',
+    },
+    {
+      ghJson,
+      mkdirImpl: () => {},
+      writeFileImpl: (p, data) => writes.push({ p, data }),
+    },
+  );
+  const names = writes.map((w) => path.basename(w.p));
+  assert.deepEqual(names.sort(), ['manifest.json', 'story-456.json']);
+  const manifest = JSON.parse(
+    writes.find((w) => w.p.endsWith('manifest.json')).data,
+  );
+  assert.equal(manifest.routing, 'story');
+  assert.equal(manifest.storyNumber, 456);
+});
+
+test('runOneRun (mandrel): threads session.phases onto the scorecard AND runs the between-session id-discovery + snapshot', async () => {
+  const record = freshRecord({ betweenResults: [] });
+  const deps = benchDeps(record);
+
+  // A scenario that routes epic but carries NO seed Epic id ⇒ the plan-phase
+  // hook must DISCOVER the id created in-session.
+  const { evaluate } = await loadScenarioFake();
+  const scenario = { ...FAKE_SCENARIO, routing: 'epic' };
+  delete scenario.epicId;
+
+  // gh stub answering the plan-phase discovery + snapshot reads.
+  deps.ghJson = (args) => {
+    const key = `${args[0]} ${args[1]}`;
+    const labelIdx = args.indexOf('--label');
+    const label = labelIdx >= 0 ? args[labelIdx + 1] : '';
+    if (key === 'issue list' && label === 'type::epic') {
+      return [{ number: 321, createdAt: '2026-06-16T20:00:01.000Z' }];
+    }
+    if (key === 'issue list' && label === 'type::story') {
+      return [
+        {
+          number: 400,
+          title: 'S',
+          body: 'b',
+          createdAt: '2026-06-16T20:00:02.000Z',
+        },
+      ];
+    }
+    if (key === 'issue view') {
+      return { number: Number(args[2]), title: 'T', body: 'B', labels: [] };
+    }
+    return [];
+  };
+
+  // The stubbed session runs the injected betweenPhases hook (as the real
+  // runSession does) and returns a phases split summing to the run envelope.
+  deps.runSessionFn = (o, d) => {
+    let between = {};
+    if (typeof d.betweenPhases === 'function') {
+      between = d.betweenPhases({
+        scenario: o.scenario,
+        planEnvelope: fakeEnvelope(),
+        cwd: o.cwd,
+      });
+      record.betweenResults.push(between);
+    }
+    return {
+      arm: o.arm,
+      scenarioId: o.scenario.id,
+      model: o.model,
+      prompt: 'p',
+      status: 0,
+      envelope: fakeEnvelope(), // cost 0.42, totalTokens 12000
+      phases:
+        o.arm === 'mandrel'
+          ? [
+              { phase: 'plan', costUsd: 0.21, tokens: 6000, wallClockMs: 1000 },
+              {
+                phase: 'deliver',
+                costUsd: 0.21,
+                tokens: 6000,
+                wallClockMs: 2000,
+              },
+            ]
+          : null,
+    };
+  };
+
+  const scorecard = await runOneRun(
+    {
+      scenario,
+      evaluate,
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'https://github.com/dsj1984/bench-sbx-abc.git',
+        owner: 'dsj1984',
+        repo: 'bench-sbx-abc',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  // The record is schema-valid WITH the phases block.
+  assert.ok(
+    validateScorecard(scorecard),
+    JSON.stringify(validateScorecard.errors),
+  );
+  assert.ok(Array.isArray(scorecard.phases));
+  assert.deepEqual(
+    scorecard.phases.map((p) => p.phase),
+    ['plan', 'deliver'],
+  );
+  // Sum-invariant against the run efficiency totals.
+  const sumCost = scorecard.phases.reduce((a, p) => a + p.costUsd, 0);
+  const sumTokens = scorecard.phases.reduce((a, p) => a + p.tokens, 0);
+  assert.ok(Math.abs(sumCost - scorecard.dimensions.efficiency.costUsd) < 1e-9);
+  assert.equal(sumTokens, scorecard.dimensions.efficiency.totalTokens);
+
+  // The hook discovered the in-session Epic id (321) and threaded it as the
+  // deliver target.
+  assert.equal(record.betweenResults.length, 1);
+  assert.equal(record.betweenResults[0].deliverTarget, 321);
+
+  // The plan snapshot landed under this cell's .raw/<stamp>/plan/ dir.
+  const planWrites = record.writes.filter((w) =>
+    w.p.includes(path.join('.raw', 'hello-world-mandrel-r1', 'plan')),
+  );
+  const names = planWrites.map((w) => path.basename(w.p));
+  assert.ok(names.includes('epic-321.json'));
+  assert.ok(names.includes('story-400.json'));
+  assert.ok(names.includes('manifest.json'));
+});
+
+test('runOneRun (control): carries no phases block', async () => {
+  const record = freshRecord({ betweenResults: [] });
+  const deps = benchDeps(record);
+  const { scenario, evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario,
+      evaluate,
+      arm: 'control',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'https://github.com/dsj1984/bench-sbx-abc.git',
+        owner: 'dsj1984',
+        repo: 'bench-sbx-abc',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+  assert.equal('phases' in scorecard, false);
 });

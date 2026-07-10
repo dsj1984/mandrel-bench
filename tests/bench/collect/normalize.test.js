@@ -442,6 +442,68 @@ describe('buildScorecard — control arm efficiency/overhead', () => {
   });
 });
 
+describe('buildScorecard — per-phase envelopes (D-019, Epic #86 Story #94)', () => {
+  it('attaches phases[] on the mandrel arm; per-phase cost/tokens SUM to the efficiency totals', () => {
+    // The run envelope is the SUM of the phase envelopes (aggregateEnvelopes),
+    // so the phases[] block sums to efficiency.costUsd / totalTokens.
+    const phases = [
+      { phase: 'plan', costUsd: 0.4, tokens: 40000, wallClockMs: 120000 },
+      { phase: 'deliver', costUsd: 1.1, tokens: 140000, wallClockMs: 480000 },
+    ];
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel', scenario: 'story-scope' }),
+      lifecycle: [],
+      envelope: {
+        usage: {
+          totalTokens: 180000,
+          inputTokens: 150000,
+          outputTokens: 30000,
+        },
+        cost: { totalUsd: 1.5 },
+        durationMs: 600000,
+      },
+      quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
+      phases,
+    });
+    assert.ok(Array.isArray(sc.phases));
+    assert.deepEqual(
+      sc.phases.map((p) => p.phase),
+      ['plan', 'deliver'],
+    );
+    // The binding sum-invariant (Story #94 AC4).
+    const sumCost = sc.phases.reduce((a, p) => a + p.costUsd, 0);
+    const sumTokens = sc.phases.reduce((a, p) => a + p.tokens, 0);
+    assert.equal(sumCost, sc.dimensions.efficiency.costUsd);
+    assert.equal(sumTokens, sc.dimensions.efficiency.totalTokens);
+  });
+
+  it('omits phases[] entirely for the control arm (single session)', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'control', scenario: 'story-scope' }),
+      lifecycle: [],
+      envelope: {
+        usage: { totalTokens: 100000, inputTokens: 80000, outputTokens: 20000 },
+        cost: { totalUsd: 0.5 },
+        durationMs: 300000,
+      },
+      quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
+      // Even if phases are (wrongly) supplied, a control record must not carry them.
+      phases: [{ phase: 'plan', costUsd: 0.5, tokens: 100000, wallClockMs: 1 }],
+    });
+    assert.equal('phases' in sc, false);
+  });
+
+  it('leaves phases[] off when none are supplied (a control record stays valid)', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.equal('phases' in sc, false);
+  });
+});
+
 describe('buildScorecard — standalone fallback (Story #48)', () => {
   it('measures planning + autonomy from standalone telemetry when no ledger exists', () => {
     const sc = buildScorecard({

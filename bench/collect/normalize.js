@@ -585,6 +585,16 @@ function resolveTokenSplit({
  *   `classes[]`); null/absent (or an empty `classes[]`) for every other
  *   scenario. Recorded under `scorecard.trap` as a SEPARATE differential
  *   signal — never folded into the seven composite dimensions.
+ * @param {Array<object>} [args.phases]    Per-phase session envelopes for the
+ *   mandrel arm's ordered two-session run (D-019, Epic #86 Story #94):
+ *   `[{ phase: 'plan'|'deliver', costUsd, tokens, wallClockMs }, …]`. Each
+ *   phase's own `claude -p` cost/tokens; the per-phase `costUsd`/`tokens` sum to
+ *   the record's `efficiency.costUsd`/`efficiency.totalTokens` by construction
+ *   (the run envelope is the sum of the phase envelopes — see
+ *   `aggregateEnvelopes` in bench/driver/run-session.js). Attached to the
+ *   scorecard as `phases[]` for the mandrel arm only; omitted entirely for the
+ *   control arm (single session) and when absent, so control records stay valid
+ *   without the block.
  * @param {object} [args.rawRefs]          Provenance breadcrumbs for `rawRefs`.
  * @param {object} [args.standalone]       Standalone-path telemetry (Story #48;
  *   phase-split added Epic #66 Story #77), present only when the mandrel arm
@@ -619,6 +629,7 @@ export function buildScorecard({
   maintainabilityInputs = {},
   securityInputs = {},
   trap = null,
+  phases = null,
   rawRefs,
   standalone = null,
   scenarioRouting = null,
@@ -840,6 +851,34 @@ export function buildScorecard({
       })),
       cleanRate: trap.cleanRate,
     };
+  }
+
+  // Per-phase session envelopes (D-019, Epic #86 Story #94). Mandrel-arm ONLY:
+  // the ordered /plan + /deliver sessions each carry their own cost/tokens/
+  // wall-clock, whose costUsd/tokens sum to this record's efficiency totals (the
+  // run envelope is their sum). The control arm is a single session, so it
+  // carries no `phases` block — and an absent/empty array leaves the block off
+  // entirely, keeping control records valid without it.
+  if (run.arm === 'mandrel' && Array.isArray(phases) && phases.length > 0) {
+    scorecard.phases = phases.map((p) => ({
+      phase: p.phase,
+      costUsd:
+        typeof p.costUsd === 'number' && Number.isFinite(p.costUsd)
+          ? p.costUsd
+          : null,
+      tokens:
+        typeof p.tokens === 'number' &&
+        Number.isFinite(p.tokens) &&
+        p.tokens >= 0
+          ? Math.trunc(p.tokens)
+          : 0,
+      wallClockMs:
+        typeof p.wallClockMs === 'number' &&
+        Number.isFinite(p.wallClockMs) &&
+        p.wallClockMs >= 0
+          ? p.wallClockMs
+          : 0,
+    }));
   }
 
   if (rawRefs && typeof rawRefs === 'object') {

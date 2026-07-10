@@ -616,6 +616,89 @@ export function autonomyGuardrailFindings(cells) {
   return findings;
 }
 
+/**
+ * Build the per-phase cost rows (D-019, Epic #86 Story #94): one row per
+ * scenario whose mandrel-arm records carry a `phases[]` block, with the mean
+ * `/plan` and `/deliver` USD cost across the cell's mandrel runs plus their
+ * total. The control arm never carries `phases`, so it contributes nothing —
+ * the per-phase cost view is mandrel-only by construction. Returns `[]` when no
+ * cell has any phase data (older corpora / control-only).
+ *
+ * @param {Array<object>} cells  `groupCells` entries.
+ * @returns {Array<{
+ *   scenario: string,
+ *   n: number,
+ *   planCostUsd: number|null,
+ *   deliverCostUsd: number|null,
+ *   totalCostUsd: number|null
+ * }>}
+ */
+export function phaseCostRows(cells) {
+  const mean = (arr) =>
+    arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+  const rows = [];
+  for (const cell of cells ?? []) {
+    const runs = cell.mandrelRuns ?? [];
+    const planVals = [];
+    const deliverVals = [];
+    for (const sc of runs) {
+      for (const ph of sc?.phases ?? []) {
+        if (typeof ph?.costUsd !== 'number' || !Number.isFinite(ph.costUsd)) {
+          continue;
+        }
+        if (ph.phase === 'plan') planVals.push(ph.costUsd);
+        else if (ph.phase === 'deliver') deliverVals.push(ph.costUsd);
+      }
+    }
+    if (planVals.length === 0 && deliverVals.length === 0) continue;
+    const planCostUsd = mean(planVals);
+    const deliverCostUsd = mean(deliverVals);
+    const totalCostUsd =
+      planCostUsd === null && deliverCostUsd === null
+        ? null
+        : (planCostUsd ?? 0) + (deliverCostUsd ?? 0);
+    rows.push({
+      scenario: cell.scenario,
+      n: runs.length,
+      planCostUsd,
+      deliverCostUsd,
+      totalCostUsd,
+    });
+  }
+  return rows;
+}
+
+/**
+ * Render the per-phase cost section (D-019): a mandrel-only table of `/plan` vs
+ * `/deliver` cost per scenario, so a reader sees which half of the pipeline the
+ * cost went to. Returns '' when no cell carries phase data (so control-only /
+ * legacy corpora render nothing).
+ *
+ * @param {Array<object>} cells
+ * @returns {string}
+ */
+export function renderPhaseCostSection(cells) {
+  const rows = phaseCostRows(cells);
+  if (rows.length === 0) return '';
+  const lines = [
+    '## Per-phase cost (mandrel arm)',
+    '',
+    'The mandrel arm runs `/plan` and `/deliver` as two separate headless',
+    'sessions (D-019), so cost is attributable to the planning half vs the',
+    'delivery half. Mean USD cost per phase across the cell’s mandrel runs; the',
+    'control arm is a single session and carries no per-phase split.',
+    '',
+    '| Scenario | n | Plan cost (USD) | Deliver cost (USD) | Total (USD) |',
+    '| --- | --- | --- | --- | --- |',
+  ];
+  for (const r of rows) {
+    lines.push(
+      `| \`${r.scenario}\` | ${r.n} | ${fmt(r.planCostUsd, 4)} | ${fmt(r.deliverCostUsd, 4)} | ${fmt(r.totalCostUsd, 4)} |`,
+    );
+  }
+  return lines.join('\n');
+}
+
 function renderScenarioSection(cell, diff, method) {
   const rows = dimensionRows(cell, diff, method);
   const routingNote = renderRoutingNote(cell.mandrelRuns);
@@ -891,6 +974,9 @@ export function renderReport({ scorecards, method = 'iqr' } = {}) {
 
   sections.push(renderAutonomyGuardrailSection(cells), '');
 
+  const phaseCostSection = renderPhaseCostSection(cells);
+  if (phaseCostSection) sections.push(phaseCostSection, '');
+
   sections.push(renderScalingView(cells, corpus, method), '');
 
   const findings = [
@@ -949,6 +1035,7 @@ export function buildReportModel({ scorecards, method = 'iqr' } = {}) {
     monotonicity: corpus.difficultyMonotonicity,
     overheadFloor: corpus.overheadFloor,
     autonomyGuardrail: autonomyGuardrailRows(cells),
+    phaseCost: phaseCostRows(cells),
     recommendations: [
       ...recommendImprovements(corpus),
       ...autonomyGuardrailFindings(cells),
