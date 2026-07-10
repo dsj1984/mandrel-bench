@@ -26,6 +26,7 @@ import {
   DEFAULT_BENCH_MODEL,
   parseSessionEnvelope,
   runSession,
+  trustWorkspaceForClaude,
 } from '../../../bench/driver/run-session.js';
 
 const SCENARIO = {
@@ -555,5 +556,103 @@ test('runSession: throws when the injected invoke returns unparseable stdout', (
         { invokeFn: invoke },
       ),
     /Failed to parse/,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// trustWorkspaceForClaude — pre-trust a throwaway workspace so headless
+// `claude -p` doesn't hard-exit on the workspace-trust gate. Fully mocked fs.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a mock fs deps bag over an in-memory file map, recording writes.
+ */
+function mockTrustDeps({
+  files = {},
+  configPath = '/home/u/.claude.json',
+} = {}) {
+  const store = { ...files };
+  const writes = [];
+  return {
+    configPath,
+    writes,
+    store,
+    deps: {
+      configPath,
+      existsSync: (p) => p in store,
+      readFileSync: (p) => {
+        if (!(p in store)) throw new Error(`ENOENT ${p}`);
+        return store[p];
+      },
+      writeFileSync: (p, data) => {
+        store[p] = data;
+        writes.push({ path: p, data });
+      },
+      renameSync: (from, to) => {
+        store[to] = store[from];
+        delete store[from];
+      },
+      realpathSync: (p) => p,
+    },
+  };
+}
+
+test('trustWorkspaceForClaude — skips a workspace with no .claude/settings.json', () => {
+  const m = mockTrustDeps();
+  const trusted = trustWorkspaceForClaude('/tmp/sbx1', m.deps);
+  assert.equal(trusted, false);
+  assert.equal(
+    m.writes.length,
+    0,
+    'must not touch ~/.claude.json for a bare dir',
+  );
+});
+
+test('trustWorkspaceForClaude — writes hasTrustDialogAccepted for the realpath', () => {
+  const m = mockTrustDeps({
+    files: {
+      '/tmp/sbx2/.claude/settings.json': '{"permissions":{"allow":["Bash"]}}',
+      '/home/u/.claude.json': JSON.stringify({ projects: { '/other': {} } }),
+    },
+  });
+  const trusted = trustWorkspaceForClaude('/tmp/sbx2', m.deps);
+  assert.equal(trusted, true);
+  const config = JSON.parse(m.store['/home/u/.claude.json']);
+  assert.equal(config.projects['/tmp/sbx2'].hasTrustDialogAccepted, true);
+  // Existing entries are preserved.
+  assert.ok('/other' in config.projects);
+});
+
+test('trustWorkspaceForClaude — idempotent when already trusted (no write)', () => {
+  const m = mockTrustDeps({
+    files: {
+      '/tmp/sbx3/.claude/settings.json': '{"permissions":{"allow":["Bash"]}}',
+      '/home/u/.claude.json': JSON.stringify({
+        projects: { '/tmp/sbx3': { hasTrustDialogAccepted: true } },
+      }),
+    },
+  });
+  const trusted = trustWorkspaceForClaude('/tmp/sbx3', m.deps);
+  assert.equal(trusted, true);
+  assert.equal(
+    m.writes.length,
+    0,
+    'already-trusted must not rewrite the config',
+  );
+});
+
+test('trustWorkspaceForClaude — refuses to clobber an unparseable config', () => {
+  const m = mockTrustDeps({
+    files: {
+      '/tmp/sbx4/.claude/settings.json': '{"permissions":{"allow":["Bash"]}}',
+      '/home/u/.claude.json': '{ this is not json',
+    },
+  });
+  const trusted = trustWorkspaceForClaude('/tmp/sbx4', m.deps);
+  assert.equal(trusted, false);
+  assert.equal(
+    m.writes.length,
+    0,
+    'a corrupt/concurrent config must never be overwritten',
   );
 });
