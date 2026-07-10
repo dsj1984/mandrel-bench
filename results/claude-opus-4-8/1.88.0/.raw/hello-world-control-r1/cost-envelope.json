@@ -1,0 +1,72 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "api_error_status": null,
+  "duration_ms": 25405,
+  "duration_api_ms": 25089,
+  "ttft_ms": 2360,
+  "ttft_stream_ms": 1810,
+  "time_to_request_ms": 154,
+  "num_turns": 6,
+  "result": "Done. Built and committed a minimal HTTP server.\n\n- **`server.js`** — ESM, uses only Node's built-in `node:http`. Listens on `PORT` (default 3000). `GET /` returns HTTP 200 with `Content-Type: text/html` and body `Hello, World!`; other paths get 404.\n- **`package.json`** — added `\"start\": \"node server.js\"` to the existing scripts.\n\nVerified end-to-end with curl: status 200, correct content type, exact body. Committed as `795cf59`.",
+  "stop_reason": "end_turn",
+  "session_id": "e6c75cf4-7849-425e-bd91-7f008aad2c33",
+  "total_cost_usd": 0.238518,
+  "usage": {
+    "input_tokens": 5803,
+    "cache_creation_input_tokens": 10372,
+    "cache_read_input_tokens": 145056,
+    "output_tokens": 1301,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 10372,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 175,
+        "cache_read_input_tokens": 27819,
+        "cache_creation_input_tokens": 218,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 218
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 655,
+      "outputTokens": 15,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.00073,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 5803,
+      "outputTokens": 1301,
+      "cacheReadInputTokens": 145056,
+      "cacheCreationInputTokens": 10372,
+      "webSearchRequests": 0,
+      "costUSD": 0.23778800000000003,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "uuid": "adf446fd-422f-45e3-9b8b-3632974276c0"
+}

@@ -1,0 +1,7 @@
+{
+  // Generated benchmark reports are machine-emitted data artifacts, not
+  // authored prose — exempt them from markdownlint (both `npm run lint:md`
+  // and the lint-staged pre-commit hook read this `ignores`). Authored docs
+  // under results/ (e.g. results/README.md) stay linted.
+  "ignores": ["results/**/reports/**"]
+}
