@@ -151,6 +151,20 @@ describe('computePlanningFidelity', () => {
     approx(pf.score, (1 + 1 + 1 / 3) / 3);
   });
 
+  it('DROPS the footprint term when it is unmeasurable (no drift/paths) — not a fake perfect 1.0', () => {
+    // The Epic-routed shape: only story counts threaded, no footprint signal.
+    const pf = computePlanningFidelity({
+      arm: 'mandrel',
+      rePlanCount: 0, // rePlanPenalty = 1
+      plannedStoryCount: 4,
+      deliveredStoryCount: 5, // storyAccuracy = 1 - 1/5 = 0.8
+    });
+    assert.equal(pf.footprintDropped, true);
+    // Honest 2-way mean (0.8 + 1)/2 = 0.9 — NOT the inflated 3-way that would
+    // silently count an unmeasured footprint as perfect: (0.8 + 1 + 1)/3 ≈ 0.933.
+    approx(pf.score, (0.8 + 1) / 2);
+  });
+
   it('is null for the control arm (no plan authored)', () => {
     const pf = computePlanningFidelity({
       arm: 'control',

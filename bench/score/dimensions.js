@@ -220,6 +220,18 @@ export function computePlanningFidelity(input = {}) {
   const havePlannedPaths = Array.isArray(input.plannedPaths);
   const haveActualPaths = Array.isArray(input.actualPaths);
 
+  // The footprint term is MEASURABLE only when the caller threaded a real
+  // signal: an explicit scalar drift, or a plan/actual path set. With none of
+  // those — e.g. the Epic-routed path, which threads only story counts — the
+  // footprint cannot be measured, and must be DROPPED from the mean rather than
+  // silently defaulting to a perfect 1.0 (which would inflate planning fidelity
+  // on exactly the runs that decompose the most). This generalizes the same
+  // §8/D-018 honesty rule already applied to ≤1-file plans to "unmeasurable".
+  const footprintMeasurable =
+    typeof input.fileFootprintDrift === 'number' ||
+    havePlannedPaths ||
+    haveActualPaths;
+
   let drift;
   if (typeof input.fileFootprintDrift === 'number') {
     drift = clamp(finiteOr(input.fileFootprintDrift, 0));
@@ -247,7 +259,9 @@ export function computePlanningFidelity(input = {}) {
   } else if (haveActualPaths) {
     plannedFileCount = 0;
   }
-  const footprintDropped = plannedFileCount !== null && plannedFileCount <= 1;
+  const footprintDropped =
+    !footprintMeasurable ||
+    (plannedFileCount !== null && plannedFileCount <= 1);
 
   const planAuthored =
     typeof input.planAuthored === 'boolean'

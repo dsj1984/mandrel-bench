@@ -734,26 +734,12 @@ export function buildScorecard({
   // recovered standalone telemetry, so planning-fidelity, autonomy, and the
   // overhead split are all genuinely unmeasured — not silently defaulted.
   const telemetryAbsent = run.arm === 'mandrel' && !valueObserved;
-  // Loud null (§8, Epic #66 audit remediation M3): the Epic-ledger routing
-  // path (`planningInputs(lifecycle)` in bench/run.js) derives only
-  // `{ plannedStoryCount, deliveredStoryCount, rePlanCount }` — it never
-  // threads `plannedFileCount`/`plannedPaths`/`actualPaths`, so
-  // `computePlanningFidelity` has no plan-size signal for this cell and
-  // silently defaults `fileFootprintDrift` to 0 (`footprintAccuracy: 1`)
-  // rather than measuring or dropping the term. That is exactly the
-  // "unmeasured defaults to a misleadingly perfect score" shape §8 exists to
-  // avoid, but wiring real plan-vs-actual path sets through the Epic
-  // decomposition is a larger change than this remediation pass budgeted
-  // for. Until that lands, surface the gap explicitly via a warning marker
-  // instead of leaving it silent — an operator reading `footprintAccuracy: 1`
-  // on an Epic-routed cell should be able to see it was never measured.
-  const footprintUnmeasuredEpicRouted =
-    run.arm === 'mandrel' &&
-    ledgerObserved &&
-    typeof planningInput.fileFootprintDrift !== 'number' &&
-    !Array.isArray(planningInput.plannedPaths) &&
-    !Array.isArray(planningInput.actualPaths) &&
-    typeof planningInput.plannedFileCount !== 'number';
+  // Footprint on an Epic-routed run (which threads only story counts, no
+  // plan-vs-actual path set) is now DROPPED from the planning-fidelity mean by
+  // `computePlanningFidelity` rather than silently defaulting to a perfect 1.0.
+  // So the old `planning-footprint-unmeasured-epic-routed` loud-null is
+  // obsolete: `dimensions.planningFidelity.footprintDropped` is the honest,
+  // self-documenting marker that the term was excluded, not scored as flawless.
 
   // ---- Dimension math (delegated to the scorer) ------------------------
   const dimensions = computeDimensions({
@@ -822,9 +808,6 @@ export function buildScorecard({
     ...(dimensions.security.warnings ?? []),
     ...(dimensions.maintainability.warnings ?? []),
     ...(telemetryAbsent ? ['standalone-telemetry-absent'] : []),
-    ...(footprintUnmeasuredEpicRouted
-      ? ['planning-footprint-unmeasured-epic-routed']
-      : []),
   ];
 
   const scorecard = {
