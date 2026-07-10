@@ -570,3 +570,85 @@ aggregate job's derive step to the run-under-test cohort triple (so the loop
 survives once `main` holds more than one cohort), single-sourced the
 routing-mismatch threshold, and wrapped the filer's LIST call in the same
 graceful-degradation guard as its writes.
+
+## D-019 — Mandrel-arm runs split into phase-scoped `/plan` + `/deliver` sessions, with an intrinsic plan-quality axis for phase attribution (Epic #86, decided 2026-07-09)
+
+**Decision.** Implements [`target-architecture.md`](target-architecture.md) §3.4
+(and listed in §11). **Amends D-008**: a mandrel-arm run is no longer
+one opaque session but an **ordered set of phase-scoped sessions** whose cost is
+their sum. This lets the feedback loop (§7) route a finding to the half of
+Mandrel that owns it — `/plan` vs `/deliver` — rather than to "Mandrel" at large,
+which plan-adherence alone cannot do (it cannot tell a bad plan faithfully
+executed from a good plan botched in delivery).
+
+- **Two sessions per mandrel-arm run.** Session 1 runs `/plan` to completion,
+  session 2 runs `/deliver`. This is faithful to Mandrel's own design — state
+  lives in tickets, so a fresh `/deliver` session is the canonical consumer
+  experience, not an artificial split. Each session carries its own `claude -p`
+  envelope, giving **per-phase cost, tokens, and wall-clock** that sum to the
+  run totals (`scorecard.phases[]`). The control arm stays a single session and
+  carries no `phases` block.
+- **The plan snapshot.** Between the two sessions the harness snapshots the plan
+  artifacts (Epic body + tech-spec sections, Story bodies with their inline
+  `acceptance[]`/`verify[]`) into `.raw/<runId>/plan/`, so delivery can never
+  retroactively alter what the plan is scored on.
+- **Intrinsic plan quality (a mandrel-only axis, like planning fidelity).** The
+  snapshot is scored against the scenario's frozen spec BEFORE any code exists:
+  **coverage** (every frozen acceptance criterion traceable to a Story AC),
+  **decomposition sanity** (story count/sizing vs the scenario's machine-readable
+  `storyCountContract`), and **constraint surfacing** (do the plan artifacts
+  carry the security-baseline obligations the scenario's traps probe?). Two-oracle
+  shape per D-007: a 0.7 deterministic spine + a 0.3 LLM-judge cross-check
+  (judge weight folds into the spine when the judge is null). It is DELIBERATELY
+  excluded from the Mandrel-vs-control differential — the control arm authors no
+  plan, so its plan-quality is null.
+- **Attribution decision table.** The plan score is crossed with the delivered
+  OUTCOME (frozen quality) and plan-adherence into one of four classes —
+  `working-as-intended`, `deliver-phase-gap`, `plan-phase-gap`,
+  `model-compensating` — and rendered as a mandrel-arm attribution table.
+  Crossing all three inputs is the Goodhart backstop: a plan that games the spine
+  cannot read as working-as-intended without a matching outcome.
+
+**Status.** Delivered (Epic #86 Phase 5). The Phase-5 audit-remediation pass
+wired the plan-quality axis end to end (it had been built + unit-tested but never
+populated on a real run): the between-session plan snapshot now flows into
+`scorecard.planQuality`, and `buildScorecard` stamps the attribution
+classification from the delivered dimensions.
+
+## D-020 — A second-touch evolution phase on rungs 2–3, with a continuity delta as the persistence measurement (Epic #86, decided 2026-07-09)
+
+**Decision.** Implements [`target-architecture.md`](target-architecture.md) §4.5
+(and listed in §11). One-shot greenfield delivery is where a frontier model needs
+scaffolding least, yet Mandrel's central thesis (docs, ADRs, tickets,
+decomposition discipline) is about making the **next** change cheaper and safer.
+No one-shot benchmark can observe that, so `story-scope` and `epic-scope` runs get
+a second, measured touch.
+
+- **Mechanics.** After touch 1 is scored, a **fresh session** (no conversational
+  carry-over) receives the scenario's frozen **change request** against the
+  delivered tree. The mandrel arm inherits everything its pipeline produced (code,
+  docs, tickets, `.agents/`); the control arm is reduced to exactly the code it
+  delivered. Same arm, same model, new session — the inheritance *is* the
+  treatment.
+- **Change requests are part of the frozen scenario spec**, versioned with it and
+  crossing a trap surface — story-scope: password change + session invalidation
+  (must preserve hashing, must actually invalidate the pre-change session);
+  epic-scope: project sharing with role-based access (must extend per-user
+  isolation to roles, not bypass it).
+- **Scoring.** Touch 2 carries the full dimension set, its own frozen behavioural
+  suite, and phase-scoped **regression traps** (`traps-touch2/`, discovered
+  separately from the touch-1 `traps/` scan), reported under `scorecard.touch2`
+  apart from touch 1. The headline is the **continuity delta**: mandrel touch-2
+  outcome/cost minus control touch-2 outcome/cost — the first measurement here
+  that can see the value of Mandrel's persistent artifacts. A mandrel touch-2 that
+  its inherited artifacts did NOT help surfaces as an `artifact-continuity-gap`
+  (`phase::artifacts`) finding — ceremony paid in touch 1 that did not pay out in
+  touch 2.
+- `hello-world` is exempt (instrumentation rung). Touch 2 roughly doubles rung 2–3
+  cell cost; that is the price of measuring the actual thesis, and that spend is
+  counted against the run's cost ceiling.
+
+**Status.** Delivered (Epic #86 Phase 5). The Phase-5 audit-remediation pass
+folded the touch-2 session spend into the `BENCH_MAX_COST_USD` accumulators
+(previously only touch-1 counted), added discrimination tests for the touch-2
+acceptance oracles, and cleaned up the control arm's reduced touch-2 workspace.

@@ -106,11 +106,21 @@ For each `(scenario × arm × run)`:
    `.agents/` stripped so the bare model gets no scaffolding. Crash-leaked
    repos are swept by a `bench-sbx-` prefix + TTL janitor
    (`bench/driver/janitor.js`) at the start of every invocation.
-2. **Run** a headless Claude Code session (`bench/driver/run-session.js` →
-   `claude -p --output-format json`). The **mandrel arm** drives `/plan` then
-   `/deliver` (real authoring — never pre-staged plans); the **control arm**
-   gets the bare task. The JSON envelope yields the real usage/cost actuals —
-   the *only* cost source, measured identically for both arms.
+2. **Run** headless Claude Code sessions (`bench/driver/run-session.js` →
+   `claude -p --output-format json`). The **mandrel arm** runs as **two
+   phase-scoped sessions** (D-019) — session 1 `/plan`, session 2 `/deliver`
+   (real authoring — never pre-staged plans) — each with its own cost envelope,
+   so the per-phase envelopes sum to the run total. Between the two sessions the
+   harness snapshots the authored plan and scores it as an intrinsic,
+   mandrel-only **plan-quality** axis (coverage, decomposition sanity,
+   constraint surfacing), which the report crosses with the delivered outcome to
+   attribute a result to the plan phase vs the deliver phase. The **control
+   arm** is a single session that gets the bare task. The JSON envelope(s) yield
+   the real usage/cost actuals — the *only* cost source, measured identically
+   for both arms. On rungs 2–3 a **second touch** — the scenario's frozen change
+   request, run as a fresh session against the delivered tree — then runs,
+   roughly doubling the cell's cost; its session spend counts against the cost
+   ceiling too.
 3. **Collect** (`bench/collect/normalize.js`) the run's lifecycle telemetry
    (`temp/epic-<id>/lifecycle.ndjson` + per-Story `signals.ndjson`, written by
    `/deliver`) plus the cost envelope into one per-run record conforming to

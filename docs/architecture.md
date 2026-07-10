@@ -20,8 +20,13 @@ The dependency is **one-directional**: `mandrel-bench` depends on `mandrel`;
 
 ## 2. Run model
 
-The unit of work is one **run** = one headless Claude Code session driving one
-**arm** over one **scenario**. For each `(scenario × arm × run)`:
+The unit of work is one **run** = one **arm** driven over one **scenario**. The
+**control** arm is a single headless Claude Code session; the **mandrel** arm is
+an *ordered set of two phase-scoped sessions* (`/plan`, then `/deliver`) whose
+per-phase cost envelopes sum to the run total (D-019). On rungs 2–3 both arms
+then take a **second touch** — a fresh session running the scenario's frozen
+change request against the delivered tree (D-020). For each `(scenario × arm ×
+run)`:
 
 ```text
 provision → run → collect → score → report → teardown
@@ -38,10 +43,14 @@ provision → run → collect → score → report → teardown
    scaffolding.
 2. **run** (`bench/driver/run-session.js`) — shell out to
    `claude -p --output-format json` (injectable `invokeFn` for tests). The
-   **mandrel** arm prompt drives `/plan` then `/deliver` (real authoring — never
-   pre-staged) with an unattended auto-proceed preamble; the **control** arm
-   gets the bare task. The JSON result envelope carries the real
-   `usage`/`total_cost_usd` actuals.
+   **mandrel** arm runs as **two phase-scoped sessions** (D-019): session 1
+   drives `/plan`, session 2 drives `/deliver` (real authoring — never
+   pre-staged) with an unattended auto-proceed preamble, each carrying its own
+   cost envelope. Between them the harness snapshots the authored plan (Epic +
+   Story bodies) to `.raw/<runId>/plan/` and scores it as an intrinsic,
+   mandrel-only **plan-quality** axis for plan-vs-deliver attribution. The
+   **control** arm is a single session that gets the bare task. Each JSON result
+   envelope carries the real `usage`/`total_cost_usd` actuals.
 3. **collect** (`bench/collect/normalize.js`) — read the run's lifecycle
    telemetry (`temp/epic-<id>/lifecycle.ndjson` + per-Story `signals.ndjson`,
    written by `/deliver`) plus the `claude -p` cost envelope into a single
@@ -110,6 +119,20 @@ its own section (per-class scores + `cleanRate`, mean/spread/min per arm) in
 both the Markdown report and the dashboard. See `bench/metrics/README.md`
 § "Trap axis" and [`data-dictionary.md`](data-dictionary.md) for the field
 shape.
+
+**Phase-scoped signals are separate top-level blocks too (Epic #86), never
+folded into the dimensions above.** The mandrel arm's two-session split
+(D-019) surfaces **per-phase cost envelopes** (`phases[]`, one per `/plan` /
+`/deliver` session, summing to `dimensions.efficiency`) and an intrinsic,
+mandrel-only **plan-quality** axis (`planQuality`, coverage + decomposition
+sanity + constraint surfacing) whose `attribution` block crosses the plan score
+with the delivered outcome to attribute a result to the plan phase vs the
+deliver phase. The second touch (D-020) records its continuity outcome/cost as
+`touch2`, and the headline **continuity delta** (mandrel touch-2 outcome/cost −
+control) is derived downstream by `bench/score/differential.js`. Like the trap
+axis, all three are mandrel-relevant blocks reported apart from the composite
+dimensions — see [`data-dictionary.md`](data-dictionary.md) for the
+`phases[]` / `planQuality` / `touch2` field shapes.
 
 **Routing contract enforcement (Epic #66, Story #76).** Each scenario
 declares a `routing` contract (`"story"` or `"epic"`); a mandrel-arm record
