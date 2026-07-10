@@ -11,8 +11,8 @@
   "scripts": {
     "test": "node --test \"tests/bench/**/*.test.js\"",
     "typecheck": "echo 'no-op: plain ESM JavaScript repo, no TypeScript — lint + test are the real gates (see .github/workflows/ci.yml)'",
-    "bench": "node bench/run.js",
-    "janitor": "node bench/driver/janitor.js",
+    "bench": "node --env-file-if-exists=.env bench/run.js",
+    "janitor": "node --env-file-if-exists=.env bench/driver/janitor.js",
     "lint": "biome ci . && npm run lint:md",
     "lint:md": "markdownlint-cli2 \"**/*.md\" \"!node_modules/**\" \"!.agents/**\" \"!**/CHANGELOG.md\" \"!temp/**\"",
     "format": "biome format --write .",
