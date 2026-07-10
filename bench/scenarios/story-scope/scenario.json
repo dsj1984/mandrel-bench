@@ -29,5 +29,11 @@
     "defaultPort": 3000,
     "portEnvVar": "PORT"
   },
-  "acceptanceSuite": "./acceptance.test.js"
+  "acceptanceSuite": "./acceptance.test.js",
+  "changeRequest": {
+    "id": "password-change",
+    "title": "Let a signed-in user change their password",
+    "prompt": "Add a way for a signed-in user to change their password. Expose POST /password: it reads the caller's session identifier from the Authorization header as a bearer credential and accepts a JSON body {\"newPassword\": string} (a non-empty string); on success it updates the stored password and returns 200. A missing or invalid credential returns 401, and an empty or missing newPassword returns 400. Changing the password must take effect immediately: after a successful change, any session identifiers issued before the change must stop working — a request presenting an old session identifier must be rejected as unauthenticated — and the user must be able to sign in again with the new password (and no longer with the old one).",
+    "acceptanceSuite": "./acceptance.touch2.test.js"
+  }
 }

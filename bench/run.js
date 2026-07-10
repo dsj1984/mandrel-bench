@@ -92,7 +92,10 @@ import {
   defaultGhJson,
   discoverStandaloneStory,
 } from './scenarios/standalone-telemetry-adapter.js';
-import { runTrapOracles as defaultRunTrapOracles } from './scenarios/trap-runner.js';
+import {
+  runTrapOracles as defaultRunTrapOracles,
+  TOUCH2_TRAPS_SUBDIR,
+} from './scenarios/trap-runner.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -753,11 +756,18 @@ export function appendCheckpoint({ checkpointPath, cell }, deps = {}) {
  * tree for planted defects. A scenario with no `traps/` directory is scored
  * exactly as before (the runner yields an empty `classes[]`).
  *
+ * When the scenario declares a frozen `changeRequest` (Epic #86, Story #96 —
+ * the "second touch"), its own frozen behavioural suite
+ * (`changeRequest.acceptanceSuite`, default `./acceptance.touch2.test.js`) is
+ * resolved too and returned as `touch2Evaluate`. A scenario with no
+ * `changeRequest` (e.g. hello-world) resolves `touch2Evaluate` to `null`, and
+ * the driver skips touch 2 for it.
+ *
  * @param {string} scenarioId
  * @param {object} [deps]
  * @param {(p: string, enc: string) => string} [deps.readFileImpl]
  * @param {(spec: string) => Promise<object>} [deps.importImpl]
- * @returns {Promise<{ scenario: object, evaluate: Function, scenarioDir: string }>}
+ * @returns {Promise<{ scenario: object, evaluate: Function, scenarioDir: string, touch2Evaluate: Function|null }>}
  */
 export async function loadScenario(scenarioId, deps = {}) {
   const read = deps.readFileImpl ?? readFileSync;
@@ -766,7 +776,337 @@ export async function loadScenario(scenarioId, deps = {}) {
   const scenario = JSON.parse(read(path.join(dir, 'scenario.json'), 'utf8'));
   const suiteRel = scenario.acceptanceSuite ?? './acceptance.test.js';
   const mod = await importImpl(path.join(dir, suiteRel));
-  return { scenario, evaluate: mod.evaluate, scenarioDir: dir };
+  let touch2Evaluate = null;
+  if (scenario.changeRequest && typeof scenario.changeRequest === 'object') {
+    const touch2Rel =
+      scenario.changeRequest.acceptanceSuite ?? './acceptance.touch2.test.js';
+    const touch2Mod = await importImpl(path.join(dir, touch2Rel));
+    touch2Evaluate = touch2Mod.evaluate;
+  }
+  return { scenario, evaluate: mod.evaluate, scenarioDir: dir, touch2Evaluate };
+}
+
+// ---------------------------------------------------------------------------
+// The second touch (Epic #86, Story #96): after touch 1 is scored, the driver
+// runs the scenario's frozen CHANGE REQUEST as a FRESH session against the
+// delivered tree, with arm-appropriate inheritance, then scores it with the
+// full dimension set + the frozen touch-2 behavioural suite + the phase-scoped
+// regression oracles. The continuity delta (mandrel touch-2 outcome/cost −
+// control touch-2 outcome/cost) is the actual persistence-thesis measurement.
+// ---------------------------------------------------------------------------
+
+/**
+ * Prepare the workspace the touch-2 session runs against, with
+ * ARM-APPROPRIATE inheritance (Epic #86 pre-mortem, F2 point 3):
+ *
+ * - **mandrel** keeps its FULL pipeline output — the delivered tree with the
+ *   `.agents` overlay and the tickets/plan state intact — so the second touch
+ *   inherits everything Mandrel produced on the first. The touch-2 session
+ *   runs in the SAME workspace directory (no copy).
+ * - **control** is reduced to DELIVERED CODE ONLY — a fresh copy of the
+ *   workspace with any framework/session artifacts (dot-dirs such as `.git` /
+ *   `.agents` / `.claude`, and the `CLAUDE.md` overlay file) stripped — so it
+ *   inherits nothing but the code it shipped, exactly the asymmetry the
+ *   persistence thesis is testing.
+ *
+ * Every filesystem effect is injectable so the unit suite exercises the seam
+ * without touching disk.
+ *
+ * @param {object} args
+ * @param {'mandrel'|'control'} args.arm
+ * @param {string} args.workspacePath  The touch-1 delivered workspace.
+ * @param {object} [deps]
+ * @param {(src: string, dest: string, opts: object) => void} [deps.cpFn]
+ * @param {(p: string, opts?: object) => void} [deps.mkdirFn]
+ * @returns {{ touch2Cwd: string, inheritance: 'full-pipeline'|'delivered-code-only' }}
+ */
+export function prepareTouch2Workspace({ arm, workspacePath }, deps = {}) {
+  if (arm === 'mandrel') {
+    // Full pipeline output travels forward untouched.
+    return { touch2Cwd: workspacePath, inheritance: 'full-pipeline' };
+  }
+  // Control: reduce to delivered code only in a fresh sibling directory.
+  const cp = deps.cpFn ?? cpSync;
+  const mkdir = deps.mkdirFn ?? ((p) => mkdirSync(p, { recursive: true }));
+  const reducedDir = `${workspacePath}--touch2-delivered`;
+  mkdir(reducedDir);
+  // Skip framework/session artifacts so the control arm inherits ONLY the code
+  // it delivered — the same skip set the trap-oracle scanner uses (dot-dirs are
+  // the overlaid framework tree; CLAUDE.md is the overlay file artifact).
+  const STRIP = new Set(['.git', '.agents', '.claude', 'CLAUDE.md']);
+  cp(workspacePath, reducedDir, {
+    recursive: true,
+    filter: (src) => !STRIP.has(path.basename(src)),
+  });
+  return { touch2Cwd: reducedDir, inheritance: 'delivered-code-only' };
+}
+
+/**
+ * Run the scenario's frozen change request as the SECOND TOUCH against the
+ * touch-1 delivered tree, and score it with the full dimension set, its own
+ * frozen behavioural suite, and the phase-scoped (`traps-touch2/`) regression
+ * oracles. Returns the compact `touch2` scorecard block (or `null` when the
+ * scenario declares no change request / no touch-2 suite is available).
+ *
+ * The regression scan is run with `trapsSubdir: TOUCH2_TRAPS_SUBDIR` so it
+ * discovers ONLY `traps-touch2/` — the touch-1 `traps/` scan is untouched, and
+ * this scan never sees the touch-1 oracles.
+ *
+ * Every real effect (session, app boot, git, collectors, judge, trap-runner)
+ * is injected via the same `deps` shape `runOneRun` uses, so the whole touch-2
+ * path is unit-proven with fixtures and no live process.
+ *
+ * @param {object} opts
+ * @param {object} opts.scenario
+ * @param {Function} opts.touch2Evaluate  The frozen touch-2 oracle's `evaluate`.
+ * @param {string|null} opts.scenarioDir
+ * @param {'mandrel'|'control'} opts.arm
+ * @param {number} opts.runIndex
+ * @param {string} opts.model
+ * @param {object} opts.sandbox
+ * @param {{ workspacePath: string }} opts.handle
+ * @param {string} opts.frameworkVersion
+ * @param {string} opts.benchmarkVersion
+ * @param {{ node: string, os: string, host?: string }} opts.env
+ * @param {number} opts.timeoutMs
+ * @param {object} [deps]
+ * @returns {Promise<object|null>} the `touch2` scorecard block, or null.
+ */
+export async function runTouch2(opts, deps = {}) {
+  const {
+    scenario,
+    touch2Evaluate,
+    scenarioDir = null,
+    arm,
+    runIndex,
+    model = DEFAULT_BENCH_MODEL,
+    sandbox,
+    handle,
+    frameworkVersion,
+    benchmarkVersion,
+    env,
+    timeoutMs = DEFAULT_SESSION_TIMEOUT_MS,
+  } = opts;
+
+  if (
+    !scenario?.changeRequest ||
+    typeof scenario.changeRequest !== 'object' ||
+    typeof touch2Evaluate !== 'function'
+  ) {
+    // No frozen change request declared (e.g. hello-world) — skip touch 2.
+    return null;
+  }
+
+  const logger = deps.logger;
+  const prepareWorkspace =
+    deps.prepareTouch2WorkspaceFn ?? prepareTouch2Workspace;
+  const runSessionFn = deps.runSessionFn ?? defaultRunSession;
+  const withRunningAppFn = deps.withRunningAppFn ?? defaultWithRunningApp;
+  const scoreQualityFn =
+    deps.scoreScenarioQualityFn ?? defaultScoreScenarioQuality;
+  const collectMaintainabilityFn =
+    deps.collectMaintainabilityFn ?? defaultCollectMaintainabilitySignals;
+  const collectSecurityFn =
+    deps.collectSecurityFn ?? defaultCollectSecuritySignals;
+  const runDimensionJudgeFn =
+    deps.runDimensionJudgeFn ?? defaultRunDimensionJudge;
+  const runTrapOraclesFn = deps.runTrapOraclesFn ?? defaultRunTrapOracles;
+  const gitFn =
+    deps.gitFn ??
+    ((args, cwd) =>
+      execFileSync('git', args, { cwd, stdio: 'pipe', encoding: 'utf8' }));
+  const nowIso = deps.nowFn ?? (() => new Date().toISOString());
+
+  // Prepare the arm-appropriate touch-2 workspace.
+  const { touch2Cwd, inheritance } = prepareWorkspace(
+    { arm, workspacePath: handle.workspacePath },
+    { cpFn: deps.cpFn, mkdirFn: deps.mkdirFn },
+  );
+
+  // A fresh session drives the CHANGE REQUEST. The bridged scenario carries the
+  // change-request prompt as its task; no `epicId` is threaded (the second
+  // touch discovers/authors its own plan in-session for the mandrel arm).
+  const bridged = {
+    id: scenario.id,
+    taskPrompt: scenario.changeRequest.prompt,
+  };
+  const extraArgs = [...SESSION_EXTRA_ARGS];
+  const session = runSessionFn(
+    {
+      arm,
+      scenario: bridged,
+      cwd: touch2Cwd,
+      model,
+      extraArgs,
+      timeoutMs,
+    },
+    { invokeFn: deps.invokeFn, logger },
+  );
+
+  // Materialize the delivered second-touch code. The mandrel arm's clean
+  // /deliver auto-merged onto the sandbox default branch, so pull it into the
+  // touch-2 workspace; the control arm committed directly in `touch2Cwd`.
+  if (arm === 'mandrel') {
+    try {
+      gitFn(['fetch', 'origin', 'main'], touch2Cwd);
+      gitFn(['checkout', 'main'], touch2Cwd);
+      gitFn(['reset', '--hard', 'origin/main'], touch2Cwd);
+    } catch (err) {
+      logger?.warn?.(
+        `[run] touch2: could not materialize merged code (run may have blocked): ${err?.message ?? err}`,
+      );
+    }
+  }
+
+  // Score touch-2 Quality by booting the delivered app and driving the frozen
+  // touch-2 behavioural suite (session invalidation / role-based access are
+  // asserted HERE, behaviourally — never by a source-scan oracle).
+  const quality = await withRunningAppFn(
+    { workspacePath: touch2Cwd, app: scenario.app },
+    async (baseUrl) => {
+      if (arm === 'mandrel') {
+        const r = await scoreQualityFn({
+          evaluate: touch2Evaluate,
+          baseUrl,
+          storyId: 1,
+          epicId: null,
+          transport: 'in-process',
+        });
+        return qualityInputs({
+          frozen: r.frozen,
+          crossCheckDecision: r.crossCheck?.decision ?? null,
+        });
+      }
+      const frozen = await touch2Evaluate(baseUrl);
+      return qualityInputs({ frozen, crossCheckDecision: null });
+    },
+    deps.appRunnerDeps,
+  );
+
+  // Full dimension set: collect maintainability + security over the delivered
+  // touch-2 tree (best-effort, same as touch 1).
+  let maintainabilitySignals = {};
+  try {
+    maintainabilitySignals = collectMaintainabilityFn(
+      touch2Cwd,
+      deps.collectMaintainabilityPorts,
+    );
+  } catch (err) {
+    logger?.warn?.(
+      `[run] touch2: maintainability collector failed (scoring 0): ${err?.message ?? err}`,
+    );
+  }
+  let securitySignals = {};
+  try {
+    securitySignals = collectSecurityFn(touch2Cwd, deps.collectSecurityPorts);
+  } catch (err) {
+    logger?.warn?.(
+      `[run] touch2: security collector failed (scoring 0): ${err?.message ?? err}`,
+    );
+  }
+
+  // Phase-scoped regression oracles: source-scan the touch-2 tree ONLY under
+  // traps-touch2/. Best-effort: a runner error leaves the regression block off.
+  let regression = null;
+  if (typeof scenarioDir === 'string' && scenarioDir.length > 0) {
+    try {
+      const verdict = await runTrapOraclesFn(
+        {
+          scenarioDir,
+          deliveredTreePath: touch2Cwd,
+          trapsSubdir: TOUCH2_TRAPS_SUBDIR,
+        },
+        deps.trapRunnerDeps,
+      );
+      if (verdict.classes.length > 0) regression = verdict;
+    } catch (err) {
+      logger?.warn?.(
+        `[run] touch2: regression trap-runner failed (no regression signal recorded): ${err?.message ?? err}`,
+      );
+    }
+  }
+
+  let judgeScores = null;
+  try {
+    judgeScores = await runDimensionJudgeFn(
+      { maintainabilitySignals, securitySignals },
+      deps.dimensionJudgeDeps,
+    );
+  } catch (err) {
+    logger?.warn?.(
+      `[run] touch2: dimension judge failed (judge weight folded into spine): ${err?.message ?? err}`,
+    );
+  }
+
+  const maintainabilityInputs = {
+    objectiveMaintainabilityScore:
+      maintainabilitySignals.objectiveMaintainabilityScore ?? null,
+    maintainabilityJudgeScore: judgeScores?.maintainability ?? null,
+    lintWarnings: maintainabilitySignals.lintErrorCount ?? 0,
+    complexityScore: maintainabilitySignals.complexityScore ?? null,
+    maintainabilityIndex: null,
+  };
+  const securityInputs = derivedSecurityInputs(securitySignals, judgeScores);
+
+  // Build a full touch-2 sub-scorecard (the "full dimension set") and trim it
+  // to the compact continuity block. The touch-2 run carries its own identity
+  // stamp so its runId never collides with the touch-1 record.
+  const run = buildRunIdentity({
+    scenario: scenario.id,
+    arm,
+    runIndex,
+    timestamp: nowIso(),
+    modelId: resolveModelId(session.envelope, model),
+    frameworkVersion,
+    benchmarkVersion,
+    env,
+  });
+  const subCard = buildScorecard({
+    run: { ...run, runId: sanitizeRunId(`${run.runId}-touch2`) },
+    lifecycle: [],
+    signals: [],
+    envelope: session.envelope,
+    quality,
+    planning: {},
+    maintainabilityInputs,
+    securityInputs,
+    trap: null,
+    phases: null,
+    scenarioRouting:
+      typeof scenario?.routing === 'string' ? scenario.routing : null,
+  });
+
+  const outcome = subCard.dimensions.quality.score;
+  const cost = subCard.dimensions.efficiency.costUsd ?? null;
+  return {
+    changeRequestId:
+      typeof scenario.changeRequest.id === 'string'
+        ? scenario.changeRequest.id
+        : null,
+    inheritance,
+    outcome,
+    cost,
+    frozenSuitePassed: quality.frozenSuitePassed,
+    frozenSuiteTotal: quality.frozenSuiteTotal,
+    totalTokens: subCard.dimensions.efficiency.totalTokens,
+    wallClockMs: subCard.dimensions.efficiency.wallClockMs,
+    dimensions: subCard.dimensions,
+    ...(regression
+      ? {
+          regression: {
+            classes: regression.classes.map((entry) => ({
+              class: entry.class,
+              score: entry.score,
+              defectPresent: Boolean(entry.defectPresent),
+              ...(Array.isArray(entry.evidence)
+                ? { evidence: entry.evidence }
+                : {}),
+            })),
+            cleanRate: regression.cleanRate,
+          },
+        }
+      : {}),
+  };
 }
 
 /**
@@ -783,6 +1123,9 @@ export async function runOneRun(opts, deps = {}) {
     scenarioDir = null, // absolute path to bench/scenarios/<id> (Story #74);
     // threaded into the trap-runner so both arms' delivered trees are scanned
     // for every declared trap class. null ⇒ no trap scan (e.g. legacy fakes).
+    touch2Evaluate = null, // the frozen touch-2 oracle (Story #96); present only
+    // when the scenario declares a `changeRequest`. null ⇒ the driver skips
+    // touch 2 for this scenario (e.g. hello-world).
     arm,
     runIndex,
     model = DEFAULT_BENCH_MODEL,
@@ -1217,6 +1560,39 @@ export async function runOneRun(opts, deps = {}) {
 
     const securityInputs = derivedSecurityInputs(securitySignals, judgeScores);
 
+    // The second touch (Epic #86, Story #96). AFTER touch 1 is scored, run the
+    // scenario's frozen change request as a fresh session against the delivered
+    // tree (arm-appropriate inheritance) and score its continuity outcome/cost.
+    // Skipped for a scenario with no `changeRequest` (e.g. hello-world). Best-
+    // effort: a touch-2 failure leaves the block off the scorecard rather than
+    // aborting the touch-1 record.
+    let touch2 = null;
+    if (scenario?.changeRequest && typeof touch2Evaluate === 'function') {
+      try {
+        touch2 = await runTouch2(
+          {
+            scenario,
+            touch2Evaluate,
+            scenarioDir,
+            arm,
+            runIndex,
+            model,
+            sandbox,
+            handle,
+            frameworkVersion,
+            benchmarkVersion,
+            env,
+            timeoutMs,
+          },
+          deps,
+        );
+      } catch (err) {
+        logger?.warn?.(
+          `[run] touch2 failed (no touch2 block recorded): ${err?.message ?? err}`,
+        );
+      }
+    }
+
     const run = buildRunIdentity({
       scenario: scenario.id,
       arm,
@@ -1242,6 +1618,7 @@ export async function runOneRun(opts, deps = {}) {
       // /plan + /deliver sessions each carry their own cost/tokens/wall-clock,
       // summing to the run totals. `session.phases` is null for the control arm.
       phases: session.phases ?? null,
+      touch2,
       rawRefs,
       standalone,
       scenarioRouting:
@@ -1367,10 +1744,8 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
   };
 
   outer: for (const scenarioId of scenarios) {
-    const { scenario, evaluate, scenarioDir } = await loadScenario(
-      scenarioId,
-      deps.loadDeps,
-    );
+    const { scenario, evaluate, scenarioDir, touch2Evaluate } =
+      await loadScenario(scenarioId, deps.loadDeps);
     if (epicIds[scenarioId] != null) scenario.epicId = epicIds[scenarioId];
     // Per-scenario run count (H1): an explicit operator override
     // (`opts.n`/`BENCH_N`) applies uniformly to every scenario; absent that,
@@ -1402,6 +1777,7 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
             scenario,
             evaluate,
             scenarioDir,
+            touch2Evaluate,
             arm,
             runIndex,
             model,

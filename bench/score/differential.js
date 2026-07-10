@@ -239,6 +239,75 @@ export function computeDifferential({
 }
 
 /**
+ * The second-touch CONTINUITY metrics (Epic #86, Story #96), each differenced
+ * mandrel-vs-control independently. Unlike {@link SCALAR_DIMENSIONS}, the
+ * accessor pulls from the SCORECARD's top-level `touch2` block (continuity
+ * lives beside `trap`, not under `dimensions`):
+ *
+ *   - `touch2.outcome` — the second touch's composite quality in [0,1].
+ *   - `touch2.cost`    — the second touch's session USD cost.
+ *
+ * The continuity delta answers the persistence thesis directly: does
+ * inheriting Mandrel's artifacts make the NEXT change cheaper (cost delta < 0)
+ * and safer/better (outcome delta > 0) than inheriting code alone?
+ */
+export const CONTINUITY_METRICS = Object.freeze([
+  { name: 'touch2.outcome', accessor: (sc) => sc?.touch2?.outcome ?? null },
+  { name: 'touch2.cost', accessor: (sc) => sc?.touch2?.cost ?? null },
+]);
+
+/**
+ * Compute the second-touch CONTINUITY DELTA for ONE scenario cell — the
+ * mandrel-vs-control difference of the second touch's outcome and cost, using
+ * the same noise-band + real-delta machinery as {@link computeDifferential}.
+ *
+ * `present` is false when NEITHER arm carries any `touch2` block for the cell
+ * (a touch-1-only scenario such as hello-world) — the caller renders no
+ * continuity section for such a cell rather than an all-incomparable table.
+ *
+ * @param {object} args
+ * @param {Array<object>} args.mandrelRuns  Scorecards for the Mandrel arm.
+ * @param {Array<object>} args.controlRuns  Scorecards for the control arm.
+ * @param {'iqr'|'ci'} [args.method='iqr']
+ * @param {string} [args.scenario]
+ * @returns {{
+ *   scenario: string|undefined,
+ *   method: 'iqr'|'ci',
+ *   present: boolean,
+ *   n: { mandrel: number, control: number },
+ *   metrics: Record<string, object>
+ * }}
+ */
+export function computeContinuityDelta({
+  mandrelRuns,
+  controlRuns,
+  method = 'iqr',
+  scenario,
+}) {
+  if (!Array.isArray(mandrelRuns) || !Array.isArray(controlRuns)) {
+    throw new TypeError(
+      'computeContinuityDelta: mandrelRuns and controlRuns must be arrays',
+    );
+  }
+  const metrics = {};
+  for (const { name, accessor } of CONTINUITY_METRICS) {
+    const mandrelBand = bandOrNull(mandrelRuns.map(accessor), method);
+    const controlBand = bandOrNull(controlRuns.map(accessor), method);
+    metrics[name] = compareBands({ name, mandrelBand, controlBand });
+  }
+  const present =
+    mandrelRuns.some((sc) => sc?.touch2 != null) ||
+    controlRuns.some((sc) => sc?.touch2 != null);
+  return {
+    scenario,
+    method,
+    present,
+    n: { mandrel: mandrelRuns.length, control: controlRuns.length },
+    metrics,
+  };
+}
+
+/**
  * Center of a band over the Mandrel arm's per-run values for one metric in one
  * scenario cell — the building block of the cross-scenario metrics. Returns
  * `null` when the cell has no finite values.

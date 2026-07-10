@@ -341,6 +341,86 @@ describe('frozen oracles are pure w.r.t. the delivered app (AC2: frozen)', () =>
   });
 });
 
+describe('frozen change requests — the second touch (Epic #86, Story #96)', () => {
+  it('story-scope declares a frozen changeRequest (password change + session invalidation)', () => {
+    const cr = loadScenario('story-scope').changeRequest;
+    assert.ok(cr && typeof cr === 'object', 'story-scope has a changeRequest');
+    assert.equal(cr.id, 'password-change');
+    assert.equal(typeof cr.prompt, 'string');
+    assert.ok(cr.prompt.length >= 40, 'change-request prompt is a real task');
+    assert.equal(cr.acceptanceSuite, './acceptance.touch2.test.js');
+  });
+
+  it('epic-scope declares a frozen changeRequest (project sharing with role-based access)', () => {
+    const cr = loadScenario('epic-scope').changeRequest;
+    assert.ok(cr && typeof cr === 'object', 'epic-scope has a changeRequest');
+    assert.equal(cr.id, 'project-sharing');
+    assert.equal(typeof cr.prompt, 'string');
+    assert.ok(cr.prompt.length >= 40, 'change-request prompt is a real task');
+    assert.equal(cr.acceptanceSuite, './acceptance.touch2.test.js');
+  });
+
+  it('hello-world declares NO changeRequest (the driver skips touch 2 for it)', () => {
+    const s = loadScenario('hello-world');
+    assert.equal(
+      s.changeRequest,
+      undefined,
+      'hello-world must not declare a second touch',
+    );
+  });
+
+  for (const id of ['story-scope', 'epic-scope']) {
+    it(`${id} change-request prompt contains no security-hint terms (trap headroom, §12)`, () => {
+      const cr = loadScenario(id).changeRequest;
+      const prompt = cr.prompt.replace(BENIGN_ENV_VAR_RE, '').toLowerCase();
+      for (const term of SECURITY_HINT_TERMS) {
+        assert.ok(
+          !prompt.includes(term),
+          `${id} change-request prompt leaks the hint term "${term}"`,
+        );
+      }
+    });
+
+    it(`${id}/acceptance.touch2.test.js imports only node: builtins (frozen)`, () => {
+      const src = readFileSync(
+        path.join(SCENARIOS_DIR, id, 'acceptance.touch2.test.js'),
+        'utf8',
+      );
+      const importRe = /^\s*import\s[^;]*from\s+['"]([^'"]+)['"]/gm;
+      const specs = [...src.matchAll(importRe)].map((m) => m[1]);
+      for (const spec of specs) {
+        assert.ok(
+          spec.startsWith('node:'),
+          `frozen touch-2 oracle ${id} must import only node: builtins, found "${spec}"`,
+        );
+      }
+    });
+
+    it(`${id}/acceptance.touch2.test.js exports a frozen CRITERIA list and an evaluate()`, async () => {
+      const mod = await import(
+        `../../../bench/scenarios/${id}/acceptance.touch2.test.js`
+      );
+      assert.equal(typeof mod.evaluate, 'function');
+      assert.ok(Array.isArray(mod.CRITERIA) && mod.CRITERIA.length > 0);
+      assert.ok(Object.isFrozen(mod.CRITERIA), 'touch-2 CRITERIA is frozen');
+      await assert.rejects(() => mod.evaluate(''), TypeError);
+    });
+  }
+
+  it('the story-scope touch-2 suite asserts session invalidation BEHAVIOURALLY (an old session → 401), not via a source scan', async () => {
+    const mod = await import(
+      '../../../bench/scenarios/story-scope/acceptance.touch2.test.js'
+    );
+    // Its criteria name the behavioural session-invalidation probe (old
+    // credential rejected on GET /me), proving it is asserted over HTTP.
+    const joined = mod.CRITERIA.join(' ').toLowerCase();
+    assert.ok(
+      joined.includes('session invalidation') && joined.includes('401'),
+      'the touch-2 suite must assert session invalidation behaviourally',
+    );
+  });
+});
+
 describe('hello-world frozen oracle behavior', () => {
   it('passes when the delivered page returns 200 text/html with the text', async () => {
     const fetchImpl = stubFetch([

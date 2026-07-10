@@ -31,6 +31,7 @@ import {
   main,
   parseOptionalNumericEnv,
   planningInputs,
+  prepareTouch2Workspace,
   qualityInputs,
   REQUIRED_SANDBOX_ENV_VARS,
   RETIRED_SANDBOX_ENV_VARS,
@@ -42,6 +43,7 @@ import {
   retiredSandboxEnvWarnings,
   runFirstBenchmark,
   runOneRun,
+  runTouch2,
   sanitizeRunId,
   scenarioEnvSuffix,
   snapshotPlanArtifacts,
@@ -2304,4 +2306,251 @@ test('runOneRun (control): carries no phases block', async () => {
     deps,
   );
   assert.equal('phases' in scorecard, false);
+});
+
+// ---------------------------------------------------------------------------
+// The second touch (Epic #86, Story #96) — prepareTouch2Workspace + runTouch2
+// + runOneRun integration. Every real effect is injected; no live process.
+// ---------------------------------------------------------------------------
+
+const FAKE_SCENARIO_WITH_CR = {
+  ...FAKE_SCENARIO,
+  routing: 'story',
+  changeRequest: {
+    id: 'password-change',
+    title: 'Change password',
+    prompt:
+      'Add a way for a signed-in user to change their password and invalidate old sessions.',
+    acceptanceSuite: './acceptance.touch2.test.js',
+  },
+};
+
+/** A frozen touch-2 oracle fake — control path calls it directly. */
+async function fakeTouch2Evaluate() {
+  return {
+    scenario: 'story-scope',
+    passed: true,
+    criteria: [{ met: true }, { met: true }, { met: true }, { met: true }],
+  };
+}
+
+test('prepareTouch2Workspace (mandrel): keeps the FULL pipeline output — same cwd, no copy', () => {
+  let copied = false;
+  const result = prepareTouch2Workspace(
+    { arm: 'mandrel', workspacePath: '/ws-mandrel' },
+    {
+      cpFn: () => {
+        copied = true;
+      },
+      mkdirFn: () => {},
+    },
+  );
+  assert.deepEqual(result, {
+    touch2Cwd: '/ws-mandrel',
+    inheritance: 'full-pipeline',
+  });
+  assert.equal(copied, false, 'the mandrel arm inherits its tree in place');
+});
+
+test('prepareTouch2Workspace (control): reduces to DELIVERED CODE ONLY — fresh dir, framework artifacts stripped', () => {
+  const cpCalls = [];
+  const mkdirCalls = [];
+  const result = prepareTouch2Workspace(
+    { arm: 'control', workspacePath: '/ws-control' },
+    {
+      cpFn: (src, dest, opts) => cpCalls.push({ src, dest, opts }),
+      mkdirFn: (p) => mkdirCalls.push(p),
+    },
+  );
+  assert.equal(result.inheritance, 'delivered-code-only');
+  assert.equal(result.touch2Cwd, '/ws-control--touch2-delivered');
+  assert.deepEqual(mkdirCalls, ['/ws-control--touch2-delivered']);
+  assert.equal(cpCalls.length, 1);
+  // The copy filter strips framework/session artifacts so the control arm
+  // inherits ONLY the code it shipped.
+  const { filter } = cpCalls[0].opts;
+  assert.equal(filter('/ws-control/.agents'), false);
+  assert.equal(filter('/ws-control/.git'), false);
+  assert.equal(filter('/ws-control/.claude'), false);
+  assert.equal(filter('/ws-control/CLAUDE.md'), false);
+  assert.equal(filter('/ws-control/server.js'), true);
+  assert.equal(filter('/ws-control/package.json'), true);
+});
+
+test('runTouch2 (mandrel): runs a fresh session against the full-pipeline tree and returns a touch2 block with the full dimension set + regression', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  const touch2SessionCwds = [];
+  deps.runSessionFn = (o) => {
+    touch2SessionCwds.push({ arm: o.arm, cwd: o.cwd });
+    return {
+      arm: o.arm,
+      scenarioId: o.scenario.id,
+      model: o.model,
+      prompt: 'p',
+      status: 0,
+      envelope: fakeEnvelope(),
+    };
+  };
+  const trapRunnerArgs = [];
+  deps.runTrapOraclesFn = async (o) => {
+    trapRunnerArgs.push(o);
+    return {
+      classes: [
+        { class: 'regression-hashing', score: 1, defectPresent: false },
+      ],
+      cleanRate: 1,
+    };
+  };
+
+  const block = await runTouch2(
+    {
+      scenario: FAKE_SCENARIO_WITH_CR,
+      touch2Evaluate: fakeTouch2Evaluate,
+      scenarioDir: '/repo/bench/scenarios/story-scope',
+      arm: 'mandrel',
+      runIndex: 1,
+      model: 'claude-opus-4-8',
+      sandbox: { owner: 'o', repo: 'r', repoUrl: 'u' },
+      handle: { workspacePath: '/ws-mandrel' },
+      frameworkVersion: '1.70.0',
+      benchmarkVersion: '0.5.0',
+      env: { node: 'v24.16.0', os: 'darwin' },
+      timeoutMs: 1000,
+    },
+    deps,
+  );
+
+  // The touch-2 session ran against the FULL pipeline tree (same workspace).
+  assert.deepEqual(touch2SessionCwds, [{ arm: 'mandrel', cwd: '/ws-mandrel' }]);
+  assert.equal(block.inheritance, 'full-pipeline');
+  assert.equal(block.changeRequestId, 'password-change');
+  // Full dimension set is present.
+  assert.ok(block.dimensions && typeof block.dimensions.quality === 'object');
+  assert.ok(typeof block.dimensions.efficiency === 'object');
+  assert.equal(typeof block.outcome, 'number');
+  assert.equal(block.cost, 0.42);
+  assert.equal(block.frozenSuiteTotal, 2); // scoreScenarioQualityFn fake → 2 criteria
+  // Regression scan used the phase-scoped traps-touch2 subdir, NOT traps/.
+  assert.equal(trapRunnerArgs[0].trapsSubdir, 'traps-touch2');
+  assert.equal(trapRunnerArgs[0].deliveredTreePath, '/ws-mandrel');
+  assert.deepEqual(
+    block.regression.classes.map((c) => c.class),
+    ['regression-hashing'],
+  );
+  assert.equal(block.regression.cleanRate, 1);
+});
+
+test('runTouch2 (control): reduces the workspace to delivered code only and scores the change request there', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  const touch2SessionCwds = [];
+  deps.runSessionFn = (o) => {
+    touch2SessionCwds.push({ arm: o.arm, cwd: o.cwd });
+    return {
+      arm: o.arm,
+      scenarioId: o.scenario.id,
+      model: o.model,
+      prompt: 'p',
+      status: 0,
+      envelope: fakeEnvelope(),
+    };
+  };
+  deps.runTrapOraclesFn = async () => ({ classes: [], cleanRate: null });
+
+  const block = await runTouch2(
+    {
+      scenario: FAKE_SCENARIO_WITH_CR,
+      touch2Evaluate: fakeTouch2Evaluate,
+      scenarioDir: '/repo/bench/scenarios/story-scope',
+      arm: 'control',
+      runIndex: 1,
+      model: 'claude-opus-4-8',
+      sandbox: { owner: 'o', repo: 'r', repoUrl: 'u' },
+      handle: { workspacePath: '/ws-control' },
+      frameworkVersion: '1.70.0',
+      benchmarkVersion: '0.5.0',
+      env: { node: 'v24.16.0', os: 'darwin' },
+      timeoutMs: 1000,
+    },
+    deps,
+  );
+
+  // The control arm's touch-2 session ran against the REDUCED (delivered-code-
+  // only) workspace, not the original.
+  assert.deepEqual(touch2SessionCwds, [
+    { arm: 'control', cwd: '/ws-control--touch2-delivered' },
+  ]);
+  assert.equal(block.inheritance, 'delivered-code-only');
+  // Its frozen touch-2 suite (4 criteria) was scored directly (no cross-check).
+  assert.equal(block.frozenSuiteTotal, 4);
+  assert.equal(block.frozenSuitePassed, 4);
+  // No traps-touch2 verdict ⇒ no regression sub-block.
+  assert.equal('regression' in block, false);
+});
+
+test('runTouch2: a scenario with no changeRequest returns null (touch 2 skipped, e.g. hello-world)', async () => {
+  const block = await runTouch2(
+    {
+      scenario: FAKE_SCENARIO, // no changeRequest
+      touch2Evaluate: null,
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: { owner: 'o', repo: 'r', repoUrl: 'u' },
+      handle: { workspacePath: '/ws-mandrel' },
+      frameworkVersion: '1.70.0',
+      benchmarkVersion: '0.5.0',
+      env: { node: 'v24.16.0', os: 'darwin' },
+    },
+    {},
+  );
+  assert.equal(block, null);
+});
+
+test('runOneRun: attaches a touch2 block when the scenario declares a changeRequest', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  deps.runTrapOraclesFn = async () => ({
+    classes: [{ class: 'regression-hashing', score: 1, defectPresent: false }],
+    cleanRate: 1,
+  });
+  const scorecard = await runOneRun(
+    {
+      scenario: FAKE_SCENARIO_WITH_CR,
+      evaluate: async () => ({ passed: true, criteria: [{ met: true }] }),
+      scenarioDir: '/repo/bench/scenarios/story-scope',
+      touch2Evaluate: fakeTouch2Evaluate,
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: { owner: 'o', repo: 'r', repoUrl: 'u', baselineSha: 's' },
+      resultsDir: '/results',
+      ephemeralRoot: '/tmp/e',
+    },
+    deps,
+  );
+  assert.ok(scorecard.touch2, 'the scorecard carries a touch2 block');
+  assert.equal(scorecard.touch2.changeRequestId, 'password-change');
+  assert.equal(scorecard.touch2.inheritance, 'full-pipeline');
+  assert.ok(scorecard.touch2.dimensions);
+  assert.equal(scorecard.touch2.regression.cleanRate, 1);
+});
+
+test('runOneRun: no changeRequest ⇒ no touch2 block on the scorecard', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  const { scenario, evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario, // FAKE_SCENARIO, no changeRequest
+      evaluate,
+      scenarioDir: '/repo/bench/scenarios/hello-world',
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: { owner: 'o', repo: 'r', repoUrl: 'u', baselineSha: 's' },
+      resultsDir: '/results',
+      ephemeralRoot: '/tmp/e',
+    },
+    deps,
+  );
+  assert.equal('touch2' in scorecard, false);
 });

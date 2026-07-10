@@ -595,6 +595,15 @@ function resolveTokenSplit({
  *   scorecard as `phases[]` for the mandrel arm only; omitted entirely for the
  *   control arm (single session) and when absent, so control records stay valid
  *   without the block.
+ * @param {object} [args.touch2]           Second-touch continuity block
+ *   (Epic #86, Story #96): `{ changeRequestId?, inheritance?, outcome, cost,
+ *   frozenSuitePassed, frozenSuiteTotal, totalTokens, wallClockMs, dimensions,
+ *   regression? }`, the compact scored second touch `bench/run.js#runTouch2`
+ *   produces. Present only when the scenario declares a `changeRequest` AND the
+ *   second touch was scored; recorded under `scorecard.touch2` as a SEPARATE
+ *   block reported apart from touch 1 (a sibling of `trap`/`phases`, never
+ *   folded into the seven composite dimensions). Absent for touch-1-only
+ *   scenarios (e.g. hello-world).
  * @param {object} [args.rawRefs]          Provenance breadcrumbs for `rawRefs`.
  * @param {object} [args.standalone]       Standalone-path telemetry (Story #48;
  *   phase-split added Epic #66 Story #77), present only when the mandrel arm
@@ -630,6 +639,7 @@ export function buildScorecard({
   securityInputs = {},
   trap = null,
   phases = null,
+  touch2 = null,
   rawRefs,
   standalone = null,
   scenarioRouting = null,
@@ -879,6 +889,73 @@ export function buildScorecard({
           ? p.wallClockMs
           : 0,
     }));
+  }
+
+  // Second-touch continuity block (Epic #86, Story #96). Present only when the
+  // scenario declared a `changeRequest` AND the driver scored the second touch;
+  // reported SEPARATELY from touch 1 (a sibling of `trap`/`phases` at the
+  // scorecard's top level, never folded into the seven composite dimensions).
+  // The continuity delta (mandrel touch-2 outcome/cost − control) is derived
+  // downstream by bench/score/differential.js from `touch2.outcome` /
+  // `touch2.cost`. An absent/malformed touch2 leaves the block off entirely, so
+  // touch-1-only scenarios (hello-world) stay valid without it.
+  if (
+    touch2 &&
+    typeof touch2 === 'object' &&
+    touch2.dimensions &&
+    typeof touch2.dimensions === 'object'
+  ) {
+    scorecard.touch2 = {
+      ...(typeof touch2.changeRequestId === 'string'
+        ? { changeRequestId: touch2.changeRequestId }
+        : {}),
+      ...(typeof touch2.inheritance === 'string'
+        ? { inheritance: touch2.inheritance }
+        : {}),
+      outcome:
+        typeof touch2.outcome === 'number' && Number.isFinite(touch2.outcome)
+          ? touch2.outcome
+          : null,
+      cost:
+        typeof touch2.cost === 'number' && Number.isFinite(touch2.cost)
+          ? touch2.cost
+          : null,
+      frozenSuitePassed:
+        typeof touch2.frozenSuitePassed === 'number'
+          ? Math.trunc(touch2.frozenSuitePassed)
+          : 0,
+      frozenSuiteTotal:
+        typeof touch2.frozenSuiteTotal === 'number'
+          ? Math.trunc(touch2.frozenSuiteTotal)
+          : 0,
+      totalTokens:
+        typeof touch2.totalTokens === 'number'
+          ? Math.trunc(touch2.totalTokens)
+          : 0,
+      wallClockMs:
+        typeof touch2.wallClockMs === 'number' &&
+        Number.isFinite(touch2.wallClockMs)
+          ? touch2.wallClockMs
+          : 0,
+      dimensions: touch2.dimensions,
+      ...(touch2.regression &&
+      Array.isArray(touch2.regression.classes) &&
+      touch2.regression.classes.length > 0
+        ? {
+            regression: {
+              classes: touch2.regression.classes.map((entry) => ({
+                class: entry.class,
+                score: entry.score,
+                defectPresent: Boolean(entry.defectPresent),
+                ...(Array.isArray(entry.evidence)
+                  ? { evidence: entry.evidence }
+                  : {}),
+              })),
+              cleanRate: touch2.regression.cleanRate,
+            },
+          }
+        : {}),
+    };
   }
 
   if (rawRefs && typeof rawRefs === 'object') {

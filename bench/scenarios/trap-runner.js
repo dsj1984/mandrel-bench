@@ -46,15 +46,42 @@ import { readdirSync } from 'node:fs';
 import path from 'node:path';
 
 /**
+ * The default trap-oracle discovery subdirectory — the touch-1 (first-touch)
+ * scan globs `traps/`. The touch-2 (second-touch) regression scan uses a
+ * SEPARATE convention, {@link TOUCH2_TRAPS_SUBDIR}, so a phase's oracles are
+ * never discovered by the other phase's scan (Epic #86 pre-mortem F2 CRITICAL:
+ * a touch-2 regression oracle placed under `traps/` would run at touch 1 and
+ * corrupt the touch-1 cleanRate).
+ */
+export const DEFAULT_TRAPS_SUBDIR = 'traps';
+
+/**
+ * The touch-2 regression-oracle discovery subdirectory. Kept DISJOINT from
+ * {@link DEFAULT_TRAPS_SUBDIR} so the touch-1 scan (`traps/` only) and its
+ * cleanRate are provably unaffected by the presence of touch-2 regression
+ * oracles, and vice-versa (Epic #86, Story #96).
+ */
+export const TOUCH2_TRAPS_SUBDIR = 'traps-touch2';
+
+/**
  * Discover the trap-oracle modules declared under a scenario directory's
- * `traps/` subdirectory. Missing `traps/` (or any unreadable directory) is
- * NOT an error — it means the scenario declares no trap classes — so this
- * returns an empty array rather than throwing.
+ * trap subdirectory. A missing subdirectory (or any unreadable directory) is
+ * NOT an error — it means the scenario declares no trap classes for that
+ * phase — so this returns an empty array rather than throwing.
+ *
+ * The `subdir` param is the phase-scoped discovery convention (Epic #86,
+ * Story #96): touch 1 scans `traps/` ({@link DEFAULT_TRAPS_SUBDIR}) and touch
+ * 2 scans `traps-touch2/` ({@link TOUCH2_TRAPS_SUBDIR}). Because the two
+ * directories are disjoint, a touch-2 regression oracle is NEVER discovered by
+ * the touch-1 scan (which is what keeps the touch-1 cleanRate uncorrupted) and
+ * vice-versa.
  *
  * @param {string} scenarioDir  Absolute path to `bench/scenarios/<id>`.
  * @param {object} [deps]
  * @param {(p: string, opts: object) => Array<{name: string, isFile(): boolean}>} [deps.readdirFn]
  *   Injected `readdirSync` (called with `{ withFileTypes: true }`).
+ * @param {string} [deps.subdir='traps']  The trap subdirectory to scan. The
+ *   touch-2 regression scan passes `'traps-touch2'`.
  * @returns {Array<{ class: string, modulePath: string }>} Sorted by class
  *   name for deterministic ordering.
  */
@@ -63,14 +90,18 @@ export function discoverTrapModules(scenarioDir, deps = {}) {
     throw new TypeError('discoverTrapModules requires a non-empty scenarioDir');
   }
   const readdir = deps.readdirFn ?? readdirSync;
-  const trapsDir = path.join(scenarioDir, 'traps');
+  const subdir =
+    typeof deps.subdir === 'string' && deps.subdir.length > 0
+      ? deps.subdir
+      : DEFAULT_TRAPS_SUBDIR;
+  const trapsDir = path.join(scenarioDir, subdir);
 
   let entries;
   try {
     entries = readdir(trapsDir, { withFileTypes: true });
   } catch {
-    // No traps/ directory (or unreadable) — this scenario declares no trap
-    // classes. A valid, common state; not an error.
+    // No trap subdirectory (or unreadable) — this scenario declares no trap
+    // classes for this phase. A valid, common state; not an error.
     return [];
   }
 
@@ -91,6 +122,9 @@ export function discoverTrapModules(scenarioDir, deps = {}) {
  * @param {string} opts.scenarioDir        Absolute path to `bench/scenarios/<id>`.
  * @param {string} opts.deliveredTreePath  Absolute path to the delivered
  *   workspace tree (the sandbox clone's working directory).
+ * @param {string} [opts.trapsSubdir='traps']  Phase-scoped discovery subdir
+ *   (Epic #86, Story #96): touch 1 scans `traps/`, touch 2 scans
+ *   `traps-touch2/`. Forwarded to {@link discoverTrapModules} as `subdir`.
  * @param {object} [deps]
  * @param {(p: string, opts: object) => Array<{name: string, isFile(): boolean}>} [deps.readdirFn]
  *   Forwarded to {@link discoverTrapModules}.
@@ -99,7 +133,7 @@ export function discoverTrapModules(scenarioDir, deps = {}) {
  * @returns {Promise<{ classes: Array<{ class: string, score: number, defectPresent: boolean, evidence?: string[] }>, cleanRate: number|null }>}
  */
 export async function runTrapOracles(opts = {}, deps = {}) {
-  const { scenarioDir, deliveredTreePath } = opts;
+  const { scenarioDir, deliveredTreePath, trapsSubdir } = opts;
   if (typeof scenarioDir !== 'string' || scenarioDir.length === 0) {
     throw new TypeError('runTrapOracles requires a non-empty scenarioDir');
   }
@@ -110,7 +144,13 @@ export async function runTrapOracles(opts = {}, deps = {}) {
   }
 
   const importImpl = deps.importImpl ?? ((spec) => import(spec));
-  const modules = discoverTrapModules(scenarioDir, deps);
+  // The phase-scoped discovery subdir travels via the opts (touch 2 passes
+  // `trapsSubdir: 'traps-touch2'`); `deps.subdir` (used directly by unit tests
+  // of discoverTrapModules) still wins when supplied.
+  const modules = discoverTrapModules(scenarioDir, {
+    ...deps,
+    subdir: deps.subdir ?? trapsSubdir ?? DEFAULT_TRAPS_SUBDIR,
+  });
 
   const classes = [];
   for (const { class: derivedClass, modulePath } of modules) {

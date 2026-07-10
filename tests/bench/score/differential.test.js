@@ -14,6 +14,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  CONTINUITY_METRICS,
+  computeContinuityDelta,
   computeDifferential,
   difficultyMonotonicity,
   EFFICIENCY_COMPONENTS,
@@ -366,5 +368,51 @@ describe('scoreCorpus — top-level convenience', () => {
       ],
     });
     assert.equal(result.overheadFloor, null);
+  });
+});
+
+describe('computeContinuityDelta — the second-touch continuity delta (Epic #86, Story #96)', () => {
+  const touch2Card = (outcome, cost) => ({ touch2: { outcome, cost } });
+
+  it('CONTINUITY_METRICS pull touch2.outcome / touch2.cost from the scorecard top level', () => {
+    const names = CONTINUITY_METRICS.map((m) => m.name);
+    assert.deepEqual(names, ['touch2.outcome', 'touch2.cost']);
+    const outcome = CONTINUITY_METRICS.find((m) => m.name === 'touch2.outcome');
+    assert.equal(outcome.accessor({ touch2: { outcome: 0.8 } }), 0.8);
+    assert.equal(outcome.accessor({ dimensions: {} }), null);
+  });
+
+  it('computes the mandrel-minus-control delta of outcome and cost', () => {
+    const mandrelRuns = [touch2Card(0.9, 0.2), touch2Card(0.9, 0.2)];
+    const controlRuns = [touch2Card(0.6, 0.5), touch2Card(0.6, 0.5)];
+    const d = computeContinuityDelta({
+      mandrelRuns,
+      controlRuns,
+      scenario: 'story-scope',
+    });
+    assert.equal(d.present, true);
+    assert.equal(d.scenario, 'story-scope');
+    // Mandrel makes the 2nd change BETTER (+0.3 outcome) and CHEAPER (−0.3 cost).
+    approx(d.metrics['touch2.outcome'].delta, 0.3);
+    approx(d.metrics['touch2.cost'].delta, -0.3);
+    assert.equal(d.metrics['touch2.outcome'].verdict, 'real');
+  });
+
+  it('is not present when neither arm carries a touch2 block (a touch-1-only cell)', () => {
+    const d = computeContinuityDelta({
+      mandrelRuns: [{ dimensions: {} }],
+      controlRuns: [{ dimensions: {} }],
+      scenario: 'hello-world',
+    });
+    assert.equal(d.present, false);
+    // Both metrics are incomparable (no finite values ⇒ null bands).
+    assert.equal(d.metrics['touch2.outcome'].comparable, false);
+  });
+
+  it('rejects non-array inputs', () => {
+    assert.throws(
+      () => computeContinuityDelta({ mandrelRuns: null, controlRuns: [] }),
+      TypeError,
+    );
   });
 });

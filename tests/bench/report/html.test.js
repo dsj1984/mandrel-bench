@@ -154,6 +154,28 @@ describe('buildDashboardModel', () => {
   it('throws on a non-array corpus', () => {
     assert.throws(() => buildDashboardModel(null), /must be an array/);
   });
+
+  it('exposes a continuity panel model for scenarios carrying a scored second touch (Epic #86, Story #96)', () => {
+    const m = card({
+      runId: 'story-mandrel-r1',
+      scenario: 'story-scope',
+      arm: 'mandrel',
+      touch2: { outcome: 0.9, cost: 0.2 },
+    });
+    const c = card({
+      runId: 'story-control-r1',
+      scenario: 'story-scope',
+      arm: 'control',
+      timestamp: '2026-06-16T18:00:00.000Z',
+      touch2: { outcome: 0.6, cost: 0.5 },
+    });
+    const model = buildDashboardModel([m, c]);
+    assert.ok(Array.isArray(model.continuity));
+    const s = model.continuity.find((x) => x.scenario === 'story-scope');
+    assert.ok(s && s.rows.length === 2, 'a continuity row per outcome + cost');
+    // A touch-1-only corpus produces no continuity entries.
+    assert.deepEqual(buildDashboardModel([card(), CONTROL]).continuity, []);
+  });
 });
 
 describe('renderDashboard', () => {
@@ -179,6 +201,24 @@ describe('renderDashboard', () => {
     // Both run ids appear in the inlined corpus.
     assert.ok(html.includes('hw-mandrel-r1'));
     assert.ok(html.includes('hw-control-r1'));
+  });
+
+  it('server-renders the continuity-delta panel (Epic #86, Story #96)', () => {
+    const m = card({
+      runId: 'story-mandrel-r1',
+      scenario: 'story-scope',
+      arm: 'mandrel',
+      touch2: { outcome: 0.9, cost: 0.2 },
+    });
+    const c = card({
+      runId: 'story-control-r1',
+      scenario: 'story-scope',
+      arm: 'control',
+      timestamp: '2026-06-16T18:00:00.000Z',
+      touch2: { outcome: 0.6, cost: 0.5 },
+    });
+    const html = renderDashboard({ scorecards: [m, c] });
+    assert.match(html, /Continuity delta \(the second touch\)/);
   });
 
   it('carries the trend-chart metrics, index table, and modal scaffolding', () => {

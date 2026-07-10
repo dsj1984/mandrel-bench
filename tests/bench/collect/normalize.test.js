@@ -914,6 +914,64 @@ describe('buildScorecard — routing contract enforcement (Epic #66, Story #76)'
   });
 });
 
+describe('buildScorecard — second-touch continuity block (Epic #86, Story #96)', () => {
+  it('attaches a schema-valid touch2 block reported separately from touch 1', () => {
+    const validate = buildValidator();
+    // Reuse a touch-1 scorecard's dimensions object as the touch-2 full
+    // dimension set (the same seven-dimension shape).
+    const base = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 2, frozenSuiteTotal: 2 },
+    });
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 2, frozenSuiteTotal: 2 },
+      touch2: {
+        changeRequestId: 'password-change',
+        inheritance: 'full-pipeline',
+        outcome: 0.9,
+        cost: 0.21,
+        frozenSuitePassed: 4,
+        frozenSuiteTotal: 4,
+        totalTokens: 5000,
+        wallClockMs: 12000,
+        dimensions: base.dimensions,
+        regression: {
+          classes: [
+            { class: 'regression-hashing', score: 1, defectPresent: false },
+          ],
+          cleanRate: 1,
+        },
+      },
+    });
+    assert.ok(sc.touch2, 'the scorecard carries a touch2 block');
+    assert.equal(sc.touch2.outcome, 0.9);
+    assert.equal(sc.touch2.cost, 0.21);
+    assert.equal(sc.touch2.inheritance, 'full-pipeline');
+    assert.equal(sc.touch2.regression.cleanRate, 1);
+    // touch2 lives at the top level, a sibling of dimensions — never nested in it.
+    assert.equal('touch2' in sc.dimensions, false);
+    assert.equal(validate(sc), true, JSON.stringify(validate.errors));
+  });
+
+  it('omits the touch2 block entirely for a touch-1-only record (e.g. hello-world)', () => {
+    const validate = buildValidator();
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'control' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+      touch2: null,
+    });
+    assert.equal('touch2' in sc, false);
+    assert.equal(validate(sc), true, JSON.stringify(validate.errors));
+  });
+});
+
 describe('buildScorecard — maintainability and security inputs', () => {
   it('threads maintainabilityInputs into dimensions.maintainability', () => {
     const sc = buildScorecard({

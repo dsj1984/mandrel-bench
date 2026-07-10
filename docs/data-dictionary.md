@@ -172,6 +172,73 @@ environment** (`sanitizeGitHubTokenEnv`, no new credential surface). The
 discovered id is threaded into the deliver-session prompt so `/deliver` enters
 at the artifact the plan session produced.
 
+## `touch2` block (Epic #86, Story #96)
+
+The **second-touch continuity** block — a SEPARATE top-level scorecard block (a
+sibling of `dimensions`, like `trap`/`phases`), never folded into the seven
+composite `dimensions`. Present only when the scenario declares a frozen
+`changeRequest` in its `scenario.json` (`story-scope`, `epic-scope`) AND the
+second touch was scored; absent (no `touch2` key) for `hello-world`, which
+declares no change request (the driver skips its second touch).
+
+After touch 1 is scored, `bench/run.js#runTouch2` runs the change request as a
+**fresh session against the delivered tree**, with **arm-appropriate
+inheritance** (`bench/run.js#prepareTouch2Workspace`): the mandrel arm keeps its
+FULL pipeline output (the `.agents/` overlay + tickets/plan state) in place; the
+control workspace is reduced to DELIVERED CODE ONLY (a fresh copy with
+framework/session artifacts stripped). The second touch is scored with the full
+dimension set, its own frozen behavioural suite (`acceptance.touch2.test.js`),
+and the phase-scoped regression oracles.
+
+```json
+"touch2": {
+  "changeRequestId": "password-change",
+  "inheritance": "full-pipeline",
+  "outcome": 0.9,
+  "cost": 0.21,
+  "frozenSuitePassed": 4,
+  "frozenSuiteTotal": 4,
+  "totalTokens": 5000,
+  "wallClockMs": 12000,
+  "dimensions": { "quality": { "score": 0.9, "frozenSuitePassRate": 1 }, "...": "the full seven-dimension set" },
+  "regression": {
+    "classes": [{ "class": "regression-hashing", "score": 1, "defectPresent": false }],
+    "cleanRate": 1
+  }
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `touch2.changeRequestId` | string (optional) | Stable id of the frozen change request (`scenario.json` `changeRequest.id`, e.g. `password-change`, `project-sharing`). |
+| `touch2.inheritance` | `"full-pipeline"` \| `"delivered-code-only"` | Arm-appropriate inheritance the second touch ran under: full pipeline (mandrel) or delivered code only (control). |
+| `touch2.outcome` | number `[0,1]` \| `null` | Continuity OUTCOME scalar — the second touch's composite quality (`touch2.dimensions.quality.score`). |
+| `touch2.cost` | number \| `null` | Continuity COST scalar in USD — the second touch's session cost (`touch2.dimensions.efficiency.costUsd`), or `null` when the envelope reported none. |
+| `touch2.frozenSuitePassed` / `frozenSuiteTotal` | integer `≥ 0` | Passing / total frozen touch-2-suite assertions. |
+| `touch2.totalTokens` | integer `≥ 0` | Total tokens for the second-touch session. |
+| `touch2.wallClockMs` | number `≥ 0` | The second-touch session's wall-clock duration. |
+| `touch2.dimensions` | object | The FULL seven-dimension set scored for the second touch — the same shape as touch 1's `dimensions`. |
+| `touch2.regression` | object (optional) | The phase-scoped regression verdict (same shape as `trap`), present only when the scenario declares `traps-touch2/` oracles. |
+
+**Phase-scoped regression oracles.** The regression oracles live under a
+DEDICATED `bench/scenarios/<id>/traps-touch2/` directory — DISJOINT from the
+touch-1 `traps/` directory — and are discovered ONLY by the touch-2 scan
+(`bench/scenarios/trap-runner.js#runTrapOracles` with `trapsSubdir:
+'traps-touch2'`). This separation is load-bearing: the touch-1 trap scan globs
+`traps/` only, so the touch-1 `cleanRate` is provably unaffected by the presence
+of touch-2 oracles. The regression classes are *hashing preservation*
+(`story-scope`) and *per-user isolation preservation* (`epic-scope`), each with
+a discrimination unit test over hand-crafted clean/vulnerable samples. Their
+behavioural counterparts (session invalidation; role-based access) are asserted
+by the frozen touch-2 suite over HTTP, NOT by a source scan.
+
+**Consumption.** `bench/score/differential.js#computeContinuityDelta` derives
+the **continuity delta** — mandrel `touch2.outcome`/`touch2.cost` minus control
+— using the same noise-band + real-delta machinery as the dimension differential.
+`bench/report/render.js#renderContinuitySection` and `bench/report/html.js`'s
+continuity panel render it as its own section (positive outcome delta / negative
+cost delta favours Mandrel).
+
 ### Plan snapshot layout — `.raw/<run-stamp>/plan/`
 
 Before the deliver session starts, `snapshotPlanArtifacts` freezes the plan
