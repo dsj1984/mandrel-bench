@@ -2114,21 +2114,6 @@ export const REQUIRED_SANDBOX_ENV_VARS = Object.freeze([
 ]);
 
 /**
- * Retired standing-repo env vars, mapped to a human-readable replacement
- * note. Presence of any of these must never be silently accepted — it
- * signals an operator still configured for the old, retired standing-repo
- * path (docs/decisions.md D-013).
- */
-export const RETIRED_SANDBOX_ENV_VARS = Object.freeze({
-  BENCH_SANDBOX_REPO_URL:
-    'ephemeral per-cell repos are created automatically — set BENCH_GITHUB_TOKEN + BENCH_SANDBOX_OWNER instead',
-  BENCH_SANDBOX_REPO:
-    'ephemeral per-cell repos are named automatically (bench-sbx-<cohort>-<scenario>-<arm>-<nonce>) — this var is no longer read',
-  BENCH_SANDBOX_BASELINE_REF:
-    'the baseline is now the per-cell seed commit recorded on the sandbox handle at seed time — this var is no longer read',
-});
-
-/**
  * Fail-fast validation for the two required sandbox env vars. Pure — reads
  * only from the supplied `env` bag, never `process.env` directly, so it is
  * unit-testable with injected env. Called at CLI-entry startup, BEFORE any
@@ -2149,26 +2134,6 @@ export function validateSandboxEnv(env = process.env) {
     }
   }
   return { ok: true };
-}
-
-/**
- * Detect any retired standing-repo env var still set and produce one
- * deprecation-warning message per var, naming its replacement. Pure.
- *
- * @param {Record<string, string|undefined>} [env=process.env]
- * @returns {string[]}
- */
-export function retiredSandboxEnvWarnings(env = process.env) {
-  const warnings = [];
-  for (const [name, replacement] of Object.entries(RETIRED_SANDBOX_ENV_VARS)) {
-    const v = env[name];
-    if (typeof v === 'string' && v.trim() !== '') {
-      warnings.push(
-        `[run] DEPRECATED: ${name} is retired and no longer read — ${replacement}.`,
-      );
-    }
-  }
-  return warnings;
 }
 
 /**
@@ -2343,9 +2308,6 @@ function reportRunResult(result) {
  *   BENCH_GITHUB_TOKEN (required) — token with repo create/delete scopes.
  *   BENCH_SANDBOX_OWNER (required) — the account/org ephemeral repos are
  *     created under.
- * Retired: BENCH_SANDBOX_REPO_URL, BENCH_SANDBOX_REPO,
- *   BENCH_SANDBOX_BASELINE_REF — presence emits a deprecation warning naming
- *   the replacement; they are no longer read.
  * Optional: BENCH_SCENARIOS (csv), BENCH_ARMS (csv), BENCH_N.
  * Per-scenario seed Epic ids (mandrel arm):
  *   BENCH_EPIC_ID (single-scenario back-compat → scenarios[0]),
@@ -2363,13 +2325,6 @@ function reportRunResult(result) {
  */
 export async function main(env = process.env, deps = {}) {
   const logger = deps.logger ?? defaultCliLogger();
-
-  // Deprecation warnings for retired vars fire regardless of whether the run
-  // proceeds — an operator with BOTH a retired var set AND the new vars
-  // missing should see both signals, not just the fatal one.
-  for (const warning of retiredSandboxEnvWarnings(env)) {
-    logger.warn(warning);
-  }
 
   // Fail fast — before any model invocation or sandbox provisioning.
   const validation = validateSandboxEnv(env);

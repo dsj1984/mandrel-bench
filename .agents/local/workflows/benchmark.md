@@ -71,18 +71,27 @@ when set. Re-running `/benchmark` after an early stop continues the same batch.
 
 ## Preconditions
 
-Before Step 1, confirm the sandbox coordinates the runner reads from the
-environment are present (see [`bench/run.js`](../../../bench/run.js) `main()`):
+Before Step 1, confirm the sandbox contract the runner reads from the
+environment is present (see [`bench/run.js`](../../../bench/run.js)
+`validateSandboxEnv`). Since D-013 the sandbox is an **ephemeral per-cell
+repo** created and destroyed by the run itself — there are no standing-repo
+coordinates:
 
-- `BENCH_SANDBOX_REPO_URL`, `BENCH_SANDBOX_OWNER`, `BENCH_SANDBOX_REPO` — the
-  throwaway sandbox the headless `claude -p` arms deliver into.
-- `BENCH_SANDBOX_BASELINE_REF` (default `bench-baseline`) — the clean branch the
-  sandbox `main` is reset to before/after each run.
-- A `GITHUB_TOKEN` with sandbox access (sanitized before `gh`, per
-  [`resetSandboxBaseline`](../../../bench/driver/sandbox.js)).
+- `BENCH_GITHUB_TOKEN` — PAT with repository create/delete + contents +
+  issues + pull-requests scopes; used (sanitized before `gh`, per
+  [`sandbox.js`](../../../bench/driver/sandbox.js)) to provision and tear
+  down the `bench-sbx-*` repos.
+- `BENCH_SANDBOX_OWNER` — the account/org the ephemeral repos are created
+  under.
+- `BENCH_JANITOR_TTL_HOURS` (optional, default 24) — age past which the
+  start-of-invocation janitor sweep deletes leaked `bench-sbx-*` repos.
 
-If any required sandbox coordinate is missing, **STOP** and report it — do not
-launch a run against an undefined sandbox.
+The retired standing-repo vars (`BENCH_SANDBOX_REPO_URL`,
+`BENCH_SANDBOX_REPO`, `BENCH_SANDBOX_BASELINE_REF`) are no longer read;
+`bench/run.js` warns if they linger in the environment.
+
+If either required variable is missing, **STOP** and report it — do not
+launch a run that cannot provision its sandbox.
 
 ---
 

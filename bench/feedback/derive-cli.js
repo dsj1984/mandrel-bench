@@ -11,9 +11,11 @@
 //   1. reads the results tree into one flat corpus (bench/report/aggregate.js),
 //   2. resolves the TARGET cohort triple (from --model / --framework-version /
 //      --benchmark-version, or auto-selects when the tree holds exactly one),
-//   3. derives the four Phase-4 finding classes for that cohort
-//      (bench/feedback/derive.js) — each carrying the cohort triple, noise-band
-//      evidence, a stable fingerprint, and report/scorecard links, and
+//   3. derives the five finding classes for that cohort (bench/feedback/
+//      derive.js — the four Phase-4 classes plus the Phase-5 attribution
+//      class, every finding phase-tagged) — each carrying the cohort triple,
+//      noise-band evidence, a stable fingerprint, and report/scorecard links,
+//      and
 //   4. writes TWO outputs beside the cohort report:
 //        a. a machine-readable finding-envelope JSON (for the filing engine),
 //        b. a Markdown findings section (for embedding in the results-PR body).
@@ -163,9 +165,11 @@ export function parseDeriveCliArgs(argv = []) {
 
 const HELP_TEXT = `Usage: node bench/feedback/derive-cli.js [options]
 
-Derive the four Phase-4 feedback finding classes for one cohort from a results
-tree, then write a machine-readable finding-envelope JSON and a Markdown findings
-section beside the cohort report. Never invokes a benchmark run.
+Derive the five feedback finding classes (the four Phase-4 classes plus the
+Phase-5 attribution class) for one cohort from a results tree, then write a
+machine-readable finding-envelope JSON and a Markdown findings section beside
+the cohort report. Every finding carries a phase tag (or null). Never invokes
+a benchmark run.
 
 Options:
   --results-dir <path>         Results-tree root (default: <repo>/results).

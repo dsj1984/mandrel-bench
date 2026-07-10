@@ -422,15 +422,36 @@ The attribution module
 every feedback finding to the HALF of Mandrel that owns it — `/plan`,
 `/deliver`, or the persistent artifacts — and derives a NET-NEW **fifth**
 finding class beside the four in `derive.js`. It is a PURE, deterministic,
-data-in/data-out module: it imports no other `bench/feedback` module and does no
-I/O, so the Epic #85 feedback stage can compose it LATER without this module
-ever reaching back into that stage's stateful surfaces. Same fixture corpus in,
-same tags and class-5 findings out.
+data-in/data-out module: beyond the shared pure `computeFingerprint` helper it
+imports no other `bench/feedback` module and does no I/O. Same fixture corpus
+in, same tags and class-5 findings out.
 
 Its inputs are PLAIN DATA per scenario: the §3.4 `computeAttribution` verdict
 ([`../bench/score/plan-quality.js`](../bench/score/plan-quality.js)) and the
 §4.5 continuity read distilled from `computeContinuityDelta`
 ([`../bench/score/differential.js`](../bench/score/differential.js)).
+
+**Composition (live since the post-Epic-#86 wiring).** `derive.js` distils the
+per-scenario inputs from the cohort's own scorecards and composes both
+capabilities into every envelope it derives:
+
+- **§3.4 verdict** — the MODAL `planQuality.attribution.classification` across
+  the cell's mandrel runs (`modalAttributionVerdict`); ties break toward the
+  more actionable gap (`plan-phase-gap` > `deliver-phase-gap` >
+  `model-compensating` > `working-as-intended`), and the boolean evidence
+  fields are asserted only when the modal-class runs are unanimous.
+- **§4.5 continuity read** — `distillContinuity` grades `helped` on REAL
+  (above-noise) signals only: `false` when the mandrel touch-2 outcome is
+  really worse than control's, or its touch-2 cost is really higher without a
+  really better outcome; `true` on a really better outcome; `null` otherwise
+  (within noise / incomparable / no touch-2 data — derives nothing).
+
+The envelope's `findings` therefore all carry `phaseTag` (value or `null`),
+its `counts` gains an `attribution` key, and `file.js` applies the `phase::*`
+tag as an issue LABEL on create (falling back to a body-only tag, with a loud
+warning, when the target repo does not define the label). The tag is a routing
+FIELD only — it never joins fingerprint identity, so the four pre-existing
+classes' fingerprints are byte-identical to their pre-wiring values.
 
 ### Phase tag
 
@@ -459,7 +480,7 @@ finding shape plus the `phaseTag` this class introduces:
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `fingerprint` | string | Stable 16-hex-char SHA-1 of `class ␟ scenario ␟ subject` (cohort-independent — same contract as `derive.js`, computed in-module so there is no `fingerprint.js` dependency). |
+| `fingerprint` | string | Stable 16-hex-char SHA-1 of `class ␟ scenario ␟ subject` (cohort-independent — the shared `fingerprint.js` contract, via the same pure `computeFingerprint` helper `derive.js` uses). |
 | `class` | string (`attribution`) | The net-new fifth finding class. |
 | `scenario` | string | Scenario id the gap was observed on. |
 | `subject` | string | One of the three class-5 subjects (below). |

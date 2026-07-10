@@ -1,11 +1,14 @@
 # mandrel-bench — Target Architecture
 
-> **Status: target spec (not yet implemented).** This document describes the
-> architecture mandrel-bench is converging on, decided 2026-07-07. The current
-> implementation is described in [`architecture.md`](architecture.md); this
-> document supersedes it where the two disagree. Decision deltas against
-> [`decisions.md`](decisions.md) are listed in [§11](#11-decision-deltas);
-> each becomes a numbered decision entry when its phase lands.
+> **Status: delivered.** Decided 2026-07-07; all five migration phases have
+> landed as of 2026-07-09 (Phases 1–2: Epics #65/#66; Phases 3–5: Epics
+> #84/#85/#86). [`architecture.md`](architecture.md) describes the
+> implemented system and is the authoritative reference going forward; this
+> document remains as the design rationale and migration record. All decision
+> deltas in [§11](#11-decision-deltas) are logged in
+> [`decisions.md`](decisions.md) (D-013–D-021). The one remaining open item —
+> the first live CI cohort, an operator-gated dispatch — is flagged inline in
+> [§9](#9-current-state--target-state) and [§10](#10-migration-plan).
 
 ## 1. Intent
 
@@ -516,8 +519,8 @@ cells; the overhead-floor estimate is unchanged and feeds §7 class 2.
 
 ## 9. Current state → target state
 
-The delta at a glance, mapped to the migration phase that closes each gap
-(current state as of benchmark 0.4.0 / mandrel 1.75.0):
+The delta at a glance, mapped to the migration phase that closed each gap
+(all phases delivered as of benchmark 0.5.0 / mandrel 1.88.0, 2026-07-09):
 
 | Area | Current | Target | Phase |
 | --- | --- | --- | --- |
@@ -529,14 +532,14 @@ The delta at a glance, mapped to the migration phase that closes each gap
 | Planning fidelity | ✅ **Delivered** (Story #77, D-018). Footprint accuracy proportional to declared plan size; dropped from the dimension mean for ≤1-file plans | Footprint proportional to plan size; dropped for ≤ 1-file plans | 2 |
 | Autonomy | ✅ **Delivered** (Story #77/#79, D-018). Reported as a mandrel-arm guardrail (`dimensions.autonomy.guardrail = { threshold, met }`, default 0.99) in its own report/dashboard section; excluded from the Mandrel-vs-control delta table (`SCALAR_DIMENSIONS`) | Guardrail: mandrel-arm threshold, drops become findings | 2 |
 | Overhead ratio | ✅ **Delivered** (Story #77, D-018). Phase-split derived from the standalone-Story telemetry adapter's `createdAt`→`closedAt` span when the mandrel arm routed through the standalone path; `null` only when telemetry is genuinely absent (itself a loud `warnings[]` entry) | Phase-split derived from standalone-Story telemetry; `null` only when telemetry absent | 2 |
-| Cohort identity | `(model, mandrelVersion)`; benchmark version untracked | Triple `(model, mandrelVersion, benchmarkVersion)`; pooling filters on all three | 3 |
-| Run automation | Local-only (`npm run bench` / `/benchmark`); CI lints and unit-tests the harness | `workflow_dispatch` CI with top-up planner, parallel per-cell matrix, results PR | 3 |
-| HITL | Interactive STOP gates inside `/benchmark` | Results-PR review is the gate in CI; interactive gates remain for local runs | 3 |
-| Per-cell N | Uniform `BENCH_N` | Per-scenario `targetN` (8/8/4); hello-world runs first as canary | 3 |
-| Feedback loop | "Recommended improvements" prose in the report; never filed (D-009) | Auto-filed, fingerprint-deduplicated issues on the mandrel repo, gated on results-PR merge | 4 |
-| Phase attribution | One session per run; `/plan` and `/deliver` indistinguishable in cost and outcome | Phase-scoped sessions with per-phase envelopes; plan snapshot + plan-quality axis; phase-tagged feedback | 5 |
-| Continuity value | Unmeasured — one-shot greenfield only | Second-touch change requests on rungs 2–3; continuity delta + regression traps | 5 |
-| Dashboard | `results.html` committed to the repo only | Also published to GitHub Pages on results-PR merge | 3 |
+| Cohort identity | ✅ **Delivered** (Story #87, D-014). `benchmarkVersion` a required scorecard field (stamped via `bench/driver/version-readers.js`, distinct from the pinned-framework reader); noise-bands, deltas, and top-up counting pool exact-triple matches only; a cell mixing benchmark versions is suppressed as non-inferential; cross-cohort comparisons annotate which single key moved or flag the comparison confounded | Triple `(model, mandrelVersion, benchmarkVersion)`; pooling filters on all three | 3 |
+| Run automation | ✅ **Delivered** (Epic #84, D-017). `workflow_dispatch`-only `benchmark.yml`: plan (per-cell deficit via `bench/driver/topup-planner.js`) → hello-world canary → per-deficit-cell matrix (max-parallel 6) → aggregate renders report + dashboard and opens the results PR; a complete cohort is a near-zero-cost no-op. First end-to-end CI cohort still to be dispatched (operator-gated spend) | `workflow_dispatch` CI with top-up planner, parallel per-cell matrix, results PR | 3 |
+| HITL | ✅ **Delivered** (Epic #84). No CI job pushes to `main` — the aggregate job opens a results PR and review of that PR is the gate; the interactive STOP gates remain in the local `/benchmark` flow | Results-PR review is the gate in CI; interactive gates remain for local runs | 3 |
+| Per-cell N | ✅ **Delivered** (Epic #84). Per-scenario `targetN` in `scenario.json` (8/8/4), with `BENCH_N`/`target_n` retained as an explicit per-invocation override; a dedicated canary job runs hello-world first and aborts the invocation on failure | Per-scenario `targetN` (8/8/4); hello-world runs first as canary | 3 |
+| Feedback loop | ✅ **Delivered** (Stories #91/#92/#93, D-016). Four signal-gated finding classes in `bench/feedback/derive.js`; stable fingerprints matched **client-side** against open `bench-feedback` issues (comment-on-hit / file-on-miss, idempotent per fingerprint × cohort); filing merge-gated by `feedback-file.yml`; findings always embedded in the results-PR body, with loud non-fatal degradation when the cross-repo token is absent or underscoped | Auto-filed, fingerprint-deduplicated issues on the mandrel repo, gated on results-PR merge | 4 |
+| Phase attribution | ✅ **Delivered** (Stories #94/#95, D-019; phase-tag wiring completed post-Epic, 2026-07-10). Phase-scoped `/plan` + `/deliver` sessions with per-phase envelopes (`phases[]`, mandrel arm only), plan snapshot to `.raw/<stamp>/plan/`, plan-quality axis + per-run attribution table. `bench/feedback/attribution.js` is composed into `derive.js`/`file.js`: every finding carries a `phaseTag`, class-5 attribution/continuity findings derive per scenario, and filed issues carry the `phase::*` label (body-only fallback when the target repo lacks the label) | Phase-scoped sessions with per-phase envelopes; plan snapshot + plan-quality axis; phase-tagged feedback | 5 |
+| Continuity value | ✅ **Delivered** (Story #96, D-020). Frozen `changeRequest` on rungs 2–3 (hello-world exempt); touch 2 scored with the full dimension set, its own frozen behavioural suite, and phase-scoped `traps-touch2/` regression oracles (discrimination-tested, discovered separately from the touch-1 `traps/` scan); `touch2` block reported apart from touch 1; continuity delta rendered in report + dashboard; touch-2 spend counted against the cost ceiling | Second-touch change requests on rungs 2–3; continuity delta + regression traps | 5 |
+| Dashboard | ✅ **Delivered** (Story #88, D-021). `publish-pages.yml` deploys `results/results.html` (and only it — provenance never leaves the repo) to GitHub Pages on results-PR merge | Also published to GitHub Pages on results-PR merge | 3 |
 
 ## 10. Migration plan
 
@@ -553,12 +556,15 @@ Epic-sized unit for `/plan`:
 
    **Implementation deltas discovered during delivery:**
    - The retired env vars (`BENCH_SANDBOX_REPO_URL`/`REPO`/`BASELINE_REF`)
-     are not simply removed — `bench/run.js` keeps a small
+     were initially not simply removed — `bench/run.js` kept a small
      `RETIRED_SANDBOX_ENV_VARS` deprecation-warning shim so an operator
-     still configured for the old standing-repo path gets a named-replacement
-     warning instead of silent misconfiguration. That shim is the sole
-     permitted post-retirement reference to the old env-var names and is
-     explicitly exempted by the Story #73 regression-guard test.
+     still configured for the old standing-repo path got a named-replacement
+     warning instead of silent misconfiguration. **That shim was itself
+     retired 2026-07-10** (several cohorts after the cutover): the vars are
+     now read by nothing, `validateSandboxEnv`'s fail-fast on the absent
+     required vars is the only gate, and the Story #73 regression guard now
+     asserts that *nothing* — `bench/run.js` included — references the old
+     names.
    - `overlay.js`'s `.agentrc.json` rewrite (`rewriteAgentrc`) needed no
      mechanism change — it already took `{ owner, repo }` as a parameter, so
      repointing it at the ephemeral repo's dynamic coordinates was a
@@ -606,21 +612,89 @@ Epic-sized unit for `/plan`:
      absorbed the retired single-defect spike's frozen suite and
      `plaintext-password` oracle as its foundation rather than the matrix
      growing a fourth, dedicated trap-only rung.
-3. **Phase 3 — CI automation.** The `workflow_dispatch` workflow, top-up
+3. **Phase 3 — CI automation.** ✅ **Delivered** (Epic #84, Stories
+   #87–#90; D-014, D-017, D-021). The `workflow_dispatch` workflow, top-up
    planner, matrix topology, artifact aggregation, results-PR flow,
    `benchmarkVersion` in schema + cohort filtering, GitHub Pages publish on
    merge. *Exit: a cohort produced end-to-end by CI with a zero-cost no-op
-   rerun proving top-up, and the dashboard live on Pages.*
-4. **Phase 4 — Feedback loop.** `bench/feedback/`, fingerprinting, dedup,
+   rerun proving top-up, and the dashboard live on Pages.* — **narrowed the
+   same way as Phase 2's exit**: the workflow, planner, aggregation, PR
+   flow, Pages publish, and their shape-asserting tests all ship, but the
+   first live CI cohort (and with it the no-op rerun proof and the first
+   Pages deploy) is a cost-bearing, operator-gated dispatch still to run.
+
+   **Implementation deltas discovered during delivery:**
+   - **Hardening beyond the spec** (Epic #84 audit remediation):
+     `max_cost_usd` is allocated **proportionally** across deficit cells
+     from observed per-run cost history (`allocateMatrix`), not flat;
+     `BENCH_MAX_RUNS` caps each cell job at exactly its deficit;
+     `workflow_dispatch` inputs reach run bodies only as quoted env vars
+     (never `${{ inputs.* }}` interpolation); and the token surface is
+     split least-privilege — the destructive sandbox PAT
+     (`BENCH_GITHUB_TOKEN`) is exposed to the canary/cell jobs only, while
+     the results PR is opened with the workflow's own `GITHUB_TOKEN`.
+   - The cohort-stamp readers were extracted to
+     `bench/driver/version-readers.js` so the planner imports nothing from
+     `bench/run.js`.
+   - The plan job pins the resolved cohort triple into the aggregate job's
+     derive step, so the feedback derivation stays unambiguous once
+     `results/` holds more than one cohort (the benchmark's steady state).
+4. **Phase 4 — Feedback loop.** ✅ **Delivered** (Epic #85, Stories
+   #91/#92/#93; D-016). `bench/feedback/`, fingerprinting, dedup,
    merge-gated filing on the mandrel repo. *Exit: a real cohort files (or
-   comment-updates) at least one issue class end-to-end.*
-5. **Phase 5 — Phase attribution + second touch.** Split mandrel-arm runs
-   into phase-scoped sessions with the plan snapshot and plan-quality axis
-   (§3.4); frozen change requests, touch-2 scoring with regression traps,
-   and the continuity delta (§4.5); phase tags in the feedback stage.
-   *Exit: a cohort whose report shows per-phase cost, plan-quality scores,
-   and touch-2 continuity deltas, and whose feedback filings carry
-   `phase::*` tags.*
+   comment-updates) at least one issue class end-to-end.* — **not yet
+   exercised**: the end-to-end filing awaits the first live CI cohort
+   (Phase 3's own outstanding exit).
+
+   **Implementation deltas discovered during delivery:**
+   - The filer **lists** open `bench-feedback` issues and matches
+     fingerprint markers client-side — GitHub issue search cannot match
+     HTML-comment text (the Epic #85 pre-mortem catch), so search is
+     deliberately never used.
+   - Graceful degradation retains D-009 behaviour end-to-end: findings are
+     always embedded in the results-PR body, and a missing or underscoped
+     `FEEDBACK_GITHUB_TOKEN` (a dedicated secret, never the sandbox PAT)
+     degrades loudly and exits 0 so a misconfigured secret never fails a
+     merge.
+   - Class 5 (attribution & continuity findings) was always Phase-5 scope;
+     it shipped with Epic #86 as `bench/feedback/attribution.js` and was
+     composed into `derive.js`/`file.js` in the post-Epic wiring pass
+     (2026-07-10) — see Phase 5.
+5. **Phase 5 — Phase attribution + second touch.** ✅ **Delivered**
+   (Epic #86, Stories #94/#95/#96; D-019, D-020; phase-tag wiring completed
+   post-Epic, 2026-07-10). Split mandrel-arm runs into phase-scoped sessions
+   with the plan snapshot and plan-quality axis (§3.4); frozen change
+   requests, touch-2 scoring with regression traps, and the continuity delta
+   (§4.5); phase tags in the feedback stage. *Exit: a cohort whose report
+   shows per-phase cost, plan-quality scores, and touch-2 continuity deltas,
+   and whose feedback filings carry `phase::*` tags.* — met in code and
+   test; the first real cohort exercising it all awaits the Phase 3
+   dispatch.
+
+   **Implementation deltas discovered during delivery:**
+   - The plan-quality axis was initially built and unit-tested but never
+     populated on real runs; the Epic #86 audit remediation wired the
+     between-session plan snapshot into `scorecard.planQuality` and made
+     `buildScorecard` stamp the attribution classification from the
+     delivered dimensions.
+   - Touch-2 session spend is folded into both `BENCH_MAX_COST_USD`
+     accumulators (audit remediation) — a change-request cell runs four
+     sessions, and all four count against the ceiling.
+   - **Phase-tag wiring (closed 2026-07-10, post-Epic).** Epic #86 shipped
+     `bench/feedback/attribution.js` as a pure, unit-tested island — no
+     production module imported it, so filed issues carried no phase tags
+     and class-5 findings never derived on a real corpus (the
+     built-but-not-wired pattern the epic audits caught three times, this
+     instance being a cross-Epic composition no single Story's AC covered).
+     The wiring pass composed it into `deriveFindings` — per-scenario
+     inputs distilled from the cohort's own scorecards (the modal
+     `planQuality.attribution` verdict; a continuity read graded on real
+     signals only) — and into the filer, which applies `phase::*` as an
+     issue label with a body-only fallback when the target repo lacks the
+     label. `phaseTag` is a routing field, never fingerprint identity, so
+     pre-wiring fingerprints are byte-identical (unit-asserted), and an
+     end-to-end test drives a derived envelope through the mocked gh port
+     to the labeled create.
 
 Phases 1 and 2 are independent enough to plan together; 3 depends on 1
 (parallel cells need per-cell repos); 4 depends on 3 (feedback fires from
@@ -629,7 +703,7 @@ without attribution, then gains phase tags when 5 lands.
 
 ## 11. Decision deltas
 
-To be logged in `decisions.md` as each phase lands:
+All logged in [`decisions.md`](decisions.md) as their phases landed:
 
 | New | Supersedes / amends | Substance |
 | --- | --- | --- |

@@ -17,6 +17,13 @@
 //      OPENS A PULL REQUEST; no job in the workflow pushes to main directly.
 //   5. The two required Action secrets (ANTHROPIC_API_KEY, BENCH_GITHUB_TOKEN)
 //      are referenced.
+//   6. A non-blank mandrel_version input is actually INSTALLED (npm install
+//      mandrel@<version> --no-save) in the plan, canary, and cell jobs BEFORE
+//      `npx mandrel sync` — so the cohort triple, the scorecard stamps, and the
+//      materialized .agents/ bundle all resolve to the version under test, and
+//      the input can never again be silently inert. The version reaches run
+//      bodies only as a quoted env var (the H1 no-`${{ inputs.* }}`-in-run
+//      convention, asserted globally).
 //
 // These are static shape assertions, not an integration run: they guard the
 // workflow's contract so a future edit that drops an input, breaks the
@@ -297,6 +304,69 @@ describe('benchmark workflow — shape contract', () => {
       /matrix\.deficit/,
       'BENCH_MAX_RUNS must carry the per-cell deficit',
     );
+  });
+
+  it('installs a non-blank mandrel_version override in plan, canary, and cell — before mandrel sync', () => {
+    // The mandrel_version input was previously declared but never threaded
+    // into an install step, so a dispatch setting it silently benchmarked the
+    // pinned dependency (the Epic #84 audit's escalated follow-up). Guard the
+    // full contract per job: the override step exists, is gated on a non-blank
+    // input, installs via a QUOTED env var with --no-save, and precedes
+    // `npx mandrel sync` so the materialized bundle matches the version the
+    // cohort stamp (node_modules/mandrel/package.json) resolves.
+    for (const jobId of ['plan', 'canary', 'cell']) {
+      const steps = workflow.jobs[jobId].steps ?? [];
+      const overrideIdx = steps.findIndex(
+        (step) =>
+          typeof step.run === 'string' &&
+          /npm install "mandrel@\$MANDREL_VERSION"/.test(step.run),
+      );
+      assert.ok(
+        overrideIdx !== -1,
+        `${jobId} must install the mandrel_version override via a quoted $MANDREL_VERSION env var`,
+      );
+      const override = steps[overrideIdx];
+      assert.match(
+        String(override.if ?? ''),
+        /inputs\.mandrel_version\s*!=\s*''/,
+        `${jobId}'s override step must be gated on a non-blank mandrel_version input`,
+      );
+      assert.match(
+        String(override.env?.MANDREL_VERSION ?? ''),
+        /inputs\.mandrel_version/,
+        `${jobId}'s override step must source MANDREL_VERSION from the input via env`,
+      );
+      assert.match(
+        override.run,
+        /--no-save/,
+        `${jobId}'s override install must be --no-save (never mutate the lockfile)`,
+      );
+      const syncIdx = steps.findIndex(
+        (step) =>
+          typeof step.run === 'string' && step.run.includes('npx mandrel sync'),
+      );
+      assert.ok(
+        syncIdx !== -1 && overrideIdx < syncIdx,
+        `${jobId} must install the override BEFORE npx mandrel sync`,
+      );
+    }
+  });
+
+  it('never interpolates a dispatch input into a run body (H1 injection guard)', () => {
+    // Inputs reach run bodies only as quoted env vars; an Actions-expression
+    // interpolation of an input inside a run: block is a shell-injection
+    // surface. This codifies the H1 convention every step in this workflow
+    // follows.
+    for (const step of allSteps(workflow)) {
+      if (typeof step.run !== 'string') continue;
+      // Match a REAL interpolation (`${{ inputs.model }}`), not the shell
+      // comment that documents the convention (`${{ inputs.* }}`).
+      assert.doesNotMatch(
+        step.run,
+        /\$\{\{\s*inputs\.[a-zA-Z_]/,
+        `run body of step "${step.name ?? step.run.slice(0, 40)}" must not interpolate inputs`,
+      );
+    }
   });
 
   it('references the two required Action secrets', () => {
