@@ -2,8 +2,14 @@
 
 A running log of the load-bearing decisions behind this benchmark and *why* they
 were made, so they are not silently re-litigated. Newest context at the bottom
-of each entry. All entries below were decided 2026-06-16 during the
-design + initial-build session.
+of each entry. Entries D-002–D-012 were decided 2026-06-16 during the
+design + initial-build session; D-013–D-021 were logged 2026-07-09/10 as the
+five migration phases landed.
+
+> The migration design doc these later entries were originally drafted against
+> (`target-architecture.md`) has been **retired** now that all five phases have
+> shipped. Its rationale lives on in these entries; the implemented system is
+> described in [`architecture.md`](architecture.md).
 
 ---
 
@@ -344,8 +350,7 @@ the initial design (D-002 era). Prior benchmark results (`results/`) carry
 no continuity obligation across this cutover — the standing-repo dependency
 they were run against is now historical provenance only.
 
-**Status.** Migration Phase 1 (see
-[`target-architecture.md`](target-architecture.md) §10) — delivered.
+**Status.** Migration Phase 1 — delivered.
 Ephemeral provisioning (Story #71) and the janitor (Story #72) landed first;
 this entry is logged alongside the reference-sweep + docs cutover (Story #73)
 that retires every remaining reference to the standing repo from code, tests,
@@ -419,8 +424,7 @@ also deleted rather than migrated: the schema change (`trap`,
 continuity obligation across this cutover (operator pre-authorization,
 2026-07-09) — comparisons restart cleanly on the new matrix.
 
-**Status.** Migration Phase 2 (see [`target-architecture.md`](target-architecture.md)
-§10) — delivered (Stories #74/#75/#76/#78/#79). Running the first cohort on
+**Status.** Migration Phase 2 — delivered (Stories #74/#75/#76/#78/#79). Running the first cohort on
 the new matrix is explicitly **not** part of this decision's delivery — it
 is a cost-bearing, operator-gated `/benchmark` invocation, a Non-Goal of
 both the Epic and Story #79.
@@ -429,7 +433,8 @@ both the Epic and Story #79.
 
 ## D-018 — §8 measurement fixes: autonomy is a guardrail, planning-fidelity footprint is proportional, overhead-ratio gets a real phase-split (Epic #66, Story #77, decided 2026-07-09)
 
-**Decision.** Amends target-architecture.md §8. Three independent instrument
+**Decision.** Amends the seven-dimension measurement standards (see
+[`architecture.md`](architecture.md) §4). Three independent instrument
 fixes, landed together because they share one review:
 
 1. **Autonomy reclassified as a mandrel-arm guardrail, not a
@@ -474,15 +479,14 @@ Tech Spec scoped as one slice, independent of the scenario-matrix build
 two, and bundling them kept the review to one pass over
 `bench/score/dimensions.js` and its normalize/report/dashboard consumers.
 
-**Status.** Migration Phase 2 (see [`target-architecture.md`](target-architecture.md)
-§10) — delivered (Story #77; the report/dashboard rendering of the
+**Status.** Migration Phase 2 — delivered (Story #77; the report/dashboard rendering of the
 guardrail and the code/test/docs sweep of the retired autonomy delta row
 landed in Story #79).
 
 ## D-014 — Cohort identity is the triple (model, mandrelVersion/frameworkVersion, benchmarkVersion); all three keys gate pooling (Epic #66/#84, decided 2026-07-09)
 
-**Decision.** Implements [`target-architecture.md`](target-architecture.md)
-§3.1 (and listed in §11). A **cohort** — the unit of statistical comparison —
+**Decision.** Implements the triple-cohort-key design (now realized in
+[`architecture.md`](architecture.md) §5). A **cohort** — the unit of statistical comparison —
 is the triple `(model, frameworkVersion, benchmarkVersion)`, not just the
 `(model, frameworkVersion)` pair the earlier layout keyed on. `benchmarkVersion`
 (this repo's own `package.json` version) joins the key because the benchmark is
@@ -511,8 +515,8 @@ most-recent cohort, and `compareRuns` suppresses internally-multi-cohort bands).
 
 ## D-021 — `results.html` publishes to GitHub Pages on results-PR merge (Epic #84, decided 2026-07-09)
 
-**Decision.** Implements [`target-architecture.md`](target-architecture.md) §11
-(the "Dashboard also published to GitHub Pages on results-PR merge" delta). The
+**Decision.** Publishes the longitudinal dashboard to GitHub Pages on
+results-PR merge. The
 longitudinal dashboard (`results/results.html`, rendered by the aggregate job)
 is published to GitHub Pages automatically. `.github/workflows/publish-pages.yml`
 triggers on a `push` to `main` whose changed paths include
@@ -532,8 +536,7 @@ by the `benchmark.yml` aggregate job) lands the freshly-rendered dashboard on
 
 ## D-017 — Benchmark runs on-demand via CI with cohort top-up intelligence; scheduling deliberately off until enabled (Epic #84, decided 2026-07-09)
 
-**Decision.** Implements [`target-architecture.md`](target-architecture.md) §6
-(and listed in §11). **Amends D-005**: the periodic capability report gains an
+**Decision.** Implements the on-demand-CI-with-top-up design. **Amends D-005**: the periodic capability report gains an
 automated executor — a `workflow_dispatch`-only GitHub Actions workflow
 (`.github/workflows/benchmark.yml`) — while remaining on-demand: no `schedule:`
 trigger is enabled, and adding one later is a deliberate one-line change, never
@@ -570,8 +573,7 @@ D-014 and D-021 but omitted D-017.)*
 
 ## D-016 — Feedback findings auto-filed on the mandrel repo, fingerprint-deduplicated and merge-gated (Epic #85, decided 2026-07-09)
 
-**Decision.** Implements [`target-architecture.md`](target-architecture.md) §7
-(and listed in §11). The report's "Recommended improvements" section stops being
+**Decision.** Implements the auto-filed-feedback design. The report's "Recommended improvements" section stops being
 a dead end (supersedes [D-009](#d-009--recommended-improvements-are-surfaced-never-auto-filed)):
 a `bench/feedback/` stage runs after aggregation and turns a results corpus into
 deterministic, evidence-carrying **findings** that are auto-filed as issues on
@@ -613,15 +615,14 @@ survives once `main` holds more than one cohort), single-sourced the
 routing-mismatch threshold, and wrapped the filer's LIST call in the same
 graceful-degradation guard as its writes. The post-Epic-#86 wiring pass
 (2026-07-10) added the fifth (`attribution`) finding class and the `phase::*`
-routing tag per target-architecture §7.2: every finding now carries a
+routing tag: every finding now carries a
 `phaseTag`, and a freshly-filed issue also carries the matching `phase::plan` /
 `phase::deliver` / `phase::artifacts` label (falling back loudly to a body-only
 tag when the target repo does not define the label).
 
 ## D-019 — Mandrel-arm runs split into phase-scoped `/plan` + `/deliver` sessions, with an intrinsic plan-quality axis for phase attribution (Epic #86, decided 2026-07-09)
 
-**Decision.** Implements [`target-architecture.md`](target-architecture.md) §3.4
-(and listed in §11). **Amends D-008**: a mandrel-arm run is no longer
+**Decision.** Implements the phase-scoped-sessions design. **Amends D-008**: a mandrel-arm run is no longer
 one opaque session but an **ordered set of phase-scoped sessions** whose cost is
 their sum. This lets the feedback loop (§7) route a finding to the half of
 Mandrel that owns it — `/plan` vs `/deliver` — rather than to "Mandrel" at large,
@@ -664,8 +665,7 @@ classification from the delivered dimensions.
 
 ## D-020 — A second-touch evolution phase on rungs 2–3, with a continuity delta as the persistence measurement (Epic #86, decided 2026-07-09)
 
-**Decision.** Implements [`target-architecture.md`](target-architecture.md) §4.5
-(and listed in §11). One-shot greenfield delivery is where a frontier model needs
+**Decision.** Implements the second-touch continuity design. One-shot greenfield delivery is where a frontier model needs
 scaffolding least, yet Mandrel's central thesis (docs, ADRs, tickets,
 decomposition discipline) is about making the **next** change cheaper and safer.
 No one-shot benchmark can observe that, so `story-scope` and `epic-scope` runs get
