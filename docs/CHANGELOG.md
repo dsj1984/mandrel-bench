@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.6.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.5.0...mandrel-bench-v0.6.0) (2026-07-10)
+
+
+### Added
+
+* Epic [#65](https://github.com/dsj1984/mandrel-bench/issues/65) ([#81](https://github.com/dsj1984/mandrel-bench/issues/81)) ([6c950f3](https://github.com/dsj1984/mandrel-bench/commit/6c950f3ed533b5ccf04ee350caf02468fdbd5d39))
+* Epic [#66](https://github.com/dsj1984/mandrel-bench/issues/66) ([#83](https://github.com/dsj1984/mandrel-bench/issues/83)) ([f64ca4d](https://github.com/dsj1984/mandrel-bench/commit/f64ca4d540ddfd2750a6b03dec3d5ce06e0e1712))
+* Epic [#84](https://github.com/dsj1984/mandrel-bench/issues/84) ([#98](https://github.com/dsj1984/mandrel-bench/issues/98)) ([f327bae](https://github.com/dsj1984/mandrel-bench/commit/f327bae56ebb29d67bb569210dbe19216f78ec6e))
+* Epic [#85](https://github.com/dsj1984/mandrel-bench/issues/85) ([#99](https://github.com/dsj1984/mandrel-bench/issues/99)) ([d99d112](https://github.com/dsj1984/mandrel-bench/commit/d99d112a2d4c59e9d7c7d62b1b8b7ab1b15c7585))
+* Epic [#86](https://github.com/dsj1984/mandrel-bench/issues/86) ([#100](https://github.com/dsj1984/mandrel-bench/issues/100)) ([597d1df](https://github.com/dsj1984/mandrel-bench/commit/597d1dfe2df183fd97674b142e86c7227bd607a8))
+
+
+### Fixed
+
+* **bench:** make janitor sweep tests clock-deterministic ([#101](https://github.com/dsj1984/mandrel-bench/issues/101)) ([d87c5a2](https://github.com/dsj1984/mandrel-bench/commit/d87c5a2728516786e6c1fc952da2277c3e5ed5f1))
+
 ## [0.5.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.4.0...mandrel-bench-v0.5.0) (2026-06-24)
 
 
