@@ -2813,3 +2813,66 @@ test('makeClaudeJudgeTransport — real dimension-judge transport', async (t) =>
     },
   );
 });
+
+// ---------------------------------------------------------------------------
+// Resume hardening: a TRANSIENT infra failure (rate/session limit) in a caught,
+// normally-degrading stage aborts the cell (so a resume redoes it) instead of
+// baking a degraded scorecard that resume would skip; a GENUINE failure still
+// degrades gracefully.
+// ---------------------------------------------------------------------------
+
+test('runOneRun: a TRANSIENT judge failure aborts the cell (rejects) for a clean resume', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  deps.runDimensionJudgeFn = async () => {
+    throw new Error(
+      'claude -p exited 1: {"api_error_status":429} session limit',
+    );
+  };
+  const { scenario, evaluate } = await loadScenarioFake();
+  await assert.rejects(
+    () =>
+      runOneRun(
+        {
+          scenario,
+          evaluate,
+          scenarioDir: '/repo/bench/scenarios/hello-world',
+          arm: 'mandrel',
+          runIndex: 1,
+          sandbox: { owner: 'o', repo: 'r', repoUrl: 'u', baselineSha: 's' },
+          resultsDir: '/results',
+          ephemeralRoot: '/tmp/e',
+        },
+        deps,
+      ),
+    /session limit|429/,
+    'a transient judge failure must propagate so the cell is never persisted/checkpointed',
+  );
+});
+
+test('runOneRun: a GENUINE judge failure degrades gracefully (cell completes, spine-only)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  deps.runDimensionJudgeFn = async () => {
+    throw new Error('judge transport returned an unparseable response');
+  };
+  const { scenario, evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario,
+      evaluate,
+      scenarioDir: '/repo/bench/scenarios/hello-world',
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: { owner: 'o', repo: 'r', repoUrl: 'u', baselineSha: 's' },
+      resultsDir: '/results',
+      ephemeralRoot: '/tmp/e',
+    },
+    deps,
+  );
+  assert.ok(scorecard, 'the cell completes rather than aborting');
+  assert.ok(
+    (scorecard.warnings ?? []).some((w) => /judge-absent/.test(w)),
+    'the judge folds into the spine (judge-absent warning recorded)',
+  );
+});
