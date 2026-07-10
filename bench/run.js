@@ -1032,191 +1032,226 @@ export async function runTouch2(opts, deps = {}) {
     { arm, workspacePath: handle.workspacePath },
     { cpFn: deps.cpFn, mkdirFn: deps.mkdirFn },
   );
+  // The control arm's reduced touch-2 tree is a fresh sibling directory under
+  // the ephemeral root (`${workspacePath}--touch2-delivered`). teardownSandbox
+  // removes only `handle.workspacePath`, and the janitor sweeps only leaked
+  // GitHub repos — so this sibling would leak and fill the ephemeral root
+  // across a batch (audit M2). Clean it up in the finally below.
+  const reducedDir =
+    inheritance === 'delivered-code-only' && touch2Cwd !== handle.workspacePath
+      ? touch2Cwd
+      : null;
+  const rmDir =
+    deps.rmFn ?? ((p) => rmSync(p, { recursive: true, force: true }));
 
-  // A fresh session drives the CHANGE REQUEST. The bridged scenario carries the
-  // change-request prompt as its task; no `epicId` is threaded (the second
-  // touch discovers/authors its own plan in-session for the mandrel arm).
-  const bridged = {
-    id: scenario.id,
-    taskPrompt: scenario.changeRequest.prompt,
-  };
-  const extraArgs = [...SESSION_EXTRA_ARGS];
-  const session = runSessionFn(
-    {
-      arm,
-      scenario: bridged,
-      cwd: touch2Cwd,
-      model,
-      extraArgs,
-      timeoutMs,
-    },
-    { invokeFn: deps.invokeFn, logger },
-  );
+  try {
+    // A fresh session drives the CHANGE REQUEST. The bridged scenario carries the
+    // change-request prompt as its task; no `epicId` is threaded (the second
+    // touch discovers/authors its own plan in-session for the mandrel arm).
+    const bridged = {
+      id: scenario.id,
+      taskPrompt: scenario.changeRequest.prompt,
+    };
+    const extraArgs = [...SESSION_EXTRA_ARGS];
+    const session = runSessionFn(
+      {
+        arm,
+        scenario: bridged,
+        cwd: touch2Cwd,
+        model,
+        extraArgs,
+        timeoutMs,
+      },
+      { invokeFn: deps.invokeFn, logger },
+    );
 
-  // Materialize the delivered second-touch code. The mandrel arm's clean
-  // /deliver auto-merged onto the sandbox default branch, so pull it into the
-  // touch-2 workspace; the control arm committed directly in `touch2Cwd`.
-  if (arm === 'mandrel') {
-    try {
-      gitFn(['fetch', 'origin', 'main'], touch2Cwd);
-      gitFn(['checkout', 'main'], touch2Cwd);
-      gitFn(['reset', '--hard', 'origin/main'], touch2Cwd);
-    } catch (err) {
-      logger?.warn?.(
-        `[run] touch2: could not materialize merged code (run may have blocked): ${err?.message ?? err}`,
-      );
-    }
-  }
-
-  // Score touch-2 Quality by booting the delivered app and driving the frozen
-  // touch-2 behavioural suite (session invalidation / role-based access are
-  // asserted HERE, behaviourally — never by a source-scan oracle).
-  const quality = await withRunningAppFn(
-    { workspacePath: touch2Cwd, app: scenario.app },
-    async (baseUrl) => {
-      if (arm === 'mandrel') {
-        const r = await scoreQualityFn({
-          evaluate: touch2Evaluate,
-          baseUrl,
-          storyId: 1,
-          epicId: null,
-          transport: 'in-process',
-        });
-        return qualityInputs({
-          frozen: r.frozen,
-          crossCheckDecision: r.crossCheck?.decision ?? null,
-        });
+    // Materialize the delivered second-touch code. The mandrel arm's clean
+    // /deliver auto-merged onto the sandbox default branch, so pull it into the
+    // touch-2 workspace; the control arm committed directly in `touch2Cwd`.
+    if (arm === 'mandrel') {
+      try {
+        gitFn(['fetch', 'origin', 'main'], touch2Cwd);
+        gitFn(['checkout', 'main'], touch2Cwd);
+        gitFn(['reset', '--hard', 'origin/main'], touch2Cwd);
+      } catch (err) {
+        logger?.warn?.(
+          `[run] touch2: could not materialize merged code (run may have blocked): ${err?.message ?? err}`,
+        );
       }
-      const frozen = await touch2Evaluate(baseUrl);
-      return qualityInputs({ frozen, crossCheckDecision: null });
-    },
-    deps.appRunnerDeps,
-  );
+    }
 
-  // Full dimension set: collect maintainability + security over the delivered
-  // touch-2 tree (best-effort, same as touch 1).
-  let maintainabilitySignals = {};
-  try {
-    maintainabilitySignals = collectMaintainabilityFn(
-      touch2Cwd,
-      deps.collectMaintainabilityPorts,
+    // Score touch-2 Quality by booting the delivered app and driving the frozen
+    // touch-2 behavioural suite (session invalidation / role-based access are
+    // asserted HERE, behaviourally — never by a source-scan oracle).
+    const quality = await withRunningAppFn(
+      { workspacePath: touch2Cwd, app: scenario.app },
+      async (baseUrl) => {
+        if (arm === 'mandrel') {
+          const r = await scoreQualityFn({
+            evaluate: touch2Evaluate,
+            baseUrl,
+            storyId: 1,
+            epicId: null,
+            transport: 'in-process',
+          });
+          return qualityInputs({
+            frozen: r.frozen,
+            crossCheckDecision: r.crossCheck?.decision ?? null,
+          });
+        }
+        const frozen = await touch2Evaluate(baseUrl);
+        return qualityInputs({ frozen, crossCheckDecision: null });
+      },
+      deps.appRunnerDeps,
     );
-  } catch (err) {
-    logger?.warn?.(
-      `[run] touch2: maintainability collector failed (scoring 0): ${err?.message ?? err}`,
-    );
-  }
-  let securitySignals = {};
-  try {
-    securitySignals = collectSecurityFn(touch2Cwd, deps.collectSecurityPorts);
-  } catch (err) {
-    logger?.warn?.(
-      `[run] touch2: security collector failed (scoring 0): ${err?.message ?? err}`,
-    );
-  }
 
-  // Phase-scoped regression oracles: source-scan the touch-2 tree ONLY under
-  // traps-touch2/. Best-effort: a runner error leaves the regression block off.
-  let regression = null;
-  if (typeof scenarioDir === 'string' && scenarioDir.length > 0) {
+    // Full dimension set: collect maintainability + security over the delivered
+    // touch-2 tree (best-effort, same as touch 1).
+    let maintainabilitySignals = {};
     try {
-      const verdict = await runTrapOraclesFn(
-        {
-          scenarioDir,
-          deliveredTreePath: touch2Cwd,
-          trapsSubdir: TOUCH2_TRAPS_SUBDIR,
-        },
-        deps.trapRunnerDeps,
+      maintainabilitySignals = collectMaintainabilityFn(
+        touch2Cwd,
+        deps.collectMaintainabilityPorts,
       );
-      if (verdict.classes.length > 0) regression = verdict;
     } catch (err) {
       logger?.warn?.(
-        `[run] touch2: regression trap-runner failed (no regression signal recorded): ${err?.message ?? err}`,
+        `[run] touch2: maintainability collector failed (scoring 0): ${err?.message ?? err}`,
       );
     }
-  }
+    let securitySignals = {};
+    try {
+      securitySignals = collectSecurityFn(touch2Cwd, deps.collectSecurityPorts);
+    } catch (err) {
+      logger?.warn?.(
+        `[run] touch2: security collector failed (scoring 0): ${err?.message ?? err}`,
+      );
+    }
 
-  let judgeScores = null;
-  try {
-    judgeScores = await runDimensionJudgeFn(
-      { maintainabilitySignals, securitySignals },
-      deps.dimensionJudgeDeps,
-    );
-  } catch (err) {
-    logger?.warn?.(
-      `[run] touch2: dimension judge failed (judge weight folded into spine): ${err?.message ?? err}`,
-    );
-  }
-
-  const maintainabilityInputs = {
-    objectiveMaintainabilityScore:
-      maintainabilitySignals.objectiveMaintainabilityScore ?? null,
-    maintainabilityJudgeScore: judgeScores?.maintainability ?? null,
-    lintWarnings: maintainabilitySignals.lintErrorCount ?? 0,
-    complexityScore: maintainabilitySignals.complexityScore ?? null,
-    maintainabilityIndex: null,
-  };
-  const securityInputs = derivedSecurityInputs(securitySignals, judgeScores);
-
-  // Build a full touch-2 sub-scorecard (the "full dimension set") and trim it
-  // to the compact continuity block. The touch-2 run carries its own identity
-  // stamp so its runId never collides with the touch-1 record.
-  const run = buildRunIdentity({
-    scenario: scenario.id,
-    arm,
-    runIndex,
-    timestamp: nowIso(),
-    modelId: resolveModelId(session.envelope, model),
-    frameworkVersion,
-    benchmarkVersion,
-    env,
-  });
-  const subCard = buildScorecard({
-    run: { ...run, runId: sanitizeRunId(`${run.runId}-touch2`) },
-    lifecycle: [],
-    signals: [],
-    envelope: session.envelope,
-    quality,
-    planning: {},
-    maintainabilityInputs,
-    securityInputs,
-    trap: null,
-    phases: null,
-    scenarioRouting:
-      typeof scenario?.routing === 'string' ? scenario.routing : null,
-  });
-
-  const outcome = subCard.dimensions.quality.score;
-  const cost = subCard.dimensions.efficiency.costUsd ?? null;
-  return {
-    changeRequestId:
-      typeof scenario.changeRequest.id === 'string'
-        ? scenario.changeRequest.id
-        : null,
-    inheritance,
-    outcome,
-    cost,
-    frozenSuitePassed: quality.frozenSuitePassed,
-    frozenSuiteTotal: quality.frozenSuiteTotal,
-    totalTokens: subCard.dimensions.efficiency.totalTokens,
-    wallClockMs: subCard.dimensions.efficiency.wallClockMs,
-    dimensions: subCard.dimensions,
-    ...(regression
-      ? {
-          regression: {
-            classes: regression.classes.map((entry) => ({
-              class: entry.class,
-              score: entry.score,
-              defectPresent: Boolean(entry.defectPresent),
-              ...(Array.isArray(entry.evidence)
-                ? { evidence: entry.evidence }
-                : {}),
-            })),
-            cleanRate: regression.cleanRate,
+    // Phase-scoped regression oracles: source-scan the touch-2 tree ONLY under
+    // traps-touch2/. Best-effort: a runner error leaves the regression block off.
+    let regression = null;
+    if (typeof scenarioDir === 'string' && scenarioDir.length > 0) {
+      try {
+        const verdict = await runTrapOraclesFn(
+          {
+            scenarioDir,
+            deliveredTreePath: touch2Cwd,
+            trapsSubdir: TOUCH2_TRAPS_SUBDIR,
           },
-        }
-      : {}),
-  };
+          deps.trapRunnerDeps,
+        );
+        if (verdict.classes.length > 0) regression = verdict;
+      } catch (err) {
+        logger?.warn?.(
+          `[run] touch2: regression trap-runner failed (no regression signal recorded): ${err?.message ?? err}`,
+        );
+      }
+    }
+
+    let judgeScores = null;
+    try {
+      judgeScores = await runDimensionJudgeFn(
+        { maintainabilitySignals, securitySignals },
+        deps.dimensionJudgeDeps,
+      );
+    } catch (err) {
+      logger?.warn?.(
+        `[run] touch2: dimension judge failed (judge weight folded into spine): ${err?.message ?? err}`,
+      );
+    }
+
+    const maintainabilityInputs = {
+      objectiveMaintainabilityScore:
+        maintainabilitySignals.objectiveMaintainabilityScore ?? null,
+      maintainabilityJudgeScore: judgeScores?.maintainability ?? null,
+      lintWarnings: maintainabilitySignals.lintErrorCount ?? 0,
+      complexityScore: maintainabilitySignals.complexityScore ?? null,
+      maintainabilityIndex: null,
+    };
+    const securityInputs = derivedSecurityInputs(securitySignals, judgeScores);
+
+    // Build a full touch-2 sub-scorecard (the "full dimension set") and trim it
+    // to the compact continuity block. The touch-2 run carries its own identity
+    // stamp so its runId never collides with the touch-1 record.
+    const run = buildRunIdentity({
+      scenario: scenario.id,
+      arm,
+      runIndex,
+      timestamp: nowIso(),
+      modelId: resolveModelId(session.envelope, model),
+      frameworkVersion,
+      benchmarkVersion,
+      env,
+    });
+    const subCard = buildScorecard({
+      run: { ...run, runId: sanitizeRunId(`${run.runId}-touch2`) },
+      lifecycle: [],
+      signals: [],
+      envelope: session.envelope,
+      quality,
+      planning: {},
+      maintainabilityInputs,
+      securityInputs,
+      trap: null,
+      phases: null,
+      scenarioRouting:
+        typeof scenario?.routing === 'string' ? scenario.routing : null,
+    });
+
+    const outcome = subCard.dimensions.quality.score;
+    const cost = subCard.dimensions.efficiency.costUsd ?? null;
+    return {
+      changeRequestId:
+        typeof scenario.changeRequest.id === 'string'
+          ? scenario.changeRequest.id
+          : null,
+      inheritance,
+      outcome,
+      cost,
+      frozenSuitePassed: quality.frozenSuitePassed,
+      frozenSuiteTotal: quality.frozenSuiteTotal,
+      totalTokens: subCard.dimensions.efficiency.totalTokens,
+      wallClockMs: subCard.dimensions.efficiency.wallClockMs,
+      dimensions: subCard.dimensions,
+      ...(regression
+        ? {
+            regression: {
+              classes: regression.classes.map((entry) => ({
+                class: entry.class,
+                score: entry.score,
+                defectPresent: Boolean(entry.defectPresent),
+                ...(Array.isArray(entry.evidence)
+                  ? { evidence: entry.evidence }
+                  : {}),
+              })),
+              cleanRate: regression.cleanRate,
+            },
+          }
+        : {}),
+    };
+  } finally {
+    // M3 (audit): the touch-2 mandrel arm calls runSessionFn with NO
+    // betweenPhases, so its /deliver session gets deliverTarget=null and
+    // self-discovers the plan it authored in-session via the fallback prompt.
+    // This is a DELIBERATE, sane degradation for the second touch (the fallback
+    // is designed for exactly this) — threading a full touch-2 id-discovery +
+    // plan-snapshot seam for parity was judged higher-risk than its narrow
+    // reliability benefit here, so it is intentionally left to the in-session
+    // fallback rather than the touch-1 between-phases discovery path.
+    //
+    // M2 (audit): tear down the control arm's reduced touch-2 sibling so it
+    // does not leak under the ephemeral root. Best-effort — a cleanup failure
+    // must not mask the touch-2 result.
+    if (reducedDir) {
+      try {
+        rmDir(reducedDir);
+      } catch (err) {
+        logger?.warn?.(
+          `[run] touch2: could not remove the reduced control workspace ${reducedDir}: ${err?.message ?? err}`,
+        );
+      }
+    }
+  }
 }
 
 /**

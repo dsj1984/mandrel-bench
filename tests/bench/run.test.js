@@ -2667,6 +2667,9 @@ test('runTouch2 (control): reduces the workspace to delivered code only and scor
     };
   };
   deps.runTrapOraclesFn = async () => ({ classes: [], cleanRate: null });
+  // Capture the reduced-workspace teardown (audit M2).
+  const removed = [];
+  deps.rmFn = (p) => removed.push(p);
 
   const block = await runTouch2(
     {
@@ -2697,6 +2700,40 @@ test('runTouch2 (control): reduces the workspace to delivered code only and scor
   assert.equal(block.frozenSuitePassed, 4);
   // No traps-touch2 verdict ⇒ no regression sub-block.
   assert.equal('regression' in block, false);
+  // M2: the reduced sibling workspace is torn down in the finally so it does
+  // not leak under the ephemeral root.
+  assert.deepEqual(removed, ['/ws-control--touch2-delivered']);
+});
+
+test('runTouch2 (mandrel): does NOT remove any workspace — the full pipeline tree travels forward untouched (audit M2)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  deps.runTrapOraclesFn = async () => ({ classes: [], cleanRate: null });
+  const removed = [];
+  deps.rmFn = (p) => removed.push(p);
+
+  const block = await runTouch2(
+    {
+      scenario: FAKE_SCENARIO_WITH_CR,
+      touch2Evaluate: fakeTouch2Evaluate,
+      scenarioDir: '/repo/bench/scenarios/story-scope',
+      arm: 'mandrel',
+      runIndex: 1,
+      model: 'claude-opus-4-8',
+      sandbox: { owner: 'o', repo: 'r', repoUrl: 'u' },
+      handle: { workspacePath: '/ws-mandrel' },
+      frameworkVersion: '1.70.0',
+      benchmarkVersion: '0.5.0',
+      env: { node: 'v24.16.0', os: 'darwin' },
+      timeoutMs: 1000,
+    },
+    deps,
+  );
+
+  assert.equal(block.inheritance, 'full-pipeline');
+  // The mandrel arm runs touch 2 in the SAME workspace (no copy), so there is
+  // no reduced sibling to remove.
+  assert.deepEqual(removed, []);
 });
 
 test('runTouch2: a scenario with no changeRequest returns null (touch 2 skipped, e.g. hello-world)', async () => {
