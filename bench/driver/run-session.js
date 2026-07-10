@@ -267,6 +267,44 @@ export function buildClaudeArgs(input) {
 }
 
 /**
+ * Recognise a TRANSIENT infrastructure failure (rate/session limit, Anthropic
+ * overload, network) in a `claude -p` error — as opposed to a GENUINE null (the
+ * delivered app is broken, the judge legitimately abstained). The run-session
+ * layer throws on a non-zero exit with the failed session's envelope JSON in the
+ * message, so the 429 / "session limit" / "overloaded" text is matched there.
+ *
+ * Deliberately narrow: it matches `429`/`529`, explicit rate/session-limit and
+ * overload phrasing, and network errnos — NOT ambiguous 5xx codes, which a
+ * *delivered app* could legitimately return through the acceptance oracle (that
+ * is a genuine failure, not an infra blip).
+ *
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isTransientClaudeError(err) {
+  const msg = String(err?.message ?? err ?? '');
+  return /\b(429|529)\b|rate.?limit(ed)?|session limit|overloaded|too many requests|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up|network error|timed out/i.test(
+    msg,
+  );
+}
+
+/**
+ * Re-throw `err` when it is a transient infrastructure failure, so a caught,
+ * normally-degrading stage (the dimension judge, the second touch) ABORTS its
+ * cell instead of completing degraded. The cell is then neither persisted nor
+ * checkpointed, so a resume redoes it cleanly rather than baking a transient
+ * blip into a "complete" scorecard indistinguishable from a genuine null. A
+ * genuine (non-transient) error is a no-op here — the caller swallows and
+ * degrades it exactly as before.
+ *
+ * @param {unknown} err
+ * @returns {void}
+ */
+export function rethrowIfTransientClaudeError(err) {
+  if (isTransientClaudeError(err)) throw err;
+}
+
+/**
  * Pre-trust a throwaway benchmark workspace for headless `claude -p`.
  *
  * Claude Code gates on WORKSPACE TRUST: `claude -p` in a directory it has never

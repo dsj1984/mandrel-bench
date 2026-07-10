@@ -62,6 +62,7 @@ import {
   defaultInvokeClaudeSession,
   runSession as defaultRunSession,
   parseSessionEnvelope,
+  rethrowIfTransientClaudeError,
 } from './driver/run-session.js';
 import {
   createEphemeralRepo,
@@ -1156,6 +1157,9 @@ export async function runTouch2(opts, deps = {}) {
         deps.dimensionJudgeDeps,
       );
     } catch (err) {
+      // Transient infra failure → abort so a resume redoes the cell; a genuine
+      // judge abstention degrades below.
+      rethrowIfTransientClaudeError(err);
       logger?.warn?.(
         `[run] touch2: dimension judge failed (judge weight folded into spine): ${err?.message ?? err}`,
       );
@@ -1697,6 +1701,10 @@ export async function runOneRun(opts, deps = {}) {
         deps.dimensionJudgeDeps,
       );
     } catch (err) {
+      // A transient infra failure (rate/session limit, overload, network) must
+      // ABORT the cell so a resume redoes it — never bake a blip into a
+      // "complete" scorecard. A genuine null (judge abstained) degrades below.
+      rethrowIfTransientClaudeError(err);
       logger?.warn?.(
         `[run] dimension judge failed (judge weight folded into spine): ${err?.message ?? err}`,
       );
@@ -1740,6 +1748,9 @@ export async function runOneRun(opts, deps = {}) {
           deps,
         );
       } catch (err) {
+        // Transient infra failure → abort the cell for a clean resume; a
+        // genuine touch-2 failure (delivered app broken) degrades below.
+        rethrowIfTransientClaudeError(err);
         logger?.warn?.(
           `[run] touch2 failed (no touch2 block recorded): ${err?.message ?? err}`,
         );

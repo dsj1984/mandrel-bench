@@ -24,7 +24,9 @@ import {
   buildMandrelDeliverPrompt,
   buildMandrelPlanPrompt,
   DEFAULT_BENCH_MODEL,
+  isTransientClaudeError,
   parseSessionEnvelope,
+  rethrowIfTransientClaudeError,
   runSession,
   trustWorkspaceForClaude,
 } from '../../../bench/driver/run-session.js';
@@ -654,5 +656,62 @@ test('trustWorkspaceForClaude — refuses to clobber an unparseable config', () 
     m.writes.length,
     0,
     'a corrupt/concurrent config must never be overwritten',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// isTransientClaudeError / rethrowIfTransientClaudeError — distinguish a
+// transient infra blip (must abort the cell for a clean resume) from a genuine
+// null (degrade gracefully).
+// ---------------------------------------------------------------------------
+
+test('isTransientClaudeError — flags rate/session limit, overload, network', () => {
+  const transient = [
+    'claude -p exited with status 1: {"api_error_status":429,"result":"You\'ve hit your session limit · resets 11:40am"}',
+    'API Error: Request rejected (429 Too Many Requests)',
+    'Overloaded (529)',
+    'rate limited, retry later',
+    'Error: socket hang up',
+    'connect ETIMEDOUT 1.2.3.4:443',
+    'read ECONNRESET',
+    'getaddrinfo EAI_AGAIN api.anthropic.com',
+  ];
+  for (const m of transient) {
+    assert.equal(
+      isTransientClaudeError(new Error(m)),
+      true,
+      `should be transient: ${m}`,
+    );
+  }
+});
+
+test('isTransientClaudeError — does NOT flag genuine failures', () => {
+  const genuine = [
+    'touch2 failed: delivered app did not start on port 3000',
+    'frozen acceptance oracle: GET / returned 500', // app 5xx is genuine, not infra
+    'judge abstained: unparseable response',
+    'boom',
+    '',
+    undefined,
+    null,
+  ];
+  for (const m of genuine) {
+    assert.equal(
+      isTransientClaudeError(
+        m instanceof Object ? m : new Error(String(m ?? '')),
+      ),
+      false,
+      `should NOT be transient: ${m}`,
+    );
+  }
+});
+
+test('rethrowIfTransientClaudeError — throws on transient, no-op on genuine', () => {
+  const t = new Error('{"api_error_status":429} session limit');
+  assert.throws(() => rethrowIfTransientClaudeError(t), /session limit/);
+  // Genuine → returns undefined, does not throw.
+  assert.equal(
+    rethrowIfTransientClaudeError(new Error('app crashed')),
+    undefined,
   );
 });
