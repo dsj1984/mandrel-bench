@@ -985,7 +985,7 @@ function renderPhaseCostSectionHtml(rows) {
 <div class="sub">The mandrel arm runs <code>/plan</code> and <code>/deliver</code> as two separate headless sessions (D-019), so cost is attributable to the planning half vs the delivery half. Mean USD cost per phase across the cell's mandrel runs; the control arm is a single session and carries no per-phase split.</div>
 <div class="panel">
 ${
-  rows && rows.length
+  rows?.length
     ? `<table><thead><tr><th>Scenario</th><th>n</th><th>Plan cost (USD)</th><th>Deliver cost (USD)</th><th>Total (USD)</th></tr></thead><tbody>${body}</tbody></table>`
     : '<div class="empty">No mandrel-arm records carry a per-phase cost split.</div>'
 }
@@ -1021,7 +1021,7 @@ function renderContinuitySectionHtml(continuity) {
 <h2>Continuity delta (the second touch)</h2>
 <div class="sub">Mandrel-vs-control delta of the FROZEN change request scored against the delivered tree — mandrel inherits its full pipeline output, control inherits delivered code only. Positive outcome delta / negative cost delta favour Mandrel. The persistence-thesis measurement (Epic #86, Story #96); never folded into the seven composite dimensions.</div>
 <div class="panel continuity">
-${continuity && continuity.length ? scenarioBlocks : '<div class="empty">No scenario in this corpus carries a scored second touch.</div>'}
+${continuity?.length ? scenarioBlocks : '<div class="empty">No scenario in this corpus carries a scored second touch.</div>'}
 </div>
 </section>`;
 }

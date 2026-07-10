@@ -990,7 +990,6 @@ export async function runTouch2(opts, deps = {}) {
     arm,
     runIndex,
     model = DEFAULT_BENCH_MODEL,
-    sandbox,
     handle,
     frameworkVersion,
     benchmarkVersion,
