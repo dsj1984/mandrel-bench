@@ -202,9 +202,10 @@ former single-scenario special case was generalized (Story #74) so a clean
   (before any cost is spent): `BENCH_GITHUB_TOKEN` (a fine-grained PAT or
   machine-account token scoped to repository create/delete + contents +
   issues + pull-requests) and `BENCH_SANDBOX_OWNER` (the account/org
-  ephemeral repos are created under). The retired standing-repo vars
-  (`BENCH_SANDBOX_REPO_URL`/`REPO`/`BASELINE_REF`) emit a deprecation
-  warning naming the replacement rather than being silently accepted.
+  ephemeral repos are created under). The old standing-repo vars
+  (`BENCH_SANDBOX_REPO_URL`/`REPO`/`BASELINE_REF`) are no longer read at all;
+  an operator configured only for the old path aborts fail-fast on the absent
+  required vars.
 - **Reserved-prefix guard on the destructive surface** — `destroyEphemeralRepo`
   and the janitor sweep both refuse to act on any repo name that does not
   start with the reserved `bench-sbx-` prefix; the janitor additionally

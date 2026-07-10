@@ -56,6 +56,30 @@ export const FEEDBACK_LABEL = 'bench-feedback';
 /** The routing label a freshly-filed feedback issue also carries. */
 export const FRAMEWORK_GAP_LABEL = 'meta::framework-gap';
 
+/**
+ * Whether a thrown `gh issue create` error is a LABEL problem (the target repo
+ * does not define the label) rather than an auth/scope problem. The phase tag
+ * labels (`phase::*`) may not exist on the target repo's taxonomy yet; a create
+ * refused for that reason retries WITHOUT the phase label instead of failing
+ * the whole filing run — the tag still travels in the issue body. Pure.
+ *
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isLabelError(err) {
+  const parts = [];
+  if (err && typeof err === 'object') {
+    if ('message' in err) parts.push(String(err.message ?? ''));
+    if ('stderr' in err) parts.push(String(err.stderr ?? ''));
+  } else {
+    parts.push(String(err ?? ''));
+  }
+  const text = parts.join('\n');
+  return /could not (?:add|find) label|label.*not found|no labels? (?:found|matching)|invalid label/i.test(
+    text,
+  );
+}
+
 /** Default `gh issue list --limit` ceiling for the candidate scan. */
 const DEFAULT_LIST_LIMIT = 100;
 
@@ -187,6 +211,9 @@ export function renderFindingBody(finding, envelope) {
     `- benchmark version: \`${cohort.benchmarkVersion}\``,
     `- fingerprint: \`${finding.fingerprint}\``,
     `- noise-band method: \`${envelope?.method ?? 'iqr'}\``,
+    ...(typeof finding.phaseTag === 'string'
+      ? [`- phase: \`${finding.phaseTag}\``]
+      : []),
     '',
     '### Noise-band evidence',
     '',
@@ -387,9 +414,15 @@ function fileOneFinding(finding, envelope, { gh, repo, openIssues, logger }) {
 
   if (!hit) {
     // Miss → file a fresh, labeled issue carrying the finding body + markers.
+    // A phase-tagged finding also carries its `phase::*` routing label
+    // (target-architecture §7.2); when the target repo does not define that
+    // label, the create is retried WITHOUT it (the tag still travels in the
+    // body) rather than failing the whole filing run.
     const title = renderFindingTitle(finding);
     const body = renderFindingBody(finding, envelope);
-    const created = gh([
+    const phaseTag =
+      typeof finding.phaseTag === 'string' ? finding.phaseTag : null;
+    const createArgs = (withPhaseLabel) => [
       'issue',
       'create',
       '--repo',
@@ -402,7 +435,20 @@ function fileOneFinding(finding, envelope, { gh, repo, openIssues, logger }) {
       FEEDBACK_LABEL,
       '--label',
       FRAMEWORK_GAP_LABEL,
-    ]);
+      ...(withPhaseLabel && phaseTag ? ['--label', phaseTag] : []),
+    ];
+    let created;
+    try {
+      created = gh(createArgs(true));
+    } catch (err) {
+      if (!(phaseTag && isLabelError(err))) throw err;
+      logger.warn(
+        `[file] ⚠️  label \`${phaseTag}\` is not defined on ${repo}; retrying ` +
+          `the create without it (the phase tag remains in the issue body). ` +
+          `(underlying error: ${err?.message ?? err})`,
+      );
+      created = gh(createArgs(false));
+    }
     logger.info(
       `[file] created issue for ${finding.fingerprint} (${cohortKey}): ${String(created).trim()}`,
     );

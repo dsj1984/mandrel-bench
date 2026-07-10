@@ -318,11 +318,15 @@ create/delete, contents, issues, and pull-requests) and
 `BENCH_SANDBOX_OWNER` (the account/org ephemeral repos are created under)
 are the only required env vars, validated fail-fast at `bench/run.js`
 startup before any cost is spent. `BENCH_SANDBOX_REPO_URL`,
-`BENCH_SANDBOX_REPO`, and
-`BENCH_SANDBOX_BASELINE_REF` are **retired** — their presence emits a
-deprecation warning naming the replacement rather than being silently
-accepted (`bench/run.js`'s `RETIRED_SANDBOX_ENV_VARS` shim, exempted from the
-reference-sweep regression guard by name).
+`BENCH_SANDBOX_REPO`, and `BENCH_SANDBOX_BASELINE_REF` are **retired** and no
+longer read at all. (At delivery, `bench/run.js` carried a
+`RETIRED_SANDBOX_ENV_VARS` deprecation-warning shim that named the replacement
+for an operator still configured for the old path; that shim was removed
+2026-07-10, several cohorts after the cutover — `validateSandboxEnv` already
+aborts fail-fast on the absent required vars, so a stale-`.env` operator gets a
+loud error rather than a silent mis-run. The `no-standing-sandbox.test.js`
+regression guard now asserts that *nothing*, `bench/run.js` included,
+references the retired names.)
 
 **Why safe to make destructive repo-deletion unattended.** The `bench-sbx-`
 prefix is *reserved* — nothing else under the operator account may use it —
@@ -526,6 +530,44 @@ by the `benchmark.yml` aggregate job) lands the freshly-rendered dashboard on
 
 **Status.** Delivered (Epic #84 Phase 3).
 
+## D-017 — Benchmark runs on-demand via CI with cohort top-up intelligence; scheduling deliberately off until enabled (Epic #84, decided 2026-07-09)
+
+**Decision.** Implements [`target-architecture.md`](target-architecture.md) §6
+(and listed in §11). **Amends D-005**: the periodic capability report gains an
+automated executor — a `workflow_dispatch`-only GitHub Actions workflow
+(`.github/workflows/benchmark.yml`) — while remaining on-demand: no `schedule:`
+trigger is enabled, and adding one later is a deliberate one-line change, never
+drift.
+
+- **Topology.** `plan` (per-cell deficit + cost allocation) → `canary`
+  (hello-world runs first as an end-to-end smoke; a failure aborts the
+  invocation before any expensive cell spends) → per-deficit-cell `matrix`
+  (max-parallel 6, one ephemeral sandbox repo per cell per D-013) →
+  `aggregate` (merge artifacts append-only into `results/`, render report +
+  dashboard, derive feedback findings, **open a results PR**). No job pushes
+  to `main`; results-PR review replaces the local `/benchmark` STOP gates in
+  CI (the interactive gates remain for local runs).
+- **Top-up intelligence.** `bench/driver/topup-planner.js` computes, per
+  `(scenario × arm)` cell, `deficit = max(0, targetN − validRuns)` where a
+  record counts only when schema-valid, exact-cohort-triple-matched (D-014),
+  and not `routingMismatch`. A complete cohort reports `cohortComplete` and
+  the invocation is a near-zero-cost no-op — the "has this combination
+  already been benchmarked?" check. Partial cohorts fill only the deficit.
+- **Cost enforcement.** `max_cost_usd` (default 150) is allocated
+  **proportionally** across deficit cells from observed per-run cost history
+  (static per-scenario fallback); each cell job additionally carries the
+  in-loop `BENCH_MAX_COST_USD` stop and a `BENCH_MAX_RUNS` cap at exactly its
+  deficit. `--dry-run` prints the deficit plan and runs nothing.
+- **CI is a caller of the same harness**, not a fork: local operation
+  (`npm run bench`, `/benchmark`) is unchanged, and per-scenario `targetN`
+  (8/8/4) governs both, with `BENCH_N`/`target_n` as an explicit override.
+
+**Status.** Delivered (Epic #84 Phase 3). The first end-to-end CI cohort —
+including the zero-cost no-op rerun that proves top-up — is an operator-gated,
+cost-bearing dispatch still to run. *(This entry was backfilled during the
+2026-07-09 post-delivery documentation review; the delivery itself logged
+D-014 and D-021 but omitted D-017.)*
+
 ## D-016 — Feedback findings auto-filed on the mandrel repo, fingerprint-deduplicated and merge-gated (Epic #85, decided 2026-07-09)
 
 **Decision.** Implements [`target-architecture.md`](target-architecture.md) §7
@@ -569,7 +611,12 @@ deterministic, evidence-carrying **findings** that are auto-filed as issues on
 aggregate job's derive step to the run-under-test cohort triple (so the loop
 survives once `main` holds more than one cohort), single-sourced the
 routing-mismatch threshold, and wrapped the filer's LIST call in the same
-graceful-degradation guard as its writes.
+graceful-degradation guard as its writes. The post-Epic-#86 wiring pass
+(2026-07-10) added the fifth (`attribution`) finding class and the `phase::*`
+routing tag per target-architecture §7.2: every finding now carries a
+`phaseTag`, and a freshly-filed issue also carries the matching `phase::plan` /
+`phase::deliver` / `phase::artifacts` label (falling back loudly to a body-only
+tag when the target repo does not define the label).
 
 ## D-019 — Mandrel-arm runs split into phase-scoped `/plan` + `/deliver` sessions, with an intrinsic plan-quality axis for phase attribution (Epic #86, decided 2026-07-09)
 

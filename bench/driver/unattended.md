@@ -26,7 +26,10 @@ auto-proceed directive** (behavioral, covering the rest).
 
 Sourced from the live workflow definitions in the materialized bundle
 (`.agents/workflows/plan.md`, `.agents/workflows/deliver.md`,
-`.agents/workflows/helpers/deliver-epic.md`) as of `mandrel` 1.70.x.
+`.agents/workflows/helpers/deliver-epic.md`) as of `mandrel` 1.70.x. The
+pinned framework has since moved (1.88.x at the time of the 2026-07-09
+review); re-verify this gate inventory against the materialized bundle
+before relying on it for a new unattended surface.
 
 | # | Gate | Where | Native unattended control | Verdict |
 | - | ---- | ----- | ------------------------- | ------- |
@@ -81,7 +84,8 @@ up as an un-merged PR + `epic.merge.blocked` in `lifecycle.ndjson`).
 A decomposition that exceeds the framework `maxTickets` reviewability budget
 otherwise stops; `--allow-over-budget` permits it
 (`.agents/workflows/plan.md` flag table). Pass it on the Mandrel arm when the
-scenario is expected to decompose wide (the CRUD+DB scenario can).
+scenario is expected to decompose wide (the `epic-scope` rung, contracted to
+4–6 Stories, can).
 
 ---
 
@@ -133,7 +137,7 @@ residual risks, recorded here per the acceptance contract:
    prefer driving the Mandrel arm from an **existing Epic id** (`/plan
    <epicId>` / `/deliver <epicId>`) rather than `--idea`, which routes around
    the ideation one-pager entirely; and rely on risk routing to skip the Phase
-   7 review for the two low-risk v1 scenarios (`hello-world`, `CRUD+DB`).
+   7 review for the low-risk rungs (`hello-world`, `story-scope`).
 2. **Tool-permission prompts are not auto-approved by the prompt.** A blocking
    permission prompt is a harness condition, not a gate the directive covers.
    Because every run executes inside a throwaway sandbox clone
@@ -159,4 +163,4 @@ that suppresses the ideation one-pager and the Phase 7 review gate the same way
 scope** for this internal-tooling Story. It should be filed against the
 framework with the `meta::framework-gap` label so `/plan` Phase 0 surfaces it
 to the planner. Until then, the prompt directive + the existing-Epic routing in
-risk #1 keep the harness unattended for v1's two low-risk scenarios.
+risk #1 keep the harness unattended for the low-risk rungs.

@@ -12,7 +12,7 @@
 // does the disk walk) and writes nothing: pure derivation, no GitHub writes, no
 // filesystem, no clock.
 //
-// Four finding classes are derived, each strictly SIGNAL-GATED — a class with
+// Five finding classes are derived, each strictly SIGNAL-GATED — a class with
 // no signal in the corpus derives ZERO findings (no placeholder / always-on
 // records):
 //
@@ -26,6 +26,23 @@
 //                          clean (per trap.classes[] clean-rate).
 //   4. pipeline-calibration — routing mismatch >25%, an unmet autonomy
 //                          guardrail, or a standalone-telemetry-absent warning.
+//   5. attribution        — plan-phase vs deliver-phase gaps read off the §3.4
+//                          decision table, plus §4.5 artifact-continuity gaps
+//                          (bench/feedback/attribution.js — the Epic #86 F7
+//                          seam, composed here). This class also supplies the
+//                          `phaseTag` (`phase::plan` / `phase::deliver` /
+//                          `phase::artifacts`) stamped on EVERY finding whose
+//                          scenario carries usable attribution inputs; findings
+//                          predating that data degrade to `phaseTag: null`.
+//
+// Phase-tag / class-5 inputs are DISTILLED per scenario from the cohort's own
+// scorecards: the §3.4 verdict is the MODAL `planQuality.attribution`
+// classification across the cell's mandrel runs (ties break toward the more
+// actionable gap), and the §4.5 continuity read distils
+// `computeContinuityDelta` into a helped/not-helped verdict that is only ever
+// `false` on a REAL (above-noise) signal. Adding `phaseTag` does NOT touch
+// fingerprint identity — the four pre-existing classes keep byte-identical
+// fingerprints (`class ␟ scenario ␟ subject`, cohort- and tag-independent).
 //
 // The previous-comparable-cohort resolver is THIS module's own (see
 // `previousComparableCohort`): comparable means same model + benchmarkVersion
@@ -46,10 +63,12 @@
 import { groupCells, MISMATCH_RATE_FLAG_THRESHOLD } from '../report/cells.js';
 import { compareRuns } from '../report/compare.js';
 import {
+  computeContinuityDelta,
   computeDifferential,
   difficultyMonotonicity,
   overheadFloor,
 } from '../score/differential.js';
+import { ATTRIBUTION_FINDING_CLASS, attribute } from './attribution.js';
 import { computeFingerprint } from './fingerprint.js';
 import { joinMarkdownBlocks } from './markdown.js';
 
@@ -62,6 +81,16 @@ export const FINDING_CLASSES = Object.freeze([
   'standing-cost',
   'trap-differential',
   'pipeline-calibration',
+]);
+
+/**
+ * Every finding class an envelope can carry, in stable render order — the four
+ * Phase-4 classes plus the Phase-5 `attribution` class (§7.1 item 5,
+ * bench/feedback/attribution.js).
+ */
+export const ALL_FINDING_CLASSES = Object.freeze([
+  ...FINDING_CLASSES,
+  ATTRIBUTION_FINDING_CLASS,
 ]);
 
 /** Warning marker a mandrel-arm record carries when its telemetry was absent. */
@@ -625,14 +654,158 @@ function derivePipelineCalibration({ cohortCards, cells, cohort, links }) {
 }
 
 /**
+ * Tie-break order for the modal §3.4 verdict — when two classifications are
+ * equally frequent across a cell's runs, the more ACTIONABLE one wins (a gap
+ * outranks a non-gap, and a plan gap outranks a deliver gap because the
+ * obligation never surfacing at all is the earlier failure).
+ */
+const ATTRIBUTION_TIEBREAK_ORDER = Object.freeze([
+  'plan-phase-gap',
+  'deliver-phase-gap',
+  'model-compensating',
+  'working-as-intended',
+]);
+
+/**
+ * The MODAL §3.4 attribution verdict across a cell's mandrel runs — the
+ * cell-level distillation of the per-run `planQuality.attribution` blocks
+ * `buildScorecard` stamps. The most frequent classification wins; ties break by
+ * {@link ATTRIBUTION_TIEBREAK_ORDER}. The boolean fields (`planGood` /
+ * `outcomeGood` / `adhered`) carry the UNANIMOUS value across the modal-class
+ * runs, or null when they disagree — a cell-level boolean is only asserted when
+ * every run behind the verdict agrees on it. Returns null when NO run carries a
+ * usable (string-classification) attribution block, so a corpus predating the
+ * plan-quality axis degrades to no verdict rather than a fabricated one. Pure.
+ *
+ * @param {Array<object>} mandrelCards  The cell's mandrel-arm scorecards.
+ * @returns {{ classification: string, planGood: boolean|null, outcomeGood: boolean|null, adhered: boolean|null }|null}
+ */
+export function modalAttributionVerdict(mandrelCards) {
+  const usable = (mandrelCards ?? []).filter(
+    (sc) => typeof sc?.planQuality?.attribution?.classification === 'string',
+  );
+  if (usable.length === 0) return null;
+
+  const counts = new Map();
+  for (const sc of usable) {
+    const c = sc.planQuality.attribution.classification;
+    counts.set(c, (counts.get(c) ?? 0) + 1);
+  }
+  const max = Math.max(...counts.values());
+  const tied = [...counts.keys()].filter((c) => counts.get(c) === max);
+  const ranked = ATTRIBUTION_TIEBREAK_ORDER.filter((c) => tied.includes(c));
+  // An unranked (unknown) classification only wins when nothing ranked ties it;
+  // among unranked ties, lexical order keeps the verdict deterministic.
+  const classification = ranked[0] ?? tied.sort()[0];
+
+  const modalRuns = usable.filter(
+    (sc) => sc.planQuality.attribution.classification === classification,
+  );
+  const unanimous = (field) => {
+    const values = modalRuns.map(
+      (sc) => sc.planQuality.attribution[field] ?? null,
+    );
+    const first = values[0];
+    if (typeof first !== 'boolean') return null;
+    return values.every((v) => v === first) ? first : null;
+  };
+
+  return {
+    classification,
+    planGood: unanimous('planGood'),
+    outcomeGood: unanimous('outcomeGood'),
+    adhered: unanimous('adhered'),
+  };
+}
+
+/**
+ * Distil one cell's `computeContinuityDelta` into the §4.5 continuity read
+ * attribution.js consumes (`{ present, helped, outcomeDelta, costDelta }`).
+ *
+ * `helped` is verdict-graded on REAL (above-noise) signals only, matching the
+ * signal-gating of every other finding class:
+ *
+ *   - `false` — the inherited artifacts demonstrably did NOT pay out: the
+ *     mandrel arm's touch-2 outcome is REALLY worse than control's, OR its
+ *     touch-2 cost is REALLY higher without a REALLY better outcome to buy.
+ *   - `true`  — the touch-2 outcome is REALLY better (the artifacts paid out).
+ *   - `null`  — indeterminate (within noise, incomparable, or no touch-2 data);
+ *     downstream this derives no finding and no tag, never a guessed one.
+ *
+ * @param {{ scenario: string, mandrelRuns: Array<object>, controlRuns: Array<object> }} cell
+ * @param {'iqr'|'ci'} method
+ * @returns {{ present: boolean, helped: boolean|null, outcomeDelta: number|null, costDelta: number|null }}
+ */
+export function distillContinuity(cell, method) {
+  const delta = computeContinuityDelta({
+    mandrelRuns: cell.mandrelRuns,
+    controlRuns: cell.controlRuns,
+    method,
+    scenario: cell.scenario,
+  });
+  const outcome = delta.metrics['touch2.outcome'];
+  const cost = delta.metrics['touch2.cost'];
+  if (!delta.present) {
+    return {
+      present: false,
+      helped: null,
+      outcomeDelta: null,
+      costDelta: null,
+    };
+  }
+
+  const outcomeWorse =
+    outcome.comparable && outcome.deltaIsReal && outcome.delta < 0;
+  const outcomeBetter =
+    outcome.comparable && outcome.deltaIsReal && outcome.delta > 0;
+  const costWorse = cost.comparable && cost.deltaIsReal && cost.delta > 0;
+
+  let helped = null;
+  if (outcomeWorse || (!outcomeBetter && costWorse)) helped = false;
+  else if (outcomeBetter) helped = true;
+
+  return {
+    present: true,
+    helped,
+    outcomeDelta: outcome.delta,
+    costDelta: cost.delta,
+  };
+}
+
+/**
+ * The per-scenario attribution inputs (`{ scenario, attribution, continuity }`)
+ * attribution.js's `attribute()` consumes, distilled from the cohort's cells in
+ * stable (sorted-scenario) order. A scenario with neither a usable §3.4 verdict
+ * nor a usable §4.5 continuity read still appears (with nulls) — attribution.js
+ * owns the degrade-to-no-tag decision. Pure.
+ *
+ * @param {Array<object>} cells  groupCells output for the cohort.
+ * @param {'iqr'|'ci'} method
+ * @returns {Array<{ scenario: string, attribution: object|null, continuity: object|null }>}
+ */
+export function attributionInputsForCells(cells, method) {
+  return [...(cells ?? [])]
+    .sort((a, b) => (a.scenario < b.scenario ? -1 : 1))
+    .map((cell) => ({
+      scenario: cell.scenario,
+      attribution: modalAttributionVerdict(cell.mandrelRuns),
+      continuity: distillContinuity(cell, method),
+    }));
+}
+
+/**
  * Derive the full finding ENVELOPE for one target cohort from a corpus.
  *
- * All four finding classes are derived and concatenated in class order
- * (regression, standing-cost, trap-differential, pipeline-calibration); within
- * a class, findings are emitted in a stable scenario/metric order. A class with
- * no signal contributes nothing — there are no placeholder findings. Pure: the
- * `generatedAt` timestamp is injected, so the same inputs always yield the same
- * envelope.
+ * All five finding classes are derived and concatenated in class order
+ * (regression, standing-cost, trap-differential, pipeline-calibration,
+ * attribution); within a class, findings are emitted in a stable
+ * scenario/metric order. A class with no signal contributes nothing — there are
+ * no placeholder findings. Every finding additionally carries a `phaseTag`
+ * (`phase::plan` / `phase::deliver` / `phase::artifacts`, or null when its
+ * scenario has no usable attribution inputs); the tag is a routing FIELD, never
+ * part of fingerprint identity, so pre-existing fingerprints are unchanged.
+ * Pure: the `generatedAt` timestamp is injected, so the same inputs always
+ * yield the same envelope.
  *
  * @param {object} args
  * @param {Array<object>} args.corpus  Full corpus (all cohorts) — the source of
@@ -667,7 +840,7 @@ export function deriveFindings({
     ? corpus.filter((sc) => inCohort(sc, previous))
     : [];
 
-  const findings = [
+  const phase4Findings = [
     ...deriveRegressions({
       cohortCards,
       baselineCards,
@@ -681,7 +854,20 @@ export function deriveFindings({
     ...derivePipelineCalibration({ cohortCards, cells, cohort, links }),
   ];
 
-  const counts = Object.fromEntries(FINDING_CLASSES.map((c) => [c, 0]));
+  // Compose the Epic #86 attribution seam (bench/feedback/attribution.js): tag
+  // the four Phase-4 classes with per-scenario phase routing and derive the
+  // class-5 attribution/continuity findings from the same distilled inputs.
+  const scenarios = attributionInputsForCells(cells, method);
+  const { tagged, attribution } = attribute({
+    findings: phase4Findings,
+    scenarios,
+    cohort,
+    links,
+    generatedAt,
+  });
+  const findings = [...tagged, ...attribution.findings];
+
+  const counts = Object.fromEntries(ALL_FINDING_CLASSES.map((c) => [c, 0]));
   for (const f of findings) counts[f.class] += 1;
 
   return {
@@ -726,20 +912,21 @@ export function renderFindingsMarkdown(envelope) {
 
   lines.push(
     `Derived **${findings.length}** finding(s): ` +
-      FINDING_CLASSES.filter((c) => counts[c] > 0)
+      ALL_FINDING_CLASSES.filter((c) => counts[c] > 0)
         .map((c) => `${counts[c]} ${c}`)
         .join(', ') +
       '.',
     '',
   );
 
-  for (const findingClass of FINDING_CLASSES) {
+  for (const findingClass of ALL_FINDING_CLASSES) {
     const inClass = findings.filter((f) => f.class === findingClass);
     if (inClass.length === 0) continue;
     lines.push(`### ${findingClass} (${inClass.length})`, '');
     for (const f of inClass) {
       const where = f.scenario ? ` · \`${f.scenario}\`` : '';
-      lines.push(`- **${f.subject}**${where} — ${f.summary}`);
+      const phase = f.phaseTag ? ` · \`${f.phaseTag}\`` : '';
+      lines.push(`- **${f.subject}**${where}${phase} — ${f.summary}`);
       lines.push(`  - fingerprint: \`${f.fingerprint}\``);
       if (f.links.report || f.links.scorecards) {
         const parts = [];

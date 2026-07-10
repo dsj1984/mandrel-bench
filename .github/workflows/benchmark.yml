@@ -6,6 +6,11 @@ name: Benchmark
 #
 #   plan  → compute the per-cell deficit (bench/driver/topup-planner.js) and the
 #           per-cell cost allocation; a complete cohort is a near-zero-cost no-op.
+#           A non-blank `mandrel_version` input is installed (--no-save) BEFORE
+#           the planner runs — the cohort stamp reads the INSTALLED
+#           node_modules/mandrel/package.json (bench/driver/version-readers.js),
+#           so the deficit, the aggregate derive pins, and every scorecard stamp
+#           all resolve to the version under test, not the pinned lockfile dep.
 #   canary→ run the cheapest rung (hello-world) FIRST as an end-to-end smoke; a
 #           canary failure aborts the invocation before any expensive cell runs.
 #   matrix→ one job per deficit cell (max-parallel 6); each job runs its single
@@ -94,6 +99,21 @@ jobs:
         with:
           node-version: 22
       - run: npm install --ignore-scripts
+
+      # Install the requested framework version under test (blank = keep the
+      # pinned dependency). --no-save keeps package.json/package-lock.json
+      # untouched; readFrameworkVersion (bench/driver/version-readers.js) reads
+      # the INSTALLED node_modules/mandrel/package.json, so the planner's cohort
+      # triple — and with it the top-up deficit and the aggregate job's derive
+      # pins — resolves to THIS version. Runs before `npx mandrel sync` so the
+      # materialized .agents/ bundle matches. The version reaches the run body
+      # only as a quoted env var — never `${{ inputs.* }}` interpolation (H1).
+      - name: Install mandrel version under test
+        if: inputs.mandrel_version != ''
+        env:
+          MANDREL_VERSION: ${{ inputs.mandrel_version }}
+        run: npm install "mandrel@$MANDREL_VERSION" --no-save --ignore-scripts
+
       - run: npx mandrel sync
 
       # Run the pure top-up planner and reduce its JSON plan to a matrix of
@@ -152,6 +172,15 @@ jobs:
         with:
           node-version: 22
       - run: npm install --ignore-scripts
+
+      # Same framework-version override as the plan job: the canary must smoke
+      # the version actually under test, with a matching .agents/ bundle.
+      - name: Install mandrel version under test
+        if: inputs.mandrel_version != ''
+        env:
+          MANDREL_VERSION: ${{ inputs.mandrel_version }}
+        run: npm install "mandrel@$MANDREL_VERSION" --no-save --ignore-scripts
+
       - run: npx mandrel sync
 
       # Run the hello-world rung end to end BEFORE the paid matrix fans out. If
@@ -186,6 +215,17 @@ jobs:
         with:
           node-version: 22
       - run: npm install --ignore-scripts
+
+      # Same framework-version override as the plan job: the cell benchmarks
+      # the version under test and stamps its scorecards with it (the stamp
+      # reads the INSTALLED node_modules/mandrel/package.json), keeping the
+      # cell's records inside the cohort triple the plan job resolved.
+      - name: Install mandrel version under test
+        if: inputs.mandrel_version != ''
+        env:
+          MANDREL_VERSION: ${{ inputs.mandrel_version }}
+        run: npm install "mandrel@$MANDREL_VERSION" --no-save --ignore-scripts
+
       - run: npx mandrel sync
 
       # Run this single deficit cell. BENCH_MAX_COST_USD carries THIS cell's

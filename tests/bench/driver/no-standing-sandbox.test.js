@@ -10,12 +10,12 @@
  * `BENCH_GITHUB_TOKEN` + `BENCH_SANDBOX_OWNER`; any driver module still
  * reading a retired var would mean the standing-repo path silently lives on.
  *
- * The ONE permitted exception is `bench/run.js`'s deprecation-warning shim
- * (`RETIRED_SANDBOX_ENV_VARS` / `retiredSandboxEnvWarnings`), which reads the
- * retired var *names* solely to warn an operator who is still configured for
- * the old path — never to configure provisioning. `bench/run.js` lives at
- * the orchestrator layer, not under `bench/driver/`, and is explicitly out
- * of this guard's scope for that reason.
+ * The `bench/run.js` deprecation-warning shim that once read the retired var
+ * *names* (to warn an operator still configured for the old path) has itself
+ * been retired now that the cutover is several cohorts old — nothing anywhere
+ * reads these names any longer. `validateSandboxEnv` already fails fast on the
+ * absent required vars, so an operator configured only for the old path aborts
+ * loudly rather than running mis-configured.
  */
 
 import assert from 'node:assert/strict';
@@ -68,13 +68,17 @@ test('no bench/driver/*.js module reads a retired standing-repo env var', () => 
   );
 });
 
-test('the retired-env-var names are still known to the run.js deprecation shim (sanity check, not a regression on THIS test)', async () => {
-  // Guards against the fixture list above silently drifting from the actual
-  // shim in bench/run.js — if a var is renamed there without updating this
-  // test, this catches it.
-  const { RETIRED_SANDBOX_ENV_VARS } = await import('../../../bench/run.js');
+test('bench/run.js no longer references any retired standing-repo env var (the deprecation shim is fully retired)', async () => {
+  // The former deprecation-warning shim read the retired var NAMES; it has
+  // been removed. Guard that the orchestrator does not reintroduce them — the
+  // fail-fast validateSandboxEnv on the required vars is the only gate now.
+  const runSrc = readFileSync(path.join(REPO_ROOT, 'bench', 'run.js'), 'utf8');
+  const offenders = RETIRED_ENV_VAR_NAMES.filter((name) =>
+    new RegExp(`\\b${name}\\b(?!_URL)`).test(runSrc),
+  );
   assert.deepEqual(
-    Object.keys(RETIRED_SANDBOX_ENV_VARS).sort(),
-    [...RETIRED_ENV_VAR_NAMES].sort(),
+    offenders,
+    [],
+    `bench/run.js still references retired env var(s): ${offenders.join(', ')}`,
   );
 });

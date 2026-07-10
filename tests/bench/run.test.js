@@ -34,13 +34,11 @@ import {
   prepareTouch2Workspace,
   qualityInputs,
   REQUIRED_SANDBOX_ENV_VARS,
-  RETIRED_SANDBOX_ENV_VARS,
   readBenchmarkVersion,
   readCheckpoint,
   readFrameworkVersion,
   resolveEpicIds,
   resolveModelId,
-  retiredSandboxEnvWarnings,
   runFirstBenchmark,
   runOneRun,
   runTouch2,
@@ -1761,30 +1759,6 @@ test('validateSandboxEnv: a blank (whitespace-only) value counts as missing', ()
   assert.match(res.message, /BENCH_GITHUB_TOKEN/);
 });
 
-test('retiredSandboxEnvWarnings: empty when no retired var is set', () => {
-  assert.deepEqual(
-    retiredSandboxEnvWarnings({
-      BENCH_GITHUB_TOKEN: 'x',
-      BENCH_SANDBOX_OWNER: 'o',
-    }),
-    [],
-  );
-});
-
-test('retiredSandboxEnvWarnings: one warning per retired var, each naming its replacement', () => {
-  const warnings = retiredSandboxEnvWarnings({
-    BENCH_SANDBOX_REPO_URL: 'https://github.com/dsj1984/legacy-sandbox-repo',
-    BENCH_SANDBOX_REPO: 'legacy-sandbox-repo',
-    BENCH_SANDBOX_BASELINE_REF: 'bench-baseline',
-  });
-  assert.equal(warnings.length, Object.keys(RETIRED_SANDBOX_ENV_VARS).length);
-  assert.match(
-    warnings.find((w) => w.includes('BENCH_SANDBOX_REPO_URL')),
-    /BENCH_GITHUB_TOKEN/,
-  );
-  assert.ok(warnings.every((w) => w.includes('DEPRECATED')));
-});
-
 test('main(): exits non-zero with a message naming the missing var, BEFORE any model invocation (BENCH_GITHUB_TOKEN unset)', async () => {
   const messages = { info: [], warn: [], error: [] };
   const logger = {
@@ -1817,31 +1791,6 @@ test('main(): exits non-zero with a message naming the missing var (BENCH_SANDBO
     await main({ BENCH_GITHUB_TOKEN: 'ghp_x' }, { logger });
     assert.equal(process.exitCode, 1);
     assert.match(messages.error[0], /BENCH_SANDBOX_OWNER/);
-  } finally {
-    process.exitCode = prevExitCode;
-  }
-});
-
-test('main(): a retired var set alongside missing required vars emits BOTH the deprecation warning and the fatal error', async () => {
-  const messages = { info: [], warn: [], error: [] };
-  const logger = {
-    info: (m) => messages.info.push(m),
-    warn: (m) => messages.warn.push(m),
-    error: (m) => messages.error.push(m),
-  };
-  const prevExitCode = process.exitCode;
-  process.exitCode = undefined;
-  try {
-    await main(
-      {
-        BENCH_SANDBOX_REPO_URL:
-          'https://github.com/dsj1984/legacy-sandbox-repo',
-      },
-      { logger },
-    );
-    assert.equal(process.exitCode, 1);
-    assert.ok(messages.warn.some((w) => w.includes('BENCH_SANDBOX_REPO_URL')));
-    assert.ok(messages.error.some((e) => e.includes('BENCH_GITHUB_TOKEN')));
   } finally {
     process.exitCode = prevExitCode;
   }

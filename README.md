@@ -265,10 +265,6 @@ seeded from `bench/sandbox-template/`) and deletes it at teardown; a
 [`docs/architecture.md`](docs/architecture.md) §2 and
 [`docs/decisions.md`](docs/decisions.md) D-013 for the full design.
 
-`BENCH_SANDBOX_REPO_URL`, `BENCH_SANDBOX_REPO`, and `BENCH_SANDBOX_BASELINE_REF`
-are **retired** — setting any of them emits a deprecation warning naming its
-replacement; they are no longer read.
-
 **Least privilege.** A fine-grained PAT can't be pre-scoped to repos that
 don't exist yet, so in practice `BENCH_GITHUB_TOKEN` carries delete authority
 over every repo under `BENCH_SANDBOX_OWNER` — only the in-process reserved
