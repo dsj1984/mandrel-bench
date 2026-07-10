@@ -250,5 +250,5 @@ source would confound harness-version with framework-version.
 | Lint / format | Biome + markdownlint |
 | Hooks | Husky + lint-staged + commitlint |
 | Versioning | release-please (version + changelog; not published to npm) |
-| CI | GitHub Actions (lint + test) |
+| CI | GitHub Actions — `ci` (lint + test) on every PR; `benchmark` (on-demand `workflow_dispatch` cohort run → results PR); `publish-pages` (dashboard to GitHub Pages on results-PR merge) |
 | Framework under test | `mandrel` (pinned npm dependency) |
