@@ -327,7 +327,9 @@ export function parseJanitorCliArgs(argv = []) {
  *
  * @param {string[]} [argv]  Defaults to `process.argv.slice(2)`.
  * @param {Record<string, string|undefined>} [env]  Defaults to `process.env`.
- * @param {{ logger?: object }} [deps]
+ * @param {{ logger?: object, ghFn?: Function, destroyFn?: Function, now?: Date }} [deps]
+ *   `now` pins the sweep's reference clock (defaults to the real `new Date()`);
+ *   injected only to make the time-relative sweep tests deterministic.
  * @returns {Promise<number>} the process exit code.
  */
 export async function main(
@@ -360,7 +362,10 @@ export async function main(
 
   try {
     sweepLeakedRepos(
-      { owner, ttlHours, dryRun: args.dryRun },
+      // `now` is injectable so a caller (chiefly the tests) can pin a
+      // deterministic clock; undefined in production, where
+      // `filterLeakedRepos` defaults it to the real `new Date()`.
+      { owner, ttlHours, dryRun: args.dryRun, now: deps.now },
       { logger, ghFn: deps.ghFn, destroyFn: deps.destroyFn },
     );
   } catch (err) {
