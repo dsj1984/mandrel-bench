@@ -414,3 +414,75 @@ on the finding (and envelope), it is simply not part of the identity key.
 Derivation is deterministic, so deriving twice from one corpus yields
 byte-identical fingerprints. Contract:
 [`../bench/feedback/fingerprint.js`](../bench/feedback/fingerprint.js).
+
+## Phase tag + class-5 attribution findings (Epic #86, Story #97)
+
+The attribution module
+([`../bench/feedback/attribution.js`](../bench/feedback/attribution.js)) routes
+every feedback finding to the HALF of Mandrel that owns it — `/plan`,
+`/deliver`, or the persistent artifacts — and derives a NET-NEW **fifth**
+finding class beside the four in `derive.js`. It is a PURE, deterministic,
+data-in/data-out module: it imports no other `bench/feedback` module and does no
+I/O, so the Epic #85 feedback stage can compose it LATER without this module
+ever reaching back into that stage's stateful surfaces. Same fixture corpus in,
+same tags and class-5 findings out.
+
+Its inputs are PLAIN DATA per scenario: the §3.4 `computeAttribution` verdict
+([`../bench/score/plan-quality.js`](../bench/score/plan-quality.js)) and the
+§4.5 continuity read distilled from `computeContinuityDelta`
+([`../bench/score/differential.js`](../bench/score/differential.js)).
+
+### Phase tag
+
+Every finding carries a `phaseTag` — one of `phase::plan`, `phase::deliver`,
+`phase::artifacts`, or `null` — derived from its scenario's attribution inputs:
+
+| Signal | `phaseTag` |
+| --- | --- |
+| §3.4 verdict `plan-phase-gap` or `model-compensating` | `phase::plan` |
+| §3.4 verdict `deliver-phase-gap` | `phase::deliver` |
+| §4.5 continuity read present and NOT helped (touch-1 ceremony did not pay out in touch 2) | `phase::artifacts` |
+| §3.4 verdict `working-as-intended` with a helpful (or absent) touch-2 | `null` (no gap to route) |
+| **Neither a usable §3.4 verdict NOR a touch-2 read** (the finding predates attribution data) | `null` (degrade — never a WRONG tag) |
+
+The §3.4 verdict takes precedence over the continuity read when both are
+present. The **degrade rule is load-bearing**: a finding whose records carry no
+plan-quality verdict (a `classification: null`) and no touch-2 block
+(`present: false` / absent) must degrade to `null` rather than guess — a
+mis-routed finding is worse than an un-routed one.
+
+### Class-5 (attribution & continuity) finding shape
+
+`deriveAttributionFindings` emits, signal-gated per scenario (a scenario with no
+gap derives ZERO findings), the class-5 findings. Each mirrors the `derive.js`
+finding shape plus the `phaseTag` this class introduces:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `fingerprint` | string | Stable 16-hex-char SHA-1 of `class ␟ scenario ␟ subject` (cohort-independent — same contract as `derive.js`, computed in-module so there is no `fingerprint.js` dependency). |
+| `class` | string (`attribution`) | The net-new fifth finding class. |
+| `scenario` | string | Scenario id the gap was observed on. |
+| `subject` | string | One of the three class-5 subjects (below). |
+| `phaseTag` | string | The fixed phase tag for the subject (`plan-phase-gap` → `phase::plan`, `deliver-phase-gap` → `phase::deliver`, `artifact-continuity-gap` → `phase::artifacts`). |
+| `summary` | string | Human-readable one-line description. |
+| `cohort` | object | The D-014 cohort triple `{ model, frameworkVersion, benchmarkVersion }`. |
+| `evidence` | object | For the §3.4 gaps: `{ classification, planGood, outcomeGood, adhered }`. For the continuity gap: `{ present, helped, outcomeDelta, costDelta }`. |
+| `links` | object | `{ report, scorecards }` — results-root-relative links. |
+
+The envelope wraps them as `{ schemaVersion, generatedAt, cohort, counts,
+findings }`, where `counts` is keyed by the three class-5 subjects.
+
+### The three class-5 subjects
+
+| Subject | Signal (gate) | `phaseTag` | Source |
+| --- | --- | --- | --- |
+| `plan-phase-gap` | §3.4 verdict `plan-phase-gap` — the obligation the delivered outcome missed is owned by `/plan`. | `phase::plan` | `computeAttribution` (§3.4). |
+| `deliver-phase-gap` | §3.4 verdict `deliver-phase-gap` — delivery diverged from a good-looking plan and missed it. | `phase::deliver` | `computeAttribution` (§3.4). |
+| `artifact-continuity-gap` | §4.5 continuity read `present` and `helped === false` — ceremony paid in touch 1 that failed to pay out in the fresh touch-2 session. | `phase::artifacts` | `computeContinuityDelta` (§4.5). |
+
+`model-compensating` is a §3.4 verdict that routes an existing finding's
+`phaseTag` to `phase::plan` (the ceremony was not load-bearing — "a finding in
+itself"), but it is deliberately NOT a class-5 subject: the class-5 finding
+types are exactly the plan-phase / deliver-phase gaps and the touch-2
+continuity gap. Contract:
+[`../bench/feedback/attribution.js`](../bench/feedback/attribution.js).
