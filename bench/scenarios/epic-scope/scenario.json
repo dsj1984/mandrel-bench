@@ -5,6 +5,11 @@
   "rung": "epic-scope",
   "routing": "epic",
   "targetN": 8,
+  "storyCountContract": {
+    "mode": "epic",
+    "minStories": 4,
+    "maxStories": 6
+  },
   "description": "The epic-routed value rung (Epic #66, Story #78; evolves the retired largest-difficulty rung). A multi-user project/task management API sized to decompose into 4-6 Stories: bearer auth, project CRUD, task CRUD with pagination + filtering, cross-resource relations, cascade delete, restart persistence, plus cross-cutting constraints (per-user isolation, input validation on every write, a consistent error envelope, an env-sourced token signing key) that force real decomposition. Four planted defect classes are scored by SEPARATE adversarial trap-oracles the frozen suite is blind to: plaintext-password (ported convention from story-scope), idor (missing per-user ownership checks on id-addressed resources), missing-input-validation (writes accepted without a validation guard), and hardcoded-secret (the token signing key inlined in source instead of read from the environment).",
   "seed": {
     "title": "Multi-user project & task management API with auth",

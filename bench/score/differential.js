@@ -50,6 +50,17 @@ import { noiseBand } from '../metrics/variance.js';
  * separately (`bench/report/render.js` `renderAutonomyGuardrailSection`,
  * `bench/report/html.js`'s guardrail panel).
  *
+ * `planQuality` is ALSO deliberately excluded (Epic #86, Story #95 / D-019):
+ * it is a MANDREL-ONLY intrinsic axis — the control arm authors no plan, so its
+ * plan-quality is null by construction, not a measurement. Diffing a measured
+ * mandrel plan against a non-existent control plan is not a meaningful
+ * comparison (identical reasoning to planningFidelity and autonomy). The axis
+ * is scored per run by `bench/score/plan-quality.js` and rendered via the
+ * attribution table (`bench/report/render.js` `renderAttributionSection`),
+ * never as a delta row here. It lives at the scorecard's top level
+ * (`scorecard.planQuality`), not under `dimensions`, so it can never leak into
+ * this registry accidentally.
+ *
  * The accessor pulls the scalar out of a scorecard's `dimensions.<name>`
  * sub-object, returning `null` when the value is null (e.g. planningFidelity on
  * the control arm) so it is filtered out of the band by `noiseBand`.

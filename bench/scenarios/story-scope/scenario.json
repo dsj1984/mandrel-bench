@@ -5,6 +5,11 @@
   "rung": "story-scope",
   "routing": "story",
   "targetN": 8,
+  "storyCountContract": {
+    "mode": "standalone",
+    "minStories": 1,
+    "maxStories": 1
+  },
   "description": "The story-routed value rung (Epic #66, Story #75). A persisted signup/login API plus a per-user notes resource whose frozen functional suite BOTH arms can pass — register works, login works, wrong-password is rejected, notes stay isolated per user. Two planted defect classes are scored by SEPARATE adversarial trap-oracles the frozen suite is blind to: plaintext-password (absorbed from the retired single-defect spike scenario, Story #57) and token-generation (predictable/non-random session identifiers). Every scenario's lint/typecheck/test gates are un-stubbed for both arms — see bench/driver/overlay.js buildTargetPackageJson.",
   "seed": {
     "title": "Signup + login JSON API with per-user notes",

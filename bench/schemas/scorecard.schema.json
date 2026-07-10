@@ -148,6 +148,9 @@
     "trap": {
       "$ref": "#/$defs/trapBlock"
     },
+    "planQuality": {
+      "$ref": "#/$defs/planQualityBlock"
+    },
     "phases": {
       "type": "array",
       "minItems": 1,
@@ -205,6 +208,85 @@
           "type": "number",
           "minimum": 0,
           "description": "This phase session's own `claude -p` duration in milliseconds. Distinct from the record's ledger-derived `efficiency.wallClockMs`; the per-phase wall-clocks are the envelope session durations."
+        }
+      }
+    },
+    "planQualityBlock": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["score"],
+      "description": "Intrinsic PLAN-QUALITY axis (Epic #86, Story #95; D-019, docs/target-architecture.md §8). Scores the pre-delivery plan the mandrel arm's `/plan` session produced — the frozen snapshot under `.raw/<run-stamp>/plan/` — against the scenario's frozen spec, so a bad outcome can be attributed to the plan phase vs the deliver phase. A MANDREL-ONLY axis: the control arm authors no plan, so its plan-quality is null (or the block is absent), and — like planning-fidelity and autonomy — it is DELIBERATELY excluded from the Mandrel-vs-control differential (`SCALAR_DIMENSIONS` in bench/score/differential.js). It lives at the scorecard's top level (a sibling of `dimensions`, like `trap`), never under `dimensions`. Composite = 0.7 deterministic spine (mean of coverage, decompositionSanity, constraintSurfacing) + 0.3 LLM-judge cross-check, with the judge weight folding into the spine when the judge is null.",
+      "properties": {
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Composite plan quality in [0,1]. Deterministic spine weighted 0.7; LLM-judge cross-check weighted 0.3 (judge weight folds into the spine when the cross-check is null)."
+        },
+        "coverage": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Fraction of the scenario's FROZEN acceptance criteria traceable to a Story AC in the plan snapshot."
+        },
+        "decompositionSanity": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Story count/sizing vs the scenario's machine-readable `storyCountContract` (epic-scope 4-6 Stories; the story-routed rungs a single standalone Story). Null when no contract was supplied (the sub-score folds out of the spine mean)."
+        },
+        "constraintSurfacing": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Fraction of the security-baseline obligations the scenario's trap classes probe that are surfaced in the plan artifacts. 1 for a scenario with no trap obligations (e.g. hello-world)."
+        },
+        "judgeScore": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "LLM-judge cross-check score in [0,1], or null when the judge did not run (the 0.3 judge weight then folds into the spine)."
+        },
+        "plannedStoryCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of Stories the plan snapshot recorded (the decomposition-sanity input)."
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Loud-null markers: 'plan-quality-decomposition-contract-absent' when the scenario supplied no storyCountContract, 'plan-quality-judge-absent' when the judge cross-check did not run."
+        },
+        "attribution": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["classification"],
+          "description": "The D-019 §3.4 attribution decision table computed for this run — plan quality × delivered outcome × plan-adherence → one of the four classes. Crossing all three inputs is the Goodhart backstop: a plan that games the spine cannot classify as working-as-intended without a matching outcome.",
+          "properties": {
+            "classification": {
+              "type": ["string", "null"],
+              "enum": [
+                "working-as-intended",
+                "deliver-phase-gap",
+                "plan-phase-gap",
+                "model-compensating",
+                null
+              ],
+              "description": "The attribution verdict, or null when plan quality or outcome was unmeasured (the table cannot attribute without both)."
+            },
+            "planGood": {
+              "type": ["boolean", "null"],
+              "description": "True when planQuality.score ≥ the plan threshold (default 0.7)."
+            },
+            "outcomeGood": {
+              "type": ["boolean", "null"],
+              "description": "True when the delivered outcome (frozen quality score) ≥ the outcome threshold (default 0.7)."
+            },
+            "adhered": {
+              "type": ["boolean", "null"],
+              "description": "True when plan-adherence (planningFidelity.score) ≥ the adherence threshold (default 0.7); null when unmeasured."
+            }
+          }
         }
       }
     },

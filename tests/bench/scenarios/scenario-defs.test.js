@@ -254,6 +254,51 @@ describe('scenario seeds (AC1: task seed shared by both arms)', () => {
   });
 });
 
+describe('machine-readable story-count contract (Epic #86, Story #95)', () => {
+  // The plan-quality axis (bench/score/plan-quality.js) reads decomposition
+  // sanity from a MACHINE-READABLE `storyCountContract` on each scenario spec —
+  // NOT from prose. Epic-scope decomposes into 4-6 Stories; the story-routed
+  // rungs stay a single standalone Story.
+  for (const id of SCENARIO_IDS) {
+    it(`${id}/scenario.json declares a well-formed storyCountContract`, () => {
+      const s = loadScenario(id);
+      const c = s.storyCountContract;
+      assert.ok(c && typeof c === 'object', 'has a storyCountContract object');
+      assert.equal(typeof c.mode, 'string');
+      assert.ok(c.mode.length > 0, 'mode is non-empty');
+      assert.ok(
+        Number.isInteger(c.minStories) && c.minStories >= 1,
+        'minStories is a positive integer',
+      );
+      assert.ok(
+        Number.isInteger(c.maxStories) && c.maxStories >= c.minStories,
+        'maxStories is an integer ≥ minStories',
+      );
+    });
+  }
+
+  it('epic-scope decomposes into 4-6 Stories (mode "epic")', () => {
+    const c = loadScenario('epic-scope').storyCountContract;
+    assert.equal(c.mode, 'epic');
+    assert.equal(c.minStories, 4);
+    assert.equal(c.maxStories, 6);
+  });
+
+  it('story-scope is a single standalone Story (mode "standalone")', () => {
+    const c = loadScenario('story-scope').storyCountContract;
+    assert.equal(c.mode, 'standalone');
+    assert.equal(c.minStories, 1);
+    assert.equal(c.maxStories, 1);
+  });
+
+  it('hello-world is a single standalone Story (mode "standalone")', () => {
+    const c = loadScenario('hello-world').storyCountContract;
+    assert.equal(c.mode, 'standalone');
+    assert.equal(c.minStories, 1);
+    assert.equal(c.maxStories, 1);
+  });
+});
+
 describe('frozen oracles are pure w.r.t. the delivered app (AC2: frozen)', () => {
   for (const id of SCENARIO_IDS) {
     it(`${id}/acceptance.test.js imports nothing from the delivered app`, () => {
