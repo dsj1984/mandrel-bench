@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.7.0...mandrel-bench-v0.8.0) (2026-07-10)
+
+
+### Added
+
+* **results:** smoke cohort 2026-07-10 — mandrel@1.88.0 / claude-opus-4-8 ([#106](https://github.com/dsj1984/mandrel-bench/issues/106)) ([324ea13](https://github.com/dsj1984/mandrel-bench/commit/324ea1314ad1316a83161f70ed224b2c193efd65))
+
+
+### Fixed
+
+* **bench:** wire the maintainability/security LLM judge to a real transport ([#107](https://github.com/dsj1984/mandrel-bench/issues/107)) ([03f3d42](https://github.com/dsj1984/mandrel-bench/commit/03f3d42df5fc29bb57b68535d5218b2df67943a6))
+
 ## [0.7.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.6.0...mandrel-bench-v0.7.0) (2026-07-10)
 
 
