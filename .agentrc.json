@@ -1,7 +1,6 @@
 {
   "$schema": "./.agents/schemas/agentrc.schema.json",
   "project": {
-    "baseBranch": "main",
     "paths": {
       "agentRoot": ".agents",
       "docsRoot": "docs",
@@ -18,9 +17,6 @@
     "projectNumber": 7
   },
   "delivery": {
-    "ci": {
-      "skipForStoryPushes": true
-    },
     "quality": {
       "gates": {
         "crap": {
