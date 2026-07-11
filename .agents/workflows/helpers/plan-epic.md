@@ -16,11 +16,21 @@ You are the master orchestrator for the v5 Epic-Centric ticketing pipeline. Your
 goal is to transform a high-level Epic into a fully decomposed, ready-to-execute
 backlog of Stories.
 
-`/plan` is the unified planning entry point. It delegates to the two
-phase helpers — [`helpers/epic-plan-spec.md`](epic-plan-spec.md) and
-[`helpers/epic-plan-decompose.md`](epic-plan-decompose.md) — and runs
-both phases sequentially with a human confirmation gate between them. The Epic
-ID is the single positional argument.
+`/plan` is the unified planning entry point. This file (`helpers/plan-epic.md`)
+is the single authoritative home for Phase 7 (spec) and Phase 8 (decompose) —
+it carries the full step-by-step procedure for both and delegates only the
+authoring middle of each to the
+[`epic-plan-spec-author`](../../skills/core/epic-plan-spec-author/SKILL.md) /
+[`epic-plan-decompose-author`](../../skills/core/epic-plan-decompose-author/SKILL.md)
+skills. It runs both phases sequentially with a human confirmation gate
+between them. The Epic ID is the single positional argument.
+
+> **Thin pointers, not duplicate procedures.** [`helpers/epic-plan-spec.md`](epic-plan-spec.md)
+> and [`helpers/epic-plan-decompose.md`](epic-plan-decompose.md) used to
+> restate Phase 7/8 as their own inline step lists — a drifted, pre-skill
+> pattern now that authoring is delegated to the two skills above. Both files
+> are now thin pointers back to this one; do not resurrect inline step lists
+> in either.
 
 As of v5.6, planning artifacts (Tech Spec, ticket decomposition) are
 authored **directly by you, the host LLM** — no external Gemini / Anthropic /
@@ -37,12 +47,13 @@ artifacts you author.
   See [SDLC § Adaptive planning risk routing](../../docs/SDLC.md#adaptive-planning-risk-routing)
   for the full envelope shape and the planner-selected
   `acceptance::n-a` route.
-- Delegate Phase 7 and Phase 8 to the
-  [`helpers/epic-plan-spec.md`](epic-plan-spec.md) and
-  [`helpers/epic-plan-decompose.md`](epic-plan-decompose.md)
-  procedures respectively — they own the Epic lifecycle label transitions and
-  the `epic-plan-state` checkpoint. This wrapper must not apply those labels
-  directly.
+- Delegate Phase 7 and Phase 8 authoring to the
+  [`epic-plan-spec-author`](../../skills/core/epic-plan-spec-author/SKILL.md)
+  and [`epic-plan-decompose-author`](../../skills/core/epic-plan-decompose-author/SKILL.md)
+  skills respectively — the deterministic `epic-plan-spec.js` /
+  `epic-plan-decompose.js` CLIs (invoked by this file's own Phase 7 / Phase 8
+  steps) own the Epic lifecycle label transitions and the `epic-plan-state`
+  checkpoint. This wrapper must not apply those labels directly.
 
 ## Prerequisites
 
@@ -448,6 +459,18 @@ for the scoring logic.
    `--emit-context` envelope is a backstop for legacy callers; the
    skill body wins when the two surfaces diverge.
 
+   > **One-pass refinement contract (amend, don't regenerate).** When step 3's
+   > persist call rejects the authored artifacts (missing `## Delivery
+   > Slicing`, a schema-invalid risk verdict), re-entering this step applies
+   > **targeted edits** to the existing `temp/epic-[Epic_ID]/{techspec.md,
+   > risk-verdict.json,acceptance-spec.md}` files — fix only what the
+   > rejection named — per the `epic-plan-spec-author` skill's re-emit rule.
+   > This refinement is bounded to **one pass**: fix the named gap and
+   > re-run step 3 once: do not loop wholesale re-authoring across multiple
+   > rejections. The same one-pass shape already governs the Phase 6 Epic
+   > Clarity Gate's refinement loop above ("Do not loop — one refinement
+   > pass per invocation").
+
 3. **Persist to GitHub**: Run the spec-phase CLI's persist half. It
    schema-validates the planner-authored risk verdict (`--risk-verdict`,
    required — a missing or malformed verdict fails closed before any
@@ -564,65 +587,35 @@ for the scoring logic.
    temp files automatically on success — no operator action required. The
    cleanup contract lives in
    [`lib/plan-phase-cleanup.js`](../../scripts/lib/plan-phase-cleanup.js).
-   **Run the Phase 7.5 spec-validate gate (below) on
-   `temp/epic-[Epic_ID]/techspec.md` *before* this cleanup deletes the file** —
-   the gate reads the authored spec from temp.
 
-## Phase 7.5: Tech Spec Section Gate (`epic-plan-spec-validate.js`)
-
-> **Hard gate (blocks Phase 8).** This step runs **after** the Tech Spec is
-> authored (Phase 7) and **before** decomposition (Phase 8). Unlike the
-> advisory spec-freshness and BDD cross-reference checks in Phase 7, this gate
-> is **blocking**: a missing required section exits non-zero and Phase 8 MUST
-> NOT proceed until it is resolved. It is the Phase 8-side counterpart to the
-> Phase 6 Epic Clarity Gate — same detect-then-prompt pattern, one phase later.
-
-**Why this gate exists.** Phase 8.3 (Holistic Consolidation) reconciles the
-draft ticket array against the Tech Spec's `## Delivery Slicing` section, which
-the [`epic-plan-decompose-author`](../../skills/core/epic-plan-decompose-author/SKILL.md)
-skill uses as the capability-boundary anchor (see Phase 8 step 2 below). When
-the authored Tech Spec omits that section, the consolidation pass runs against a
-void and produces groupings that reflect **technical shape** (e.g. cron jobs
-together) rather than **capability boundaries** — reproduced on Epic #18 in
-`dsj1984/athportal` (planned with v1.54.0), whose spec carried a detailed
-`## Core Components` table but no `## Delivery Slicing` section.
-
-**Run the gate** against the authored Tech Spec before the Phase 7 cleanup
-deletes `temp/epic-[Epic_ID]/techspec.md`:
-
-```bash
-node .agents/scripts/epic-plan-spec-validate.js \
-  --techspec temp/epic-[Epic_ID]/techspec.md
-```
-
-- **Exit 0** — the spec contains a `## Delivery Slicing` heading (case-
-  insensitive; the gate also accepts the variant `## Delivery slicing` and the
-  shorthand `## Slicing`). Continue to Phase 8.
-- **Exit non-zero** — the required section is missing. The gate is implemented
-  by [`lib/orchestration/spec-section-validator.js`](../../scripts/lib/orchestration/spec-section-validator.js)
-  and prints an operator-visible message naming the missing section and the two
-  recovery paths:
-
-  ```text
-  [epic-plan-spec-validate] Tech Spec is missing required section(s): ## Delivery Slicing
-    Spec file: temp/epic-18/techspec.md
-
-    Phase 8 (decomposition) reconciles the draft ticket array against the
-    Tech Spec's "## Delivery Slicing" section — without it, the Phase 8.3
-    consolidation pass has no capability-boundary anchor and groups by
-    technical shape instead.
-
-    To continue, do ONE of the following before re-running Phase 8:
-      1. Re-author the Tech Spec (re-run the Phase 7 spec-author step) so it
-         emits a "## Delivery Slicing" section, OR
-      2. Add a "## Delivery Slicing" section to the Tech Spec by hand,
-         describing the capability boundaries the work should be sliced along.
-  ```
-
-  **STOP** on a non-zero exit: do not advance to Phase 8. Re-author the Tech
-  Spec (re-run the Phase 7 spec-author step) or add a `## Delivery Slicing`
-  section by hand (to the temp spec file and the Epic body's tech-spec
-  section), then re-run the gate until it exits 0.
+> **Tech Spec section gate (folded into Step 3 persist).** The persist call
+> in Step 3 above validates the authored Tech Spec for the required
+> `## Delivery Slicing` heading (case-insensitive; also accepts the variant
+> `## Delivery slicing` and the shorthand `## Slicing`) via
+> [`lib/orchestration/spec-section-validator.js`](../../scripts/lib/orchestration/spec-section-validator.js#validateSpecSections)
+> **before** acquiring the Epic-lease or making any GitHub mutation — a
+> Tech Spec missing the section fails the persist call closed with a message
+> naming the gap and the two recovery paths (re-author, or add the section by
+> hand). This used to run as a separate, standalone
+> `epic-plan-spec-validate.js` CLI invoked as its own Phase 7.5 workflow
+> step; that ordering ran the check *after* the persist had already written
+> to GitHub and *after* `cleanupPhaseTempFiles` had deleted the temp spec
+> file the check read, so the "blocking gate" could never actually block.
+> Folding the check into the persist path's input validation makes it a
+> real hard gate. **Why this gate exists**: Phase 8.3 (Holistic
+> Consolidation) reconciles the draft ticket array against the Tech Spec's
+> `## Delivery Slicing` section, which the
+> [`epic-plan-decompose-author`](../../skills/core/epic-plan-decompose-author/SKILL.md)
+> skill uses as the capability-boundary anchor (see Phase 8 step 2 below).
+> Without it, the consolidation pass runs against a void and produces
+> groupings that reflect **technical shape** (e.g. cron jobs together)
+> rather than **capability boundaries** — reproduced on Epic #18 in
+> `dsj1984/athportal` (planned with v1.54.0), whose spec carried a detailed
+> `## Core Components` table but no `## Delivery Slicing` section. On a
+> persist failure, re-enter the Step 2 spec-author step and apply a
+> **targeted edit** adding the missing `## Delivery Slicing` section to the
+> existing `techspec.md` (amend, don't regenerate — the one-pass refinement
+> contract above) — or add the section by hand — then re-run Step 3 once.
 
 ## Phase 8: Work Breakdown Decomposition
 
@@ -681,38 +674,78 @@ node .agents/scripts/epic-plan-spec-validate.js \
    toward the Architect's proposed shippable-Story clusters; it degrades
    gracefully when the section is absent.
 
-3. **Phase 8.3 — Holistic Consolidation (HITL diff gate)**: After the
-   draft `temp/epic-[Epic_ID]/tickets.json` exists and **before** the persist
-   call below, **dispatch a genuine fresh-context sub-agent** (`Agent` tool,
-   `subagent_type: general-purpose`) whose task is to read the
-   [`epic-plan-consolidate`](../../skills/core/epic-plan-consolidate/SKILL.md)
-   skill and execute its procedure with `[Epic_ID]` as input. Dispatching the critic
-   as a sub-agent — **not** activating the skill inline in your authoring
-   turn — is what makes it a **separate critic pass with fresh context**: the
-   sub-agent does not inherit the conversation that authored the draft, so it
-   cannot grade its own homework (the same nested-dispatch mechanic the
-   acceptance self-eval loop uses, now that the sub-agent depth limit is
-   lifted — see [`.agents/instructions.md` § 4](../../instructions.md)). The
-   sub-agent reads the draft array plus the Epic body (which carries the Tech
-   Spec sections), reconciles the draft against
-   the Tech Spec `## Delivery Slicing` target, and emits a **consolidated**
-   `tickets.json` plus a human-readable
-   `temp/epic-[Epic_ID]/consolidation-report.md`. Its operations are
-   scope-preserving only — **merge sibling Stories and rewire
-   `depends_on`** — and it MUST NOT add scope or invent tickets; it
-   consolidates fragmented slices by merging them into a cohesive Story,
-   never by splitting one. The sub-agent **never writes to GitHub**: it emits
-   only the two temp artifacts and returns control to this operator session.
-   It runs **before** the deterministic
-   validator (step 7), so the validator re-checks its output and the critic
-   cannot emit an invalid plan.
+   > **One-pass refinement contract (amend, don't regenerate).** When the
+   > deterministic validator (`validateAndNormalizeTickets`) rejects the
+   > draft, or the 8.3 / 8.4 / 8.5 critics below flag specific Stories,
+   > re-entering this step applies
+   > **targeted edits** to the existing `temp/epic-[Epic_ID]/tickets.json` —
+   > fix only the rejected or flagged Stories — per the
+   > `epic-plan-decompose-author` skill's re-emit rule, rather than
+   > re-authoring the whole array from scratch. Each critic's feedback gets
+   > **one refinement pass**: apply the targeted edit and re-run the
+   > relevant downstream step (validator or persist) once, matching the
+   > Phase 7 spec-author contract above; do not loop wholesale re-authoring
+   > across repeated rejections.
 
-   **Show the operator the consolidation report (the before/after diff +
-   rationale) before persisting.** The HITL diff-confirm and the persist call
-   both run here in the **operator session**, never inside the sub-agent —
-   consolidation is never auto-applied without review: on operator approval,
-   persist the consolidated `tickets.json`; on rejection, persist the draft
-   instead. This is a sub-step of Phase 8 — it
+3. **Phase 8.3 — Holistic Consolidation (HITL diff gate, precondition-gated
+   dispatch)**: After the draft `temp/epic-[Epic_ID]/tickets.json` exists and
+   **before** the persist call below, first consult the deterministic
+   dispatch precondition — [`evaluateConsolidationPrecondition`](../../scripts/lib/orchestration/consolidation-precondition.js),
+   called with the draft Story array and the Epic body (which carries the
+   folded Tech Spec `## Delivery Slicing` section). The precondition compares
+   the draft against the Delivery Slicing table **1:1** — same shippable-Story
+   count (excluding the wave-0 `bdd-scaffold` Story) and a `depends_on` shape
+   that agrees with each slice's `Independent?` answer — and returns
+   `{ dispatch, reasons }`. It **fails open** (`dispatch: true`) on every
+   ambiguous input: a missing or unparseable Delivery Slicing section, or an
+   unparseable `Independent?` cell.
+
+   - **`dispatch: false`** — the draft already matches the Delivery Slicing
+     target, so the consolidation critic has nothing to reconcile. **Skip the
+     sub-agent dispatch** and surface the skip as a **one-line progress
+     note** naming the precondition's `reasons` — quoting verbatim the
+     string `evaluateConsolidationPrecondition` actually emits: "Draft
+     matches Delivery Slicing 1:1 in count and dependency shape (N
+     slice(s)) — skipping the 8.3 consolidation dispatch." (`N` is the
+     interpolated `slicing.length`). Proceed straight to Phase 8.4 with the
+     draft `tickets.json` unchanged (no `consolidation-report.md` is
+     produced when the dispatch is skipped).
+   - **`dispatch: true`** — **dispatch a genuine fresh-context sub-agent**
+     (`Agent` tool, `subagent_type: general-purpose`) whose task is to read
+     the
+     [`epic-plan-consolidate`](../../skills/core/epic-plan-consolidate/SKILL.md)
+     skill and execute its procedure with `[Epic_ID]` as input, including the
+     precondition's `reasons` in the HITL diff context so the operator sees
+     *why* the critic ran. Dispatching the critic as a sub-agent — **not**
+     activating the skill inline in your authoring turn — is what makes it a
+     **separate critic pass with fresh context**: the sub-agent does not
+     inherit the conversation that authored the draft, so it cannot grade its
+     own homework (the same nested-dispatch mechanic the acceptance self-eval
+     loop uses, now that the sub-agent depth limit is lifted — see
+     [`.agents/instructions.md` § 4](../../instructions.md)). The sub-agent
+     reads the draft array plus the Epic body (which carries the Tech Spec
+     sections), reconciles the draft against the Tech Spec `## Delivery
+     Slicing` target, and emits a **consolidated** `tickets.json` plus a
+     human-readable `temp/epic-[Epic_ID]/consolidation-report.md`. Its operations are scope-preserving only — **merge sibling Stories and
+     rewire `depends_on`** — and it MUST NOT add scope or invent tickets; it
+     consolidates fragmented slices by merging them into a cohesive Story,
+     never by splitting one. The sub-agent **never writes to GitHub**: it
+     emits only the two temp artifacts and returns control to this operator
+     session. It runs **before** the deterministic validator
+     (`validateAndNormalizeTickets`), so the validator re-checks its output
+     and the critic cannot emit an invalid plan. **Show the operator the
+     consolidation report (the before/after
+     diff + rationale) before persisting.** The HITL diff-confirm and the
+     persist call both run here in the **operator session**, never inside
+     the sub-agent — consolidation is never auto-applied without review: on
+     operator approval, persist the consolidated `tickets.json`; on
+     rejection, persist the draft instead.
+
+   Phase 8.4 (Reachability Completeness Critic), Phase 8.5 (Planning
+   Pre-Mortem Critic), and the deterministic ticket validator
+   (`validateAndNormalizeTickets`) are
+   **unconditional** — the precondition governs only the 8.3 sub-agent
+   dispatch, never any other Phase 8 gate. This is a sub-step of Phase 8 — it
    does **not** renumber the top-level lifecycle phases (9–12).
 
 4. **Phase 8.4 — Reachability Completeness Critic (HITL diff gate, F6)**:
@@ -748,8 +781,8 @@ node .agents/scripts/epic-plan-spec-validate.js \
    - **HITL.** The added Story is surfaced in the **same Phase 8 HITL diff** as
      consolidation, **before** any GitHub write — never auto-persisted. On
      operator rejection, drop the added Story and persist without it. The
-     deterministic validator (step 7) re-checks the critic's output, so an
-     invalid addition cannot reach GitHub.
+     deterministic validator (`validateAndNormalizeTickets`) re-checks the
+     critic's output, so an invalid addition cannot reach GitHub.
 
 5. **Phase 8.5 — Planning Pre-Mortem Critic (code-reading, F9)**: After the
    reachability critic (8.4) and **before** the persist call below, **dispatch a
@@ -776,8 +809,11 @@ node .agents/scripts/epic-plan-spec-validate.js \
    shown in the **same Phase 8 HITL diff** (which stays in the operator
    session), and on
    operator approval the author re-runs (Step 2) on the findings **before** the
-   persist call. The critic runs **before** the deterministic validator (step
-   7), so the persist below is the single GitHub write for the whole phase.
+   persist call — applying **targeted edits** to the flagged Stories in the
+   existing `tickets.json` (amend, don't regenerate; **one refinement pass**
+   per the contract above), not a wholesale re-author. The critic runs
+   **before** the deterministic validator (`validateAndNormalizeTickets`),
+   so the persist below is the single GitHub write for the whole phase.
 
 6. **Persist to GitHub**: Run the decompose CLI's persist half. It
    validates the ticket array (`validateAndNormalizeTickets`), creates

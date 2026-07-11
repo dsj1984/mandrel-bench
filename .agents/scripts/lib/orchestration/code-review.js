@@ -22,8 +22,11 @@
  * Behaviour:
  *   - Loads the configured review adapter via the factory; defaults to
  *     `native` when `delivery.codeReview.provider` is unset.
- *   - Always posts the structured `code-review` comment on the Epic
- *     issue (the adapter never posts; the orchestrator owns persistence).
+ *   - Always posts the unified `verification-results` structured comment on
+ *     the Epic issue (the adapter never posts; the orchestrator owns
+ *     persistence). Story #4411 (Epic #4405) unified the former
+ *     `code-review` and `audit-results` findings contracts into this one
+ *     `verification-results` marker.
  *   - Treats severity.critical > 0 as a halting blocker — the merged
  *     `/deliver` runner consults `halted` and refuses to advance
  *     to Phase E (retro) when set.
@@ -32,6 +35,8 @@
  * helper's "operator must remediate before /deliver" gate.
  */
 
+import { hasSurvivingCritical } from '../audit-suite/findings.js';
+import { resolveLensTier } from '../audit-suite/selector.js';
 import { resolveConfig } from '../config-resolver.js';
 import { selectAuditStrategy } from '../dynamic-workflow/capability.js';
 import { gitSpawn } from '../git-utils.js';
@@ -226,6 +231,71 @@ export function resolveAuditLenses(envelope = {}) {
     if (lens) matched.add(lens);
   }
   return LENS_ORDER.filter((lens) => matched.has(lens));
+}
+
+/**
+ * Compose the Epic-close (gate3) lens roster from the change-set selection
+ * plus every risk-routed lens.
+ *
+ * STOPGAP (post-#4405 review finding): Story #4412 excluded every
+ * `local`-tier change-set lens here on the premise that the Story-scope
+ * local-lens pass (Story #4409) verifies those concerns shift-left. That
+ * premise does not hold yet — `runLocalLensReview`
+ * (story-close/phases/code-review.js) materializes lens bodies with no
+ * `artifactPrefix` (so no content persists) and no consumer acts on its
+ * result, which left change-set lenses (security, privacy, performance,
+ * quality, …) executed by NO reviewer at ANY tier. Local-tier lenses are
+ * therefore KEPT at Epic close until the story-scope pass has a real
+ * consumer; re-enable the exclusion then (tracked as a follow-up issue).
+ * The write-time maker checklists (#4410) are advisory self-checks, not
+ * verification. The `resolveLensTierFn` seam is retained so the
+ * re-exclusion is a one-line revert.
+ *
+ * The two inputs mirror the `epic-audit-prepare.js` envelope:
+ *   - `changeSetAudits` — the raw change-set gate3 selection, kept in full
+ *     (see the stopgap note above).
+ *   - `riskRoutedAudits` — the verdict-routed high-risk lenses plus the
+ *     route-glob navigability lens. Kept in **full**, regardless of tier: a
+ *     high-risk axis (or a route-adding change set) that demands a local-tier
+ *     lens still runs it at Epic close, because that demand is the whole point
+ *     of risk routing.
+ *
+ * De-duplicated and order-preserving (kept change-set lenses first, then the
+ * risk-routed extras). Pure over the injected `resolveLensTierFn` seam; the
+ * default resolver reads `audit-rules.json` from disk.
+ *
+ * @param {{
+ *   changeSetAudits?: string[],
+ *   riskRoutedAudits?: string[],
+ *   resolveLensTierFn?: typeof resolveLensTier,
+ * }} [params]
+ * @returns {string[]} The Epic-close roster (all change-set tiers +
+ *   risk-routed; local-tier exclusion suspended per the stopgap above).
+ */
+export function selectEpicCloseLenses({
+  changeSetAudits = [],
+  riskRoutedAudits = [],
+  resolveLensTierFn = resolveLensTier,
+} = {}) {
+  const kept = [];
+  const seen = new Set();
+  const add = (lens) => {
+    if (typeof lens !== 'string' || lens.length === 0 || seen.has(lens)) return;
+    seen.add(lens);
+    kept.push(lens);
+  };
+  for (const lens of Array.isArray(changeSetAudits) ? changeSetAudits : []) {
+    if (typeof lens !== 'string' || lens.length === 0) continue;
+    // Stopgap: keep local-tier lenses (see docstring). The tier seam is
+    // deliberately untouched so restoring `=== 'local' → continue` is a
+    // one-line revert once the story-scope tier has a real consumer.
+    void resolveLensTierFn;
+    add(lens);
+  }
+  for (const lens of Array.isArray(riskRoutedAudits) ? riskRoutedAudits : []) {
+    add(lens);
+  }
+  return kept;
 }
 
 /**
@@ -551,7 +621,7 @@ async function postReviewComment({
     const postResult = await upsertCommentFn(
       provider,
       commentTargetId,
-      'code-review',
+      'verification-results',
       report,
     );
     const postedCommentId =
@@ -621,7 +691,7 @@ async function executeReviewPipeline({ opts, config, envelope }) {
   );
 
   const severity = countBySeverity(findings);
-  const halted = severity.critical > 0;
+  const halted = hasSurvivingCritical(severity);
   const report = renderFindingsFn({
     scope,
     ticketId,

@@ -1,7 +1,15 @@
 /**
  * audit-results-graduator.js — Auto-graduate non-blocking audit findings
- * from the Epic's `audit-results` structured comment into routed GitHub
- * follow-up issues. Story #2615 / Epic #2586.
+ * from the Epic's unified `verification-results` structured comment into
+ * routed GitHub follow-up issues. Story #2615 / Epic #2586.
+ *
+ * Story #4411 (Epic #4405) unified the former `audit-results` and
+ * `code-review` structured-comment contracts into one `verification-results`
+ * contract: this graduator now reads the shared
+ * {@link VERIFICATION_RESULTS_MARKER} comment rather than the retired
+ * audit-results structured-comment marker. The lens-aware finding
+ * parser, the `audit-results::<severity>` + `domain::<lens>` label shape,
+ * and the audit idempotency marker are unchanged.
  *
  * As of Story #3845 / Epic #3823 the spawn helper, the path/idempotency
  * probes, the `gh issue create` filer, the toggle reader, and the
@@ -12,8 +20,8 @@
  * title / body shape, and the audit idempotency marker. Behaviour is
  * identical to the pre-consolidation graduator.
  *
- *   - Read the `audit-results` structured comment off the Epic ticket
- *     via the injected provider (`getTicketComments`).
+ *   - Read the unified `verification-results` structured comment off the
+ *     Epic ticket via the injected provider (`getTicketComments`).
  *   - For each non-blocking finding (severity high/medium/low/suggestion
  *     — i.e. anything that is NOT a 🔴 Critical Blocker), check that
  *     the cited file still exists in the merged tree.
@@ -38,22 +46,21 @@
  */
 
 import {
+  contentFingerprint,
   graduate,
   makeIsAutoFileEnabled,
-  probePathExists,
+  NO_VERIFICATION_RESULTS_COMMENT_REASON,
+  VERIFICATION_RESULTS_MARKER,
 } from './graduator-core.js';
 
 /**
  * Resolve the toggle from the resolved agentrc config. Defaults to `true`
- * — the feature is opt-out, not opt-in (mirrors codeReviewAutoFile).
+ * — the feature is opt-out, not opt-in.
  *
  * @param {object|undefined|null} config
  * @returns {boolean}
  */
 export const isAutoFileEnabled = makeIsAutoFileEnabled('auditResultsAutoFile');
-
-// Re-export the shared path probe so existing importers keep working.
-export { probePathExists };
 
 /**
  * Severity → label mapping. Only non-blocking severities have a route;
@@ -79,9 +86,12 @@ function metaSourceLabel(source) {
 }
 
 /**
- * Build the idempotency marker for a given epicId / finding index. An
- * HTML comment so it survives markdown rendering without leaking into
- * the visible body, but stays indexable via `gh search`.
+ * Build the **legacy** idempotency marker for a given epicId / finding
+ * index. Superseded by the content-hash marker
+ * ({@link buildContentMarker}) at the Story #4415 cutover, but still
+ * probed for so follow-ups filed before the cutover are recognized and
+ * not re-filed. An HTML comment so it survives markdown rendering without
+ * leaking into the visible body, but stays indexable via `gh search`.
  *
  * @param {number} epicId
  * @param {number} index — zero-based finding ordinal within the Epic.
@@ -89,6 +99,26 @@ function metaSourceLabel(source) {
  */
 export function buildIdempotencyMarker(epicId, index) {
   return `<!-- audit-results-followup: epic-${epicId}-finding-${index} -->`;
+}
+
+/**
+ * Build the content-hash idempotency marker embedded in freshly filed
+ * follow-up bodies. Derived from the finding's `lens|path|summary` triple
+ * so the marker is stable across sibling insert/remove/reorder churn in
+ * the source `audit-results` comment (Story #4415). An HTML comment so it
+ * survives markdown rendering but stays indexable via `gh search`.
+ *
+ * @param {number} epicId
+ * @param {{ lens?: string, path?: string, summary?: string }} finding
+ * @returns {string}
+ */
+export function buildContentMarker(epicId, finding) {
+  const fp = contentFingerprint({
+    category: finding.lens,
+    path: finding.path,
+    title: finding.summary,
+  });
+  return `<!-- audit-results-followup: epic-${epicId}-${fp} -->`;
 }
 
 /**
@@ -194,10 +224,12 @@ export async function graduateAuditResults(opts = {}) {
     spec: {
       fnName: 'graduateAuditResults',
       isAutoFileEnabled,
-      commentMarker: '<!-- claude-managed: audit-results -->',
-      noCommentReason: 'no-audit-results-comment',
+      commentMarker: VERIFICATION_RESULTS_MARKER,
+      noCommentReason: NO_VERIFICATION_RESULTS_COMMENT_REASON,
       parseFindings,
-      buildIdempotencyMarker,
+      buildContentMarker,
+      buildLegacyMarker: buildIdempotencyMarker,
+      crossRepoCommentAttrs: { graduator: 'audit-results' },
       decorateRecord: (record, finding) => {
         record.lens = finding.lens;
         return record;

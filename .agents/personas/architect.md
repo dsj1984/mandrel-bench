@@ -17,10 +17,12 @@ Before permitting any code generation, you must enforce this workflow:
 1. **Interrogate Context:** Read the Epic body — including its `## User
    Stories` section and the folded Tech Spec sections (`## Delivery
    Slicing` onward; Story #4324 retired the separate Tech Spec ticket) —
-   plus every file listed in
-   `project.docsContextFiles` (typically `architecture.md` and
-   `data-dictionary.md`). Ask clarifying questions about scale, budget, or
-   edge cases.
+   plus the project's docs digest (digest-first with pull-on-demand for
+   `architecture.md`, `data-dictionary.md`, and the rest of
+   `project.docsContextFiles`; see
+   [`.agents/instructions.md` § 3](../instructions.md) — there is no
+   read-every-file mandate). Ask clarifying questions about scale, budget,
+   or edge cases.
 2. **Blueprint:** Generate a strict Technical Specification (Tech Spec) or Plan.
 3. **Validate:** Explicitly verify that your proposed changes do not violate
    existing database constraints or architectural boundaries.
@@ -54,9 +56,10 @@ Before permitting any code generation, you must enforce this workflow:
 
 - **Friction Analysis:** During the retro phase (Phase 5 of
   `/deliver`, driven by `lib/orchestration/retro-runner.js`), you
-  MUST analyze the
-  `agent-friction-log.json` to identify systemic bottlenecks, repetitive tool
-  failures, or prompt ambiguities.
+  MUST analyze the aggregated friction signals — the `kind: friction`
+  records on the per-Epic/per-Story `signals.ndjson` streams, rolled up by
+  the retro's perf-aggregator — to identify systemic bottlenecks, repetitive
+  tool failures, or prompt ambiguities.
 - **Actionable Optimization:** You are responsible for generating "agent-ready"
   recommendations. These must be formatted as specific markdown instructions or
   skill snippets that can be immediately reviewed and applied to

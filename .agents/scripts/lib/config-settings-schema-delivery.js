@@ -211,11 +211,17 @@ const MERGE_WATCH_SCHEMA = {
  * unattended auto-fixes, independent of the Story-sizing thresholds in
  * `ticket-validator-sizing.js`.
  *
- * `autoFixSeverity` (Story #4399) is the threshold that governs which
- * findings the Phase 4 host-LLM remediation loop fixes on-branch: `medium`
- * (the default) routes 🔴/🟠/🟡 into remediation while 🟢 still graduates;
- * `high` reproduces the pre-4399 Critical/High-only routing. It is a hard
- * cutover per `rules/git-conventions.md` — there is no back-compat flag.
+ * `autoFixSeverity` (Story #4399) is the threshold that governs which findings
+ * the Epic-close host-LLM remediation loop fixes on-branch. It is **tier-aware**
+ * (Story #4412, Epic #4405): the Epic-close audit tier defaults to `high`
+ * (route only 🔴 Critical + 🟠 High into remediation; 🟡 Medium + 🟢 Suggestion
+ * graduate to follow-up issues) because 🟡 Medium code-quality concerns are
+ * already remediated shift-left at the write-time and Story-scope tiers — the
+ * slim outermost tier stops re-paying to fix them where a fix is most
+ * expensive. Setting `medium` opts back into routing 🔴/🟠/🟡 on-branch. The
+ * enum is the single validation seam: a configured value round-trips through
+ * the resolver, and any value outside `['high', 'medium']` is rejected at load.
+ * Hard cutover per `rules/git-conventions.md` — there is no back-compat flag.
  */
 const EPIC_AUDIT_SCHEMA = {
   type: 'object',
@@ -331,15 +337,22 @@ const ACCEPTANCE_EVAL_SCHEMA = {
 /**
  * `delivery.feedbackLoop` — opt-out toggles consumed by the Epic finalize
  * listener's auto-file graduators (`lib/feedback-loop/*-graduator.js`, read
- * via `graduator-core.js#makeIsAutoFileEnabled`). Both default to `true`
- * (auto-file on); set either to `false` to suppress auto-filing the
+ * via `graduator-core.js#makeIsAutoFileEnabled`). All default to `true`
+ * (auto-file on); set any to `false` to suppress auto-filing the
  * corresponding non-blocking findings as follow-up issues.
+ *
+ * `retroProposals` (Story #4418) governs the retro auto-filer: when true
+ * (default) the retro's actionable routed proposals are filed as
+ * `meta::<framework-gap|consumer-improvement>` + `friction::<category>`
+ * issues via the graduator pre-parsed-findings seam, and the rendered retro
+ * sections list the filed issue numbers instead of paste-ready `gh` command
+ * stanzas; set it to `false` to fall back to the command stanzas.
  */
 const FEEDBACK_LOOP_SCHEMA = {
   type: 'object',
   properties: {
-    codeReviewAutoFile: { type: 'boolean' },
     auditResultsAutoFile: { type: 'boolean' },
+    retroProposals: { type: 'boolean' },
   },
   additionalProperties: false,
 };
