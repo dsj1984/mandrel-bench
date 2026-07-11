@@ -125,6 +125,22 @@ export function fileFootprintDrift(planned, actual) {
  * }}
  */
 export function computeQuality(input = {}) {
+  // UNMATERIALIZED delivery (`measured: false`): the mandrel `/deliver` never
+  // landed on origin/main (the workspace holds only the seed baseline), so
+  // there is no runnable app to probe. Score quality NULL, not 0 — a false 0 is
+  // indistinguishable from a genuine "delivered broken code" miss and would
+  // poison the differential. The absence is the honest autonomy signal, carried
+  // separately as a `delivery-not-materialized` warning. Symmetric to the
+  // touch-2 materialization guard and to planning-fidelity's `planObserved`.
+  if (input.measured === false) {
+    return {
+      score: null,
+      frozenSuitePassRate: null,
+      frozenSuitePassed: 0,
+      frozenSuiteTotal: 0,
+      acceptanceEvalScore: null,
+    };
+  }
   const passed = nonNegInt(input.frozenSuitePassed);
   const total = nonNegInt(input.frozenSuiteTotal);
   // A delivered-but-empty suite (total 0) scores 0, never a divide-by-zero.

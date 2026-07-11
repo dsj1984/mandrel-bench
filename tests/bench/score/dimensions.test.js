@@ -37,6 +37,19 @@ const approx = (actual, expected, eps = 1e-9) =>
   );
 
 describe('computeQuality', () => {
+  it('scores NULL (not 0) when the delivery did not materialize (measured:false)', () => {
+    const q = computeQuality({ measured: false });
+    assert.equal(
+      q.score,
+      null,
+      'unmaterialized delivery is unmeasured, not a false 0',
+    );
+    assert.equal(q.frozenSuitePassRate, null);
+    assert.equal(q.frozenSuiteTotal, 0);
+    // Contrast: a delivered-but-empty suite (measured, total 0) still scores 0.
+    assert.equal(computeQuality({ frozenSuiteTotal: 0 }).score, 0);
+  });
+
   it('blends frozen-suite pass rate (0.7) and judge score (0.3)', () => {
     const q = computeQuality({
       frozenSuitePassed: 6,

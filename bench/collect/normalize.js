@@ -660,6 +660,7 @@ export function buildScorecard({
   rawRefs,
   standalone = null,
   scenarioRouting = null,
+  deliveryNotMaterialized = false,
 }) {
   if (!run || typeof run !== 'object') {
     throw new TypeError('buildScorecard: run identity is required');
@@ -745,6 +746,9 @@ export function buildScorecard({
   const dimensions = computeDimensions({
     arm: run.arm,
     quality: {
+      // `measured: false` (an unmaterialized mandrel delivery) forces a null
+      // quality score, so it must survive the reshape into the scorer input.
+      ...(quality.measured === false ? { measured: false } : {}),
       frozenSuitePassed: quality.frozenSuitePassed,
       frozenSuiteTotal: quality.frozenSuiteTotal,
       acceptanceEvalScore:
@@ -808,6 +812,11 @@ export function buildScorecard({
     ...(dimensions.security.warnings ?? []),
     ...(dimensions.maintainability.warnings ?? []),
     ...(telemetryAbsent ? ['standalone-telemetry-absent'] : []),
+    // The mandrel /deliver never landed on origin/main (stalled/blocked Epic or
+    // an auto-merge that never completed), so quality was scored `null` rather
+    // than a fabricated 0 on the empty seed tree — this is the loud autonomy
+    // marker for that (see computeQuality's `measured` path in run.js).
+    ...(deliveryNotMaterialized ? ['delivery-not-materialized'] : []),
   ];
 
   const scorecard = {
@@ -911,6 +920,9 @@ export function buildScorecard({
         : {}),
       ...(typeof touch2.inheritance === 'string'
         ? { inheritance: touch2.inheritance }
+        : {}),
+      ...(typeof touch2.materialized === 'boolean'
+        ? { materialized: touch2.materialized }
         : {}),
       outcome:
         typeof touch2.outcome === 'number' && Number.isFinite(touch2.outcome)

@@ -961,6 +961,42 @@ describe('buildScorecard — second-touch continuity block (Epic #86, Story #96)
     assert.equal(validate(sc), true, JSON.stringify(validate.errors));
   });
 
+  it('preserves the touch2 materialized flag + null outcome (the #115 guard round-trips)', () => {
+    const validate = buildValidator();
+    const base = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: {},
+    });
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 2, frozenSuiteTotal: 2 },
+      // The shape runTouch2 returns when the change-request PR never landed.
+      touch2: {
+        changeRequestId: 'password-change',
+        inheritance: 'full-pipeline',
+        materialized: false,
+        outcome: null,
+        cost: 1.9,
+        frozenSuitePassed: 0,
+        frozenSuiteTotal: 0,
+        totalTokens: 5000,
+        wallClockMs: 12000,
+        dimensions: base.dimensions,
+      },
+    });
+    assert.equal(
+      sc.touch2.materialized,
+      false,
+      'materialized must survive the buildScorecard reshape',
+    );
+    assert.equal(sc.touch2.outcome, null);
+    assert.equal(validate(sc), true, JSON.stringify(validate.errors));
+  });
+
   it('omits the touch2 block entirely for a touch-1-only record (e.g. hello-world)', () => {
     const validate = buildValidator();
     const sc = buildScorecard({
