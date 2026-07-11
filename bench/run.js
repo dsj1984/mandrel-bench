@@ -1578,14 +1578,32 @@ export async function runOneRun(opts, deps = {}) {
 
     // Materialize the delivered code into the working tree. For the mandrel arm
     // a clean /deliver auto-merged onto the sandbox's default branch on GitHub,
-    // so pull it down; best-effort (a blocked run leaves the default branch
-    // empty → the oracle records quality=0, which is the correct signal).
+    // so pull it down and CHECK it actually landed. When the Epic stalls/blocks
+    // or auto-merge never completes, origin/main is still the seed baseline — the
+    // reset restores an EMPTY tree and the oracle would fabricate quality=0,
+    // indistinguishable from a genuine "delivered broken code" miss (and it
+    // silently poisons the quality differential). Compare the post-reset HEAD to
+    // the seed baseline: an unchanged SHA means nothing landed. Symmetric to the
+    // touch-2 materialization guard (#115); the control arm commits directly and
+    // always materializes.
+    let delivered = true;
     if (arm === 'mandrel') {
       try {
         gitFn(['fetch', 'origin', 'main'], handle.workspacePath);
         gitFn(['checkout', 'main'], handle.workspacePath);
         gitFn(['reset', '--hard', 'origin/main'], handle.workspacePath);
+        const headSha = gitFn(
+          ['rev-parse', 'HEAD'],
+          handle.workspacePath,
+        ).trim();
+        if (baselineSha && headSha === baselineSha) {
+          delivered = false;
+          logger?.warn?.(
+            `[run] delivery did not land — origin/main unchanged at the seed baseline ${headSha.slice(0, 8)} (Epic likely blocked/incomplete); scoring quality as null (unmaterialized), not a false 0.`,
+          );
+        }
       } catch (err) {
+        delivered = false;
         logger?.warn?.(
           `[run] could not materialize merged code (run may have blocked): ${err?.message ?? err}`,
         );
@@ -1686,28 +1704,32 @@ export async function runOneRun(opts, deps = {}) {
     );
     rawRefs = { ...(rawRefs ?? {}), costEnvelope: envelopePath };
 
-    // Score Quality by bringing up the delivered app and probing it.
-    const quality = await withRunningAppFn(
-      { workspacePath: handle.workspacePath, app: scenario.app },
-      async (baseUrl) => {
-        if (arm === 'mandrel') {
-          const r = await scoreQualityFn({
-            evaluate,
-            baseUrl,
-            storyId: 1,
-            epicId: scenario.epicId ?? null,
-            transport: 'in-process',
-          });
-          return qualityInputs({
-            frozen: r.frozen,
-            crossCheckDecision: r.crossCheck?.decision ?? null,
-          });
-        }
-        const frozen = await evaluate(baseUrl);
-        return qualityInputs({ frozen, crossCheckDecision: null });
-      },
-      deps.appRunnerDeps,
-    );
+    // Score Quality by bringing up the delivered app and probing it — UNLESS the
+    // mandrel delivery didn't materialize, in which case there is no app in the
+    // empty seed tree: score quality as unmeasured (null), never a false 0.
+    const quality = !delivered
+      ? { measured: false }
+      : await withRunningAppFn(
+          { workspacePath: handle.workspacePath, app: scenario.app },
+          async (baseUrl) => {
+            if (arm === 'mandrel') {
+              const r = await scoreQualityFn({
+                evaluate,
+                baseUrl,
+                storyId: 1,
+                epicId: scenario.epicId ?? null,
+                transport: 'in-process',
+              });
+              return qualityInputs({
+                frozen: r.frozen,
+                crossCheckDecision: r.crossCheck?.decision ?? null,
+              });
+            }
+            const frozen = await evaluate(baseUrl);
+            return qualityInputs({ frozen, crossCheckDecision: null });
+          },
+          deps.appRunnerDeps,
+        );
 
     // Collect maintainability and security sub-signals from the materialized
     // workspace tree. Both arms are measured identically so the comparison is
@@ -1747,7 +1769,15 @@ export async function runOneRun(opts, deps = {}) {
     // error leaves the trap block off the scorecard rather than aborting the
     // run — a missing trap signal is conservative (no false delta).
     let trap = null;
-    if (typeof scenarioDir === 'string' && scenarioDir.length > 0) {
+    // Skip the trap scan on an unmaterialized delivery: an empty seed tree has
+    // no planted defect to find, so the oracle would read a false cleanRate=1
+    // (looks like a clean pass when nothing was delivered) and pollute the trap
+    // axis. Leaving `trap` null excludes the cell from the trap differential.
+    if (
+      delivered &&
+      typeof scenarioDir === 'string' &&
+      scenarioDir.length > 0
+    ) {
       try {
         const verdict = await runTrapOraclesFn(
           { scenarioDir, deliveredTreePath: handle.workspacePath },
@@ -1766,11 +1796,16 @@ export async function runOneRun(opts, deps = {}) {
     // result (judge disabled / transport error) folds the 0.3 judge weight
     // into the objective spine — the dimension is still populated.
     let judgeScores = null;
+    // Skip the judge `claude -p` entirely when the delivery didn't land — there
+    // is nothing to judge in the empty seed tree, and maintainability/security
+    // are already forced to null below.
     try {
-      judgeScores = await runDimensionJudgeFn(
-        { maintainabilitySignals, securitySignals },
-        deps.dimensionJudgeDeps,
-      );
+      if (delivered) {
+        judgeScores = await runDimensionJudgeFn(
+          { maintainabilitySignals, securitySignals },
+          deps.dimensionJudgeDeps,
+        );
+      }
     } catch (err) {
       // A transient infra failure (rate/session limit, overload, network) must
       // ABORT the cell so a resume redoes it — never bake a blip into a
@@ -1781,16 +1816,23 @@ export async function runOneRun(opts, deps = {}) {
       );
     }
 
-    const maintainabilityInputs = {
-      objectiveMaintainabilityScore:
-        maintainabilitySignals.objectiveMaintainabilityScore ?? null,
-      maintainabilityJudgeScore: judgeScores?.maintainability ?? null,
-      lintWarnings: maintainabilitySignals.lintErrorCount ?? 0,
-      complexityScore: maintainabilitySignals.complexityScore ?? null,
-      maintainabilityIndex: null,
-    };
+    // An unmaterialized delivery has no code to analyse: mark maintainability +
+    // security unmeasured (null) too, so they don't score a conservative 0 on
+    // the empty seed tree and drag the mandrel arm down — same guard as quality.
+    const maintainabilityInputs = !delivered
+      ? { measured: false }
+      : {
+          objectiveMaintainabilityScore:
+            maintainabilitySignals.objectiveMaintainabilityScore ?? null,
+          maintainabilityJudgeScore: judgeScores?.maintainability ?? null,
+          lintWarnings: maintainabilitySignals.lintErrorCount ?? 0,
+          complexityScore: maintainabilitySignals.complexityScore ?? null,
+          maintainabilityIndex: null,
+        };
 
-    const securityInputs = derivedSecurityInputs(securitySignals, judgeScores);
+    const securityInputs = !delivered
+      ? { measured: false }
+      : derivedSecurityInputs(securitySignals, judgeScores);
 
     // The second touch (Epic #86, Story #96). AFTER touch 1 is scored, run the
     // scenario's frozen change request as a fresh session against the delivered
@@ -1885,6 +1927,9 @@ export async function runOneRun(opts, deps = {}) {
       standalone,
       scenarioRouting:
         typeof scenario?.routing === 'string' ? scenario.routing : null,
+      // Loud autonomy marker: the mandrel /deliver never landed (quality is null,
+      // trap absent) — distinct from a delivered-but-broken app.
+      deliveryNotMaterialized: arm === 'mandrel' && !delivered,
     });
     return scorecard;
   } finally {

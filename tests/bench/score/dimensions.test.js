@@ -37,6 +37,19 @@ const approx = (actual, expected, eps = 1e-9) =>
   );
 
 describe('computeQuality', () => {
+  it('scores NULL (not 0) when the delivery did not materialize (measured:false)', () => {
+    const q = computeQuality({ measured: false });
+    assert.equal(
+      q.score,
+      null,
+      'unmaterialized delivery is unmeasured, not a false 0',
+    );
+    assert.equal(q.frozenSuitePassRate, null);
+    assert.equal(q.frozenSuiteTotal, 0);
+    // Contrast: a delivered-but-empty suite (measured, total 0) still scores 0.
+    assert.equal(computeQuality({ frozenSuiteTotal: 0 }).score, 0);
+  });
+
   it('blends frozen-suite pass rate (0.7) and judge score (0.3)', () => {
     const q = computeQuality({
       frozenSuitePassed: 6,
@@ -393,6 +406,12 @@ describe('computeAutonomy', () => {
 });
 
 describe('computeMaintainability', () => {
+  it('scores NULL when the delivery did not materialize (measured:false)', () => {
+    const m = computeMaintainability({ measured: false });
+    assert.equal(m.score, null);
+    assert.deepEqual(m.warnings, []);
+  });
+
   it('blends objective spine (0.7) and judge score (0.3)', () => {
     const m = computeMaintainability({
       objectiveMaintainabilityScore: 1,
@@ -483,6 +502,12 @@ describe('computeMaintainability', () => {
 });
 
 describe('computeSecurity', () => {
+  it('scores NULL when the delivery did not materialize (measured:false)', () => {
+    const sec = computeSecurity({ measured: false });
+    assert.equal(sec.score, null);
+    assert.deepEqual(sec.warnings, []);
+  });
+
   it('blends objective spine (0.7) and judge score (0.3)', () => {
     const s = computeSecurity({
       objectiveSecurityScore: 1,

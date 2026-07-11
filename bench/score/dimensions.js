@@ -125,6 +125,22 @@ export function fileFootprintDrift(planned, actual) {
  * }}
  */
 export function computeQuality(input = {}) {
+  // UNMATERIALIZED delivery (`measured: false`): the mandrel `/deliver` never
+  // landed on origin/main (the workspace holds only the seed baseline), so
+  // there is no runnable app to probe. Score quality NULL, not 0 — a false 0 is
+  // indistinguishable from a genuine "delivered broken code" miss and would
+  // poison the differential. The absence is the honest autonomy signal, carried
+  // separately as a `delivery-not-materialized` warning. Symmetric to the
+  // touch-2 materialization guard and to planning-fidelity's `planObserved`.
+  if (input.measured === false) {
+    return {
+      score: null,
+      frozenSuitePassRate: null,
+      frozenSuitePassed: 0,
+      frozenSuiteTotal: 0,
+      acceptanceEvalScore: null,
+    };
+  }
   const passed = nonNegInt(input.frozenSuitePassed);
   const total = nonNegInt(input.frozenSuiteTotal);
   // A delivered-but-empty suite (total 0) scores 0, never a divide-by-zero.
@@ -449,6 +465,20 @@ export const SECURITY_WEIGHTS = Object.freeze({ spine: 0.7, judge: 0.3 });
  * }}
  */
 export function computeMaintainability(input = {}) {
+  // UNMATERIALIZED delivery (`measured: false`): the empty seed tree has no
+  // code to analyse, so score NULL (excluded from the differential) rather than
+  // a conservative 0 that would drag the mandrel arm down for a run that never
+  // landed. Same rationale as computeQuality's `measured` path.
+  if (input.measured === false) {
+    return {
+      score: null,
+      lintWarnings: 0,
+      complexityScore: null,
+      maintainabilityIndex: null,
+      maintainabilityJudgeScore: null,
+      warnings: [],
+    };
+  }
   const lintWarnings = nonNegInt(input.lintWarnings);
   const complexityScore =
     typeof input.complexityScore === 'number' &&
@@ -547,6 +577,19 @@ export function computeMaintainability(input = {}) {
  * }}
  */
 export function computeSecurity(input = {}) {
+  // UNMATERIALIZED delivery (`measured: false`): no delivered code to scan, so
+  // score NULL (excluded from the differential) rather than a 0 that would
+  // penalize the mandrel arm for a run that never landed. See computeQuality.
+  if (input.measured === false) {
+    return {
+      score: null,
+      criticalFindings: 0,
+      highFindings: 0,
+      secretsDetected: false,
+      securityJudgeScore: null,
+      warnings: [],
+    };
+  }
   const criticalFindings = nonNegInt(input.criticalFindings);
   const highFindings = nonNegInt(input.highFindings);
   const secretsDetected = input.secretsDetected === true;

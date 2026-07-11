@@ -2904,6 +2904,69 @@ test('runOneRun: a TRANSIENT judge failure aborts the cell (rejects) for a clean
   );
 });
 
+test('runOneRun (mandrel): an UNMATERIALIZED delivery → quality null, trap absent, app not booted, delivery-not-materialized warning', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  // Force the materialization check to read "nothing landed": after the reset,
+  // HEAD === the seed baseline SHA (the Epic stalled / auto-merge never ran).
+  deps.gitFn = (args) => {
+    record.git.push(args.join(' '));
+    if (args[0] === 'rev-parse') return 'seedbaselinesha\n';
+    return '';
+  };
+  let appBooted = false;
+  deps.withRunningAppFn = async () => {
+    appBooted = true;
+    return { frozenSuitePassed: 24, frozenSuiteTotal: 24 };
+  };
+  let trapScanned = false;
+  deps.runTrapOraclesFn = async () => {
+    trapScanned = true;
+    return { classes: [{ class: 'idor', score: 1 }], cleanRate: 1 };
+  };
+  const { scenario, evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario,
+      evaluate,
+      scenarioDir: '/repo/bench/scenarios/epic-scope',
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: {
+        owner: 'o',
+        repo: 'r',
+        repoUrl: 'u',
+        baselineSha: 'seedbaselinesha',
+      },
+      resultsDir: '/results',
+      ephemeralRoot: '/tmp/e',
+    },
+    deps,
+  );
+  // The KEY guard: every tree-derived value dimension is UNMEASURED (null),
+  // never a fabricated 0 that would drag the mandrel arm down.
+  assert.equal(scorecard.dimensions.quality.score, null);
+  assert.equal(scorecard.dimensions.maintainability.score, null);
+  assert.equal(scorecard.dimensions.security.score, null);
+  // Efficiency stays real — the session ran and cost money.
+  assert.ok(typeof scorecard.dimensions.efficiency.costUsd === 'number');
+  assert.equal(appBooted, false, 'the empty seed tree has no app to boot');
+  assert.equal(
+    trapScanned,
+    false,
+    'the trap oracle is skipped (no false cleanRate)',
+  );
+  assert.equal(
+    'trap' in scorecard,
+    false,
+    'trap axis excluded for an unmaterialized delivery',
+  );
+  assert.ok(
+    (scorecard.warnings ?? []).includes('delivery-not-materialized'),
+    'the failed landing is surfaced as a loud autonomy warning',
+  );
+});
+
 test('runOneRun: a GENUINE judge failure degrades gracefully (cell completes, spine-only)', async () => {
   const record = freshRecord();
   const deps = benchDeps(record);
