@@ -69,6 +69,16 @@ const SCENARIO_IDS = ['hello-world', 'story-scope', 'epic-scope'];
  * from an environment variable and never inline it (the fix).
  */
 const SECURITY_HINT_TERMS = [
+  // Prompt-realism cutover: behavioural answer-leaks. A seed prompt must
+  // state GOALS, not pre-answer the judgment calls the suite scores — these
+  // phrases gave away the isolation / no-echo / validation / envelope /
+  // session-invalidation answers verbatim in the pre-cutover prompts.
+  'never reveal',
+  'error envelope',
+  'echoes the password',
+  'not return the password',
+  'must stop working',
+  'rejects an invalid payload',
   'hash',
   'bcrypt',
   'salt',
@@ -956,7 +966,16 @@ describe('epic-scope frozen oracle behavior', () => {
       const u = new URL(String(url));
       const parts = u.pathname.split('/').filter(Boolean);
       const method = (init.method ?? 'GET').toUpperCase();
-      const body = init.body ? JSON.parse(init.body) : undefined;
+      let body;
+      if (init.body) {
+        try {
+          body = JSON.parse(init.body);
+        } catch {
+          // A conforming backend rejects a syntactically malformed JSON body
+          // with a 4xx rather than crashing (criterion 22's robustness probe).
+          return err(400, 'malformed JSON body');
+        }
+      }
 
       if (parts[0] === 'auth' && parts[1] === 'register' && method === 'POST') {
         const ok =
