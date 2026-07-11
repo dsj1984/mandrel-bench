@@ -465,6 +465,20 @@ export const SECURITY_WEIGHTS = Object.freeze({ spine: 0.7, judge: 0.3 });
  * }}
  */
 export function computeMaintainability(input = {}) {
+  // UNMATERIALIZED delivery (`measured: false`): the empty seed tree has no
+  // code to analyse, so score NULL (excluded from the differential) rather than
+  // a conservative 0 that would drag the mandrel arm down for a run that never
+  // landed. Same rationale as computeQuality's `measured` path.
+  if (input.measured === false) {
+    return {
+      score: null,
+      lintWarnings: 0,
+      complexityScore: null,
+      maintainabilityIndex: null,
+      maintainabilityJudgeScore: null,
+      warnings: [],
+    };
+  }
   const lintWarnings = nonNegInt(input.lintWarnings);
   const complexityScore =
     typeof input.complexityScore === 'number' &&
@@ -563,6 +577,19 @@ export function computeMaintainability(input = {}) {
  * }}
  */
 export function computeSecurity(input = {}) {
+  // UNMATERIALIZED delivery (`measured: false`): no delivered code to scan, so
+  // score NULL (excluded from the differential) rather than a 0 that would
+  // penalize the mandrel arm for a run that never landed. See computeQuality.
+  if (input.measured === false) {
+    return {
+      score: null,
+      criticalFindings: 0,
+      highFindings: 0,
+      secretsDetected: false,
+      securityJudgeScore: null,
+      warnings: [],
+    };
+  }
   const criticalFindings = nonNegInt(input.criticalFindings);
   const highFindings = nonNegInt(input.highFindings);
   const secretsDetected = input.secretsDetected === true;

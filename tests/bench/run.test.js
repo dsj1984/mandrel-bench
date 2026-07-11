@@ -2943,8 +2943,13 @@ test('runOneRun (mandrel): an UNMATERIALIZED delivery → quality null, trap abs
     },
     deps,
   );
-  // The KEY guard: quality is UNMEASURED (null), never a fabricated 0.
+  // The KEY guard: every tree-derived value dimension is UNMEASURED (null),
+  // never a fabricated 0 that would drag the mandrel arm down.
   assert.equal(scorecard.dimensions.quality.score, null);
+  assert.equal(scorecard.dimensions.maintainability.score, null);
+  assert.equal(scorecard.dimensions.security.score, null);
+  // Efficiency stays real — the session ran and cost money.
+  assert.ok(typeof scorecard.dimensions.efficiency.costUsd === 'number');
   assert.equal(appBooted, false, 'the empty seed tree has no app to boot');
   assert.equal(
     trapScanned,

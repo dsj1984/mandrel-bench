@@ -773,6 +773,9 @@ export function buildScorecard({
       observed: run.arm === 'control' ? true : valueObserved,
     },
     maintainability: {
+      // `measured: false` (unmaterialized delivery) forces a null score — must
+      // survive the reshape, like the quality input above.
+      ...(maintainabilityInputs.measured === false ? { measured: false } : {}),
       objectiveMaintainabilityScore:
         maintainabilityInputs.objectiveMaintainabilityScore ?? null,
       maintainabilityJudgeScore:
@@ -782,6 +785,7 @@ export function buildScorecard({
       maintainabilityIndex: maintainabilityInputs.maintainabilityIndex ?? null,
     },
     security: {
+      ...(securityInputs.measured === false ? { measured: false } : {}),
       objectiveSecurityScore: securityInputs.objectiveSecurityScore ?? null,
       securityJudgeScore: securityInputs.securityJudgeScore ?? null,
       criticalFindings: securityInputs.criticalFindings,

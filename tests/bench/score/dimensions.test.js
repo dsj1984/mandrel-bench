@@ -406,6 +406,12 @@ describe('computeAutonomy', () => {
 });
 
 describe('computeMaintainability', () => {
+  it('scores NULL when the delivery did not materialize (measured:false)', () => {
+    const m = computeMaintainability({ measured: false });
+    assert.equal(m.score, null);
+    assert.deepEqual(m.warnings, []);
+  });
+
   it('blends objective spine (0.7) and judge score (0.3)', () => {
     const m = computeMaintainability({
       objectiveMaintainabilityScore: 1,
@@ -496,6 +502,12 @@ describe('computeMaintainability', () => {
 });
 
 describe('computeSecurity', () => {
+  it('scores NULL when the delivery did not materialize (measured:false)', () => {
+    const sec = computeSecurity({ measured: false });
+    assert.equal(sec.score, null);
+    assert.deepEqual(sec.warnings, []);
+  });
+
   it('blends objective spine (0.7) and judge score (0.3)', () => {
     const s = computeSecurity({
       objectiveSecurityScore: 1,

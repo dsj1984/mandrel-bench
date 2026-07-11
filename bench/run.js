@@ -1796,11 +1796,16 @@ export async function runOneRun(opts, deps = {}) {
     // result (judge disabled / transport error) folds the 0.3 judge weight
     // into the objective spine — the dimension is still populated.
     let judgeScores = null;
+    // Skip the judge `claude -p` entirely when the delivery didn't land — there
+    // is nothing to judge in the empty seed tree, and maintainability/security
+    // are already forced to null below.
     try {
-      judgeScores = await runDimensionJudgeFn(
-        { maintainabilitySignals, securitySignals },
-        deps.dimensionJudgeDeps,
-      );
+      if (delivered) {
+        judgeScores = await runDimensionJudgeFn(
+          { maintainabilitySignals, securitySignals },
+          deps.dimensionJudgeDeps,
+        );
+      }
     } catch (err) {
       // A transient infra failure (rate/session limit, overload, network) must
       // ABORT the cell so a resume redoes it — never bake a blip into a
@@ -1811,16 +1816,23 @@ export async function runOneRun(opts, deps = {}) {
       );
     }
 
-    const maintainabilityInputs = {
-      objectiveMaintainabilityScore:
-        maintainabilitySignals.objectiveMaintainabilityScore ?? null,
-      maintainabilityJudgeScore: judgeScores?.maintainability ?? null,
-      lintWarnings: maintainabilitySignals.lintErrorCount ?? 0,
-      complexityScore: maintainabilitySignals.complexityScore ?? null,
-      maintainabilityIndex: null,
-    };
+    // An unmaterialized delivery has no code to analyse: mark maintainability +
+    // security unmeasured (null) too, so they don't score a conservative 0 on
+    // the empty seed tree and drag the mandrel arm down — same guard as quality.
+    const maintainabilityInputs = !delivered
+      ? { measured: false }
+      : {
+          objectiveMaintainabilityScore:
+            maintainabilitySignals.objectiveMaintainabilityScore ?? null,
+          maintainabilityJudgeScore: judgeScores?.maintainability ?? null,
+          lintWarnings: maintainabilitySignals.lintErrorCount ?? 0,
+          complexityScore: maintainabilitySignals.complexityScore ?? null,
+          maintainabilityIndex: null,
+        };
 
-    const securityInputs = derivedSecurityInputs(securitySignals, judgeScores);
+    const securityInputs = !delivered
+      ? { measured: false }
+      : derivedSecurityInputs(securitySignals, judgeScores);
 
     // The second touch (Epic #86, Story #96). AFTER touch 1 is scored, run the
     // scenario's frozen change request as a fresh session against the delivered
