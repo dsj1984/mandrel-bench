@@ -36,11 +36,16 @@ export const SCENARIO_ID = 'story-scope';
  * @type {ReadonlyArray<string>}
  */
 export const CRITERIA = Object.freeze([
-  'POST /password with a valid bearer credential and a non-empty newPassword returns 200; a missing/invalid credential returns 401 and an empty newPassword returns 400',
-  'After a password change, a session identifier issued BEFORE the change no longer authenticates — GET /me with the old credential returns 401 (session invalidation)',
-  'After the change the user can sign in again with the NEW password (POST /login returns 200 with a non-empty session identifier)',
-  'After the change the OLD password is rejected (POST /login with the old password returns 401)',
+  'POST /password with a valid bearer credential and a non-empty newPassword succeeds (2xx); a missing/invalid credential is rejected as unauthenticated (401/403) and an empty newPassword is rejected with a 4xx',
+  'After a password change, a session identifier issued BEFORE the change no longer authenticates — GET /me with the old credential is rejected (session invalidation)',
+  'After the change the user can sign in again with the NEW password (POST /login responds 2xx with a non-empty session identifier)',
+  'After the change the OLD password is rejected (POST /login with the old password is rejected as unauthenticated)',
 ]);
+
+/** Tolerant status matchers — see the touch-1 oracle for the rationale. */
+const isSuccess = (st) => st >= 200 && st < 300;
+const isClientError = (st) => st >= 400 && st < 500;
+const isAuthReject = (st) => st === 401 || st === 403;
 
 /**
  * Join a base URL and a path without producing a double slash.
@@ -196,7 +201,7 @@ export async function evaluate(
         ...json({ newPassword }),
         method: 'POST',
       });
-      const noCredOk = noCredRes.status === 401;
+      const noCredOk = isAuthReject(noCredRes.status);
 
       // Valid credential, empty newPassword ⇒ 400.
       const emptyRes = await fetchImpl(passwordUrl, {
@@ -204,7 +209,7 @@ export async function evaluate(
         body: JSON.stringify({ newPassword: '' }),
         method: 'POST',
       });
-      const emptyOk = emptyRes.status === 400;
+      const emptyOk = isClientError(emptyRes.status);
 
       // Valid credential, valid newPassword ⇒ 200.
       const changeRes = await fetchImpl(passwordUrl, {
@@ -212,7 +217,7 @@ export async function evaluate(
         body: JSON.stringify({ newPassword }),
         method: 'POST',
       });
-      const changeOk = changeRes.status === 200;
+      const changeOk = isSuccess(changeRes.status);
 
       ledger.record(
         0,
@@ -235,7 +240,7 @@ export async function evaluate(
     // --- Criterion 1 — the pre-change session is invalidated ------------
     {
       const meRes = await fetchImpl(meUrl, { ...bearer(oldSession) });
-      const met = meRes.status === 401;
+      const met = isAuthReject(meRes.status);
       ledger.record(
         1,
         met,
@@ -254,7 +259,7 @@ export async function evaluate(
       newSession =
         payload && typeof payload === 'object' ? payload.session : undefined;
       const met =
-        res.status === 200 &&
+        isSuccess(res.status) &&
         typeof newSession === 'string' &&
         newSession.length > 0;
       ledger.record(
@@ -270,7 +275,7 @@ export async function evaluate(
         ...json({ username, password: oldPassword }),
         method: 'POST',
       });
-      const met = res.status === 401;
+      const met = isAuthReject(res.status);
       ledger.record(
         3,
         met,

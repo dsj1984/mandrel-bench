@@ -34,12 +34,16 @@ export const SCENARIO_ID = 'epic-scope';
  * @type {ReadonlyArray<string>}
  */
 export const CRITERIA = Object.freeze([
-  "POST /projects/:id/shares by the project's owner shares it with another user as a viewer and returns 201",
-  'A user a project is shared with as a viewer can GET the project (200) and list its tasks (200)',
+  "POST /projects/:id/shares by the project's owner shares it with another user as a viewer (2xx)",
+  'A user a project is shared with as a viewer can GET the project and list its tasks (2xx)',
   'A viewer may NOT create a task on the shared project — POST /projects/:id/tasks is rejected with a non-2xx status',
-  'A user a project is shared with as an editor may create a task on the shared project — POST /projects/:id/tasks returns 201',
-  'A user with no relationship to the project still gets 404 for it, exactly as before',
+  'A user a project is shared with as an editor may create a task on the shared project (2xx)',
+  'A user with no relationship to the project is still denied access (403/404), exactly as before',
 ]);
+
+/** Tolerant status matchers — see the touch-1 oracle for the rationale. */
+const isSuccess = (st) => st >= 200 && st < 300;
+const isDenied = (st) => st === 403 || st === 404;
 
 /**
  * Join a base URL and a path without producing a double slash.
@@ -222,7 +226,7 @@ export async function evaluate(
       });
       ledger.record(
         0,
-        res.status === 201,
+        isSuccess(res.status),
         `POST /projects/:id/shares (owner→viewer) → ${res.status} (want 201)`,
       );
     }
@@ -237,7 +241,7 @@ export async function evaluate(
       });
       ledger.record(
         1,
-        projGet.status === 200 && tasksGet.status === 200,
+        isSuccess(projGet.status) && isSuccess(tasksGet.status),
         `viewer GET /projects/:id → ${projGet.status}, GET tasks → ${tasksGet.status} (want 200/200)`,
       );
     }
@@ -273,7 +277,7 @@ export async function evaluate(
       });
       ledger.record(
         3,
-        shareRes.status === 201 && createRes.status === 201,
+        isSuccess(shareRes.status) && isSuccess(createRes.status),
         `share owner→editor → ${shareRes.status}, editor POST task → ${createRes.status} (want 201/201)`,
       );
     }
@@ -285,7 +289,7 @@ export async function evaluate(
       });
       ledger.record(
         4,
-        res.status === 404,
+        isDenied(res.status),
         `stranger GET /projects/:id → ${res.status} (want 404 — no relationship)`,
       );
     }

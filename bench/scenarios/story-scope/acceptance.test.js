@@ -47,13 +47,25 @@ export const SCENARIO_ID = 'story-scope';
  * @type {ReadonlyArray<string>}
  */
 export const CRITERIA = Object.freeze([
-  'POST /signup with a valid body creates a user and returns 201 with {id, username} (and never echoes the password back) as JSON',
-  'POST /signup with a duplicate username returns 409',
-  'POST /login with the correct username and password returns 200 with a non-empty session identifier',
-  'POST /login with a wrong password returns 401, and an unknown username returns 401',
-  "GET /me with a valid bearer credential returns 200 with the authenticated user's {id, username}; a missing or invalid credential returns 401",
+  'POST /signup with a valid body creates a user and responds 2xx with {id, username} — and never echoes the password back',
+  'POST /signup with a duplicate username is rejected with a 4xx status',
+  'POST /login with the correct username and password responds 2xx with a non-empty session identifier',
+  'POST /login with a wrong password or an unknown username is rejected as unauthenticated (401/403)',
+  "GET /me with a valid bearer credential responds 2xx with the authenticated user's {id, username}; a missing or invalid credential is rejected as unauthenticated (401/403)",
   "POST /notes creates a note for the authenticated user and GET /notes returns only that user's own notes, never another user's notes",
 ]);
+
+/**
+ * Tolerant status matchers (prompt-realism cutover). The seed prompt now
+ * states GOALS ("multi-user", "handle bad requests sensibly") rather than an
+ * exact status-code contract, so the oracle accepts any status a competent
+ * engineer would defensibly choose for each semantic outcome — while still
+ * failing hard on the outcomes themselves (a leak, a wrong-password login, a
+ * crash). Exact-code choices are judgment the arms now own.
+ */
+const isSuccess = (s) => s >= 200 && s < 300;
+const isClientError = (s) => s >= 400 && s < 500;
+const isAuthReject = (s) => s === 401 || s === 403;
 
 /**
  * Join a base URL and a path without producing a double slash.
@@ -199,7 +211,8 @@ export async function evaluate(
         Object.values(payload).some(
           (v) => typeof v === 'string' && v === passwordA,
         );
-      const met = res.status === 201 && hasId && usernameOk && !leaksPassword;
+      const met =
+        isSuccess(res.status) && hasId && usernameOk && !leaksPassword;
       ledger.record(
         0,
         met,
@@ -215,8 +228,8 @@ export async function evaluate(
       });
       ledger.record(
         1,
-        res.status === 409,
-        `POST /signup duplicate username → HTTP ${res.status} (expected 409)`,
+        isClientError(res.status),
+        `POST /signup duplicate username → HTTP ${res.status} (expected a 4xx rejection)`,
       );
     }
 
@@ -236,7 +249,7 @@ export async function evaluate(
       if (sessionOk) sessionA = payload.session;
       ledger.record(
         2,
-        res.status === 200 && sessionOk,
+        isSuccess(res.status) && sessionOk,
         `POST /login correct creds → HTTP ${res.status}; non-empty session=${sessionOk}`,
       );
     }
@@ -253,8 +266,8 @@ export async function evaluate(
       });
       ledger.record(
         3,
-        wrongRes.status === 401 && unknownRes.status === 401,
-        `POST /login wrong pw → HTTP ${wrongRes.status} (expected 401); unknown user → HTTP ${unknownRes.status} (expected 401)`,
+        isAuthReject(wrongRes.status) && isAuthReject(unknownRes.status),
+        `POST /login wrong pw → HTTP ${wrongRes.status} (expected 401/403); unknown user → HTTP ${unknownRes.status} (expected 401/403)`,
       );
     }
 
@@ -273,7 +286,7 @@ export async function evaluate(
         });
         const payload = await safeJson(res);
         hitOk =
-          res.status === 200 &&
+          isSuccess(res.status) &&
           payload != null &&
           typeof payload === 'object' &&
           payload.username === usernameA &&
@@ -295,11 +308,12 @@ export async function evaluate(
         method: 'GET',
         headers: { accept: 'application/json' },
       });
-      const rejectsOk = missRes.status === 401 && noneRes.status === 401;
+      const rejectsOk =
+        isAuthReject(missRes.status) && isAuthReject(noneRes.status);
       ledger.record(
         4,
         hitOk && rejectsOk,
-        `${hitEvidence}; invalid credential → HTTP ${missRes.status} (expected 401); missing credential → HTTP ${noneRes.status} (expected 401)`,
+        `${hitEvidence}; invalid credential → HTTP ${missRes.status} (expected 401/403); missing credential → HTTP ${noneRes.status} (expected 401/403)`,
       );
     }
 
@@ -324,12 +338,12 @@ export async function evaluate(
         });
         const createPayload = await safeJson(createRes);
         const createOk =
-          createRes.status === 201 &&
+          isSuccess(createRes.status) &&
           createPayload != null &&
           typeof createPayload === 'object';
         if (createOk) noteA = createPayload;
         evidenceParts.push(
-          `POST /notes (user A) → HTTP ${createRes.status} (expected 201)`,
+          `POST /notes (user A) → HTTP ${createRes.status} (expected 2xx)`,
         );
 
         const signupB = await fetchImpl(signupUrl, {
@@ -342,8 +356,8 @@ export async function evaluate(
         });
         const loginBPayload = await safeJson(loginB);
         if (
-          signupB.status === 201 &&
-          loginB.status === 200 &&
+          isSuccess(signupB.status) &&
+          isSuccess(loginB.status) &&
           loginBPayload != null &&
           typeof loginBPayload === 'object' &&
           typeof loginBPayload.session === 'string'
@@ -366,9 +380,9 @@ export async function evaluate(
             },
           });
           const createBPayload = await safeJson(createBRes);
-          if (createBRes.status === 201) noteB = createBPayload;
+          if (isSuccess(createBRes.status)) noteB = createBPayload;
           evidenceParts.push(
-            `POST /notes (user B) → HTTP ${createBRes.status} (expected 201)`,
+            `POST /notes (user B) → HTTP ${createBRes.status} (expected 2xx)`,
           );
         }
 

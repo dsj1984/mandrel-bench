@@ -50,31 +50,45 @@ export const SCENARIO_ID = 'epic-scope';
  * @type {ReadonlyArray<string>}
  */
 export const CRITERIA = Object.freeze([
-  'POST /auth/register with valid credentials returns 201 with { id, username } and persists the user',
-  'POST /auth/register with a duplicate username returns 409',
-  'POST /auth/register with missing or empty fields returns 400',
-  'POST /auth/login with valid credentials returns 200 with a bearer token',
-  'POST /auth/login with an unknown username or wrong password returns 401',
-  'Requests to a protected endpoint without a token return 401',
-  'Requests to a protected endpoint with an invalid token return 401',
-  'POST /projects with a valid name returns 201 with the created project (id, name, ownerId, createdAt)',
-  'POST /projects with an empty name returns 400',
-  "GET /projects returns 200 with a JSON array containing only the authenticated user's own projects, never another user's projects",
-  'GET /projects/:id returns the matching project when owned by the authenticated user, and 404 for an unknown id',
-  'GET /projects/:id for a project owned by a different user returns 404, not the project',
-  'DELETE /projects/:id removes the project and all its tasks and returns 204; a subsequent GET returns 404',
-  'DELETE /projects/:id for a project owned by a different user returns 404 and leaves the project intact',
-  'POST /projects/:projectId/tasks with a valid title returns 201 with the task (id, title, projectId, assigneeId, createdAt, done: false)',
-  'POST /projects/:projectId/tasks with an assigneeId for a valid user sets the assignee; an unknown assigneeId returns 400',
-  'POST /projects/:projectId/tasks with a missing or empty title returns 400',
-  'POST /projects/:projectId/tasks against a project not owned by the authenticated user returns 404',
+  'POST /auth/register with valid credentials responds 2xx with { id, username } and persists the user',
+  'POST /auth/register with a duplicate username is rejected with a 4xx status',
+  'POST /auth/register with missing or empty fields is rejected with a 4xx status',
+  'POST /auth/login with valid credentials responds 2xx with a bearer token',
+  'POST /auth/login with an unknown username or wrong password is rejected as unauthenticated (401/403)',
+  'Requests to a protected endpoint without a token are rejected as unauthenticated (401/403)',
+  'Requests to a protected endpoint with an invalid token are rejected as unauthenticated (401/403)',
+  'POST /projects with a valid name responds 2xx with the created project (id, name, ownerId, createdAt)',
+  'POST /projects with an empty name is rejected with a 4xx status',
+  "GET /projects returns a JSON array containing only the authenticated user's own projects, never another user's projects",
+  'GET /projects/:id returns the matching project when owned by the authenticated user, and a 4xx (never the project) for an unknown id',
+  'GET /projects/:id for a project owned by a different user is denied (403/404) without leaking the project',
+  'DELETE /projects/:id removes the project and all its tasks (2xx); a subsequent GET no longer returns it',
+  'DELETE /projects/:id for a project owned by a different user is denied (403/404) and leaves the project intact',
+  'POST /projects/:projectId/tasks with a valid title responds 2xx with the task (id, title, projectId, createdAt, done: false)',
+  'POST /projects/:projectId/tasks with a valid assigneeId sets the assignee; an unknown assigneeId is rejected with a 4xx status',
+  'POST /projects/:projectId/tasks with a missing or empty title is rejected with a 4xx status',
+  "POST /projects/:projectId/tasks against another user's project is denied (403/404)",
   'GET /projects/:projectId/tasks returns a paginated response { items, total, page, pageSize } respecting ?page and ?pageSize',
   'GET /projects/:projectId/tasks with a ?done=true or ?done=false filter returns only tasks matching that done value',
   'PATCH /projects/:projectId/tasks/:taskId updates title and/or done and returns the updated task',
-  'DELETE /projects/:projectId/tasks/:taskId removes the task and returns 204; a subsequent GET of the task list no longer includes it',
-  'Every non-2xx JSON response across every endpoint shares one consistent error envelope: a top-level object with a string "error" field',
+  'DELETE /projects/:projectId/tasks/:taskId removes the task (2xx); the task list no longer includes it',
+  'A syntactically malformed JSON request body is rejected with a 4xx status and the server keeps serving subsequent requests (no crash, no silent accept)',
   'Data for users, projects, and tasks persists across a server restart',
 ]);
+
+/**
+ * Tolerant status matchers (prompt-realism cutover). The seed prompt now
+ * states GOALS ("multi-user", "other users' data must stay private", "handle
+ * bad or malformed requests sensibly") rather than an exact status-code
+ * contract, so the oracle accepts any status a competent engineer would
+ * defensibly choose for each semantic outcome — while still failing hard on
+ * the outcomes themselves (a cross-user leak, a wrong-password login, a
+ * crash). Exact-code choices are judgment the arms now own.
+ */
+const isSuccess = (st) => st >= 200 && st < 300;
+const isClientError = (st) => st >= 400 && st < 500;
+const isAuthReject = (st) => st === 401 || st === 403;
+const isDenied = (st) => st === 403 || st === 404;
 
 /**
  * Join a base URL and a path without producing a double slash.
@@ -150,29 +164,13 @@ async function safeJson(res) {
 }
 
 /**
- * `true` when `payload` conforms to the scenario's consistent error
- * envelope: a JSON object carrying a single non-empty string `error` field.
- *
- * @param {unknown} payload
- * @returns {boolean}
- */
-function isErrorEnvelope(payload) {
-  return (
-    payload != null &&
-    typeof payload === 'object' &&
-    typeof payload.error === 'string' &&
-    payload.error.length > 0
-  );
-}
-
-/**
  * Run the frozen multi-user project/task oracle against a running app
  * instance.
  *
  * Drives a sequential auth → project → task round-trip for two independent
  * users (A and B) so cross-user isolation can be probed at every
  * id-addressed surface, plus pagination, filtering, cascade delete, and a
- * consistent-error-envelope sweep. Never throws on an assertion failure: a
+ * malformed-input robustness probe. Never throws on an assertion failure: a
  * failed or unreachable endpoint becomes a `met: false` criterion with
  * concrete evidence.
  *
@@ -222,17 +220,6 @@ export async function evaluate(
     headers: { ...jsonHeaders, authorization: `Bearer ${token}` },
   });
 
-  /** @type {Array<unknown>} */
-  const errorPayloads = [];
-  const collect = async (res) => {
-    if (res.status >= 300) {
-      const payload = await safeJson(res);
-      errorPayloads.push({ status: res.status, payload });
-      return payload;
-    }
-    return safeJson(res);
-  };
-
   try {
     // ---- Criterion 0 — POST /auth/register (valid, user A) → 201 --------
     let userIdA;
@@ -241,7 +228,7 @@ export async function evaluate(
         joinUrl(baseUrl, '/auth/register'),
         post({ username: usernameA, password: passwordA }),
       );
-      const payload = await collect(res);
+      const payload = await safeJson(res);
       const hasId =
         payload != null && typeof payload === 'object' && 'id' in payload;
       const usernameOk =
@@ -251,7 +238,7 @@ export async function evaluate(
       if (hasId) userIdA = payload.id;
       ledger.record(
         0,
-        res.status === 201 && hasId && usernameOk,
+        isSuccess(res.status) && hasId && usernameOk,
         `POST /auth/register (A) → HTTP ${res.status}; id=${hasId}; username match=${usernameOk}`,
       );
     }
@@ -262,11 +249,11 @@ export async function evaluate(
         joinUrl(baseUrl, '/auth/register'),
         post({ username: usernameA, password: passwordA }),
       );
-      await collect(res);
+      await safeJson(res);
       ledger.record(
         1,
-        res.status === 409,
-        `POST /auth/register duplicate → HTTP ${res.status} (expected 409)`,
+        isClientError(res.status),
+        `POST /auth/register duplicate → HTTP ${res.status} (expected a 4xx rejection)`,
       );
     }
 
@@ -276,11 +263,11 @@ export async function evaluate(
         joinUrl(baseUrl, '/auth/register'),
         post({ username: '', password: '' }),
       );
-      await collect(res);
+      await safeJson(res);
       ledger.record(
         2,
-        res.status === 400,
-        `POST /auth/register empty fields → HTTP ${res.status} (expected 400)`,
+        isClientError(res.status),
+        `POST /auth/register empty fields → HTTP ${res.status} (expected a 4xx rejection)`,
       );
     }
 
@@ -300,7 +287,7 @@ export async function evaluate(
       if (hasToken) tokenA = payload.token;
       ledger.record(
         3,
-        res.status === 200 && hasToken,
+        isSuccess(res.status) && hasToken,
         `POST /auth/login (A) → HTTP ${res.status}; token present=${hasToken}`,
       );
     }
@@ -311,16 +298,16 @@ export async function evaluate(
         joinUrl(baseUrl, '/auth/login'),
         post({ username: usernameA, password: `${passwordA}-WRONG` }),
       );
-      await collect(wrongRes);
+      await safeJson(wrongRes);
       const unknownRes = await fetchImpl(
         joinUrl(baseUrl, '/auth/login'),
         post({ username: `no-such-${usernameA}`, password: passwordA }),
       );
-      await collect(unknownRes);
+      await safeJson(unknownRes);
       ledger.record(
         4,
-        wrongRes.status === 401 && unknownRes.status === 401,
-        `wrong password → HTTP ${wrongRes.status} (expected 401); unknown user → HTTP ${unknownRes.status} (expected 401)`,
+        isAuthReject(wrongRes.status) && isAuthReject(unknownRes.status),
+        `wrong password → HTTP ${wrongRes.status} (expected 401/403); unknown user → HTTP ${unknownRes.status} (expected 401/403)`,
       );
     }
 
@@ -330,11 +317,11 @@ export async function evaluate(
         method: 'GET',
         headers: { accept: 'application/json' },
       });
-      await collect(res);
+      await safeJson(res);
       ledger.record(
         5,
-        res.status === 401,
-        `GET /projects (no token) → HTTP ${res.status} (expected 401)`,
+        isAuthReject(res.status),
+        `GET /projects (no token) → HTTP ${res.status} (expected 401/403)`,
       );
     }
 
@@ -344,11 +331,11 @@ export async function evaluate(
         method: 'GET',
         headers: { ...jsonHeaders, authorization: 'Bearer invalid-token-xyz' },
       });
-      await collect(res);
+      await safeJson(res);
       ledger.record(
         6,
-        res.status === 401,
-        `GET /projects (invalid token) → HTTP ${res.status} (expected 401)`,
+        isAuthReject(res.status),
+        `GET /projects (invalid token) → HTTP ${res.status} (expected 401/403)`,
       );
     }
 
@@ -366,8 +353,8 @@ export async function evaluate(
       );
       const loginPayload = await safeJson(loginRes);
       if (
-        regRes.status === 201 &&
-        loginRes.status === 200 &&
+        isSuccess(regRes.status) &&
+        isSuccess(loginRes.status) &&
         loginPayload != null &&
         typeof loginPayload === 'object' &&
         typeof loginPayload.token === 'string'
@@ -388,7 +375,7 @@ export async function evaluate(
         ...authHeaders(useTokenA),
         method: 'POST',
       });
-      const payload = await collect(res);
+      const payload = await safeJson(res);
       const hasShape =
         payload != null &&
         typeof payload === 'object' &&
@@ -399,7 +386,7 @@ export async function evaluate(
       if (hasShape) projectA1 = payload.id;
       ledger.record(
         7,
-        res.status === 201 && hasShape && payload?.name === name,
+        isSuccess(res.status) && hasShape && payload?.name === name,
         `POST /projects (A) → HTTP ${res.status}; shape=${hasShape}; name match=${payload?.name === name}`,
       );
     }
@@ -411,11 +398,11 @@ export async function evaluate(
         ...authHeaders(useTokenA),
         method: 'POST',
       });
-      await collect(res);
+      await safeJson(res);
       ledger.record(
         8,
-        res.status === 400,
-        `POST /projects empty name → HTTP ${res.status} (expected 400)`,
+        isClientError(res.status),
+        `POST /projects empty name → HTTP ${res.status} (expected a 4xx rejection)`,
       );
     }
 
@@ -430,7 +417,7 @@ export async function evaluate(
       });
       const payload = await safeJson(res);
       if (
-        res.status === 201 &&
+        isSuccess(res.status) &&
         payload != null &&
         typeof payload === 'object'
       ) {
@@ -449,7 +436,7 @@ export async function evaluate(
       });
       const payload = await safeJson(res);
       if (
-        res.status === 201 &&
+        isSuccess(res.status) &&
         payload != null &&
         typeof payload === 'object'
       ) {
@@ -476,7 +463,7 @@ export async function evaluate(
         payload.some((p) => p?.id === projectB1);
       ledger.record(
         9,
-        res.status === 200 && isArray && containsOwn && !leaksOther,
+        isSuccess(res.status) && isArray && containsOwn && !leaksOther,
         `GET /projects (A) → HTTP ${res.status}; array=${isArray}; contains own=${containsOwn}; leaks B's project=${leaksOther}`,
       );
     }
@@ -495,7 +482,7 @@ export async function evaluate(
         );
         const payload = await safeJson(res);
         hitOk =
-          res.status === 200 &&
+          isSuccess(res.status) &&
           payload != null &&
           typeof payload === 'object' &&
           payload.id === projectA1;
@@ -505,12 +492,12 @@ export async function evaluate(
         joinUrl(baseUrl, '/projects/00000000-nonexistent-id'),
         { method: 'GET', ...authHeaders(useTokenA) },
       );
-      await collect(missRes);
-      const missOk = missRes.status === 404;
+      await safeJson(missRes);
+      const missOk = isClientError(missRes.status);
       ledger.record(
         10,
         hitOk && missOk,
-        `${evidence}; GET unknown project → HTTP ${missRes.status} (expected 404)`,
+        `${evidence}; GET unknown project → HTTP ${missRes.status} (expected a 4xx)`,
       );
     }
 
@@ -527,9 +514,13 @@ export async function evaluate(
           ),
           { method: 'GET', ...authHeaders(useTokenA) },
         );
-        await collect(res);
-        ok = res.status === 404;
-        evidence = `GET /projects/${projectB1} (owned by B) as A → HTTP ${res.status} (expected 404)`;
+        const payload = await safeJson(res);
+        const leaked =
+          payload != null &&
+          typeof payload === 'object' &&
+          payload.id === projectB1;
+        ok = isDenied(res.status) && !leaked;
+        evidence = `GET /projects/${projectB1} (owned by B) as A → HTTP ${res.status} (expected 403/404); leaked=${leaked}`;
       }
       ledger.record(11, ok, evidence);
     }
@@ -551,7 +542,7 @@ export async function evaluate(
         ),
         { ...post({ title }), ...authHeaders(useTokenA), method: 'POST' },
       );
-      const payload = await collect(res);
+      const payload = await safeJson(res);
       const hasShape =
         payload != null &&
         typeof payload === 'object' &&
@@ -563,7 +554,7 @@ export async function evaluate(
       if (hasShape) taskA1 = payload.id;
       ledger.record(
         14,
-        res.status === 201 && hasShape && payload?.title === title,
+        isSuccess(res.status) && hasShape && payload?.title === title,
         `POST task (A) → HTTP ${res.status}; shape=${hasShape}; title match=${payload?.title === title}`,
       );
     }
@@ -591,7 +582,7 @@ export async function evaluate(
         );
         const payload = await safeJson(res);
         assignOk =
-          res.status === 201 &&
+          isSuccess(res.status) &&
           payload != null &&
           typeof payload === 'object' &&
           payload.assigneeId !== undefined &&
@@ -612,12 +603,12 @@ export async function evaluate(
           method: 'POST',
         },
       );
-      await collect(badRes);
-      const unknownOk = badRes.status === 400;
+      await safeJson(badRes);
+      const unknownOk = isClientError(badRes.status);
       ledger.record(
         15,
         assignOk && unknownOk,
-        `${assignEvidence}; POST unknown assigneeId → HTTP ${badRes.status} (expected 400)`,
+        `${assignEvidence}; POST unknown assigneeId → HTTP ${badRes.status} (expected a 4xx rejection)`,
       );
     }
 
@@ -632,11 +623,11 @@ export async function evaluate(
         ),
         { ...post({ title: '' }), ...authHeaders(useTokenA), method: 'POST' },
       );
-      await collect(res);
+      await safeJson(res);
       ledger.record(
         16,
-        res.status === 400,
-        `POST task empty title → HTTP ${res.status} (expected 400)`,
+        isClientError(res.status),
+        `POST task empty title → HTTP ${res.status} (expected a 4xx rejection)`,
       );
     }
 
@@ -657,9 +648,9 @@ export async function evaluate(
             method: 'POST',
           },
         );
-        await collect(res);
-        ok = res.status === 404;
-        evidence = `POST task under B's project as A → HTTP ${res.status} (expected 404)`;
+        await safeJson(res);
+        ok = isDenied(res.status);
+        evidence = `POST task under B's project as A → HTTP ${res.status} (expected 403/404)`;
       }
       ledger.record(17, ok, evidence);
     }
@@ -681,7 +672,7 @@ export async function evaluate(
         );
         const payload = await safeJson(res);
         if (
-          res.status === 201 &&
+          isSuccess(res.status) &&
           payload != null &&
           typeof payload === 'object'
         ) {
@@ -715,7 +706,7 @@ export async function evaluate(
         payload.pageSize === 2;
       ledger.record(
         18,
-        res.status === 200 && hasPaginatedShape && respectsPageSize,
+        isSuccess(res.status) && hasPaginatedShape && respectsPageSize,
         `GET tasks?page=1&pageSize=2 → HTTP ${res.status}; paginatedShape=${hasPaginatedShape}; respectsPageSize=${respectsPageSize}`,
       );
     }
@@ -739,7 +730,7 @@ export async function evaluate(
       );
       const payload = await safeJson(res);
       patchedOk =
-        res.status === 200 &&
+        isSuccess(res.status) &&
         payload != null &&
         typeof payload === 'object' &&
         payload.title === updatedTitle &&
@@ -791,8 +782,8 @@ export async function evaluate(
 
       ledger.record(
         19,
-        doneRes.status === 200 &&
-          notDoneRes.status === 200 &&
+        isSuccess(doneRes.status) &&
+          isSuccess(notDoneRes.status) &&
           allDone &&
           noneDone &&
           includesPatched &&
@@ -825,8 +816,8 @@ export async function evaluate(
       const stillPresent = items.some((t) => t?.id === targetTaskId);
       ledger.record(
         21,
-        delRes.status === 204 && !stillPresent,
-        `DELETE task → HTTP ${delRes.status} (expected 204); still in list=${stillPresent}`,
+        isSuccess(delRes.status) && !stillPresent,
+        `DELETE task → HTTP ${delRes.status} (expected 2xx); still in list=${stillPresent}`,
       );
     }
 
@@ -855,11 +846,11 @@ export async function evaluate(
         joinUrl(baseUrl, `/projects/${encodeURIComponent(String(projectA1))}`),
         { method: 'GET', ...authHeaders(useTokenA) },
       );
-      await collect(afterRes);
+      await safeJson(afterRes);
       ledger.record(
         12,
-        delRes.status === 204 && afterRes.status === 404,
-        `DELETE /projects/${projectA1} → HTTP ${delRes.status} (expected 204); subsequent GET → HTTP ${afterRes.status} (expected 404)`,
+        isSuccess(delRes.status) && isClientError(afterRes.status),
+        `DELETE /projects/${projectA1} → HTTP ${delRes.status} (expected 2xx); subsequent GET → HTTP ${afterRes.status} (expected a 4xx)`,
       );
     }
 
@@ -876,7 +867,7 @@ export async function evaluate(
           ),
           { method: 'DELETE', ...authHeaders(useTokenA) },
         );
-        await collect(delRes);
+        await safeJson(delRes);
         const stillThereRes = await fetchImpl(
           joinUrl(
             baseUrl,
@@ -886,25 +877,35 @@ export async function evaluate(
         );
         const stillTherePayload = await safeJson(stillThereRes);
         const stillThere =
-          stillThereRes.status === 200 &&
+          isSuccess(stillThereRes.status) &&
           stillTherePayload != null &&
           typeof stillTherePayload === 'object' &&
           stillTherePayload.id === projectB1;
-        ok = delRes.status === 404 && stillThere;
-        evidence = `DELETE B's project as A → HTTP ${delRes.status} (expected 404); still retrievable by B=${stillThere}`;
+        ok = isDenied(delRes.status) && stillThere;
+        evidence = `DELETE B's project as A → HTTP ${delRes.status} (expected 403/404); still retrievable by B=${stillThere}`;
       }
       ledger.record(13, ok, evidence);
     }
 
-    // ---- Criterion 22 — consistent error envelope --------------------------
+    // ---- Criterion 22 — malformed JSON is rejected; server survives -------
     {
-      const nonConforming = errorPayloads.filter(
-        ({ payload }) => !isErrorEnvelope(payload),
-      );
+      const badRes = await fetchImpl(joinUrl(baseUrl, '/projects'), {
+        method: 'POST',
+        headers: { ...jsonHeaders, authorization: `Bearer ${useTokenA}` },
+        body: '{"name": "unterminated',
+      });
+      const rejected = isClientError(badRes.status);
+      // The server must survive the malformed request: a normal authenticated
+      // read afterwards still succeeds.
+      const afterRes = await fetchImpl(joinUrl(baseUrl, '/projects'), {
+        method: 'GET',
+        ...authHeaders(useTokenA),
+      });
+      const aliveOk = isSuccess(afterRes.status);
       ledger.record(
         22,
-        errorPayloads.length > 0 && nonConforming.length === 0,
-        `${errorPayloads.length} error response(s) observed; ${nonConforming.length} did not carry a top-level string "error" field`,
+        rejected && aliveOk,
+        `POST /projects malformed JSON → HTTP ${badRes.status} (expected a 4xx, not a crash/accept); follow-up GET /projects → HTTP ${afterRes.status}`,
       );
     }
 
@@ -919,7 +920,7 @@ export async function evaluate(
       );
       const payload = await safeJson(res);
       const loginOk =
-        res.status === 200 &&
+        isSuccess(res.status) &&
         payload != null &&
         typeof payload === 'object' &&
         typeof payload.token === 'string' &&
