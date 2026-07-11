@@ -18,8 +18,10 @@
  *   4. AutomergeArmer          (epic.merge.ready → epic.merge.armed)
  *   5. AutomergePredicate      (epic.watch.end → epic.merge.{ready,blocked})
  *   6. BranchCleaner           (epic.cleanup.start → branch reap)
- *   7. Cleaner                 (epic.merge.armed → epic.cleanup.* / epic.complete)
- *   8. CheckpointPointerWriter (every *.end → checkpoint.json)
+ *   7. MergeWatcher            (epic.merge.armed → epic.merge.confirmed)
+ *   8. Cleaner                 (epic.merge.confirmed → epic.cleanup.* / epic.complete)
+ *   9. LabelTransitioner       (epic.complete → Epic ticket flips to agent::done)
+ *  10. CheckpointPointerWriter (every *.end → checkpoint.json)
  *
  * The bus contract requires LedgerWriter first: its `onEmitted` hook
  * lands the `emitted` ledger record on disk BEFORE any listener body
@@ -60,6 +62,7 @@ import { BranchCleaner } from './branch-cleaner.js';
 import { CheckpointPointerWriter } from './checkpoint-pointer-writer.js';
 import { Cleaner } from './cleaner.js';
 import { Finalizer } from './finalizer.js';
+import { LabelTransitioner } from './label-transitioner.js';
 import { MergeWatcher } from './merge-watcher.js';
 
 /**
@@ -118,6 +121,11 @@ export function parseLedgerPath(ledgerPath) {
  * @param {object} [opts.checkpointer] Epic-run-state checkpoint reader.
  *   When omitted, BranchCleaner is skipped.
  * @param {object} [opts.logger] Logger surface (`debug`/`warn`/`error`).
+ * @param {boolean} [opts.headless] Explicit must-land signal (Story
+ *   #4427), threaded straight through to `MergeWatcher`. Defaults to
+ *   `false` (attended-mode behavior unchanged). `lifecycle-emit.js`
+ *   resolves this from its own `--headless` runtime flag — an explicit
+ *   input, never an ambient global.
  *
  * @returns {Promise<{
  *   ledgerWriter: object,
@@ -140,6 +148,7 @@ export async function buildDefaultListenerChain(opts = {}) {
     config = null,
     checkpointer = null,
     logger = console,
+    headless = false,
   } = opts;
   if (
     !bus ||
@@ -288,6 +297,7 @@ export async function buildDefaultListenerChain(opts = {}) {
     cwd: repoRoot,
     intervalSeconds: mergeWatchConfig.intervalSeconds,
     maxBudgetSeconds: mergeWatchConfig.maxBudgetSeconds,
+    headless,
     logger,
   });
   mergeWatcher.register();
@@ -306,7 +316,32 @@ export async function buildDefaultListenerChain(opts = {}) {
   cleaner.register();
   order.push('Cleaner');
 
-  // 8. CheckpointPointerWriter — persists `{ lastCompletedSeqId, phase }`
+  // 9. LabelTransitioner — flips the Epic ticket to `agent::done` (and
+  //    closes it as completed, idempotently) on the terminal
+  //    `epic.complete` event. Requires a truthy `provider`; skip
+  //    cleanly when the caller omitted one — the same guard pattern as
+  //    AutomergePredicate. Restores the contract the Cleaner /
+  //    BranchCleaner / MergeWatcher docstrings have referenced since
+  //    the original listener was deleted with the epic-runner stratum
+  //    (#3936): without this registration the flip had NO owner and
+  //    cleanly-merged Epics stranded at `agent::executing`.
+  let labelTransitioner = null;
+  if (provider) {
+    labelTransitioner = new LabelTransitioner({
+      bus,
+      epicId,
+      provider,
+      logger,
+    });
+    labelTransitioner.register();
+    order.push('LabelTransitioner');
+  } else {
+    logger?.debug?.(
+      '[lifecycle] buildDefaultListenerChain: skipping LabelTransitioner (no provider)',
+    );
+  }
+
+  // 10. CheckpointPointerWriter — persists `{ lastCompletedSeqId, phase }`
   //    on every `*.end` event.
   const checkpointPointerWriter = new CheckpointPointerWriter({
     bus,
@@ -330,6 +365,7 @@ export async function buildDefaultListenerChain(opts = {}) {
     branchCleaner,
     mergeWatcher,
     cleaner,
+    labelTransitioner,
     checkpointPointerWriter,
     order,
   };

@@ -165,6 +165,83 @@ operator intervention:
   owning flow's hygiene step regressed — fix the flow, do not codify the manual
   sweep.
 
+### Shared-checkout contention (Story #4460)
+
+`story-close.js`'s merge phase runs `git checkout <epic-branch>` directly in
+the **shared main repo checkout** (`close-inputs.js` resolves `mainCwd` to
+`PROJECT_ROOT`), not an isolated worktree. `lib/epic-merge-lock.js` guards
+that checkout with a **per-Epic** filesystem lock
+(`epic-<epicId>.merge.lock`) so two `story-close.js` runs for the **same**
+Epic serialize against each other — but nothing stops a **different**
+Epic's concurrently-running `story-close.js` from treating the same shared
+checkout as scratch space at the same time.
+
+- **Recognition signature**: a `git checkout`/`git switch` failure during
+  the merge phase whose message is `error: Your local changes ... would be
+  overwritten by checkout`, where the shared checkout is parked on a
+  **different** epic's branch (e.g. `epic/4405`) than the one the current
+  `story-close.js` run is trying to merge (e.g. `epic/4425`), with
+  uncommitted edits that belong to that other Epic's delivery. This was
+  observed live during Epic #4425 delivery (Stories #4427/#4428) colliding
+  with a concurrently-running Epic #4405 session, and had to be worked
+  around by hand via `git stash push -u`.
+- **The fix — `assertSharedCheckoutAvailable`**
+  (`lib/orchestration/story-close/shared-checkout-guard.js`), called from
+  `runFinalizeMerge` in `lib/orchestration/story-close/merge-runner.js`
+  immediately before the merge-phase `git checkout <epicBranch>`. It
+  **composes with, not replaces,** the per-Epic lock:
+  - It first checks the shared common `.git/` dir for a **foreign**
+    (different-epic) `epic-*.merge.lock` file whose recorded PID is still
+    alive (`findForeignActiveEpicLock` in `lib/epic-merge-lock.js`). If
+    found, the merge phase fails fast with a diagnostic naming the holding
+    epic id, its lock-file path, and its PID/acquired-at timestamp —
+    instead of surfacing the raw git checkout error.
+  - It then checks whether the shared checkout is simply dirty (via `git
+    status --porcelain`), regardless of whose branch is checked out, and
+    reports the dirty file list plus the currently-checked-out branch in
+    the failure diagnostic.
+  - It never inspects the **caller's own** epic-id lock namespace, so
+    same-epic concurrent `story-close.js` runs continue to serialize
+    solely through `withEpicMergeLock` (the existing per-Epic lock) before
+    this guard ever executes — this guard only ever refuses on a truly
+    _foreign_ epic's live lock or unrelated dirt.
+- **Not fixed by this guard**: the guard reports the contention early and
+  actionably; it does not redesign the merge phase to use an isolated
+  worktree, and it does not change `restoreStartingBranch`'s existing
+  dirty-tree refusal behavior (`phases/branch-restore.js`) — both remain
+  out of scope. Resolution of an actual collision is still manual: wait for
+  the other Epic's story-close run to finish, or — only once you have
+  independently confirmed that process is no longer running — remove the
+  stale lock file and resolve the dirty tree by hand (stash/commit/reset;
+  never `git reset --hard` or `git checkout --force`).
+
+## Documentation Freshness Gate
+
+The `validate-docs-freshness.js` gate (run during `/deliver`) asks a
+falsifiable question of every doc in `delivery.docsFreshness.paths` +
+`project.docsContextFiles`: **was this doc actually updated for the Epic?**
+A doc passes on either of two conditions, but they are not
+interchangeable:
+
+- **Living docs are satisfied by being rewritten, not annotated.** For
+  any non-changelog doc (architecture, decisions, README, guides, …) the
+  gate passes **only** when an Epic-referencing commit touched the file —
+  a commit whose message references `#<epicId>` and changes the doc.
+  Rewrite the doc as part of the Epic's work; do not sprinkle `#<epicId>`
+  into its prose to satisfy the check. An appended `#<epicId>` annotation
+  alone **fails** the gate for these files, and the failure message names
+  the file and the rewrite-not-append contract.
+- **`#<epicId>` body annotations pass only for changelog files.** A
+  changelog-class file (basename matches `/changelog/i`, e.g.
+  `docs/CHANGELOG.md`) may pass on a body annotation, because an appended
+  release note keyed to the Epic is the legitimate, expected update there.
+  This is the single sanctioned annotation path; every other doc must use
+  the rewrite path above.
+
+This restriction exists to remove the perverse incentive by which the
+gate would otherwise reward manufacturing fake provenance — appending
+Epic-ID history into living docs purely to clear the check.
+
 ## Meta Labels (Retrospective Signal Routing)
 
 Two `meta::*` labels route retrospective signals into durable substrates so

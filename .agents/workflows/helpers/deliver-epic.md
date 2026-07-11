@@ -1,8 +1,10 @@
 ---
 description: >-
   Drive an Epic from `agent::ready` to a merged pull request against `main`.
-  The ten-phase flow runs the wave loop, close-validation, epic-audit,
-  code-review, retro, finalize, watch-and-iterate, conditional auto-merge,
+  The ten-phase flow runs the wave loop, close-validation, the Epic-close
+  lens-roster resolve, the code-review pass (which walks the cumulative diff
+  once with the lens roster folded in), retro, finalize, watch-and-iterate,
+  conditional auto-merge,
   and local branch cleanup. When the run is end-to-end clean (zero manual
   interventions, zero 🔴/🟠 review findings, compact retro) the PR
   auto-merges via `gh pr merge --squash --delete-branch`; otherwise the
@@ -36,8 +38,8 @@ back to the operator-merges-button path.
   → Phase 1 — prepare              (epic-deliver-prepare.js)
   → Phase 2 — ready-set loop       (wave-tick.js → dispatch ready set → observe → re-tick)
   → Phase 3 — close-validation     (lint + test + ratchets on epic/<id>)
-  → Phase 4 — epic-audit           (helpers/epic-audit.md — change-set audits via selectAudits)
-  → Phase 5 — code-review          (helpers/code-review.md with scope: epic)
+  → Phase 4 — epic-close lens roster (helpers/epic-audit.md — resolve the slim cumulative+global+risk-routed roster)
+  → Phase 5 — code-review          (helpers/code-review.md scope: epic — walks the cumulative diff once, lens roster folded in)
   → Phase 6 — retro                (.agents/scripts/lib/orchestration/retro-runner.js)
   → Phase 6.5 — integration gate   (whole-product navigability + journey suite; @pending ≠ green for surface-adding Epics — blocks finalize)
   → Phase 7 — finalize             (lifecycle-emit → epic.close.end → open PR to main)
@@ -80,6 +82,19 @@ spawned.
 
 Every other runtime modifier is sourced from the Epic's labels or from
 `delivery.deliverRunner` in `.agentrc.json`.
+
+- `--yes` — the top-level `/deliver` unattended flag (suppresses the
+  operator confirmation gate; see [`deliver.md`](../deliver.md)). This
+  helper reads it as the **headless signal** for Phase 8.5's must-land
+  terminal step (Story #4427): when `/deliver` was invoked with `--yes`,
+  thread `--headless true` into the Phase 8.5
+  `epic.automerge.start` `lifecycle-emit.js` call (omit the flag, or
+  pass `--headless false`, for an attended run). The runtime reads this
+  as an explicit `headless` input threaded through
+  `runLifecycleEmit` → `buildDefaultListenerChain` →
+  `MergeWatcher({ headless })` — never an ambient/undefined global.
+  Attended-mode behavior (no `--headless` flag) is byte-for-byte
+  unchanged: `MergeWatcher` defaults `headless` to `false`.
 
 ---
 
@@ -178,9 +193,14 @@ Validates `type::epic`, enumerates `type::story` descendants, parses
 checkpoint in the per-Story-status shape (a flat `stories` map seeded at
 `pending`, plus the global `concurrencyCap`). Treat the printed JSON as
 `state`: `{ epicId, storyCount, concurrencyCap, stories, checkpointInitializedAt, docsDigestPath }`.
-`stories` is the flat dispatch hint (`{ storyId, worktree, title }` per open
-Story); the ready-set `tick` (Phase 2) decides which to dispatch on each
-beat. `docsDigestPath` is the repo-relative path to the per-Epic docs digest
+`stories` is the flat dispatch hint (`{ storyId, worktree, title,
+checklistPath }` per open Story); the ready-set `tick` (Phase 2) decides
+which to dispatch on each beat. `checklistPath` is the repo-relative path to
+that Story's footprint-matched local-lens authoring checklist
+(`temp/epic-<epicId>/checklists/story-<storyId>.md`, Story #4410) — thread it
+into that child's prompt (§ 2b, item 7); it is `null` when the Story's
+predicted footprint matched no local lens. `docsDigestPath` is the
+repo-relative path to the per-Epic docs digest
 (`temp/epic-<epicId>/docs-digest.md`) that prepare writes from
 `project.docsContextFiles` — thread it into every child prompt (§ 2b, item 6).
 It is `null` when the project configured no `docsContextFiles` (no digest is
@@ -369,7 +389,14 @@ digest instead of re-reading the full `project.docsContextFiles` set,
 and to pull individual docs files on demand (per
 [`.agents/instructions.md` § 3](../../instructions.md)). When
 `docsDigestPath` is null (the project configured no `docsContextFiles`),
-say so — the child then has no per-Story docs mandate. The pairing of
+say so — the child then has no per-Story docs mandate. (7) pass the
+**checklist path** — the `checklistPath` field from that Story's entry in
+the `stories` dispatch hint (Story #4410), which points at
+`temp/epic-<epicId>/checklists/story-<storyId>.md`. Instruct the child to
+read that file (footprint-matched local-lens authoring checklists) and
+self-check its change against those concerns while writing. When
+`checklistPath` is null (the Story's predicted footprint matched no local
+lens), there is nothing to read. The pairing of
 `story.heartbeat` and `agent::blocked` is what lets the § 2d Idle
 Watchdog distinguish a working child from a dead one; a silent child
 with no recent heartbeat and no blocker label is the failure mode the
@@ -473,61 +500,61 @@ the Epic branch; if any drifts, refresh and commit
 
 ---
 
-## Phase 4 — Epic audit (change-set lenses)
+## Phase 4 — Epic-close lens roster
 
 Skip when `--skip-epic-audit`. Otherwise auto-invoke
-[`helpers/epic-audit.md`](epic-audit.md) inline. The helper runs
+[`helpers/epic-audit.md`](epic-audit.md) inline to **resolve** (not walk) the
+slim Epic-close lens roster. The helper runs
 [`epic-audit-prepare.js`](../../scripts/epic-audit-prepare.js) to ask the
 [`selectAudits`](../../scripts/lib/audit-suite/index.js) SDK which lenses fire
 at the `gate3` close gate, **unions in the model-judged risk-routed lenses**
 (Story #3889 — `epic-audit-prepare.js` reads the Epic's `planningRisk`
 envelope off the `epic-plan-state` checkpoint and maps each high-risk axis to
-its lens via `resolveAuditLenses`), then dispatches each selected lens through
-[`runAuditSuite`](../../scripts/lib/audit-suite/index.js). A high-risk Epic
-therefore auto-runs its mapped lenses (e.g. a `security`-axis Epic runs
-`audit-security`) even when the change set alone did not select them; a
-low-risk Epic adds nothing. Findings are persisted as an `audit-results`
-structured comment on the Epic.
+its lens via `resolveAuditLenses`), then restricts that union to the tiers the
+Epic-close tier owns via
+[`selectEpicCloseLenses`](../../scripts/lib/orchestration/code-review.js): the
+envelope's **`epicCloseLenses`** field is the slim roster of **cumulative +
+global + risk-routed** lenses, with every **local-tier** change-set lens
+excluded (its concern is already verified shift-left at the write-time and
+Story-scope tiers). A high-risk Epic still auto-runs its risk-routed lenses
+even when the change set alone did not select them; a docs-only or
+already-shift-left-covered change set yields an empty roster.
 
-The helper's Step 3 remediation is **threshold-aware** (Story #4399): it
-reads `delivery.epicAudit.autoFixSeverity` (default **`medium`**) and, at
-`medium`, routes 🔴/🟠/**🟡** findings into on-branch remediation (Mediums
-batched per lens — one commit per lens, a single validation + overlapping-
-lens rescan at the end) while 🟢 Suggestions still graduate; `high`
-reproduces the pre-4399 Critical/High-only routing. Remediated findings are
-rendered under the comment's `## Fixed on-branch` section so they never
-graduate to follow-up issues. The severity gate below is **unchanged** —
-it keys off the surviving (unfixed) findings.
+**The lens roster is not walked here.** Story #4412 folded the standalone
+Phase 4 lens walk into the Phase 5 code-review pass so the cumulative Epic diff
+is walked **once**. Phase 4 resolves `epicCloseLenses` (plus `depth`,
+`globalLenses`, `substitutionsPayload`) and hands it to Phase 5; there is no
+separate `audit-results` comment. Remediation of the lens findings happens in
+Phase 5 and is **tier-aware** (Story #4412): the Epic-close tier reads
+`delivery.epicAudit.autoFixSeverity` (default **`high`**) and routes only
+🔴 Critical + 🟠 High lens findings into on-branch remediation while 🟡 Medium
+and 🟢 Suggestion findings graduate (🟡 Medium concerns are already remediated
+shift-left); setting `medium` opts back into routing 🔴/🟠/🟡.
 
-The helper walks the selected roster **serially in-context by default**; when
-the roster carries more than one lens it **may delegate the walk to a single
-audit-orchestrator sub-agent** that fans the already-selected lenses out as
-parallel level-2 agents and returns only the aggregated `audit-results` (see
-[`epic-audit.md` § "Optional: delegate the roster walk to an audit-orchestrator
-sub-agent"](epic-audit.md), within the sub-agent depth budget noted under
-"Flat Story dispatch by design" above). The roster stays fixed upstream, every
-per-lens cost gate is preserved, and the seven sequential-only lenses are **not**
-batch-converted — the fan-out parallelizes across lenses only and never changes
-how any single lens runs internally.
-
-- **Any surviving 🔴 Critical Blocker** — STOP. Relay to the operator.
-- **Only 🟠/🟡/🟢 surviving** — log as non-blocking and continue.
 - **Selector reports `degraded: true`** — STOP. Propagate the
   `reason`/`detail`, post a friction comment, do not fall back to a
   full-roster audit.
-- **`selectedAudits` is empty** (docs-only change set) — log the
-  short-circuit and continue to Phase 5.
+- **`epicCloseLenses` is empty** (docs-only change set, or every selected lens
+  already covered shift-left, and no risk-routed lens) — there is no lens
+  dimension for Phase 5 to walk; continue to Phase 5, which still runs its
+  review pillars.
 
 ---
 
-## Phase 5 — Code review
+## Phase 5 — Code review (cumulative diff walked once)
 
 Skip when `--skip-code-review`. Otherwise resolve the **risk-derived review
 depth** for this Epic, then auto-invoke
 [`helpers/code-review.md`](code-review.md) inline (read-only audit)
 with the argument envelope `{ scope: 'epic', ticketId: <epicId>, baseRef:
-'main', headRef: 'epic/<epicId>', depth: <reviewDepth> }`. The helper
-persists findings as a `code-review` structured comment on the Epic.
+'main', headRef: 'epic/<epicId>', depth: <reviewDepth> }`, threading the
+Phase 4 `epicCloseLenses` roster through. The pass walks the cumulative
+`main..epic/<epicId>` diff **once**: it executes the Epic-close lens roster as
+review dimensions (helper Step 1b) **and** the review pillars, folding both
+into a single aggregate. Findings persist as the unified `verification-results`
+structured comment on the Epic (the single findings surface — Story #4411
+unified the former `code-review` and `audit-results` contracts, and Story #4412
+folded the lens walk into this pass).
 
 The `depth` is the live epic-scope producer for Story #3876's review-depth
 lever (Story #3937). Resolve it from the Epic's judged risk envelope the same
@@ -543,14 +570,16 @@ emit so a high-risk Epic gets a deeper adversarial pass and a low-risk one a
 lighter one. Depth is **input-only** — it never changes the findings envelope
 or the posted comment shape.
 
-The helper's Step 4.5 focused-fix routing is **threshold-aware**
-(Story #4399): it reads `delivery.codeReview.autoFixSeverity` (default
-**`medium`**) and, at `medium`, routes 🔴/🟠/**🟡** findings into on-branch
-remediation (Mediums batched per lens — one commit per lens, a single
-validation + rescan at the end) while 🟢 Suggestions stay on the comment;
-`high` reproduces the pre-4399 Critical/High-only routing. Remediated
-findings are rendered under the comment's `## Fixed on-branch` section so
-they never graduate to follow-up issues. The severity gate below is
+Remediation in this pass is **tier-aware and split by finding class**
+(Story #4412). The **review-pillar** findings (Pillars 1–4) route off
+`delivery.codeReview.autoFixSeverity` (default **`medium`** — 🔴/🟠/🟡
+on-branch, Mediums batched per lens, 🟢 stays on the comment). The **Epic-close
+lens** findings (Step 1b) route off `delivery.epicAudit.autoFixSeverity`
+(default **`high`** — only 🔴/🟠 on-branch; 🟡 Medium + 🟢 graduate, because
+🟡 Medium concerns were already remediated shift-left). Setting either key to
+its other value re-widens or narrows that class. Remediated findings are
+rendered under the single `verification-results` comment's `## Fixed on-branch`
+section so they never graduate to follow-up issues. The severity gate below is
 **unchanged** — it keys off the surviving (unfixed) findings.
 
 - **Any surviving 🔴 Critical Blocker** — STOP. Relay to the operator.
@@ -584,6 +613,23 @@ the GitHub upsert succeeds, the retro body is also **mirrored locally** to
 [`lib/config/temp-paths.js`](../../scripts/lib/config/temp-paths.js)'s
 `epicRetroMirrorPath`). GitHub remains the source of truth — a
 mirror-write failure only logs a warn and never fails the phase.
+
+**Auto-file routed proposals (Story #4418).** Between gathering the retro
+signals and composing the body, the runner files the retro's **actionable
+routed proposals** (the `framework` / `consumer` friction categories that
+recurred ≥ 2× or were force-flagged by an unresolved `agent::blocked`) as
+GitHub follow-up issues via the graduator pre-parsed-findings seam
+([`retro-proposals-graduator.js`](../../scripts/lib/feedback-loop/retro-proposals-graduator.js)).
+Each filed issue carries `meta::<framework-gap|consumer-improvement>` +
+`friction::<category>` labels — the join key `/plan` Phase 0's
+prior-feedback fetcher reads back — and the rendered retro sections then
+list the **real filed issue numbers** instead of paste-ready `gh issue
+create` command stanzas. Filing is idempotent (a content-hash marker probe
+skips already-filed categories) and respects the graduator per-run filing
+cap. The beat runs behind `delivery.feedbackLoop.retroProposals` (default
+**ON**); set it to `false` to suppress auto-filing and fall back to the
+command stanzas. Filing never fails the phase — a filing error degrades to
+the command stanzas.
 
 ---
 
@@ -740,12 +786,35 @@ run. Passing `--epic <epicId>` scopes the red-path failure digest to
 ## Phase 8.5 — Auto-merge gate
 
 After Phase 8 exits 0, evaluate the auto-merge predicate by emitting
-`epic.automerge.start`:
+`epic.automerge.start`. When this `/deliver` run was invoked with `--yes`,
+add `--headless true` so the downstream `MergeWatcher` engages the
+must-land terminal step (Story #4427, § Arguments above); omit the flag
+(or pass `--headless false`) for an attended run:
 
 ```bash
 node .agents/scripts/lifecycle-emit.js --epic <epicId> \
-  --event epic.automerge.start --pr-url <prUrl>
+  --event epic.automerge.start --pr-url <prUrl> [--headless true]
 ```
+
+**Must-land terminal step (headless only).** `MergeWatcher` polls
+`epic.merge.armed` to confirmation as usual. If its poll budget is
+exhausted, a headless (`--headless true`) run does not exit silently —
+it classifies the block (`classifyMergeBlock`, the shared classifier
+from Story #4426) and applies one bounded retry before giving up:
+
+- `checks-pending-timeout` (required checks still progressing) — extend
+  the watch budget once and keep polling.
+- `api-race-other` (no definitive block signal) — re-arm once by
+  re-emitting `epic.merge.ready` on the bus (never a direct `gh pr merge`
+  call — `AutomergeArmer` remains the sole authorized call site).
+- `branch-protection-human-required`, or both bounded retries already
+  spent — terminal: emit `merge.unlanded` (`scope: "epic"`, carrying the
+  block class) and fall through to the existing single `epic.blocked`
+  emit — one blocked path, never a duplicate `agent::blocked` transition.
+
+Attended runs (no `--headless` flag) keep today's exact behavior: budget
+exhaustion emits `epic.blocked` immediately, with no classification, no
+retry, and no `merge.unlanded`.
 
 `AutomergePredicate` first runs a **live `gh pr checks --required` probe**
 (Story #4361): green required CI is the arming signal, so if any required

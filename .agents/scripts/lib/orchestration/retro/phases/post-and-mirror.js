@@ -14,6 +14,7 @@ import nodeFs from 'node:fs';
 import path from 'node:path';
 
 import { epicRetroMirrorPath } from '../../../config/temp-paths.js';
+import { fileRetroProposals as defaultFileRetroProposals } from '../../../feedback-loop/retro-proposals-graduator.js';
 import { upsertStructuredComment } from '../../ticketing.js';
 import { appendChecksSection, collectRetroFindings } from './checks.js';
 import {
@@ -37,9 +38,15 @@ export async function composeAndPostRetro({
   bus,
   now,
   manualInterventions,
+  frameworkRepo,
+  consumerRepo,
+  config = null,
   gatherFn = defaultGatherRetroSignals,
   composeFn = defaultComposeRetroBody,
   upsertFn = upsertStructuredComment,
+  fileRetroProposalsFn = defaultFileRetroProposals,
+  ghPath,
+  spawnImpl,
   runChecksFn,
   assembleStateFn,
   cwd,
@@ -48,7 +55,47 @@ export async function composeAndPostRetro({
   onMirrorWritten,
   perfThresholds = null,
 }) {
-  const signals = await gatherFn({ epicId, provider, logger });
+  const signals = await gatherFn({
+    epicId,
+    provider,
+    logger,
+    frameworkRepo,
+    consumerRepo,
+  });
+
+  // Story #4418 — auto-file the retro's actionable routed proposals BEFORE
+  // the body composes, so the rendered retro sections list the real filed
+  // issue numbers instead of paste-ready `gh` command stanzas. Runs behind
+  // the `delivery.feedbackLoop.retroProposals` toggle (default ON); when
+  // OFF (or when filing is skipped / fails) the proposals pass through
+  // unenriched and the composer falls back to the command stanzas. Never
+  // throws — a filing failure degrades gracefully.
+  const { routedProposals: filedRoutedProposals, summary: filingSummary } =
+    await fileRetroProposalsFn({
+      epicId,
+      provider,
+      config,
+      frameworkRepo,
+      consumerRepo,
+      routedProposals: signals.routedProposals,
+      ghPath,
+      spawnImpl,
+      cwd,
+      logger,
+    });
+  // Surface (never throw on) per-proposal filing failures. Dropping
+  // `summary.errors` silently made a failed `gh issue create` — e.g. a
+  // `friction::<category>` label that doesn't exist in the target repo —
+  // invisible except as an unenriched command stanza in the retro body.
+  if (Array.isArray(filingSummary?.errors) && filingSummary.errors.length) {
+    for (const err of filingSummary.errors) {
+      logger?.warn?.(
+        `[retro] proposal auto-file error (degrading to command stanza): ${
+          typeof err === 'string' ? err : JSON.stringify(err)
+        }`,
+      );
+    }
+  }
 
   // Best-effort fetch of the Epic title for the heading.
   let epicTitle;
@@ -69,7 +116,7 @@ export async function composeAndPostRetro({
     storyPerfSummaries: signals.storyPerfSummaries,
     epicPerfReport: signals.epicPerfReport,
     parkedFollowOns: signals.parkedFollowOns,
-    routedProposals: signals.routedProposals,
+    routedProposals: filedRoutedProposals,
     timestamp,
     forceFull,
     perfThresholds,

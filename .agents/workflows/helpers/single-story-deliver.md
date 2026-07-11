@@ -135,6 +135,19 @@ Operator/agent responsibilities while in the worktree:
    only when the Story's own context points you at one — do not ingest the
    whole docs set up front. See
    [`.agents/instructions.md` § 3](../../instructions.md).
+
+   **Write-time audit checklists.** The write-time local-lens checklist
+   threading (Story #4410) is wired on the Epic delivery path via
+   `epic-deliver-prepare.js`, which threads a per-Story `checklistPath` into
+   the maker prompt. When a standalone caller provides a `checklistPath`
+   (the repo-relative path to this Story's footprint-matched **local**-lens
+   authoring checklists, matched via `resolveLensTier(lens) === 'local'` +
+   `matchesAnyFilePattern` against the Story's predicted footprint — never
+   `selectAudits`, so no provider or git diff runs), read it before you
+   write and self-check your change against each listed concern as you
+   author it. When no `checklistPath` is provided, there is nothing extra to
+   read — the lens-aware coverage still runs maker-blind at Story-scope
+   review inside the close subprocess.
 2. Implement the changes.
 3. Commit on the Story branch. Conventional-commit format is encouraged
    but not enforced — the PR title carries the canonical summary.
@@ -249,6 +262,28 @@ Flags:
 - `--no-auto-merge` — disable auto-merge. Use when the PR materially changes
   behaviour and warrants a pre-merge eyeball; the operator then merges via
   the GitHub UI.
+- `--wait-merge` — **headless must-land** (Story #4428, Epic #4425). Pass
+  this flag when driving `single-story-close.js` from an unattended /
+  headless context (no operator available to run Step 5 by hand — a CI
+  job, a scheduled `/loop`, or any wrapper that cannot rely on a human to
+  invoke `single-story-confirm-merge.js` later). Instead of resting at
+  `agent::closing` after arming, close polls the armed PR to merge
+  confirmation on the `delivery.mergeWatch.*` cadence (reusing the same
+  `confirmStoryMerged` flip logic Step 5 calls) and flips `agent::done`
+  itself. If the arm fails, the PR closes without merging, or the poll
+  budget is exhausted first, close classifies the block
+  (`checks-pending-timeout` \| `branch-protection-human-required` \|
+  `arm-failure` \| `api-race-other`), emits a `merge.unlanded` lifecycle
+  event, posts a `friction` comment, transitions the Story to
+  `agent::blocked`, and exits non-zero — never a silent `agent::closing`
+  rest. **Attended runs must not pass this flag** — the default (no flag)
+  preserves the exit-at-`agent::closing` behaviour documented in Step 3
+  and Step 5 below.
+- `--no-wait-merge` — explicit opt-out that always wins over `--wait-merge`
+  (including for a caller that otherwise defaults to headless mode). Use
+  when a headless wrapper still wants to manage merge confirmation itself
+  (e.g. via its own `single-story-confirm-merge.js` invocation) rather than
+  have close block the turn.
 
 > **Full close pipeline (base-sync outcomes, `agent::closing` rationale,
 > lease release).** For the numbered close pipeline, the base-sync outcome
@@ -259,6 +294,14 @@ Flags:
 ---
 
 ## Step 4 — CI watch + fix loop (**required, not optional**)
+
+> **Headless (`--wait-merge`) runs skip Steps 4 and 5.** When Step 3 passed
+> `--wait-merge`, `single-story-close.js` already polled the PR to a
+> confirmed merge (flipping `agent::done` itself) or exited non-zero after
+> transitioning the Story to `agent::blocked` with a `merge.unlanded`
+> event — there is no separate CI-watch turn or manual confirm step to run.
+> Proceed straight to Step 5.5. Attended runs (the default) still own
+> Steps 4 and 5 as documented below.
 
 The Story is **not done** when `single-story-close.js` returns. Auto-merge
 only fires when every required CI check turns green. Local close-validation

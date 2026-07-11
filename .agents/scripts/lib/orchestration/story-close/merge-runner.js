@@ -55,6 +55,10 @@ import {
   buildMergeMessageWithCap,
   loadHeaderMaxLength,
 } from './merge-subject.js';
+import {
+  assertNoForeignEpicLock as defaultAssertNoForeignEpicLock,
+  assertSharedCheckoutAvailable as defaultAssertSharedCheckoutAvailable,
+} from './shared-checkout-guard.js';
 
 /**
  * Render the lock-file path for a given main-repo `cwd` + `epicId`. Pure;
@@ -424,7 +428,7 @@ export async function runFinalizeMerge({
   storyBranch,
   storyTitle,
   storyId,
-  epicId: _epicId,
+  epicId,
   cwd,
   config,
   bus = null,
@@ -432,6 +436,7 @@ export async function runFinalizeMerge({
   logger = DefaultLogger,
   gitSync = defaultGitSync,
   gitSpawn = defaultGitSpawn,
+  assertSharedCheckoutAvailable = defaultAssertSharedCheckoutAvailable,
 }) {
   rebaseStoryOnEpic({
     config,
@@ -442,6 +447,15 @@ export async function runFinalizeMerge({
     log,
     gitSpawn,
   });
+
+  // Story #4460 — cross-epic shared-checkout guard. Runs AFTER the
+  // per-Epic merge lock is already held (acquired around the whole close
+  // flow in story-close.js) so it composes with, rather than replaces,
+  // that same-epic serialization. Fails fast with an actionable
+  // diagnostic instead of letting a raw `git checkout` error surface
+  // when another epic's merge phase (or unrelated dirt) holds the
+  // shared checkout.
+  assertSharedCheckoutAvailable({ cwd, epicId, gitSpawn });
 
   log('GIT', `Checking out ${epicBranch}...`);
   gitSync(cwd, 'checkout', epicBranch);
@@ -582,13 +596,21 @@ export async function runResumeMerge({
   storyBranch,
   storyTitle,
   storyId,
-  epicId: _epicId,
+  epicId,
   config,
   bus = null,
   logger = DefaultLogger,
   log = () => {},
   gitSpawn = defaultGitSpawn,
+  assertNoForeignEpicLockFn = defaultAssertNoForeignEpicLock,
 }) {
+  // Story #4460 follow-up: the resume path re-enters the shared checkout
+  // just like the finalize path, so another epic's live merge phase is
+  // the same hazard here. Only the foreign-lock half of the guard runs —
+  // a resume's own partial merge legitimately leaves the tree dirty, so
+  // the dirty-tree probe would false-positive against our own state.
+  assertNoForeignEpicLockFn({ cwd, epicId });
+
   const resumeMergeMessage = await buildMergeMessage(storyTitle, storyId, {
     cwd,
     logger,
