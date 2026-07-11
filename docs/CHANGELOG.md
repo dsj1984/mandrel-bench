@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.10.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.9.0...mandrel-bench-v0.10.0) (2026-07-11)
+
+
+### Added
+
+* **results:** first coherent baseline — claude-opus-4-8 / mandrel@1.88.0 @ bench 0.9.0 ([#112](https://github.com/dsj1984/mandrel-bench/issues/112)) ([3368519](https://github.com/dsj1984/mandrel-bench/commit/3368519ebfeba6130a1b4418fadefb70bf96be82))
+
+
+### Fixed
+
+* **bench:** don't score a stale tree when a touch-2 change-request PR never lands ([#115](https://github.com/dsj1984/mandrel-bench/issues/115)) ([5e1962a](https://github.com/dsj1984/mandrel-bench/commit/5e1962a7af999ab6f44745072b80ae504afae096))
+* **bench:** drop the unmeasurable planning-fidelity footprint instead of scoring it 1.0 ([#114](https://github.com/dsj1984/mandrel-bench/issues/114)) ([601b390](https://github.com/dsj1984/mandrel-bench/commit/601b390247a4db9eae23cee87524f43ef660188a))
+* **bench:** realistic prompts — stop pre-answering the judgment the suites score ([#116](https://github.com/dsj1984/mandrel-bench/issues/116)) ([79a3d98](https://github.com/dsj1984/mandrel-bench/commit/79a3d984b210ef1f9decb1bf5af83091bd62c1be))
+
 ## [0.9.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.8.0...mandrel-bench-v0.9.0) (2026-07-10)
 
 
