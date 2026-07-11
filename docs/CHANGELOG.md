@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.10.0...mandrel-bench-v0.11.0) (2026-07-11)
+
+
+### Fixed
+
+* **bench:** score quality null (not a false 0) when a mandrel delivery never lands ([#117](https://github.com/dsj1984/mandrel-bench/issues/117)) ([49b794d](https://github.com/dsj1984/mandrel-bench/commit/49b794dbfadd29170d8cf67120ae37fbf8027585))
+
 ## [0.10.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.9.0...mandrel-bench-v0.10.0) (2026-07-11)
 
 
