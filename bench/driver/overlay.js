@@ -48,6 +48,8 @@ import {
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { baseArm } from './arms.js';
+
 /**
  * The relative paths copied from this repo (the version under test) into a
  * mandrel-arm clone. `node_modules` is included so the framework scripts'
@@ -291,6 +293,53 @@ export function writeGatePackageJson(opts = {}, deps = {}) {
 }
 
 /**
+ * Absolute path of the SHARED static `CLAUDE.md` fixture the
+ * `control-claudemd` arm (arm 3, Ticket #123) seeds into its workspace: a
+ * ~2KB generic-engineering-conventions + security-hygiene instruction file
+ * with NO scenario-specific answers and NO trap answers, reusable verbatim
+ * across every scenario. `(arm3 − control)` isolates the value of ANY static
+ * structure from the value of Mandrel's orchestration.
+ */
+export const STATIC_CLAUDEMD_FIXTURE_PATH = path.join(
+  repoRoot(),
+  'bench',
+  'fixtures',
+  'control-claudemd.md',
+);
+
+/**
+ * Seed the static generic `CLAUDE.md` fixture into a provisioned
+ * control-claudemd-arm workspace (arm 3, Ticket #123). Runs AFTER
+ * `writeGatePackageJson` on the otherwise-identical control path: the ONLY
+ * delta between arm 3 and the control arm is this one file. The fixture is
+ * read from the shared path above (injectable for tests) and written verbatim
+ * as `<workspace>/CLAUDE.md`.
+ *
+ * @param {object} opts
+ * @param {string} opts.workspacePath  Absolute path of the provisioned clone.
+ * @param {object} [deps]
+ * @param {(p: string, enc: string) => string} [deps.readFileFn]
+ * @param {(p: string, data: string) => void} [deps.writeFileFn]
+ * @param {string} [deps.fixturePath]  Override the fixture location (tests).
+ * @returns {{ workspacePath: string, claudeMdPath: string, bytes: number }}
+ */
+export function seedStaticClaudeMd(opts = {}, deps = {}) {
+  const { workspacePath } = opts;
+  if (typeof workspacePath !== 'string' || workspacePath.length === 0) {
+    throw new TypeError(
+      'seedStaticClaudeMd requires a non-empty workspacePath',
+    );
+  }
+  const readFile = deps.readFileFn ?? readFileSync;
+  const writeFile = deps.writeFileFn ?? writeFileSync;
+  const fixturePath = deps.fixturePath ?? STATIC_CLAUDEMD_FIXTURE_PATH;
+  const content = readFile(fixturePath, 'utf8');
+  const claudeMdPath = path.join(workspacePath, 'CLAUDE.md');
+  writeFile(claudeMdPath, content);
+  return { workspacePath, claudeMdPath, bytes: Buffer.byteLength(content) };
+}
+
+/**
  * Rewrite a `.agentrc.json` so the pipeline targets the sandbox GitHub repo.
  * Pure: takes the source JSON text and returns the rewritten config object.
  *
@@ -350,9 +399,12 @@ export function overlayFrameworkUnderTest(opts = {}, deps = {}) {
     overlayPaths = DEFAULT_OVERLAY_PATHS,
   } = opts;
 
-  if (arm !== 'mandrel' && arm !== 'control') {
+  let resolvedBase;
+  try {
+    resolvedBase = baseArm(arm);
+  } catch {
     throw new TypeError(
-      `overlayFrameworkUnderTest arm must be "mandrel" or "control", got: ${String(arm)}`,
+      `overlayFrameworkUnderTest arm must be a known benchmark arm, got: ${String(arm)}`,
     );
   }
   if (typeof workspacePath !== 'string' || workspacePath.length === 0) {
@@ -361,8 +413,10 @@ export function overlayFrameworkUnderTest(opts = {}, deps = {}) {
     );
   }
 
-  // The control arm is the bare baseline: no scaffolding, nothing to overlay.
-  if (arm === 'control') {
+  // A control-base arm is the bare baseline: no scaffolding, nothing to
+  // overlay (arm 3's static CLAUDE.md is seeded separately by
+  // `seedStaticClaudeMd`, never by this framework overlay).
+  if (resolvedBase === 'control') {
     return { overlaid: false, arm, copied: [] };
   }
 

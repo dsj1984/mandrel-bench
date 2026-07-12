@@ -76,6 +76,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { baseArm, isControlArm } from './arms.js';
 import { sanitizeGitHubTokenEnv } from './token-env.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -200,9 +201,11 @@ export function provisionSandbox(opts = {}, deps = {}) {
   if (typeof repoUrl !== 'string' || repoUrl.length === 0) {
     throw new TypeError('provisionSandbox requires a non-empty repoUrl');
   }
-  if (arm !== 'mandrel' && arm !== 'control') {
+  try {
+    baseArm(arm);
+  } catch {
     throw new TypeError(
-      `provisionSandbox arm must be "mandrel" or "control", got: ${String(arm)}`,
+      `provisionSandbox arm must be a known benchmark arm, got: ${String(arm)}`,
     );
   }
 
@@ -258,8 +261,8 @@ export function provisionSandbox(opts = {}, deps = {}) {
   }
 
   let agentsStripped = false;
-  if (arm === 'control') {
-    // The control arm is the bare-model baseline: it must carry NO Mandrel
+  if (isControlArm(arm)) {
+    // A control-base arm is the bare-model baseline: it must carry NO Mandrel
     // scaffolding so the overhead ratio is apples-to-apples by construction.
     const agentsPath = assertInsideRoot(
       workspacePath,

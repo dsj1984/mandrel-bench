@@ -18,7 +18,13 @@
 
 import assert from 'node:assert/strict';
 import { execSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -31,6 +37,8 @@ import {
   overlayFrameworkUnderTest,
   REWRITTEN_OVERLAY_ARTIFACTS,
   rewriteAgentrc,
+  STATIC_CLAUDEMD_FIXTURE_PATH,
+  seedStaticClaudeMd,
   writeGatePackageJson,
 } from '../../../bench/driver/overlay.js';
 
@@ -341,7 +349,7 @@ test('overlay: rejects a bad arm and a missing workspacePath/sandbox', () => {
         { workspacePath: WS, arm: 'nope', sandbox: SANDBOX },
         deps,
       ),
-    /must be "mandrel" or "control"/,
+    /must be a known benchmark arm/,
   );
   assert.throws(
     () => overlayFrameworkUnderTest({ arm: 'mandrel', sandbox: SANDBOX }, deps),
@@ -488,4 +496,64 @@ test('overlay (control): no overlay, no git-exclude written', () => {
     deps,
   );
   assert.deepEqual(appends, {});
+});
+
+// ---------------------------------------------------------------------------
+// Ticket #123, arm 3 (control-claudemd): the static generic CLAUDE.md seed.
+// ---------------------------------------------------------------------------
+
+test('seedStaticClaudeMd: writes the shared fixture verbatim as <workspace>/CLAUDE.md (injected fs)', () => {
+  const writes = [];
+  const result = seedStaticClaudeMd(
+    { workspacePath: WS },
+    {
+      fixturePath: '/fixtures/control-claudemd.md',
+      readFileFn: (p, enc) => {
+        assert.equal(p, '/fixtures/control-claudemd.md');
+        assert.equal(enc, 'utf8');
+        return '# Project Conventions\ngeneric guidance\n';
+      },
+      writeFileFn: (p, data) => writes.push({ p, data }),
+    },
+  );
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].p, path.join(WS, 'CLAUDE.md'));
+  assert.equal(writes[0].data, '# Project Conventions\ngeneric guidance\n');
+  assert.equal(result.claudeMdPath, path.join(WS, 'CLAUDE.md'));
+  assert.equal(
+    result.bytes,
+    Buffer.byteLength('# Project Conventions\ngeneric guidance\n'),
+  );
+  assert.throws(() => seedStaticClaudeMd({}), /workspacePath/);
+});
+
+test('the committed control-claudemd fixture is generic, ~2KB, and carries conventions + security hygiene with NO scenario answers', () => {
+  const content = readFileSync(STATIC_CLAUDEMD_FIXTURE_PATH, 'utf8');
+  const bytes = Buffer.byteLength(content);
+  // "~2KB": small enough to be a cheap static seed, big enough to be real
+  // guidance — never an empty stub and never a scenario-answer dump.
+  assert.ok(bytes >= 1024 && bytes <= 4096, `fixture is ${bytes} bytes`);
+  // Generic engineering conventions + error handling + testing + security.
+  assert.match(content, /conventions/i);
+  assert.match(content, /error/i);
+  assert.match(content, /test/i);
+  assert.match(content, /Never hardcode secrets/i);
+  assert.match(content, /password/i);
+  assert.match(content, /authorization/i);
+  // No scenario-specific answers and no trap answers: the fixture must not
+  // name the scenario corpus's concrete surfaces or the trap-class ids.
+  for (const banned of [
+    /\/auth\/register/,
+    /\/auth\/login/,
+    /\/projects\b/,
+    /\/notes\b/,
+    /task management/i,
+    /hello-world/i,
+    /plaintext-password/,
+    /hardcoded-secret/,
+    /missing-input-validation/,
+    /\bidor\b/i,
+  ]) {
+    assert.doesNotMatch(content, banned);
+  }
 });
