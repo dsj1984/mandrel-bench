@@ -156,6 +156,7 @@ describe('deriveAutonomyCounters', () => {
       hitlStops: 2,
       blockedEvents: 2,
       manualRescues: 1,
+      gateRetries: 0,
     });
   });
 
@@ -168,6 +169,33 @@ describe('deriveAutonomyCounters', () => {
       hitlStops: 0,
       blockedEvents: 0,
       manualRescues: 0,
+      gateRetries: 0,
+    });
+  });
+
+  it('routes self-recovered close-validate failures to gateRetries, not blockedEvents (Ticket #121, item 2)', () => {
+    const lifecycle = [
+      // A terminal block (genuine intervention).
+      { event: 'story.blocked', payload: { storyId: 1, reason: 'stuck' } },
+      // Two self-recovered close-validate gate failures — NOT interventions.
+      {
+        event: 'story.blocked',
+        payload: { storyId: 2, reason: 'close-validate-failed:test' },
+      },
+      {
+        event: 'story.blocked',
+        payload: { storyId: 2, reason: 'close-validate-failed:lint' },
+      },
+      { event: 'epic.blocked', payload: { reason: 'x' } },
+    ];
+    const counters = deriveAutonomyCounters({ lifecycle, signals: [] });
+    assert.deepEqual(counters, {
+      hitlStops: 0,
+      // 1 terminal story.blocked + 1 epic.blocked; the two close-validate
+      // failures are excluded from the terminal tally.
+      blockedEvents: 2,
+      manualRescues: 0,
+      gateRetries: 2,
     });
   });
 });
@@ -365,12 +393,15 @@ describe('deriveTokenSplitFromCodegenMs — direct edge-case coverage (Epic #66 
 });
 
 describe('extractUsage', () => {
-  it('reads the normalized envelope shape', () => {
+  it('reads the normalized envelope shape (no modelUsage ⇒ true==reported)', () => {
     const u = extractUsage(normalizedEnvelope());
     assert.deepEqual(u, {
       totalTokens: 184320,
+      reportedTokens: 184320,
       inputTokens: 151200,
       outputTokens: 33120,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
       costUsd: 1.47,
     });
   });
@@ -386,16 +417,82 @@ describe('extractUsage', () => {
       },
     });
     assert.equal(u.totalTokens, 4942 + 100 + 31340 + 1000);
+    assert.equal(u.reportedTokens, 4942 + 100 + 31340 + 1000);
     assert.equal(u.inputTokens, 4942);
     assert.equal(u.outputTokens, 100);
+    assert.equal(u.cacheReadTokens, 1000);
+    assert.equal(u.cacheWriteTokens, 31340);
     assert.equal(u.costUsd, 0.35);
+  });
+
+  it('sums modelUsage into a TRUE, sub-agent-inclusive total distinct from reported (Ticket #122, item 1)', () => {
+    // Parent session reports 10k; two sub-agents add 20k + 15k → true 45k.
+    const u = extractUsage({
+      cost: { totalUsd: 12.5 },
+      usage: {
+        inputTokens: 8000,
+        outputTokens: 2000,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        totalTokens: 10000,
+      },
+      modelUsage: {
+        'claude-opus-4-8[1m]': {
+          inputTokens: 8000,
+          outputTokens: 2000,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+        },
+        'claude-opus-4-8[1m]#sub-a': {
+          inputTokens: 1000,
+          outputTokens: 4000,
+          cacheReadInputTokens: 15000,
+          cacheCreationInputTokens: 0,
+        },
+        'claude-opus-4-8[1m]#sub-b': {
+          inputTokens: 500,
+          outputTokens: 2500,
+          cacheReadInputTokens: 12000,
+          cacheCreationInputTokens: 0,
+        },
+      },
+    });
+    assert.equal(u.reportedTokens, 10000, 'reported stays the parent figure');
+    assert.equal(
+      u.totalTokens,
+      10000 + 20000 + 15000,
+      'true total is sub-agent-inclusive',
+    );
+    assert.equal(u.cacheReadTokens, 27000);
+    assert.equal(u.outputTokens, 8500);
+  });
+
+  it('falls back to reported when modelUsage is degenerately smaller (never under-counts)', () => {
+    // Incomplete modelUsage (only inputTokens) must not shrink the true total.
+    const u = extractUsage({
+      total_cost_usd: 0.35,
+      usage: {
+        input_tokens: 4942,
+        output_tokens: 100,
+        cache_creation_input_tokens: 31340,
+        cache_read_input_tokens: 1000,
+      },
+      modelUsage: {
+        'claude-opus-4-8[1m]': { inputTokens: 4942, costUSD: 0.35 },
+      },
+    });
+    assert.equal(u.totalTokens, 4942 + 100 + 31340 + 1000);
+    assert.equal(u.reportedTokens, 4942 + 100 + 31340 + 1000);
   });
 
   it('returns zeros / null for a missing envelope', () => {
     assert.deepEqual(extractUsage(null), {
       totalTokens: 0,
+      reportedTokens: 0,
       inputTokens: 0,
       outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
       costUsd: null,
     });
   });
@@ -789,16 +886,78 @@ describe('buildScorecard — planning-fidelity footprint DROPPED when unmeasurab
 });
 
 describe('buildScorecard — autonomy guardrail surfaced on the record (Epic #66, Story #77)', () => {
-  it('carries guardrail.met on dimensions.autonomy', () => {
+  it('carries guardrail.met on dimensions.autonomy for a MEASURED (mandrel-ledger) run', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      // A clean Epic ledger → autonomy is observed and fully unattended.
+      lifecycle: [
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:00:00.000Z',
+          event: 'story.dispatch.start',
+          payload: { storyId: 1 },
+        },
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:05:00.000Z',
+          event: 'story.dispatch.end',
+          payload: { storyId: 1 },
+        },
+      ],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+      landed: true,
+    });
+    assert.equal(sc.dimensions.autonomy.score, 1);
+    assert.equal(sc.dimensions.autonomy.guardrail.met, true);
+    assert.equal(sc.dimensions.autonomy.guardrail.threshold, 0.99);
+  });
+
+  it('drops the control arm’s definitional 1.0 — autonomy is null/N-A, not an unearned baseline (Ticket #121, item 2)', () => {
     const sc = buildScorecard({
       run: runStamp({ arm: 'control' }),
       lifecycle: [],
       envelope: normalizedEnvelope(),
       quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
     });
-    assert.equal(sc.dimensions.autonomy.score, 1);
-    assert.equal(sc.dimensions.autonomy.guardrail.met, true);
-    assert.equal(sc.dimensions.autonomy.guardrail.threshold, 0.99);
+    assert.equal(sc.dimensions.autonomy.score, null);
+    assert.equal(sc.dimensions.autonomy.guardrail.met, null);
+  });
+
+  it('an unlanded mandrel PR-head run scores autonomy below a landed one (unattended-landing, Ticket #121)', () => {
+    const ledger = [
+      {
+        kind: 'emitted',
+        ts: '2026-06-16T19:00:00.000Z',
+        event: 'story.dispatch.start',
+        payload: { storyId: 1 },
+      },
+      {
+        kind: 'emitted',
+        ts: '2026-06-16T19:05:00.000Z',
+        event: 'story.dispatch.end',
+        payload: { storyId: 1 },
+      },
+    ];
+    const landedSc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: ledger,
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+      landed: true,
+    });
+    const unlandedSc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: ledger,
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+      landed: false,
+    });
+    assert.equal(landedSc.dimensions.autonomy.score, 1);
+    // landed:false is one intervention → 1/(1+1) = 0.5.
+    assert.equal(unlandedSc.dimensions.autonomy.score, 0.5);
+    assert.equal(unlandedSc.dimensions.autonomy.landed, false);
+    assert.equal(unlandedSc.landed, false);
   });
 });
 

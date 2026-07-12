@@ -301,3 +301,23 @@ test('withRunningApp: validates inputs', async () => {
     /requires a callback fn/,
   );
 });
+
+test('withRunningApp: exposes a real restart hook that reaps and respawns on the same port (Ticket #122, item 5)', async () => {
+  const { deps, spawnCalls } = baseDeps();
+  let restartResult = null;
+  await withRunningApp(
+    { workspacePath: '/ws', app: APP },
+    async (_baseUrl, info) => {
+      assert.equal(typeof info.restart, 'function', 'restart hook provided');
+      restartResult = await info.restart();
+      return 'ok';
+    },
+    deps,
+  );
+  // One initial spawn + one respawn from restart.
+  assert.equal(spawnCalls.length, 2, 'restart respawned the app');
+  // Same port re-injected on the respawn.
+  assert.equal(spawnCalls[1].env.PORT, '40000');
+  assert.equal(restartResult.ready, true);
+  assert.equal(restartResult.port, 40000);
+});

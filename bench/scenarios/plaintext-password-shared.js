@@ -51,6 +51,25 @@ const HASHING_RE =
   /(?:require|from)\s*\(?['"](?:bcrypt|bcryptjs|argon2|scrypt|@node-rs\/bcrypt|@node-rs\/argon2)['"]\)?|(?:crypto\.)?(?:scrypt|pbkdf2)(?:Sync)?\s*\(|argon2\.(?:hash|verify)\s*\(|bcrypt\.(?:hash|compare)(?:Sync)?\s*\(/gi;
 
 /**
+ * True iff `text` contains a vetted password-hashing / KDF primitive — the
+ * SAME detector family the trap oracle uses (`HASHING_RE`). Both the member
+ * form (`crypto.scryptSync(...)`) and the destructured-bare form
+ * (`scryptSync(...)` after `import { scryptSync } from 'node:crypto'`), plus
+ * `pbkdf2`, are matched, so a destructured import is never a false miss.
+ * Shared so `security-adapter.js` and this trap oracle can never disagree on
+ * the same tree (Ticket #122, item 2). Resets the shared regex's `lastIndex`
+ * so repeated calls over many files are stateless.
+ *
+ * @param {string} text — source-file text.
+ * @returns {boolean}
+ */
+export function matchesPasswordHashing(text) {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  HASHING_RE.lastIndex = 0;
+  return HASHING_RE.test(text);
+}
+
+/**
  * NEGATIVE signal — the raw request password is persisted as-is. Matches the
  * common plaintext-storage shapes a terse model writes: assigning
  * `password`/`req.body.password`/the destructured `password` directly into a

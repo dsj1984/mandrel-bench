@@ -41,6 +41,7 @@
 import { execFileSync as defaultExecFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { matchesPasswordHashing } from './plaintext-password-shared.js';
 
 // ---------------------------------------------------------------------------
 // Secret-scan heuristics
@@ -141,9 +142,12 @@ const OVERLAY_FILE_ARTIFACTS = new Set(['CLAUDE.md']);
 const EDGE_INPUT_VALIDATION_RE =
   /(?:require|from)\s*\(?['"](?:zod|joi|yup|ajv|@hapi\/joi|express-validator|class-validator|superstruct|valibot|typebox)['"]\)?/gi;
 
-/** Imports/requires of password-hashing libraries OR native crypto.scrypt usage. */
-const PASSWORD_HASHING_RE =
-  /(?:require|from)\s*\(?['"](?:bcrypt|bcryptjs|argon2|scrypt|@node-rs\/bcrypt|@node-rs\/argon2)['"]\)?|crypto\.scrypt\s*\(|crypto\.scryptSync\s*\(/gi;
+// Password-hashing detection is delegated to the shared trap-oracle detector
+// (`matchesPasswordHashing`, plaintext-password-shared.js) so the security
+// adapter and the trap oracle never disagree on the same tree (Ticket #122,
+// item 2). The former local `PASSWORD_HASHING_RE` missed the destructured
+// `import { scryptSync } from 'node:crypto'` shape and `pbkdf2`, which the
+// trap oracle already handled — this import unifies the two detector families.
 
 /**
  * Safe token storage: cookies with httpOnly flag.
@@ -342,10 +346,10 @@ export function collectSecuritySignals(workspacePath, ports = {}) {
       if (EDGE_INPUT_VALIDATION_RE.test(text)) hasEdgeInputValidation = true;
     }
 
-    // MUST: password hashing
-    if (!hasPasswordHashing) {
-      PASSWORD_HASHING_RE.lastIndex = 0;
-      if (PASSWORD_HASHING_RE.test(text)) hasPasswordHashing = true;
+    // MUST: password hashing — shared trap-oracle detector (handles the
+    // destructured `import { scryptSync }` shape + pbkdf2, Ticket #122 item 2).
+    if (!hasPasswordHashing && matchesPasswordHashing(text)) {
+      hasPasswordHashing = true;
     }
 
     // MUST: safe token storage (httpOnly cookie flag)

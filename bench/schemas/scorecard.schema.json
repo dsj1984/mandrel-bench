@@ -110,6 +110,10 @@
       "default": false,
       "description": "Epic #66, Story #76: true when a mandrel-arm run's OBSERVED `routingVerdict` diverges from the scenario contract's DECLARED `routing` (scenario.json). Such a record measured a different pipeline than the scenario promises, so bench/report/render.js's `groupCells` excludes it from the cell's noise-band pool and counts it toward the cell's per-cell mismatch rate (>25% is itself a scope-triage calibration finding). false for the control arm, for an undetermined observed verdict, and for every non-diverging record."
     },
+    "landed": {
+      "type": "boolean",
+      "description": "Ticket #121, item 1: whether the mandrel delivery LANDED on the sandbox default branch (its change-request PR merged), recorded SEPARATELY from whether the delivered tree was scoreable. When a PR does not auto-merge, the harness now scores the PR-HEAD delivery-branch tree (quality/traps/maintainability/security) and sets `landed: false` — a reliability failure that feeds the autonomy dimension — instead of discarding the run as a null on the post-reset baseline tree. `true` = merged onto the default branch. Present on mandrel-arm records only; ABSENT for the control arm (which commits directly, so landing is not a concept) and when landing could not be determined (undetermined ⇒ not scored as a failure)."
+    },
     "dimensions": {
       "type": "object",
       "additionalProperties": false,
@@ -514,6 +518,10 @@
           "minimum": 0,
           "description": "Count of operator interventions that unblocked or restarted the run."
         },
+        "landed": {
+          "type": ["boolean", "null"],
+          "description": "Ticket #121, item 2: the unattended-landing datum this autonomy score folds in. `false` (the mandrel PR did not land unattended) counts as one intervention in the autonomy formula — the reliability failure the old formula turned into an invisible null. `true` (landed) or `null` (control / undetermined) adds nothing. Mirrors the top-level `landed` field for the mandrel arm; `null` for the control arm."
+        },
         "guardrail": {
           "type": "object",
           "additionalProperties": false,
@@ -633,22 +641,42 @@
         "totalTokens": {
           "type": "integer",
           "minimum": 0,
-          "description": "Total tokens (input + output) from the `claude -p` usage envelope, summed across the session."
+          "description": "TRUE, sub-agent-INCLUSIVE total tokens (input + output + cacheRead + cacheWrite), summed from the `claude -p` envelope's `modelUsage` map when present so it matches the sub-agent-inclusive dollar column (Ticket #122, item 1). Before the fix the harness summed only the parent session's top-level `usage`, undercounting a fan-out Epic run 2–3× (14.2M reported vs ~27.9M true) while dollars were already sub-agent-inclusive. When `modelUsage` is absent (or degenerately smaller than the reported figure) this equals `reportedTokens`."
+        },
+        "reportedTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Ticket #122, item 1: the PARENT-session-only token figure — the top-level `usage` envelope total. Recorded alongside the sub-agent-inclusive `totalTokens` so the reported-vs-true gap (the sub-agent overhead the old single figure hid) is legible. Equals `totalTokens` for a control cell (no sub-agents)."
         },
         "inputTokens": {
           "type": "integer",
           "minimum": 0,
-          "description": "Input tokens from the usage envelope."
+          "description": "Fresh input tokens from the (sub-agent-inclusive) token split."
         },
         "outputTokens": {
           "type": "integer",
           "minimum": 0,
-          "description": "Output tokens from the usage envelope."
+          "description": "Output tokens from the (sub-agent-inclusive) token split. The most expensive kind (~$21.6/M) — kept distinct from cache reads so efficiency scoring never conflates the two (Ticket #122, item 1)."
+        },
+        "cacheReadTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Ticket #122, item 1: cache-read tokens (the cheapest kind, ~$0.65/M) from the sub-agent-inclusive split. Persisted separately so a single conflated `totalTokens` no longer equates a cache read with a ~$21.6/M output token."
+        },
+        "cacheWriteTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Ticket #122, item 1: cache-creation (write) tokens from the sub-agent-inclusive split."
         },
         "dispatches": {
           "type": "integer",
           "minimum": 0,
           "description": "Number of agent dispatches (Story sub-agent launches) recorded in lifecycle.ndjson."
+        },
+        "gateRetries": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Ticket #121, item 2: count of self-recovered close-validate gate failures (`story.blocked` with a `close-validate-failed:*` reason) — moved OFF the autonomy tally (they are self-recovered, already priced in tokens) and reported here as a cost signal instead of dragging every gated run's autonomy to 0.50."
         },
         "costUsd": {
           "type": ["number", "null"],

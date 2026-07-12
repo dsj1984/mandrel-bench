@@ -87,7 +87,10 @@ import {
   renderDashboardFile,
 } from './report/render-tree.js';
 import { scoreScenarioQuality as defaultScoreScenarioQuality } from './scenarios/acceptance-eval-adapter.js';
-import { runDimensionJudge as defaultRunDimensionJudge } from './scenarios/dimension-judge-adapter.js';
+import {
+  collectSourceExcerpt as defaultCollectSourceExcerpt,
+  runDimensionJudge as defaultRunDimensionJudge,
+} from './scenarios/dimension-judge-adapter.js';
 import { collectMaintainabilitySignals as defaultCollectMaintainabilitySignals } from './scenarios/maintainability-adapter.js';
 import { collectSecuritySignals as defaultCollectSecuritySignals } from './scenarios/security-adapter.js';
 import {
@@ -285,6 +288,35 @@ export function planningInputs(lifecycle = []) {
 }
 
 /**
+ * Canonical security-MUST keys → the `collectSecuritySignals` boolean flag that
+ * detects each (Ticket #122, item 3). A scenario declares which of these apply
+ * via `scenario.security.applicableMusts`.
+ */
+export const SECURITY_MUST_FLAGS = Object.freeze({
+  inputValidation: 'hasEdgeInputValidation',
+  passwordHashing: 'hasPasswordHashing',
+  safeTokenStorage: 'hasSafeTokenStorage',
+  serverSideAuthz: 'hasServerSideAuthz',
+  authRateLimiting: 'hasAuthRateLimiting',
+});
+
+/** The full MUST-key set, used as the fallback when a scenario declares none. */
+const ALL_SECURITY_MUSTS = Object.freeze(Object.keys(SECURITY_MUST_FLAGS));
+
+/**
+ * Resolve a scenario's declared applicable-MUST set (Ticket #122, item 3):
+ * `scenario.security.applicableMusts` when it is a non-empty array, else null
+ * (the caller then scores all five). Pure.
+ *
+ * @param {object} scenario
+ * @returns {string[]|null}
+ */
+export function scenarioApplicableMusts(scenario) {
+  const declared = scenario?.security?.applicableMusts;
+  return Array.isArray(declared) && declared.length > 0 ? declared : null;
+}
+
+/**
  * Derive the `securityInputs` object for `buildScorecard` from the raw
  * sub-signals returned by `collectSecuritySignals` and the optional judge
  * scores.
@@ -301,11 +333,28 @@ export function planningInputs(lifecycle = []) {
  *   objectiveSecurityScore  = secretPenalty·0.30 + vulnPenalty·0.20
  *                           + mustPresenceScore·0.50
  *
+ * **Applicable MUST set (Ticket #122, item 3).** 3 of the 5 MUSTs are
+ * UNREACHABLE under the scenarios' "no external web framework" + bearer-token
+ * constraints: a schema-validation library import (`inputValidation`),
+ * httpOnly cookies (`safeTokenStorage` — bearer tokens live in the
+ * Authorization header, not cookies), and a rate-limit library import
+ * (`authRateLimiting`). Scoring them anyway pinned the spine at a floor no
+ * arm could clear. A scenario now declares the APPLICABLE MUST set via
+ * `scenario.security.applicableMusts`; only those are scored, and the
+ * mustPresenceScore divides by the applicable count rather than a hardcoded 5.
+ * An absent/empty declaration falls back to all five (back-compat).
+ *
  * @param {object} sigs   Output of collectSecuritySignals (or {}).
  * @param {{ security?: number } | null} judgeScores  Batched judge output.
+ * @param {string[]|null} [applicableMusts]  The scenario's declared applicable
+ *   MUST keys (subset of SECURITY_MUST_FLAGS keys); null/empty ⇒ all five.
  * @returns {object}
  */
-export function derivedSecurityInputs(sigs, judgeScores) {
+export function derivedSecurityInputs(
+  sigs,
+  judgeScores,
+  applicableMusts = null,
+) {
   const secretScanCount =
     typeof sigs.secretScanCount === 'number' ? sigs.secretScanCount : 0;
   const depAuditVulnCount =
@@ -324,15 +373,16 @@ export function derivedSecurityInputs(sigs, judgeScores) {
   );
   const vulnPenalty = Math.max(0, 1 - depAuditVulnCount / 10);
 
-  const mustFlags = [
-    sigs.hasEdgeInputValidation,
-    sigs.hasPasswordHashing,
-    sigs.hasSafeTokenStorage,
-    sigs.hasServerSideAuthz,
-    sigs.hasAuthRateLimiting,
-  ];
-  const mustCount = mustFlags.filter(Boolean).length;
-  const mustPresenceScore = mustCount / 5;
+  // Score only the APPLICABLE MUSTs (Ticket #122, item 3). An absent/empty
+  // declaration scores all five (back-compat); an unknown key is ignored.
+  const musts =
+    Array.isArray(applicableMusts) && applicableMusts.length > 0
+      ? applicableMusts.filter((k) => k in SECURITY_MUST_FLAGS)
+      : ALL_SECURITY_MUSTS;
+  const mustCount = musts.filter((k) =>
+    Boolean(sigs[SECURITY_MUST_FLAGS[k]]),
+  ).length;
+  const mustPresenceScore = musts.length > 0 ? mustCount / musts.length : 1;
 
   const objectiveSecurityScore = Math.max(
     0,
@@ -420,6 +470,122 @@ export function discoverLedger({ workspacePath }, deps = {}) {
     }
   }
   return { lifecyclePath: chosen.lifecyclePath, signalsPaths };
+}
+
+/**
+ * Resolve the PR-head delivery branch name for a mandrel run from the discovered
+ * routing target (Ticket #121, item 1). The `/deliver` pipeline pushes an Epic
+ * integration branch `epic/<epicId>` (epic routing) or a Story execution branch
+ * `story-<storyId>` (standalone routing) and opens the change-request PR from
+ * it; that branch's tip is the scoreable PR-head tree even when the PR never
+ * merges. Returns null when the target is unknown (nothing to fetch).
+ *
+ * @param {{ routing?: string|null, epicId?: number|null, storyNumber?: number|null }|null} target
+ * @returns {string|null}
+ */
+export function resolveDeliveryBranch(target) {
+  if (!target || typeof target !== 'object') return null;
+  const { routing, epicId, storyNumber } = target;
+  if (routing === 'story' && storyNumber != null) return `story-${storyNumber}`;
+  if (epicId != null) return `epic/${epicId}`;
+  if (storyNumber != null) return `story-${storyNumber}`;
+  return null;
+}
+
+/**
+ * Materialize the mandrel arm's delivered tree into the working copy and
+ * classify its LANDING (Ticket #121, item 1). This replaces the prior
+ * "reset to origin/main; null the run when the SHA is unchanged" behaviour,
+ * which discarded a perfectly-scoreable PR-head tree as a data-destroying null
+ * (42% of the last cohort). New contract:
+ *
+ *   1. Fetch + reset the working copy to `origin/main`. If `main` advanced past
+ *      the seed baseline, the PR MERGED → `{ landed: true, delivered: true,
+ *      source: 'main' }` and the merged tree is scored.
+ *   2. If `main` is unchanged (unlanded), fetch the PR-head delivery branch and
+ *      check it out. If it exists and differs from the baseline, the unlanded
+ *      PR-head tree IS scoreable → `{ landed: false, delivered: true, source:
+ *      'branch' }`. This preserves the materialization guards' intent (no false
+ *      zeros) while flipping the default from "null when unlanded" to "score the
+ *      PR-head, flag landed:false".
+ *   3. Only when neither a merged main nor a differing PR-head branch exists is
+ *      the run genuinely unmaterialized → `{ landed: false, delivered: false,
+ *      source: 'none' }` (quality/maintainability/security score null, NOT a
+ *      false 0 on the empty seed tree).
+ *
+ * When `baselineSha` is unknown the landing comparison is impossible; the prior
+ * behaviour (score `main`, assume delivered) is preserved with `landed: null`.
+ *
+ * @param {object} args
+ * @param {(args: string[], cwd: string) => string} args.gitFn
+ * @param {string} args.workspacePath
+ * @param {string|null|undefined} args.baselineSha
+ * @param {string|null} args.deliveryBranch
+ * @param {{ warn?: Function, info?: Function }} [logger]
+ * @returns {{ landed: boolean|null, delivered: boolean, source: 'main'|'branch'|'none' }}
+ */
+export function materializeMandrelDelivery(
+  { gitFn, workspacePath, baselineSha, deliveryBranch },
+  logger,
+) {
+  let mainHead = null;
+  try {
+    gitFn(['fetch', 'origin', 'main'], workspacePath);
+    gitFn(['checkout', 'main'], workspacePath);
+    gitFn(['reset', '--hard', 'origin/main'], workspacePath);
+    mainHead = gitFn(['rev-parse', 'HEAD'], workspacePath).trim();
+  } catch (err) {
+    logger?.warn?.(
+      `[run] could not reach origin/main to materialize delivery: ${err?.message ?? err}`,
+    );
+    // Fall through: still try the PR-head branch below (main is unreachable but
+    // the delivery branch might be fetchable).
+  }
+
+  // No baseline to compare against → cannot determine landing; preserve the
+  // prior "score main, assume delivered" behaviour with an undetermined landed.
+  if (!baselineSha) {
+    if (mainHead != null) {
+      return { landed: null, delivered: true, source: 'main' };
+    }
+  } else if (mainHead != null && mainHead !== baselineSha) {
+    // main advanced past the seed baseline → the PR merged (landed).
+    return { landed: true, delivered: true, source: 'main' };
+  }
+
+  // Unlanded (or main unreachable): try to score the PR-head delivery branch so
+  // an existing-but-unlanded tree is not discarded as null.
+  if (deliveryBranch) {
+    try {
+      gitFn(['fetch', 'origin', deliveryBranch], workspacePath);
+      gitFn(
+        ['checkout', '-B', 'bench-pr-head', `origin/${deliveryBranch}`],
+        workspacePath,
+      );
+      const branchHead = gitFn(['rev-parse', 'HEAD'], workspacePath).trim();
+      if (!baselineSha || branchHead !== baselineSha) {
+        logger?.info?.(
+          `[run] delivery did not land — scoring the unlanded PR-head tree from origin/${deliveryBranch} (landed:false), not a null.`,
+        );
+        return { landed: false, delivered: true, source: 'branch' };
+      }
+    } catch (err) {
+      logger?.warn?.(
+        `[run] could not fetch PR-head branch origin/${deliveryBranch}: ${err?.message ?? err}`,
+      );
+    }
+  }
+
+  // Neither a merged main nor a differing PR-head branch — genuinely nothing to
+  // score. landed is false only when we had a baseline to compare against.
+  logger?.warn?.(
+    '[run] delivery did not materialize (no merged main, no PR-head branch) — scoring quality as null (unmaterialized), not a false 0.',
+  );
+  return {
+    landed: baselineSha ? false : null,
+    delivered: false,
+    source: 'none',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -998,6 +1164,9 @@ export async function runTouch2(opts, deps = {}) {
     benchmarkVersion,
     env,
     timeoutMs = DEFAULT_SESSION_TIMEOUT_MS,
+    // Directory to persist the touch-2 delivery's raw telemetry into before
+    // sandbox teardown (Ticket #121, item 4). Null ⇒ skip the persistence.
+    touch2RawDir = null,
   } = opts;
 
   if (
@@ -1022,12 +1191,70 @@ export async function runTouch2(opts, deps = {}) {
     deps.collectSecurityFn ?? defaultCollectSecuritySignals;
   const runDimensionJudgeFn =
     deps.runDimensionJudgeFn ?? defaultRunDimensionJudge;
+  const collectSourceExcerptFn =
+    deps.collectSourceExcerptFn ?? defaultCollectSourceExcerpt;
   const runTrapOraclesFn = deps.runTrapOraclesFn ?? defaultRunTrapOracles;
   const gitFn =
     deps.gitFn ??
     ((args, cwd) =>
       execFileSync('git', args, { cwd, stdio: 'pipe', encoding: 'utf8' }));
   const nowIso = deps.nowFn ?? (() => new Date().toISOString());
+  const mkdirFn = deps.mkdirFn ?? ((p) => mkdirSync(p, { recursive: true }));
+  const writeFileFn = deps.writeFileFn ?? writeFileSync;
+
+  // Persist the touch-2 delivery's raw telemetry (cost envelope, lifecycle
+  // ledger, session result) into `touch2RawDir` before sandbox teardown so a
+  // `merge.unlanded` failure is attributable rather than invisible (Ticket
+  // #121, item 4). Best-effort: a persistence failure never masks the touch-2
+  // result. Called once the session envelope is available.
+  const persistTouch2Raw = (envelopeToPersist, workspaceForLedger) => {
+    if (typeof touch2RawDir !== 'string' || touch2RawDir.length === 0) return;
+    try {
+      mkdirFn(touch2RawDir);
+      // Cost envelope + final session result.
+      writeFileFn(
+        path.join(touch2RawDir, 'cost-envelope.json'),
+        `${JSON.stringify(envelopeToPersist?.raw ?? envelopeToPersist ?? {}, null, 2)}\n`,
+      );
+      writeFileFn(
+        path.join(touch2RawDir, 'session-result.json'),
+        `${JSON.stringify(
+          {
+            isError: envelopeToPersist?.isError ?? null,
+            result: envelopeToPersist?.result ?? null,
+            terminalReason: envelopeToPersist?.terminalReason ?? null,
+            numTurns: envelopeToPersist?.numTurns ?? null,
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      // Lifecycle ledger, when the mandrel arm produced one in the touch-2 tree.
+      if (arm === 'mandrel') {
+        const found = discoverLedger(
+          { workspacePath: workspaceForLedger },
+          deps.discoverDeps,
+        );
+        if (found?.lifecyclePath) {
+          const read = deps.readFileImpl ?? readFileSync;
+          try {
+            writeFileFn(
+              path.join(touch2RawDir, 'lifecycle.ndjson'),
+              read(found.lifecyclePath, 'utf8'),
+            );
+          } catch (err) {
+            logger?.warn?.(
+              `[run] touch2: could not copy lifecycle ledger: ${err?.message ?? err}`,
+            );
+          }
+        }
+      }
+    } catch (err) {
+      logger?.warn?.(
+        `[run] touch2: could not persist raw telemetry to ${touch2RawDir}: ${err?.message ?? err}`,
+      );
+    }
+  };
 
   // Prepare the arm-appropriate touch-2 workspace.
   const { touch2Cwd, inheritance } = prepareWorkspace(
@@ -1066,6 +1293,12 @@ export async function runTouch2(opts, deps = {}) {
       },
       { invokeFn: deps.invokeFn, logger },
     );
+
+    // Persist the touch-2 delivery's raw telemetry BEFORE materialization (the
+    // `git reset --hard` below can move the working tree off the delivery HEAD)
+    // and before sandbox teardown, so an unlanded touch-2 (`merge.unlanded`) is
+    // attributable rather than invisible (Ticket #121, item 4).
+    persistTouch2Raw(session.envelope, touch2Cwd);
 
     // Materialize the delivered second-touch code. The mandrel arm's clean
     // /deliver auto-merged onto the sandbox default branch, so pull it into the
@@ -1134,6 +1367,9 @@ export async function runTouch2(opts, deps = {}) {
         phases: null,
         scenarioRouting:
           typeof scenario?.routing === 'string' ? scenario.routing : null,
+        // The touch-2 change did NOT land unattended — feeds autonomy as an
+        // unattended-landing failure (Ticket #121, items 1–2).
+        landed: false,
       });
       return {
         changeRequestId:
@@ -1157,7 +1393,8 @@ export async function runTouch2(opts, deps = {}) {
     // asserted HERE, behaviourally — never by a source-scan oracle).
     const quality = await withRunningAppFn(
       { workspacePath: touch2Cwd, app: scenario.app },
-      async (baseUrl) => {
+      async (baseUrl, appInfo) => {
+        const restart = appInfo?.restart;
         if (arm === 'mandrel') {
           const r = await scoreQualityFn({
             evaluate: touch2Evaluate,
@@ -1165,13 +1402,14 @@ export async function runTouch2(opts, deps = {}) {
             storyId: 1,
             epicId: null,
             transport: 'in-process',
+            evaluateDeps: { restart },
           });
           return qualityInputs({
             frozen: r.frozen,
             crossCheckDecision: r.crossCheck?.decision ?? null,
           });
         }
-        const frozen = await touch2Evaluate(baseUrl);
+        const frozen = await touch2Evaluate(baseUrl, { restart });
         return qualityInputs({ frozen, crossCheckDecision: null });
       },
       deps.appRunnerDeps,
@@ -1222,8 +1460,20 @@ export async function runTouch2(opts, deps = {}) {
 
     let judgeScores = null;
     try {
+      // Bounded delivered-source excerpt for the judge (Ticket #122, item 4).
+      let sourceExcerpt = '';
+      try {
+        sourceExcerpt = collectSourceExcerptFn(
+          touch2Cwd,
+          deps.collectSourceExcerptPorts,
+        );
+      } catch (err) {
+        logger?.warn?.(
+          `[run] touch2: source-excerpt collection failed (judge runs without it): ${err?.message ?? err}`,
+        );
+      }
       judgeScores = await runDimensionJudgeFn(
-        { maintainabilitySignals, securitySignals },
+        { maintainabilitySignals, securitySignals, sourceExcerpt },
         deps.dimensionJudgeDeps,
       );
     } catch (err) {
@@ -1243,7 +1493,11 @@ export async function runTouch2(opts, deps = {}) {
       complexityScore: maintainabilitySignals.complexityScore ?? null,
       maintainabilityIndex: null,
     };
-    const securityInputs = derivedSecurityInputs(securitySignals, judgeScores);
+    const securityInputs = derivedSecurityInputs(
+      securitySignals,
+      judgeScores,
+      scenarioApplicableMusts(scenario),
+    );
 
     // Build a full touch-2 sub-scorecard (the "full dimension set") and trim it
     // to the compact continuity block. The touch-2 run carries its own identity
@@ -1271,6 +1525,8 @@ export async function runTouch2(opts, deps = {}) {
       phases: null,
       scenarioRouting:
         typeof scenario?.routing === 'string' ? scenario.routing : null,
+      // The touch-2 change LANDED (materialized onto main); feeds autonomy.
+      landed: arm === 'mandrel' ? true : null,
     });
 
     const outcome = subCard.dimensions.quality.score;
@@ -1379,6 +1635,8 @@ export async function runOneRun(opts, deps = {}) {
     deps.collectSecurityFn ?? defaultCollectSecuritySignals;
   const runDimensionJudgeFn =
     deps.runDimensionJudgeFn ?? defaultRunDimensionJudge;
+  const collectSourceExcerptFn =
+    deps.collectSourceExcerptFn ?? defaultCollectSourceExcerpt;
   const gitFn =
     deps.gitFn ??
     ((args, cwd) =>
@@ -1490,6 +1748,12 @@ export async function runOneRun(opts, deps = {}) {
     // itself keeps returning only `{ deliverTarget }`. Stays null for the
     // control arm and on any plan-phase discovery/snapshot failure.
     let planSnapshot = null;
+    // The routing target the plan phase discovered (Ticket #121, item 1),
+    // surfaced out of the between-phases hook so the post-session
+    // materialization step can resolve the PR-head delivery branch to score
+    // when the delivery does not land. Stays null for the control arm and on a
+    // discovery failure (then no PR-head branch can be recovered).
+    let deliveredTarget = null;
     const betweenPhases =
       arm === 'mandrel'
         ? ({ planEnvelope }) => {
@@ -1554,11 +1818,22 @@ export async function runOneRun(opts, deps = {}) {
                   logger,
                 },
               );
+              deliveredTarget = { routing, epicId, storyNumber };
               return { deliverTarget };
             } catch (err) {
               logger?.warn?.(
                 `[run] plan-phase id-discovery/snapshot failed (continuing): ${err?.message ?? err}`,
               );
+              deliveredTarget = {
+                routing:
+                  typeof scenario?.routing === 'string'
+                    ? scenario.routing
+                    : scenario.epicId != null
+                      ? 'epic'
+                      : null,
+                epicId: scenario.epicId ?? null,
+                storyNumber: null,
+              };
               return { deliverTarget: scenario.epicId ?? null };
             }
           }
@@ -1576,38 +1851,30 @@ export async function runOneRun(opts, deps = {}) {
       { invokeFn: deps.invokeFn, logger, betweenPhases },
     );
 
-    // Materialize the delivered code into the working tree. For the mandrel arm
-    // a clean /deliver auto-merged onto the sandbox's default branch on GitHub,
-    // so pull it down and CHECK it actually landed. When the Epic stalls/blocks
-    // or auto-merge never completes, origin/main is still the seed baseline — the
-    // reset restores an EMPTY tree and the oracle would fabricate quality=0,
-    // indistinguishable from a genuine "delivered broken code" miss (and it
-    // silently poisons the quality differential). Compare the post-reset HEAD to
-    // the seed baseline: an unchanged SHA means nothing landed. Symmetric to the
-    // touch-2 materialization guard (#115); the control arm commits directly and
-    // always materializes.
+    // Materialize the delivered code into the working tree and classify its
+    // LANDING (Ticket #121, item 1). A clean /deliver auto-merges onto the
+    // sandbox default branch; when it does NOT, `origin/main` is still the seed
+    // baseline — but the delivered code lives on the PR-head branch, which IS
+    // scoreable. `materializeMandrelDelivery` scores the PR-head tree in that
+    // case (flagging `landed: false`) instead of discarding the run as a null on
+    // the empty baseline tree, while still returning `delivered: false` only when
+    // there is genuinely nothing to score (no merged main, no PR-head branch).
+    // The control arm commits directly and always materializes (landed: N/A).
     let delivered = true;
+    let landed = null;
     if (arm === 'mandrel') {
-      try {
-        gitFn(['fetch', 'origin', 'main'], handle.workspacePath);
-        gitFn(['checkout', 'main'], handle.workspacePath);
-        gitFn(['reset', '--hard', 'origin/main'], handle.workspacePath);
-        const headSha = gitFn(
-          ['rev-parse', 'HEAD'],
-          handle.workspacePath,
-        ).trim();
-        if (baselineSha && headSha === baselineSha) {
-          delivered = false;
-          logger?.warn?.(
-            `[run] delivery did not land — origin/main unchanged at the seed baseline ${headSha.slice(0, 8)} (Epic likely blocked/incomplete); scoring quality as null (unmaterialized), not a false 0.`,
-          );
-        }
-      } catch (err) {
-        delivered = false;
-        logger?.warn?.(
-          `[run] could not materialize merged code (run may have blocked): ${err?.message ?? err}`,
-        );
-      }
+      const deliveryBranch = resolveDeliveryBranch(deliveredTarget);
+      const m = materializeMandrelDelivery(
+        {
+          gitFn,
+          workspacePath: handle.workspacePath,
+          baselineSha,
+          deliveryBranch,
+        },
+        logger,
+      );
+      delivered = m.delivered;
+      landed = m.landed;
     }
 
     // Resolve the cohort directory up front (model id + framework version are
@@ -1711,7 +1978,11 @@ export async function runOneRun(opts, deps = {}) {
       ? { measured: false }
       : await withRunningAppFn(
           { workspacePath: handle.workspacePath, app: scenario.app },
-          async (baseUrl) => {
+          async (baseUrl, appInfo) => {
+            // Thread the app-runner's real `restart` into the frozen oracle so a
+            // persistence criterion can test survival across an actual server
+            // restart (Ticket #122, item 5).
+            const restart = appInfo?.restart;
             if (arm === 'mandrel') {
               const r = await scoreQualityFn({
                 evaluate,
@@ -1719,13 +1990,14 @@ export async function runOneRun(opts, deps = {}) {
                 storyId: 1,
                 epicId: scenario.epicId ?? null,
                 transport: 'in-process',
+                evaluateDeps: { restart },
               });
               return qualityInputs({
                 frozen: r.frozen,
                 crossCheckDecision: r.crossCheck?.decision ?? null,
               });
             }
-            const frozen = await evaluate(baseUrl);
+            const frozen = await evaluate(baseUrl, { restart });
             return qualityInputs({ frozen, crossCheckDecision: null });
           },
           deps.appRunnerDeps,
@@ -1801,8 +2073,23 @@ export async function runOneRun(opts, deps = {}) {
     // are already forced to null below.
     try {
       if (delivered) {
+        // Feed the judge a bounded excerpt of the delivered source (Ticket #122,
+        // item 4) so it has an INDEPENDENT observation instead of re-scoring the
+        // spine's own sub-signal JSON. Best-effort: an unreadable tree yields an
+        // empty excerpt (the judge prompt simply omits the section).
+        let sourceExcerpt = '';
+        try {
+          sourceExcerpt = collectSourceExcerptFn(
+            handle.workspacePath,
+            deps.collectSourceExcerptPorts,
+          );
+        } catch (err) {
+          logger?.warn?.(
+            `[run] source-excerpt collection failed (judge runs without it): ${err?.message ?? err}`,
+          );
+        }
         judgeScores = await runDimensionJudgeFn(
-          { maintainabilitySignals, securitySignals },
+          { maintainabilitySignals, securitySignals, sourceExcerpt },
           deps.dimensionJudgeDeps,
         );
       }
@@ -1832,7 +2119,11 @@ export async function runOneRun(opts, deps = {}) {
 
     const securityInputs = !delivered
       ? { measured: false }
-      : derivedSecurityInputs(securitySignals, judgeScores);
+      : derivedSecurityInputs(
+          securitySignals,
+          judgeScores,
+          scenarioApplicableMusts(scenario),
+        );
 
     // The second touch (Epic #86, Story #96). AFTER touch 1 is scored, run the
     // scenario's frozen change request as a fresh session against the delivered
@@ -1857,6 +2148,9 @@ export async function runOneRun(opts, deps = {}) {
             benchmarkVersion,
             env,
             timeoutMs,
+            // Persist the touch-2 delivery's raw telemetry here before teardown
+            // (Ticket #121, item 4).
+            touch2RawDir: path.join(rawDir, idStampForRaw, 'touch2'),
           },
           deps,
         );
@@ -1927,9 +2221,15 @@ export async function runOneRun(opts, deps = {}) {
       standalone,
       scenarioRouting:
         typeof scenario?.routing === 'string' ? scenario.routing : null,
-      // Loud autonomy marker: the mandrel /deliver never landed (quality is null,
-      // trap absent) — distinct from a delivered-but-broken app.
+      // Loud autonomy marker: the mandrel /deliver produced NOTHING scoreable —
+      // neither a merged main nor a PR-head branch (distinct from a
+      // delivered-but-broken app, and distinct from an unlanded-but-scored
+      // PR-head tree, which now scores normally with landed:false).
       deliveryNotMaterialized: arm === 'mandrel' && !delivered,
+      // Landing datum (Ticket #121, item 1): true = PR merged onto main; false =
+      // an unlanded PR-head tree was scored; null = control / undetermined. Feeds
+      // the autonomy dimension as unattended-landing.
+      landed: arm === 'mandrel' ? landed : null,
     });
     return scorecard;
   } finally {

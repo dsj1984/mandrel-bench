@@ -697,3 +697,53 @@ describe('collectSecuritySignals — edge cases', () => {
     assert.equal(signals.hasEdgeInputValidation, true);
   });
 });
+
+describe('collectSecuritySignals — shared hashing detector (Ticket #122, item 2)', () => {
+  it('detects the destructured `import { scryptSync } from "node:crypto"` shape the old regex missed', () => {
+    const files = {
+      [`${ROOT}/auth.js`]: [
+        "import { scryptSync, randomBytes } from 'node:crypto';",
+        'export function hash(pw) {',
+        "  const salt = randomBytes(16).toString('hex');",
+        "  return scryptSync(pw, salt, 64).toString('hex');",
+        '}',
+      ].join('\n'),
+      [`${ROOT}/package.json`]: '{"name":"app"}',
+    };
+    const signals = collectSecuritySignals(ROOT, {
+      fsImpl: makeFs(files, ROOT),
+      execFileSync: makeExec(CLEAN_AUDIT),
+    });
+    assert.equal(signals.hasPasswordHashing, true);
+  });
+
+  it('detects a bare pbkdf2Sync call (also missed by the old regex)', () => {
+    const files = {
+      [`${ROOT}/kdf.js`]: [
+        "import { pbkdf2Sync } from 'node:crypto';",
+        "const derived = pbkdf2Sync(pw, salt, 100000, 64, 'sha512');",
+      ].join('\n'),
+      [`${ROOT}/package.json`]: '{"name":"app"}',
+    };
+    const signals = collectSecuritySignals(ROOT, {
+      fsImpl: makeFs(files, ROOT),
+      execFileSync: makeExec(CLEAN_AUDIT),
+    });
+    assert.equal(signals.hasPasswordHashing, true);
+  });
+
+  it('still detects the member `crypto.scryptSync(...)` form', () => {
+    const files = {
+      [`${ROOT}/auth.js`]: [
+        "import crypto from 'node:crypto';",
+        'const h = crypto.scryptSync(pw, salt, 64);',
+      ].join('\n'),
+      [`${ROOT}/package.json`]: '{"name":"app"}',
+    };
+    const signals = collectSecuritySignals(ROOT, {
+      fsImpl: makeFs(files, ROOT),
+      execFileSync: makeExec(CLEAN_AUDIT),
+    });
+    assert.equal(signals.hasPasswordHashing, true);
+  });
+});

@@ -35,6 +35,113 @@
  * @module bench/scenarios/dimension-judge-adapter
  */
 
+import fsDefault from 'node:fs';
+import pathMod from 'node:path';
+
+/** Directories skipped when collecting the delivered-source excerpt. */
+const EXCERPT_SKIP_DIRS = new Set([
+  'node_modules',
+  'dist',
+  'build',
+  'coverage',
+]);
+
+/** File extensions included in the delivered-source excerpt. */
+const EXCERPT_EXTENSIONS = new Set([
+  '.js',
+  '.mjs',
+  '.cjs',
+  '.ts',
+  '.tsx',
+  '.jsx',
+  '.json',
+]);
+
+/** Filenames excluded from the excerpt (huge, low-signal). */
+const EXCERPT_SKIP_FILES = new Set([
+  'package-lock.json',
+  'npm-shrinkwrap.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+]);
+
+/**
+ * Recursively collect delivered-source file paths under `dir`, skipping hidden
+ * directories (the overlaid framework tree — `.agents` / `.claude` / `.git`),
+ * dependency/build output, and lockfiles, so the excerpt measures the delivered
+ * app rather than the framework (the same confound the security scanner avoids).
+ *
+ * @param {string} dir
+ * @param {Pick<typeof fsDefault, 'readdirSync'>} fsImpl
+ * @param {string[]} out
+ */
+function collectExcerptFiles(dir, fsImpl, out) {
+  let entries;
+  try {
+    entries = fsImpl.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (entry.name.startsWith('.')) continue;
+    if (EXCERPT_SKIP_DIRS.has(entry.name)) continue;
+    const full = pathMod.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      collectExcerptFiles(full, fsImpl, out);
+    } else if (entry.isFile()) {
+      if (EXCERPT_SKIP_FILES.has(entry.name)) continue;
+      if (EXCERPT_EXTENSIONS.has(pathMod.extname(entry.name).toLowerCase())) {
+        out.push(full);
+      }
+    }
+  }
+}
+
+/**
+ * Collect a bounded, deterministic excerpt of the delivered source tree for the
+ * dimension judge (Ticket #122, item 4). Files are read in sorted-path order
+ * and concatenated with a per-file header until `maxChars` is reached, so the
+ * judge has an independent observation of the code without any risk of blowing
+ * the prompt on a large tree. All I/O runs through an injected `fsImpl` so the
+ * unit test exercises it without touching disk.
+ *
+ * @param {string} workspacePath — absolute path of the delivered workspace.
+ * @param {object} [ports]
+ * @param {Pick<typeof fsDefault, 'readdirSync'|'readFileSync'>} [ports.fsImpl]
+ * @param {number} [ports.maxChars]  Character bound (default DEFAULT_SOURCE_EXCERPT_MAX_CHARS).
+ * @returns {string} the bounded excerpt (empty string when nothing is readable).
+ */
+export function collectSourceExcerpt(workspacePath, ports = {}) {
+  const fsImpl = ports.fsImpl ?? fsDefault;
+  const maxChars =
+    typeof ports.maxChars === 'number' && ports.maxChars > 0
+      ? ports.maxChars
+      : DEFAULT_SOURCE_EXCERPT_MAX_CHARS;
+  if (typeof workspacePath !== 'string' || workspacePath.length === 0) {
+    return '';
+  }
+  const files = [];
+  collectExcerptFiles(workspacePath, fsImpl, files);
+  files.sort();
+  let out = '';
+  for (const fp of files) {
+    if (out.length >= maxChars) break;
+    let text;
+    try {
+      text = fsImpl.readFileSync(fp, 'utf8');
+    } catch {
+      continue;
+    }
+    if (typeof text !== 'string') continue;
+    const rel = pathMod.relative(workspacePath, fp) || pathMod.basename(fp);
+    const header = `\n// ===== ${rel} =====\n`;
+    const budget = maxChars - out.length;
+    if (budget <= header.length) break;
+    out += header + text.slice(0, budget - header.length);
+  }
+  return out.trim();
+}
+
 /**
  * Clamp `v` into [0, 1]. Returns 0 for non-finite inputs.
  *
@@ -49,28 +156,50 @@ function clamp01(v) {
 }
 
 /**
- * Build the batched judge prompt from collected sub-signals.
+ * Default upper bound on the delivered-source excerpt fed to the judge, in
+ * characters. Bounds the prompt so a large delivered tree can never blow the
+ * judge call's context; ~16 KB is enough for the judge to independently
+ * observe the shape of a small scenario app.
+ */
+export const DEFAULT_SOURCE_EXCERPT_MAX_CHARS = 16000;
+
+/**
+ * Build the batched judge prompt from collected sub-signals AND a bounded
+ * excerpt of the delivered source tree.
  *
  * The prompt is structured so a compact LLM response can be parsed without
  * ambiguity: it requests exactly two JSON fields (`maintainability` and
  * `security`), each a float in [0, 1], and no surrounding prose.
  *
+ * **Independent observation (Ticket #122, item 4).** Feeding the judge only
+ * the spine's own sub-signal JSON gave it ZERO independent observation — it
+ * re-scored the booleans the spine already computed, producing a near-constant
+ * 0.28–0.35 (it even "graded" hello-world on password-hashing MUSTs). A bounded
+ * excerpt of the delivered source (or diff) is now included so the judge has
+ * something observable to correlate its score with. The excerpt is
+ * size-bounded by the caller (see `buildSourceExcerpt`); an empty/absent
+ * excerpt simply omits the section (back-compat with callers that pass none).
+ *
  * @param {object} args
  * @param {object} args.maintainabilitySignals  — output of collectMaintainabilitySignals.
  * @param {object} args.securitySignals         — output of collectSecuritySignals.
+ * @param {string} [args.sourceExcerpt]         — bounded delivered-source excerpt.
  * @param {string} [args.rubric]                — optional rubric override (tests).
  * @returns {string} The judge prompt string.
  */
 export function buildJudgePrompt({
   maintainabilitySignals,
   securitySignals,
+  sourceExcerpt,
   rubric,
 }) {
   const defaultRubric = [
     'You are an independent code-quality judge for the Mandrel self-benchmark.',
-    'Rate the following workspace on two dimensions based solely on the provided',
-    'static sub-signals. Your output MUST be a single JSON object with exactly',
-    'two keys: "maintainability" and "security", each a float in [0, 1].',
+    'Rate the following workspace on two dimensions based on the provided',
+    'static sub-signals AND the delivered source excerpt below (your own',
+    'independent observation of the code — do not merely restate the signals).',
+    'Your output MUST be a single JSON object with exactly two keys:',
+    '"maintainability" and "security", each a float in [0, 1].',
     'Do not include any prose, explanation, or extra keys.',
     '',
     'Rubric:',
@@ -82,6 +211,11 @@ export function buildJudgePrompt({
 
   const mSigs = JSON.stringify(maintainabilitySignals ?? {}, null, 2);
   const sSigs = JSON.stringify(securitySignals ?? {}, null, 2);
+
+  const excerpt =
+    typeof sourceExcerpt === 'string' && sourceExcerpt.trim().length > 0
+      ? sourceExcerpt
+      : null;
 
   return [
     rubric ?? defaultRubric,
@@ -95,6 +229,15 @@ export function buildJudgePrompt({
     '```json',
     sSigs,
     '```',
+    ...(excerpt
+      ? [
+          '',
+          '## Delivered source (bounded excerpt — your independent observation)',
+          '```',
+          excerpt,
+          '```',
+        ]
+      : []),
     '',
     'Respond with only the JSON object, e.g.:',
     '{"maintainability": 0.85, "security": 0.72}',
@@ -211,6 +354,10 @@ async function defaultJudgeTransport(_prompt, _opts) {
  *   Sub-signals from `collectMaintainabilitySignals` (maintainability-adapter).
  * @param {object} args.securitySignals
  *   Sub-signals from `collectSecuritySignals` (security-adapter).
+ * @param {string} [args.sourceExcerpt]
+ *   Bounded excerpt of the delivered source tree so the judge has an
+ *   independent observation to score against (Ticket #122, item 4). Omitted /
+ *   empty ⇒ the excerpt section is left off the prompt.
  * @param {object} [deps]
  *   Injectable dependencies for testing.
  * @param {(prompt: string, opts?: object) => Promise<object | string | null>} [deps.judgeTransport]
@@ -223,14 +370,18 @@ async function defaultJudgeTransport(_prompt, _opts) {
  * @returns {Promise<{ maintainability: number, security: number } | null>}
  */
 export async function runDimensionJudge(
-  { maintainabilitySignals, securitySignals },
+  { maintainabilitySignals, securitySignals, sourceExcerpt },
   deps = {},
 ) {
   const judgeTransport = deps.judgeTransport ?? defaultJudgeTransport;
   const buildPromptFn = deps.buildPromptFn ?? buildJudgePrompt;
   const parseResponseFn = deps.parseResponseFn ?? parseJudgeResponse;
 
-  const prompt = buildPromptFn({ maintainabilitySignals, securitySignals });
+  const prompt = buildPromptFn({
+    maintainabilitySignals,
+    securitySignals,
+    sourceExcerpt,
+  });
 
   let raw;
   try {

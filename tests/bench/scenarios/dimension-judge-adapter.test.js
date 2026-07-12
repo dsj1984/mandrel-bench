@@ -11,6 +11,7 @@ import { describe, it } from 'node:test';
 
 import {
   buildJudgePrompt,
+  collectSourceExcerpt,
   parseJudgeResponse,
   runDimensionJudge,
 } from '../../../bench/scenarios/dimension-judge-adapter.js';
@@ -95,6 +96,100 @@ describe('buildJudgePrompt', () => {
         securitySignals: undefined,
       }),
     );
+  });
+
+  it('includes the delivered-source excerpt when supplied (Ticket #122, item 4)', () => {
+    const prompt = buildJudgePrompt({
+      maintainabilitySignals: {},
+      securitySignals: {},
+      sourceExcerpt: 'export function login() { /* UNIQUE_MARKER_9f */ }',
+    });
+    assert.ok(prompt.includes('Delivered source'), 'excerpt section present');
+    assert.ok(
+      prompt.includes('UNIQUE_MARKER_9f'),
+      'the excerpt content is embedded so the judge can observe it',
+    );
+  });
+
+  it('omits the excerpt section when the excerpt is empty/absent', () => {
+    const prompt = buildJudgePrompt({
+      maintainabilitySignals: {},
+      securitySignals: {},
+      sourceExcerpt: '   ',
+    });
+    assert.ok(!prompt.includes('Delivered source'));
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// collectSourceExcerpt (Ticket #122, item 4)
+// ────────────────────────────────────────────────────────────────────────────
+
+/** Build a minimal fsImpl over a flat { absPath → content } map. */
+function makeExcerptFs(files, root) {
+  const dirs = new Map();
+  for (const filePath of Object.keys(files)) {
+    const parts = filePath.slice(root.length).split('/').filter(Boolean);
+    let current = root;
+    for (let i = 0; i < parts.length; i++) {
+      const name = parts[i];
+      const isLast = i === parts.length - 1;
+      if (!dirs.has(current)) dirs.set(current, []);
+      const entries = dirs.get(current);
+      if (!entries.some((e) => e.name === name)) {
+        entries.push({
+          name,
+          isDirectory: () => !isLast,
+          isFile: () => isLast,
+        });
+      }
+      if (!isLast) current = `${current}/${name}`;
+    }
+  }
+  return {
+    readdirSync: (p) => dirs.get(p) ?? [],
+    readFileSync: (p) => {
+      if (Object.hasOwn(files, p)) return files[p];
+      throw new Error(`ENOENT ${p}`);
+    },
+  };
+}
+
+describe('collectSourceExcerpt', () => {
+  const ROOT = '/ws';
+
+  it('concatenates delivered source, skipping hidden framework dirs and lockfiles', () => {
+    const files = {
+      [`${ROOT}/src/server.js`]: 'const server = 1; // SERVER_CODE',
+      [`${ROOT}/package.json`]: '{"name":"app"}',
+      [`${ROOT}/package-lock.json`]: '{"HUGE":true}',
+      [`${ROOT}/.agents/instructions.md`]: 'FRAMEWORK_ONLY',
+      [`${ROOT}/node_modules/dep/index.js`]: 'DEP_CODE',
+    };
+    const excerpt = collectSourceExcerpt(ROOT, {
+      fsImpl: makeExcerptFs(files, ROOT),
+    });
+    assert.ok(excerpt.includes('SERVER_CODE'), 'delivered code included');
+    assert.ok(!excerpt.includes('FRAMEWORK_ONLY'), 'framework dir skipped');
+    assert.ok(!excerpt.includes('DEP_CODE'), 'node_modules skipped');
+    assert.ok(!excerpt.includes('HUGE'), 'lockfile skipped');
+  });
+
+  it('is bounded by maxChars', () => {
+    const big = 'x'.repeat(5000);
+    const files = {
+      [`${ROOT}/a.js`]: big,
+      [`${ROOT}/b.js`]: big,
+    };
+    const excerpt = collectSourceExcerpt(ROOT, {
+      fsImpl: makeExcerptFs(files, ROOT),
+      maxChars: 1000,
+    });
+    assert.ok(excerpt.length <= 1000);
+  });
+
+  it('returns an empty string for a missing workspace path', () => {
+    assert.equal(collectSourceExcerpt(''), '');
   });
 });
 
