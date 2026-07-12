@@ -276,6 +276,70 @@ describe('groupCells', () => {
       assert.equal(cell.mismatchFlag, false);
     });
   });
+
+  describe('variant arms (Ticket #123)', () => {
+    it('holds control-claudemd / mandrel-story-routed records under extraArms without touching the base pools', () => {
+      const cells = groupCells([
+        card({ scenario: 'story-scope', arm: 'mandrel', runId: 'm-1' }),
+        card({ scenario: 'story-scope', arm: 'control', runId: 'c-1' }),
+        card({
+          scenario: 'story-scope',
+          arm: 'control-claudemd',
+          runId: 'a3-1',
+        }),
+        card({
+          scenario: 'story-scope',
+          arm: 'mandrel-story-routed',
+          runId: 'a4-1',
+        }),
+        card({
+          scenario: 'story-scope',
+          arm: 'mandrel-story-routed',
+          runId: 'a4-2',
+        }),
+      ]);
+      const cell = cells.find((c) => c.scenario === 'story-scope');
+      // The primary mandrel-vs-control differential pools are byte-identical
+      // with or without the variant cells present.
+      assert.equal(cell.mandrelRuns.length, 1);
+      assert.equal(cell.controlRuns.length, 1);
+      assert.equal(cell.mismatchRate, 0);
+      assert.equal(cell.extraArms['control-claudemd'].length, 1);
+      assert.equal(cell.extraArms['mandrel-story-routed'].length, 2);
+    });
+
+    it('applies the (arm-aware) routing-mismatch exclusion per variant arm', () => {
+      const cells = groupCells([
+        card({
+          scenario: 'story-scope',
+          arm: 'mandrel-story-routed',
+          runId: 'a4-ok',
+        }),
+        card({
+          scenario: 'story-scope',
+          arm: 'mandrel-story-routed',
+          runId: 'a4-bad',
+          // routingMismatch is already arm-aware at build time: for arm 4 a
+          // flagged record means the story-routing treatment failed to apply.
+          routingMismatch: true,
+        }),
+      ]);
+      const cell = cells.find((c) => c.scenario === 'story-scope');
+      assert.equal(cell.extraArms['mandrel-story-routed'].length, 1);
+      assert.equal(
+        cell.extraArmMismatchedRuns['mandrel-story-routed'].length,
+        1,
+      );
+    });
+
+    it('a corpus with no variant arms yields empty extraArms (2-arm cohorts parse unchanged)', () => {
+      const cells = groupCells(healthyCorpus());
+      for (const cell of cells) {
+        assert.deepEqual(cell.extraArms, {});
+        assert.deepEqual(cell.extraArmMismatchedRuns, {});
+      }
+    });
+  });
 });
 
 describe('deriveCohort', () => {

@@ -709,6 +709,16 @@ function benchDeps(record) {
       record.gatePackageJsonWrites?.push(o.workspacePath);
       return { workspacePath: o.workspacePath, pkg: {} };
     },
+    // arm-3 CLAUDE.md seed seam (Ticket #123) — records which workspaces the
+    // static fixture was seeded into, off real disk.
+    seedStaticClaudeMdFn: (o) => {
+      record.claudeMdSeeds?.push(o.workspacePath);
+      return {
+        workspacePath: o.workspacePath,
+        claudeMdPath: `${o.workspacePath}/CLAUDE.md`,
+        bytes: 2048,
+      };
+    },
     // session seam
     runSessionFn: (o) => {
       record.sessions.push({
@@ -824,6 +834,7 @@ function freshRecord(overrides = {}) {
     resets: [],
     overlays: [],
     gatePackageJsonWrites: [],
+    claudeMdSeeds: [],
     sessions: [],
     git: [],
     writes: [],
@@ -3216,4 +3227,217 @@ test('runOneRun: a GENUINE judge failure degrades gracefully (cell completes, sp
     (scorecard.warnings ?? []).some((w) => /judge-absent/.test(w)),
     'the judge folds into the spine (judge-absent warning recorded)',
   );
+});
+
+// ---------------------------------------------------------------------------
+// Ticket #123 — variant arms: control-claudemd (arm 3) and
+// mandrel-story-routed (arm 4) as opt-in cells on the existing machinery.
+// ---------------------------------------------------------------------------
+
+test('runFirstBenchmark (arm 3): control-claudemd runs the identical control path PLUS the static CLAUDE.md seed, and its scorecard is schema-valid', async () => {
+  const record = freshRecord();
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['control', 'control-claudemd'],
+      n: 1,
+      sandbox: {
+        repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
+        owner: 'dsj1984',
+        repo: 'legacy-sandbox-repo',
+      },
+      resultsDir: '/results',
+    },
+    benchDeps(record),
+  );
+
+  assert.equal(result.scorecards.length, 2);
+  for (const sc of result.scorecards) {
+    assert.ok(
+      validateScorecard(sc),
+      `scorecard invalid: ${JSON.stringify(validateScorecard.errors)}`,
+    );
+  }
+  const arm3 = result.scorecards.find((s) => s.arm === 'control-claudemd');
+  const control = result.scorecards.find((s) => s.arm === 'control');
+  assert.ok(arm3 && control);
+
+  // Neither control-base arm is overlaid; BOTH get the identical gate
+  // package.json; ONLY arm 3 gets the CLAUDE.md seed — the single delta.
+  assert.deepEqual(record.overlays, []);
+  assert.equal(record.gatePackageJsonWrites.length, 2);
+  assert.deepEqual(record.claudeMdSeeds, ['/ws-control-claudemd']);
+
+  // Arm 3 scores under the control shape: no plan, no judge cross-check
+  // default, all-codegen overhead split, no routing concept.
+  assert.equal(arm3.dimensions.planningFidelity.score, null);
+  assert.equal(arm3.dimensions.quality.acceptanceEvalScore, null);
+  assert.equal(arm3.dimensions.overheadRatio.ceremonyTokens, 0);
+  assert.equal(arm3.routingMismatch, false);
+  // Both cells persist into the same cohort store and checkpoint separately —
+  // the arm value is part of the cell key, so arms 3/4 resume independently.
+  assert.equal(record.checkpointed.length, 2);
+  const cells = record.checkpointed.map((c) => JSON.parse(c.data).cell);
+  assert.ok(cells.some((c) => c.includes('control-claudemd')));
+});
+
+test('runOneRun (arm 4): mandrel-story-routed drives story discovery and is EXEMPT from the routing-mismatch exclusion on an epic-contract scenario', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  // The plan session authored a standalone Story; GitHub telemetry recovers it.
+  deps.ghJson = (args) => {
+    const key = `${args[0]} ${args[1]}`;
+    if (key === 'issue list') {
+      return [{ number: 99, createdAt: '2026-06-16T20:30:00.000Z' }];
+    }
+    if (key === 'issue view') {
+      return {
+        number: 99,
+        state: 'CLOSED',
+        labels: [{ name: 'type::story' }, { name: 'agent::done' }],
+        comments: [
+          {
+            body: '<!-- ap:structured-comment type="story-init" -->\n"standalone": true',
+          },
+        ],
+      };
+    }
+    if (key === 'pr list') {
+      return [
+        {
+          number: 100,
+          mergedAt: '2026-06-16T20:50:00.000Z',
+          files: [{ path: 'src/server.js' }],
+        },
+      ];
+    }
+    return [];
+  };
+
+  const { evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      // An epic-contract scenario WITH a seed Epic id: arm 4 must ignore both
+      // (its --idea plan session authors its own standalone Story).
+      scenario: { ...FAKE_SCENARIO, routing: 'epic' },
+      evaluate,
+      arm: 'mandrel-story-routed',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
+        owner: 'dsj1984',
+        repo: 'legacy-sandbox-repo',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.equal(scorecard.arm, 'mandrel-story-routed');
+  // The mandrel pipeline ran (overlay, not the control path) …
+  assert.deepEqual(record.overlays, ['mandrel-story-routed']);
+  // … but the seed Epic id was NOT threaded into the session (the routing
+  // override authors its own Story via the --idea drive).
+  assert.equal(record.sessions[0].epicId, undefined);
+  // Observed story routing on the epic-contract scenario: for arm 4 the
+  // mismatch IS the treatment — the record stays in the pool.
+  assert.equal(scorecard.routingVerdict, 'story');
+  assert.equal(scorecard.routingMismatch, false);
+  // Standalone telemetry stands in for the ledger — value dims are measured.
+  assert.equal(typeof scorecard.dimensions.planningFidelity.score, 'number');
+  assert.ok(
+    validateScorecard(scorecard),
+    `scorecard invalid: ${JSON.stringify(validateScorecard.errors)}`,
+  );
+});
+
+test('main(): rejects an unknown BENCH_ARMS value BEFORE any sandbox is provisioned (fail fast)', async () => {
+  const messages = { error: [] };
+  const logger = {
+    info: () => {},
+    warn: () => {},
+    error: (m) => messages.error.push(m),
+  };
+  const calls = [];
+  const prevExitCode = process.exitCode;
+  process.exitCode = undefined;
+  try {
+    await main(
+      {
+        BENCH_GITHUB_TOKEN: 'ghp_x',
+        BENCH_SANDBOX_OWNER: 'dsj1984',
+        BENCH_ARMS: 'mandrel,contrl',
+      },
+      {
+        logger,
+        sweepJanitorFn: () => ({
+          candidates: [],
+          deleted: [],
+          failed: [],
+          dryRun: false,
+        }),
+        createEphemeralRepoFn: () => {
+          calls.push('createEphemeralRepo');
+          return { repoFullName: 'dsj1984/x' };
+        },
+      },
+    );
+    assert.equal(process.exitCode, 1);
+    assert.equal(calls.length, 0, 'no repo may be provisioned');
+    assert.match(messages.error[0], /BENCH_ARMS/);
+    assert.match(messages.error[0], /unknown benchmark arm "contrl"/);
+  } finally {
+    process.exitCode = prevExitCode;
+  }
+});
+
+test('main(): accepts the opt-in variant arms in BENCH_ARMS and runs one cell per (scenario × arm)', async () => {
+  const logger = { info: () => {}, warn: () => {}, error: () => {} };
+  const cellArms = [];
+  await main(
+    {
+      BENCH_GITHUB_TOKEN: 'ghp_x',
+      BENCH_SANDBOX_OWNER: 'dsj1984',
+      BENCH_ARMS: 'control,control-claudemd,mandrel,mandrel-story-routed',
+    },
+    {
+      logger,
+      sweepJanitorFn: () => ({
+        candidates: [],
+        deleted: [],
+        failed: [],
+        dryRun: false,
+      }),
+      createEphemeralRepoFn: ({ owner, name }) => ({
+        repoFullName: `${owner}/${name}`,
+      }),
+      seedFromTemplateFn: ({ repoFullName }) => ({
+        repoFullName,
+        baselineSha: 'deadbeef',
+        repoUrl: `https://github.com/${repoFullName}.git`,
+      }),
+      destroyEphemeralRepoFn: ({ repoFullName }) => ({
+        deleted: true,
+        repoFullName,
+      }),
+      runFirstBenchmarkFn: async (opts) => {
+        cellArms.push(...opts.arms);
+        return {
+          scorecards: [],
+          cohorts: [],
+          dashboardPath: 'x',
+          skipped: 0,
+          stopped: null,
+        };
+      },
+      mkdtempFn: (p) => `${p}fake`,
+      rmFn: () => {},
+    },
+  );
+  assert.deepEqual(cellArms, [
+    'control',
+    'control-claudemd',
+    'mandrel',
+    'mandrel-story-routed',
+  ]);
 });

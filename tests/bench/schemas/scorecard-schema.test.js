@@ -171,6 +171,24 @@ describe('scorecard schema — rejects malformed records', () => {
     assert.equal(validate(bad), false);
   });
 
+  it('accepts the Ticket #123 variant arms (control-claudemd, mandrel-story-routed) additively', () => {
+    for (const arm of ['control-claudemd', 'mandrel-story-routed']) {
+      const rec = clone(fixture);
+      rec.arm = arm;
+      assert.equal(
+        validate(rec),
+        true,
+        `${arm} record failed: ${JSON.stringify(validate.errors, null, 2)}`,
+      );
+    }
+    // The base pair still validates — existing 2-arm cohorts parse unchanged.
+    for (const arm of ['mandrel', 'control']) {
+      const rec = clone(fixture);
+      rec.arm = arm;
+      assert.equal(validate(rec), true);
+    }
+  });
+
   it('rejects a quality.score above its [0,1] range', () => {
     const bad = clone(fixture);
     bad.dimensions.quality.score = 1.5;

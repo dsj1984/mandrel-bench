@@ -70,6 +70,15 @@ export const MISMATCH_RATE_FLAG_THRESHOLD = 0.25;
  * triple; `cohortKey()` in persist.js is its persistence-time counterpart. A
  * single benchmark version (the normal case) leaves the pool untouched.
  *
+ * Variant arms (Ticket #123): records whose `arm` is neither `mandrel` nor
+ * `control` (the opt-in `control-claudemd` / `mandrel-story-routed` cells)
+ * are grouped ADDITIVELY under `extraArms` (keyed by arm value, with
+ * routing-mismatched records held apart under `extraArmMismatchedRuns` by the
+ * same exclusion rule as the mandrel pool). They NEVER pool into
+ * `mandrelRuns`/`controlRuns`, so the primary mandrel-vs-control
+ * differential/noise-band computation is byte-identical with or without
+ * variant cells present — existing 2-arm cohorts parse unchanged.
+ *
  * @param {Array<object>} scorecards
  * @returns {Array<{
  *   scenario: string,
@@ -82,7 +91,9 @@ export const MISMATCH_RATE_FLAG_THRESHOLD = 0.25;
  *   floorCalibration: boolean,
  *   benchmarkVersions: string[],
  *   nonInferential: boolean,
- *   nonInferentialRuns: Array<object>
+ *   nonInferentialRuns: Array<object>,
+ *   extraArms: Record<string, Array<object>>,
+ *   extraArmMismatchedRuns: Record<string, Array<object>>
  * }>}
  */
 export function groupCells(scorecards) {
@@ -98,6 +109,8 @@ export function groupCells(scorecards) {
         mandrelRuns: [],
         controlRuns: [],
         mismatchedRuns: [],
+        extraArms: {},
+        extraArmMismatchedRuns: {},
         benchmarkVersions: new Set(),
       });
     }
@@ -113,6 +126,19 @@ export function groupCells(scorecards) {
       else cell.mandrelRuns.push(sc);
     } else if (sc.arm === 'control') {
       cell.controlRuns.push(sc);
+    } else if (typeof sc.arm === 'string' && sc.arm.length > 0) {
+      // A variant arm (Ticket #123) — held apart from the base pools so the
+      // primary differential is untouched. The routing-mismatch exclusion
+      // applies per arm: `routingMismatch` is already ARM-AWARE at build time
+      // (the story-routed arm's expected routing is its own override), so a
+      // flagged variant record measured a pipeline its own arm did not
+      // promise and is excluded from that arm's pool too.
+      const bucket =
+        sc.routingMismatch === true
+          ? cell.extraArmMismatchedRuns
+          : cell.extraArms;
+      if (!bucket[sc.arm]) bucket[sc.arm] = [];
+      bucket[sc.arm].push(sc);
     }
   }
 
@@ -124,7 +150,13 @@ export function groupCells(scorecards) {
     // band. An undetermined version (absent on every record) is not a mix.
     const nonInferential = benchmarkVersions.length > 1;
     const nonInferentialRuns = nonInferential
-      ? [...arms.mandrelRuns, ...arms.mismatchedRuns, ...arms.controlRuns]
+      ? [
+          ...arms.mandrelRuns,
+          ...arms.mismatchedRuns,
+          ...arms.controlRuns,
+          ...Object.values(arms.extraArms).flat(),
+          ...Object.values(arms.extraArmMismatchedRuns).flat(),
+        ]
       : [];
     const totalMandrel = arms.mandrelRuns.length + arms.mismatchedRuns.length;
     const mismatchRate =
@@ -146,6 +178,8 @@ export function groupCells(scorecards) {
       benchmarkVersions,
       nonInferential,
       nonInferentialRuns,
+      extraArms: nonInferential ? {} : arms.extraArms,
+      extraArmMismatchedRuns: nonInferential ? {} : arms.extraArmMismatchedRuns,
     });
   }
   cells.sort((a, b) => {

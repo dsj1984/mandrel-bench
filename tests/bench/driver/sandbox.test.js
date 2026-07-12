@@ -230,7 +230,7 @@ test('provisionSandbox: rejects empty repoUrl and bad arm', () => {
         { repoUrl: 'u', arm: 'nope', ephemeralRoot: ROOT },
         deps,
       ),
-    /must be "mandrel" or "control"/,
+    /must be a known benchmark arm/,
   );
 });
 

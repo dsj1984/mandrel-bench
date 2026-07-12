@@ -90,8 +90,13 @@
     },
     "arm": {
       "type": "string",
-      "enum": ["mandrel", "control"],
-      "description": "Which arm produced this run. 'mandrel' clones carry .agents/ and run the /plan→/deliver pipeline; 'control' clones have no scaffolding and receive the bare task prompt. Both arms are costed by the same `claude -p` envelope (apples-to-apples by construction)."
+      "enum": [
+        "mandrel",
+        "control",
+        "control-claudemd",
+        "mandrel-story-routed"
+      ],
+      "description": "Which arm produced this run. 'mandrel' clones carry .agents/ and run the /plan→/deliver pipeline; 'control' clones have no scaffolding and receive the bare task prompt. Ticket #123 adds two OPT-IN variant arms (additional cells within the same cohort — D-014 identity unchanged): 'control-claudemd' (arm 3) is the identical control path plus one static generic CLAUDE.md seeded into the workspace, and 'mandrel-story-routed' (arm 4) is the full mandrel pipeline with the plan-phase prompt forcing single-standalone-Story routing (its expected routing is 'story' by construction, so the routing-mismatch exclusion compares against that override — see bench/driver/arms.js). All arms are costed by the same `claude -p` envelope (apples-to-apples by construction)."
     },
     "routingVerdict": {
       "type": ["string", "null"],
