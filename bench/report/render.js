@@ -36,7 +36,9 @@
 
 import { noiseBand } from '../metrics/variance.js';
 import {
+  chainArmSummary,
   computeContinuityDelta,
+  degradationSlope,
   EFFICIENCY_COMPONENTS,
   SCALAR_DIMENSIONS,
   scoreCorpus,
@@ -584,6 +586,254 @@ export function renderContinuitySection(cell, method) {
 }
 
 /**
+ * Collect every arm of a cell that carries at least one chain record
+ * (issue #124, PR-D), in a stable render order: the two primary arms first,
+ * then any variant arms (Ticket #123 `extraArms`) sorted by arm id. Arms with
+ * no chain data are omitted, so a non-chain cell yields `[]` — the guard the
+ * chain section's no-op guarantee hangs off.
+ *
+ * @param {object} cell  A `groupCells` entry.
+ * @returns {Array<{ arm: string, runs: Array<object> }>}
+ */
+export function chainArms(cell) {
+  const hasChain = (runs) =>
+    (runs ?? []).some((sc) => Array.isArray(sc?.chain?.touches));
+  const arms = [];
+  if (hasChain(cell.mandrelRuns)) {
+    arms.push({ arm: 'mandrel', runs: cell.mandrelRuns });
+  }
+  if (hasChain(cell.controlRuns)) {
+    arms.push({ arm: 'control', runs: cell.controlRuns });
+  }
+  for (const arm of Object.keys(cell.extraArms ?? {}).sort()) {
+    if (hasChain(cell.extraArms[arm])) {
+      arms.push({ arm, runs: cell.extraArms[arm] });
+    }
+  }
+  return arms;
+}
+
+/**
+ * Per-arm, per-touch aggregation of one chain cell (issue #124, PR-D): for
+ * every arm carrying chain records, one row per touch index with the mean
+ * outcome / cost / regression rate (`regression.regressionRate`) / convention
+ * clean-rate (`conventions.cleanRate`) across the arm's cells, plus the
+ * materialized / landed / advanced counts. This is the per-touch LINE DATA
+ * the report and dashboard render — nulls are excluded from each mean (an
+ * unmeasured touch never averages as 0), and `n` counts the cells that
+ * carried the touch at all.
+ *
+ * @param {object} cell  A `groupCells` entry.
+ * @returns {Array<{
+ *   arm: string,
+ *   rows: Array<{
+ *     touchIndex: number,
+ *     n: number,
+ *     outcome: number|null,
+ *     cost: number|null,
+ *     regressionRate: number|null,
+ *     cleanRate: number|null,
+ *     materialized: number,
+ *     landed: number,
+ *     advanced: number
+ *   }>
+ * }>}
+ */
+export function chainTouchRows(cell) {
+  const meanOf = (arr) =>
+    arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+  return chainArms(cell).map(({ arm, runs }) => {
+    const byTouch = new Map();
+    for (const sc of runs) {
+      for (const t of sc?.chain?.touches ?? []) {
+        const idx = t?.touchIndex;
+        if (typeof idx !== 'number' || !Number.isFinite(idx)) continue;
+        if (!byTouch.has(idx)) {
+          byTouch.set(idx, {
+            n: 0,
+            outcomes: [],
+            costs: [],
+            regressionRates: [],
+            cleanRates: [],
+            materialized: 0,
+            landed: 0,
+            advanced: 0,
+          });
+        }
+        const agg = byTouch.get(idx);
+        agg.n += 1;
+        if (typeof t.outcome === 'number' && Number.isFinite(t.outcome)) {
+          agg.outcomes.push(t.outcome);
+        }
+        if (typeof t.cost === 'number' && Number.isFinite(t.cost)) {
+          agg.costs.push(t.cost);
+        }
+        const rr = t?.regression?.regressionRate;
+        if (typeof rr === 'number' && Number.isFinite(rr)) {
+          agg.regressionRates.push(rr);
+        }
+        const cr = t?.conventions?.cleanRate;
+        if (typeof cr === 'number' && Number.isFinite(cr)) {
+          agg.cleanRates.push(cr);
+        }
+        if (t.materialized === true) agg.materialized += 1;
+        if (t.landed === true) agg.landed += 1;
+        if (t.advanced === true) agg.advanced += 1;
+      }
+    }
+    const rows = [...byTouch.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([touchIndex, agg]) => ({
+        touchIndex,
+        n: agg.n,
+        outcome: meanOf(agg.outcomes),
+        cost: meanOf(agg.costs),
+        regressionRate: meanOf(agg.regressionRates),
+        cleanRate: meanOf(agg.cleanRates),
+        materialized: agg.materialized,
+        landed: agg.landed,
+        advanced: agg.advanced,
+      }));
+    return { arm, rows };
+  });
+}
+
+/**
+ * Per-arm landed-change summary rows for one chain cell (issue #124, PR-D):
+ * `chainArmSummary` (the differential-layer aggregation of PR-C's per-cell
+ * `chain.landedCount` / `chain.costPerLandedChange`) evaluated for every arm
+ * carrying chain records. Returns `[]` for a non-chain cell.
+ *
+ * @param {object} cell  A `groupCells` entry.
+ * @param {'iqr'|'ci'} method
+ * @returns {Array<{ arm: string, summary: object }>}
+ */
+export function chainSummaryRows(cell, method) {
+  return chainArms(cell)
+    .map(({ arm, runs }) => ({
+      arm,
+      summary: chainArmSummary(runs, { method }),
+    }))
+    .filter((r) => r.summary !== null);
+}
+
+/**
+ * Render the seeded-gap annotation lines for a chain cell's degradation-slope
+ * result: every touch whose baseline was seeded from an earlier tree than its
+ * immediate predecessor (skip-forward fired) is named — the design's
+ * "annotated on the result, not silently pooled" rule. Returns `''` when no
+ * arm carries a gap.
+ *
+ * @param {ReturnType<typeof degradationSlope>} slope
+ * @returns {string}
+ */
+export function renderSeededGapNote(slope) {
+  const parts = [];
+  for (const arm of ['mandrel', 'control']) {
+    for (const gap of slope.seededGaps[arm] ?? []) {
+      parts.push(
+        `${arm}${gap.runId ? ` \`${gap.runId}\`` : ''}: touch ${gap.touchIndex} seeded from touch ${gap.seededFromTouch}`,
+      );
+    }
+  }
+  if (parts.length === 0) return '';
+  return (
+    '> ⚠️ **Seeded-from gaps (skip-forward fired):** the touch baselines are ' +
+    'not strictly sequential in the runs below — the slope pools touch ' +
+    `indices that share a baseline. ${parts.join('; ')}.`
+  );
+}
+
+/**
+ * Render one scenario's TOUCH-CHAIN section (issue #124, PR-D; design §4/§5):
+ * the degradation-slope headline (mandrel slope − control slope under the
+ * real-delta rule, band over per-cell OLS slopes), the per-touch outcome /
+ * cost / regression-rate / convention line-data tables per arm, and the
+ * landed-count + cost-per-landed-change summary. Returns '' when the cell
+ * carries no chain data at all, so every non-chain cohort renders
+ * byte-identical to the pre-chain report.
+ *
+ * @param {object} cell  A `groupCells` entry.
+ * @param {'iqr'|'ci'} method
+ * @returns {string}
+ */
+export function renderChainSection(cell, method) {
+  const arms = chainArms(cell);
+  if (arms.length === 0) return '';
+  const slope = degradationSlope({
+    mandrelRuns: cell.mandrelRuns,
+    controlRuns: cell.controlRuns,
+    method,
+    scenario: cell.scenario,
+  });
+  const lines = [
+    '#### Touch chain (degradation slope — separate from the seven dimensions)',
+    '',
+    'Five chained change requests over the frozen seed: per arm, every cell',
+    'contributes ONE OLS slope of per-touch outcome (and cost) on touch index;',
+    'the band forms over the per-cell slopes and the headline is mandrel slope −',
+    'control slope under the real-delta rule. Mandrel’s thesis predicts a',
+    'FLATTER slope: outcome slope closer to 0 (quality degrades less) and a',
+    'smaller cost slope (each next change stays cheap). Null outcomes',
+    '(unmaterialized touches) are excluded from the quality regression but their',
+    'cost stays in the cost regression.',
+    '',
+    '| Metric | Mandrel | Control | Δ (M−C) | Noise floor | Verdict |',
+    '| --- | --- | --- | --- | --- | --- |',
+  ];
+  const slopeLabels = {
+    'chain.outcomeSlope':
+      'Outcome slope (quality per touch; flatter is better)',
+    'chain.costSlope': 'Cost slope (USD per touch; flatter is cheaper)',
+  };
+  for (const [metric, cmp] of Object.entries(slope.metrics)) {
+    lines.push(
+      `| ${slopeLabels[metric] ?? metric} | ${fmtBand(cmp.mandrelBand, 4)} | ${fmtBand(cmp.controlBand, 4)} | ${fmt(cmp.delta, 4)} | ${fmt(cmp.noiseFloor, 4)} | ${VERDICT_BADGE[cmp.verdict]} |`,
+    );
+  }
+  const gapNote = renderSeededGapNote(slope);
+  if (gapNote) lines.push('', gapNote);
+
+  for (const { arm, rows } of chainTouchRows(cell)) {
+    lines.push(
+      '',
+      `##### Per-touch line data — \`${arm}\``,
+      '',
+      '| Touch | n | Outcome | Cost (USD) | Regression rate | Convention cleanRate | Materialized | Landed | Advanced |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    );
+    for (const r of rows) {
+      lines.push(
+        `| ${r.touchIndex} | ${r.n} | ${fmt(r.outcome, 3)} | ${fmt(r.cost, 4)} | ${fmt(r.regressionRate, 3)} | ${fmt(r.cleanRate, 3)} | ${r.materialized} | ${r.landed} | ${r.advanced} |`,
+      );
+    }
+  }
+
+  const summaryRows = chainSummaryRows(cell, method);
+  if (summaryRows.length > 0) {
+    lines.push(
+      '',
+      '##### Landed changes & cost per landed change',
+      '',
+      'Σ every touch’s cost (landed or not) ÷ landed count, per cell, then mean +',
+      'band across the arm’s cells — unlanded spend stays in the numerator (the',
+      'autonomy penalty in dollars). `landed:true` counts strictly-landed mandrel',
+      'touches; the landed total also counts advanced control touches (landing is',
+      'not a concept on the control arm).',
+      '',
+      '| Arm | Cells | Touches | Landed (total) | landed:true | Cost/landed (mean) | Band |',
+      '| --- | --- | --- | --- | --- | --- | --- |',
+    );
+    for (const { arm, summary } of summaryRows) {
+      lines.push(
+        `| \`${arm}\` | ${summary.cells} | ${summary.touchesTotal} | ${summary.landedCountTotal} | ${summary.landedTrueTotal} | ${fmt(summary.costPerLandedChange.mean, 4)} | ${fmtBand(summary.costPerLandedChange.band, 4)} |`,
+      );
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
  * Build the per-scenario autonomy-guardrail summary (Epic #66, Story #77):
  * autonomy is a mandrel-arm pass/fail GUARDRAIL against a cohort threshold,
  * never a mandrel-vs-control delta (see `differential.js` `SCALAR_DIMENSIONS`
@@ -913,11 +1163,13 @@ function renderScenarioSection(cell, diff, method) {
   });
   const trapSection = renderTrapAxisSection(cell, method);
   const continuitySection = renderContinuitySection(cell, method);
+  const chainSection = renderChainSection(cell, method);
   return [
     ...header,
     ...body,
     ...(trapSection ? ['', trapSection] : []),
     ...(continuitySection ? ['', continuitySection] : []),
+    ...(chainSection ? ['', chainSection] : []),
   ].join('\n');
 }
 
@@ -1220,6 +1472,21 @@ export function buildReportModel({ scorecards, method = 'iqr' } = {}) {
       rows: dimensionRows(cell, corpus.perScenario[i], method),
       trap: trapAxisRows(cell, method),
       continuity: continuityRows(cell, method),
+      // Chain block (issue #124, PR-D) — strictly additive: null for every
+      // non-chain cell so pre-chain consumers of the model see no new data.
+      chain:
+        chainArms(cell).length > 0
+          ? {
+              slope: degradationSlope({
+                mandrelRuns: cell.mandrelRuns,
+                controlRuns: cell.controlRuns,
+                method,
+                scenario: cell.scenario,
+              }),
+              touchRows: chainTouchRows(cell),
+              summary: chainSummaryRows(cell, method),
+            }
+          : null,
     })),
     monotonicity: corpus.difficultyMonotonicity,
     overheadFloor: corpus.overheadFloor,

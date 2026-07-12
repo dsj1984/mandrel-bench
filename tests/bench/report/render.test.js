@@ -12,6 +12,7 @@
 //     improvements section.
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
 import {
@@ -19,6 +20,9 @@ import {
   autonomyGuardrailFindings,
   autonomyGuardrailRows,
   buildReportModel,
+  chainArms,
+  chainSummaryRows,
+  chainTouchRows,
   continuityRows,
   deriveCohort,
   dimensionRows,
@@ -26,6 +30,7 @@ import {
   phaseCostRows,
   recommendImprovements,
   renderAttributionSection,
+  renderChainSection,
   renderContinuitySection,
   renderFloorCalibrationNote,
   renderMismatchNote,
@@ -35,6 +40,8 @@ import {
   trapAxisRows,
 } from '../../../bench/report/render.js';
 import { scoreCorpus } from '../../../bench/score/differential.js';
+import { chainCard, chainTouch } from '../fixtures/chain-cards.js';
+import { nonChainCorpus } from './fixtures/nonchain-corpus.js';
 
 const MODEL = { id: 'claude-opus-4-8[1m]' };
 const ENV = { node: 'v24.16.0', os: 'darwin' };
@@ -1152,5 +1159,174 @@ describe('continuity delta — the second touch (Epic #86, Story #96)', () => {
   it('renderContinuitySection returns "" for a touch-1-only cell', () => {
     const cells = groupCells([card({ scenario: 'hello-world' })]);
     assert.equal(renderContinuitySection(cells[0], 'iqr'), '');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Touch-chain report sections (issue #124, PR-D)
+// ---------------------------------------------------------------------------
+
+describe('chain report sections — issue #124 PR-D', () => {
+  const chainCorpus = () => [
+    chainCard({ run: 1, outcomeSlope: -0.01, costSlope: 0.05 }),
+    chainCard({ run: 2, outcomeSlope: -0.02, costSlope: 0.06 }),
+    chainCard({ arm: 'control', run: 1, outcomeSlope: -0.08, costSlope: 0.3 }),
+    chainCard({ arm: 'control', run: 2, outcomeSlope: -0.09, costSlope: 0.35 }),
+  ];
+
+  it('chainArms returns [] for a non-chain cell (the no-op guard)', () => {
+    const [cell] = groupCells(healthyCorpus());
+    assert.deepEqual(chainArms(cell), []);
+  });
+
+  it('chainArms lists primary arms first, then sorted variant arms', () => {
+    const corpus = [
+      ...chainCorpus(),
+      chainCard({ arm: 'mandrel-story-routed', run: 1 }),
+      chainCard({ arm: 'control-claudemd', run: 1 }),
+    ];
+    const [cell] = groupCells(corpus);
+    assert.deepEqual(
+      chainArms(cell).map((a) => a.arm),
+      ['mandrel', 'control', 'control-claudemd', 'mandrel-story-routed'],
+    );
+  });
+
+  it('chainTouchRows aggregates per-arm per-touch means and counts', () => {
+    const [cell] = groupCells(chainCorpus());
+    const perArm = chainTouchRows(cell);
+    assert.deepEqual(
+      perArm.map((a) => a.arm),
+      ['mandrel', 'control'],
+    );
+    const mandrel = perArm[0].rows;
+    assert.equal(mandrel.length, 5);
+    assert.deepEqual(
+      mandrel.map((r) => r.touchIndex),
+      [1, 2, 3, 4, 5],
+    );
+    // Touch 2 outcome: mean of 0.95−0.01 and 0.95−0.02 = 0.935.
+    const t2 = mandrel[1];
+    assert.equal(t2.n, 2);
+    assert.ok(Math.abs(t2.outcome - 0.935) < 1e-9);
+    assert.ok(Math.abs(t2.cost - 1.055) < 1e-9);
+    assert.ok(Math.abs(t2.regressionRate - 0.02) < 1e-9);
+    assert.equal(t2.materialized, 2);
+    assert.equal(t2.landed, 2);
+    assert.equal(t2.advanced, 2);
+    // Control-arm touches carry landed:null ⇒ strict landed count 0.
+    assert.equal(perArm[1].rows[1].landed, 0);
+    // Touch 3 conventions cleanRate 0.5 (the fixture's layering violation).
+    assert.ok(Math.abs(mandrel[2].cleanRate - 0.5) < 1e-9);
+  });
+
+  it('chainTouchRows excludes null outcomes from the mean (never a fabricated 0)', () => {
+    const withNull = chainCard({
+      run: 1,
+      touches: [
+        chainTouch(1, { outcome: 0.9, cost: 1 }),
+        chainTouch(2, {
+          outcome: null,
+          cost: 2,
+          materialized: false,
+          advanced: false,
+          seededFromTouch: 1,
+        }),
+      ],
+    });
+    const [cell] = groupCells([withNull, chainCard({ run: 2 })]);
+    const mandrel = chainTouchRows(cell)[0].rows;
+    // Touch 2: one measured outcome (0.93 from the clean run) — the null run
+    // contributes cost but not outcome.
+    assert.equal(mandrel[1].n, 2);
+    assert.ok(Math.abs(mandrel[1].outcome - 0.93) < 1e-9);
+    assert.ok(Math.abs(mandrel[1].cost - (2 + 1.05) / 2) < 1e-9);
+    assert.equal(mandrel[1].materialized, 1);
+  });
+
+  it('chainSummaryRows carries the per-arm chainArmSummary aggregation', () => {
+    const [cell] = groupCells(chainCorpus());
+    const rows = chainSummaryRows(cell, 'iqr');
+    assert.deepEqual(
+      rows.map((r) => r.arm),
+      ['mandrel', 'control'],
+    );
+    assert.equal(rows[0].summary.cells, 2);
+    assert.equal(rows[0].summary.landedCountTotal, 10);
+    assert.equal(rows[0].summary.landedTrueTotal, 10);
+    assert.ok(Math.abs(rows[0].summary.costPerLandedChange.mean - 1.2) < 1e-9);
+  });
+
+  it('renderChainSection renders the slope headline, per-touch tables and summary', () => {
+    const [cell] = groupCells(chainCorpus());
+    const section = renderChainSection(cell, 'iqr');
+    assert.match(section, /#### Touch chain \(degradation slope/);
+    assert.match(
+      section,
+      /Outcome slope \(quality per touch; flatter is better\)/,
+    );
+    assert.match(section, /Cost slope \(USD per touch; flatter is cheaper\)/);
+    // The fixture's clean separation makes both deltas real.
+    assert.match(section, /✅ real/);
+    assert.match(section, /##### Per-touch line data — `mandrel`/);
+    assert.match(section, /##### Per-touch line data — `control`/);
+    assert.match(section, /Regression rate \| Convention cleanRate/);
+    assert.match(section, /##### Landed changes & cost per landed change/);
+    assert.match(section, /\| `mandrel` \| 2 \| 10 \| 10 \| 10 \| 1\.2 \|/);
+    // No seeded gaps in the clean fixture chain.
+    assert.doesNotMatch(section, /Seeded-from gaps/);
+  });
+
+  it('renderChainSection annotates seeded-from gaps', () => {
+    const gapped = chainCard({
+      run: 1,
+      touches: [
+        chainTouch(1, { advanced: false }),
+        chainTouch(2, { seededFromTouch: 0 }),
+        chainTouch(3),
+      ],
+    });
+    const [cell] = groupCells([gapped, chainCard({ arm: 'control', run: 1 })]);
+    const section = renderChainSection(cell, 'iqr');
+    assert.match(section, /Seeded-from gaps \(skip-forward fired\)/);
+    assert.match(
+      section,
+      /mandrel `brownfield-longitudinal-mandrel-r1`: touch 2 seeded from touch 0/,
+    );
+  });
+
+  it('renderChainSection returns "" for a non-chain cell', () => {
+    const [cell] = groupCells(healthyCorpus());
+    assert.equal(renderChainSection(cell, 'iqr'), '');
+  });
+
+  it('renderReport renders the chain section for a chain corpus', () => {
+    const report = renderReport({ scorecards: chainCorpus() });
+    assert.match(report, /### Scenario: `brownfield-longitudinal`/);
+    assert.match(report, /#### Touch chain \(degradation slope/);
+  });
+
+  it('buildReportModel exposes the chain block only for chain cells', () => {
+    const model = buildReportModel({ scorecards: chainCorpus() });
+    const chain = model.scenarios[0].chain;
+    assert.ok(chain, 'chain block missing for the chain scenario');
+    assert.equal(chain.slope.present, true);
+    assert.equal(chain.slope.metrics['chain.outcomeSlope'].verdict, 'real');
+    assert.equal(chain.touchRows.length, 2);
+    assert.equal(chain.summary.length, 2);
+
+    const nonChain = buildReportModel({ scorecards: healthyCorpus() });
+    for (const s of nonChain.scenarios) {
+      assert.equal(s.chain, null);
+    }
+  });
+
+  it('renderReport is BYTE-IDENTICAL to the pre-chain renderer for a non-chain corpus (snapshot guard)', () => {
+    const expected = readFileSync(
+      new URL('./fixtures/nonchain-report.md', import.meta.url),
+      'utf8',
+    );
+    const actual = renderReport({ scorecards: nonChainCorpus() });
+    assert.equal(actual, expected);
   });
 });

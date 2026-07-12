@@ -308,6 +308,303 @@ export function computeContinuityDelta({
 }
 
 /**
+ * Ordinary-least-squares slope of `y` on `x` over a set of points — the
+ * degradation-slope primitive (issue #124, design §4). Returns `null` when
+ * fewer than two points are supplied or every `x` is identical (the slope is
+ * undefined, never a fabricated 0).
+ *
+ * @param {Array<{ x: number, y: number }>} points
+ * @returns {number|null}
+ */
+export function olsSlope(points) {
+  if (!Array.isArray(points)) {
+    throw new TypeError('olsSlope: points must be an array');
+  }
+  const pts = points.filter(
+    (p) =>
+      typeof p?.x === 'number' &&
+      Number.isFinite(p.x) &&
+      typeof p?.y === 'number' &&
+      Number.isFinite(p.y),
+  );
+  if (pts.length < 2) return null;
+  const mx = pts.reduce((a, p) => a + p.x, 0) / pts.length;
+  const my = pts.reduce((a, p) => a + p.y, 0) / pts.length;
+  let sxx = 0;
+  let sxy = 0;
+  for (const p of pts) {
+    sxx += (p.x - mx) * (p.x - mx);
+    sxy += (p.x - mx) * (p.y - my);
+  }
+  if (sxx === 0) return null;
+  return sxy / sxx;
+}
+
+/**
+ * Per-cell chain slopes + seeded-gap annotations for ONE chain scorecard
+ * (issue #124, design §4). Returns `null` when the record carries no `chain`
+ * block (a non-chain scorecard), so callers can filter chain cells cheaply.
+ *
+ * Exclusion rules (design §4/§5):
+ *   - QUALITY regression (`outcomeSlope`): touches whose `outcome` is null
+ *     (unmaterialized delivery / no suite verdict) are EXCLUDED — an
+ *     unmeasured touch is never scored a fabricated 0.
+ *   - COST regression (`costSlope`): every touch with a finite `cost` is
+ *     INCLUDED, landed or not — the spend is real even when the change never
+ *     materialized (the autonomy penalty in dollars).
+ *   - `seededFromTouch` gaps (a touch seeded from an earlier tree than its
+ *     immediate predecessor, i.e. skip-forward fired) are ANNOTATED, never
+ *     silently pooled: each gap is reported so a reader knows some touch
+ *     indices share a baseline.
+ *
+ * @param {object} sc  One scorecard (potentially carrying `chain.touches[]`).
+ * @returns {{
+ *   outcomeSlope: number|null,
+ *   costSlope: number|null,
+ *   outcomePoints: number,
+ *   costPoints: number,
+ *   seededGaps: Array<{ touchIndex: number, seededFromTouch: number }>
+ * }|null}
+ */
+export function cellChainSlopes(sc) {
+  const touches = sc?.chain?.touches;
+  if (!Array.isArray(touches)) return null;
+  const outcomePts = [];
+  const costPts = [];
+  const seededGaps = [];
+  for (const t of touches) {
+    const idx = t?.touchIndex;
+    if (typeof idx !== 'number' || !Number.isFinite(idx)) continue;
+    if (typeof t.outcome === 'number' && Number.isFinite(t.outcome)) {
+      outcomePts.push({ x: idx, y: t.outcome });
+    }
+    if (typeof t.cost === 'number' && Number.isFinite(t.cost)) {
+      costPts.push({ x: idx, y: t.cost });
+    }
+    if (
+      typeof t.seededFromTouch === 'number' &&
+      Number.isFinite(t.seededFromTouch) &&
+      t.seededFromTouch !== idx - 1
+    ) {
+      seededGaps.push({ touchIndex: idx, seededFromTouch: t.seededFromTouch });
+    }
+  }
+  return {
+    outcomeSlope: olsSlope(outcomePts),
+    costSlope: olsSlope(costPts),
+    outcomePoints: outcomePts.length,
+    costPoints: costPts.length,
+    seededGaps,
+  };
+}
+
+/**
+ * Pool one arm's chain cells into its per-arm slope statistics: the per-cell
+ * OLS slopes (each cell contributes ONE slope per metric — the cell-level
+ * resampling unit the noise-band machinery expects), the pooled slope over
+ * every per-touch point across all cells (the arm's headline point estimate),
+ * and the seeded-gap annotations keyed by run id.
+ *
+ * @param {Array<object>} runs  One arm's scorecards.
+ * @returns {{
+ *   cells: number,
+ *   outcomeSlopes: number[],
+ *   costSlopes: number[],
+ *   pooledOutcomeSlope: number|null,
+ *   pooledCostSlope: number|null,
+ *   seededGaps: Array<{ runId: string|null, touchIndex: number, seededFromTouch: number }>
+ * }}
+ */
+function armChainSlopes(runs) {
+  const outcomeSlopes = [];
+  const costSlopes = [];
+  const pooledOutcome = [];
+  const pooledCost = [];
+  const seededGaps = [];
+  let cells = 0;
+  for (const sc of runs ?? []) {
+    const cell = cellChainSlopes(sc);
+    if (cell === null) continue;
+    cells += 1;
+    if (cell.outcomeSlope !== null) outcomeSlopes.push(cell.outcomeSlope);
+    if (cell.costSlope !== null) costSlopes.push(cell.costSlope);
+    for (const t of sc.chain.touches) {
+      const idx = t?.touchIndex;
+      if (typeof idx !== 'number' || !Number.isFinite(idx)) continue;
+      if (typeof t.outcome === 'number' && Number.isFinite(t.outcome)) {
+        pooledOutcome.push({ x: idx, y: t.outcome });
+      }
+      if (typeof t.cost === 'number' && Number.isFinite(t.cost)) {
+        pooledCost.push({ x: idx, y: t.cost });
+      }
+    }
+    for (const gap of cell.seededGaps) {
+      seededGaps.push({
+        runId: typeof sc?.runId === 'string' ? sc.runId : null,
+        ...gap,
+      });
+    }
+  }
+  return {
+    cells,
+    outcomeSlopes,
+    costSlopes,
+    pooledOutcomeSlope: olsSlope(pooledOutcome),
+    pooledCostSlope: olsSlope(pooledCost),
+    seededGaps,
+  };
+}
+
+/**
+ * Compute the DEGRADATION SLOPE differential for ONE chain scenario cell
+ * (issue #124, design §4) — mandrel's thesis predicts a FLATTER slope: quality
+ * degrades less (outcome slope less negative) and cost grows less (cost slope
+ * less positive) across the touch chain than under the bare control arm.
+ *
+ * A cross-run derived metric like the continuity delta: per arm, every chain
+ * cell contributes ONE per-cell OLS slope per metric (outcome-on-touchIndex,
+ * cost-on-touchIndex), the arm's noise-band forms over those per-cell slopes
+ * (the existing cell-level resampling approach — `noiseBand` over per-cell
+ * values), and the headline read is mandrel slope − control slope under the
+ * binding real-delta rule (`compareBands`, identical to every other
+ * differential verdict in this module).
+ *
+ * Exclusion rules are per-cell (see {@link cellChainSlopes}): null outcomes
+ * excluded from the quality regression, every finite cost included in the
+ * cost regression, and `seededFromTouch` gaps annotated on the result —
+ * never silently pooled.
+ *
+ * `present` is false when NEITHER arm carries any `chain` block for the cell
+ * (a non-chain scenario) — the caller renders no chain section for such a
+ * cell rather than an all-incomparable table.
+ *
+ * @param {object} args
+ * @param {Array<object>} args.mandrelRuns  Scorecards for the Mandrel arm.
+ * @param {Array<object>} args.controlRuns  Scorecards for the control arm.
+ * @param {'iqr'|'ci'} [args.method='iqr']
+ * @param {string} [args.scenario]
+ * @returns {{
+ *   scenario: string|undefined,
+ *   method: 'iqr'|'ci',
+ *   present: boolean,
+ *   n: { mandrel: number, control: number },
+ *   metrics: Record<'chain.outcomeSlope'|'chain.costSlope', object>,
+ *   perArm: {
+ *     mandrel: ReturnType<typeof armChainSlopes>,
+ *     control: ReturnType<typeof armChainSlopes>
+ *   },
+ *   seededGaps: { mandrel: Array<object>, control: Array<object> }
+ * }}
+ */
+export function degradationSlope({
+  mandrelRuns,
+  controlRuns,
+  method = 'iqr',
+  scenario,
+}) {
+  if (!Array.isArray(mandrelRuns) || !Array.isArray(controlRuns)) {
+    throw new TypeError(
+      'degradationSlope: mandrelRuns and controlRuns must be arrays',
+    );
+  }
+  const mandrel = armChainSlopes(mandrelRuns);
+  const control = armChainSlopes(controlRuns);
+  const metrics = {
+    'chain.outcomeSlope': compareBands({
+      name: 'chain.outcomeSlope',
+      mandrelBand: bandOrNull(mandrel.outcomeSlopes, method),
+      controlBand: bandOrNull(control.outcomeSlopes, method),
+    }),
+    'chain.costSlope': compareBands({
+      name: 'chain.costSlope',
+      mandrelBand: bandOrNull(mandrel.costSlopes, method),
+      controlBand: bandOrNull(control.costSlopes, method),
+    }),
+  };
+  return {
+    scenario,
+    method,
+    present: mandrel.cells > 0 || control.cells > 0,
+    n: { mandrel: mandrel.cells, control: control.cells },
+    metrics,
+    perArm: { mandrel, control },
+    seededGaps: {
+      mandrel: mandrel.seededGaps,
+      control: control.seededGaps,
+    },
+  };
+}
+
+/**
+ * Per-arm cost-per-landed-change aggregation for ONE chain scenario cell
+ * (issue #124, design §4/§5). PR-C computes the per-cell
+ * `chain.costPerLandedChange` at scorecard build (Σ every touch's cost —
+ * landed or not — ÷ landedCount; landed strictly means `landed: true` on
+ * mandrel arms, with advanced control touches counting because landing is not
+ * a concept there); this aggregates ACROSS the arm's cells: mean + noise-band
+ * over the per-cell values, alongside the landed and strict-landed counts.
+ * Cells whose `costPerLandedChange` is null (no touch landed) are excluded
+ * from the mean/band but surface via `cellsWithNoLanding`.
+ *
+ * Returns `null` when the arm carries no chain records at all.
+ *
+ * @param {Array<object>} runs  One arm's scorecards.
+ * @param {object} [options]
+ * @param {'iqr'|'ci'} [options.method='iqr']
+ * @returns {{
+ *   cells: number,
+ *   touchesTotal: number,
+ *   landedCountTotal: number,
+ *   landedCountMean: number,
+ *   landedTrueTotal: number,
+ *   cellsWithNoLanding: number,
+ *   costPerLandedChange: { n: number, mean: number|null, band: object|null }
+ * }|null}
+ */
+export function chainArmSummary(runs, { method = 'iqr' } = {}) {
+  if (!Array.isArray(runs)) {
+    throw new TypeError('chainArmSummary: runs must be an array');
+  }
+  const chainRuns = runs.filter((sc) => Array.isArray(sc?.chain?.touches));
+  if (chainRuns.length === 0) return null;
+  let touchesTotal = 0;
+  let landedCountTotal = 0;
+  let landedTrueTotal = 0;
+  let cellsWithNoLanding = 0;
+  const cplcValues = [];
+  for (const sc of chainRuns) {
+    touchesTotal += sc.chain.touches.length;
+    const lc = sc.chain.landedCount;
+    if (typeof lc === 'number' && Number.isFinite(lc)) landedCountTotal += lc;
+    landedTrueTotal += sc.chain.touches.filter(
+      (t) => t?.landed === true,
+    ).length;
+    const cplc = sc.chain.costPerLandedChange;
+    if (typeof cplc === 'number' && Number.isFinite(cplc)) {
+      cplcValues.push(cplc);
+    } else {
+      cellsWithNoLanding += 1;
+    }
+  }
+  return {
+    cells: chainRuns.length,
+    touchesTotal,
+    landedCountTotal,
+    landedCountMean: landedCountTotal / chainRuns.length,
+    landedTrueTotal,
+    cellsWithNoLanding,
+    costPerLandedChange: {
+      n: cplcValues.length,
+      mean:
+        cplcValues.length > 0
+          ? cplcValues.reduce((a, b) => a + b, 0) / cplcValues.length
+          : null,
+      band: bandOrNull(cplcValues, method),
+    },
+  };
+}
+
+/**
  * Center of a band over the Mandrel arm's per-run values for one metric in one
  * scenario cell — the building block of the cross-scenario metrics. Returns
  * `null` when the cell has no finite values.

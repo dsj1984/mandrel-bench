@@ -12,7 +12,12 @@
   // must never force churn inside them. Harness-side oracle CODE next to
   // them (suite-evolution.js, conventions/*.js) stays linted — fixing a
   // detector bug is not a change to measured instrument content.
+  // The report/dashboard byte-identity snapshot fixtures
+  // (tests/bench/report/fixtures/) are frozen machine-emitted renderer
+  // output (issue #124, PR-D) — regenerated deliberately, never hand-edited,
+  // so lint churn must never touch them.
   "ignores": [
+    "tests/bench/report/fixtures/**",
     "results/**/reports/**",
     "bench/scenarios/*/sandbox/**",
     "bench/scenarios/*/frozen-suite/**",
