@@ -1613,6 +1613,7 @@ export async function runOneRun(opts, deps = {}) {
     resultsDir,
     ephemeralRoot,
     timeoutMs = DEFAULT_SESSION_TIMEOUT_MS,
+    skipTouch2 = false, // BENCH_SKIP_TOUCH2 diagnostic (touch-1-only runs)
   } = opts;
 
   const baselineRef = sandbox.baselineRef ?? 'bench-baseline';
@@ -2131,8 +2132,25 @@ export async function runOneRun(opts, deps = {}) {
     // Skipped for a scenario with no `changeRequest` (e.g. hello-world). Best-
     // effort: a touch-2 failure leaves the block off the scorecard rather than
     // aborting the touch-1 record.
+    //
+    // BENCH_SKIP_TOUCH2 (diagnostic): an explicit operator opt-out that skips
+    // the change-request touch for THIS invocation — for cheap touch-1-only
+    // verification runs (e.g. the Gate G0 delivery-materialization repro,
+    // docs/07-12-2026-analysis.md Phase 1 progress log) where touch-2 would
+    // double the spend without informing the question. The scorecard simply
+    // omits the `touch2` block, exactly as for a scenario with no
+    // `changeRequest`; continuity for the cell is unmeasured, not failed.
     let touch2 = null;
-    if (scenario?.changeRequest && typeof touch2Evaluate === 'function') {
+    if (skipTouch2 && scenario?.changeRequest) {
+      logger?.info?.(
+        '[run] touch2: skipped via BENCH_SKIP_TOUCH2 (diagnostic touch-1-only run) — continuity unmeasured for this cell.',
+      );
+    }
+    if (
+      !skipTouch2 &&
+      scenario?.changeRequest &&
+      typeof touch2Evaluate === 'function'
+    ) {
       try {
         touch2 = await runTouch2(
           {
@@ -2391,6 +2409,7 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
             sandbox,
             resultsDir,
             ephemeralRoot,
+            skipTouch2: opts.skipTouch2 === true,
           },
           deps,
         );
@@ -2703,6 +2722,7 @@ async function runCell({ scenarioId, arm, ctx, deps }) {
     costTotal,
     maxRuns,
     maxCostUsd,
+    skipTouch2,
   } = ctx;
 
   const nonce = randomBytes(4).toString('hex');
@@ -2753,6 +2773,7 @@ async function runCell({ scenarioId, arm, ctx, deps }) {
       ...(maxCostUsd != null
         ? { maxCostUsd: Math.max(0, maxCostUsd - costTotal) }
         : {}),
+      ...(skipTouch2 === true ? { skipTouch2: true } : {}),
     };
 
     const cellResult = await runFirstBenchmarkFn(cellOpts, {
@@ -2812,6 +2833,10 @@ function reportRunResult(result) {
  *   BENCH_MAX_RUNS (run-count ceiling for this invocation),
  *   BENCH_MAX_COST_USD (USD cost ceiling for this invocation),
  *   BENCH_CHECKPOINT (override the resume-checkpoint path).
+ * Diagnostics:
+ *   BENCH_SKIP_TOUCH2 ('1'/'true' — skip the frozen change-request touch for
+ *     this invocation; touch-1-only verification runs. The scorecard omits
+ *     the `touch2` block; continuity is unmeasured, not failed).
  *
  * @param {Record<string, string|undefined>} [env=process.env]  Injectable for
  *   tests — exercises the fail-fast / deprecation-warning contract without
@@ -2856,6 +2881,9 @@ export async function main(env = process.env, deps = {}) {
   const n = parseOptionalNumericEnv(env.BENCH_N);
   const maxRuns = parseOptionalNumericEnv(env.BENCH_MAX_RUNS) ?? null;
   const maxCostUsd = parseOptionalNumericEnv(env.BENCH_MAX_COST_USD) ?? null;
+  // BENCH_SKIP_TOUCH2 (diagnostic): touch-1-only invocation — see runOneRun.
+  const skipTouch2 =
+    env.BENCH_SKIP_TOUCH2 === '1' || env.BENCH_SKIP_TOUCH2 === 'true';
   const resultsDir = path.join(repoRoot(), 'results');
   const checkpointPath =
     env.BENCH_CHECKPOINT ?? path.join(resultsDir, CHECKPOINT_FILENAME);
@@ -2909,6 +2937,7 @@ export async function main(env = process.env, deps = {}) {
           costTotal,
           maxRuns,
           maxCostUsd,
+          skipTouch2,
         },
         deps: {
           logger,
