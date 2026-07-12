@@ -39,9 +39,13 @@
 // given corpus. The browser-side JS computes layout at view time, but the
 // emitted string is fixed for a fixed corpus.
 
+import { degradationSlope } from '../score/differential.js';
 import { cohortSegments } from './cohort-path.js';
 import {
   autonomyGuardrailRows,
+  chainArms,
+  chainSummaryRows,
+  chainTouchRows,
   continuityRows,
   formatTrapStat,
   groupCells,
@@ -309,7 +313,34 @@ export function buildDashboardModel(scorecards) {
       rows: continuityRows(cell, 'iqr'),
     }))
     .filter((s) => s.rows.length > 0);
-  return { rows, metrics, guardrail, trapAxis, phaseCost, continuity };
+  // Touch-chain panel (issue #124, PR-D): degradation slope + per-touch line
+  // data + landed-change summary per chain scenario, reusing render.js's
+  // chain helpers so the dashboard and the Markdown report share one
+  // interpretation. The `chain` key is ONLY present when a chain scenario
+  // exists in the corpus, so a non-chain cohort's inlined JSON — and thus the
+  // whole dashboard — stays byte-identical to the pre-chain renderer.
+  const chain = cells
+    .filter((cell) => chainArms(cell).length > 0)
+    .map((cell) => ({
+      scenario: cell.scenario,
+      slope: degradationSlope({
+        mandrelRuns: cell.mandrelRuns,
+        controlRuns: cell.controlRuns,
+        method: 'iqr',
+        scenario: cell.scenario,
+      }),
+      touchRows: chainTouchRows(cell),
+      summary: chainSummaryRows(cell, 'iqr'),
+    }));
+  return {
+    rows,
+    metrics,
+    guardrail,
+    trapAxis,
+    phaseCost,
+    continuity,
+    ...(chain.length > 0 ? { chain } : {}),
+  };
 }
 
 /**
@@ -1026,6 +1057,183 @@ ${continuity?.length ? scenarioBlocks : '<div class="empty">No scenario in this 
 </section>`;
 }
 
+/** Per-arm stroke colors for the chain line charts. Primary arms use the
+ * dashboard's CSS variables; variant arms draw from a fixed fallback palette
+ * (deterministic by declaration order). */
+const CHAIN_ARM_COLORS = Object.freeze({
+  mandrel: 'var(--mandrel)',
+  control: 'var(--control)',
+});
+const CHAIN_EXTRA_ARM_PALETTE = Object.freeze([
+  '#d2a8ff',
+  '#7ee787',
+  '#ffa657',
+]);
+
+/**
+ * Render one small server-side SVG line chart of a per-touch metric (issue
+ * #124, PR-D): x = touch index, y = the arm's per-touch mean, one polyline per
+ * arm. Null means (unmeasured touches) are skipped, so a line simply omits
+ * that touch rather than plotting a fabricated 0. Deterministic for a given
+ * input; no client JS involved.
+ *
+ * @param {object} args
+ * @param {Array<{ arm: string, points: Array<{ x: number, y: number }> }>} args.series
+ * @param {string} args.title  Accessible title text for the chart.
+ * @param {number|null} [args.yMax=null]  Fixed y-axis max (e.g. 1 for
+ *   outcome); null derives it from the data.
+ * @returns {string}
+ */
+function chainLineChartSvg({ series, title, yMax = null }) {
+  const W = 360;
+  const H = 170;
+  const PAD = { top: 18, right: 12, bottom: 26, left: 40 };
+  const xs = series.flatMap((s) => s.points.map((p) => p.x));
+  const ys = series.flatMap((s) => s.points.map((p) => p.y));
+  if (xs.length === 0) {
+    return `<svg class="chain-chart" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(title)}"><text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="var(--muted)" font-size="12">${esc(title)}: no data</text></svg>`;
+  }
+  const xMin = Math.min(...xs);
+  const xMax = Math.max(...xs);
+  const yTop = yMax ?? Math.max(...ys, 0);
+  const yDomain = yTop === 0 ? 1 : yTop;
+  const px = (x) =>
+    xMax === xMin
+      ? PAD.left + (W - PAD.left - PAD.right) / 2
+      : PAD.left + ((x - xMin) / (xMax - xMin)) * (W - PAD.left - PAD.right);
+  const py = (y) => H - PAD.bottom - (y / yDomain) * (H - PAD.top - PAD.bottom);
+  const fmtTick = (v) => String(Number(v.toFixed(2)));
+  const parts = [
+    `<svg class="chain-chart" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(title)}">`,
+    `<text x="${PAD.left}" y="12" fill="var(--muted)" font-size="11">${esc(title)}</text>`,
+    `<line x1="${PAD.left}" y1="${py(0)}" x2="${W - PAD.right}" y2="${py(0)}" stroke="var(--border)"/>`,
+    `<line x1="${PAD.left}" y1="${PAD.top}" x2="${PAD.left}" y2="${py(0)}" stroke="var(--border)"/>`,
+    `<text x="${PAD.left - 4}" y="${py(0) + 4}" text-anchor="end" fill="var(--muted)" font-size="10">0</text>`,
+    `<text x="${PAD.left - 4}" y="${py(yDomain) + 4}" text-anchor="end" fill="var(--muted)" font-size="10">${fmtTick(yDomain)}</text>`,
+  ];
+  for (let x = Math.ceil(xMin); x <= Math.floor(xMax); x += 1) {
+    parts.push(
+      `<text x="${px(x)}" y="${H - 8}" text-anchor="middle" fill="var(--muted)" font-size="10">${x}</text>`,
+    );
+  }
+  let extraIdx = 0;
+  for (const s of series) {
+    const color =
+      CHAIN_ARM_COLORS[s.arm] ??
+      CHAIN_EXTRA_ARM_PALETTE[extraIdx++ % CHAIN_EXTRA_ARM_PALETTE.length];
+    const pts = s.points.map((p) => `${px(p.x)},${py(p.y)}`).join(' ');
+    if (s.points.length > 1) {
+      parts.push(
+        `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2"/>`,
+      );
+    }
+    for (const p of s.points) {
+      parts.push(
+        `<circle cx="${px(p.x)}" cy="${py(p.y)}" r="2.5" fill="${color}"><title>${esc(s.arm)} touch ${p.x}: ${p.y.toFixed(4)}</title></circle>`,
+      );
+    }
+  }
+  parts.push('</svg>');
+  return parts.join('');
+}
+
+/**
+ * Server-rendered, static "Touch chain" panel (issue #124, PR-D; design
+ * §4/§5): the degradation-slope headline (band over per-cell OLS slopes,
+ * mandrel − control under the real-delta rule), per-touch outcome/cost LINE
+ * CHARTS per arm, the per-touch regression-rate + convention tables, and the
+ * landed-count + cost-per-landed-change summary. Reuses `render.js`'s chain
+ * helpers so the dashboard and the Markdown report share one interpretation.
+ * Returns '' when the corpus carries no chain scenario, so non-chain
+ * dashboards render byte-identical to the pre-chain renderer.
+ *
+ * @param {Array<{ scenario: string, slope: object, touchRows: Array<object>, summary: Array<object> }>|undefined} chain
+ * @returns {string}
+ */
+function renderChainSectionHtml(chain) {
+  if (!Array.isArray(chain) || chain.length === 0) return '';
+  const num = (v, digits = 4) =>
+    typeof v === 'number' && Number.isFinite(v)
+      ? Number(v.toFixed(digits))
+      : '—';
+  const band = (b, digits = 4) =>
+    b
+      ? `${num(b.center, digits)} [${num(b.low, digits)}, ${num(b.high, digits)}]`
+      : '—';
+  const slopeLabels = {
+    'chain.outcomeSlope':
+      'Outcome slope (quality per touch; flatter is better)',
+    'chain.costSlope': 'Cost slope (USD per touch; flatter is cheaper)',
+  };
+  const blocks = chain
+    .map((s) => {
+      const slopeRows = Object.entries(s.slope.metrics)
+        .map(
+          ([metric, cmp]) =>
+            `<tr><td>${esc(slopeLabels[metric] ?? metric)}</td><td>${band(cmp.mandrelBand)}</td><td>${band(cmp.controlBand)}</td><td>${num(cmp.delta)}</td><td>${num(cmp.noiseFloor)}</td><td>${esc(cmp.verdict)}</td></tr>`,
+        )
+        .join('');
+      const gaps = [
+        ...s.slope.seededGaps.mandrel.map((g) => ({ arm: 'mandrel', ...g })),
+        ...s.slope.seededGaps.control.map((g) => ({ arm: 'control', ...g })),
+      ];
+      const gapNote = gaps.length
+        ? `<div class="sub">⚠️ Seeded-from gaps (skip-forward fired): ${esc(
+            gaps
+              .map(
+                (g) =>
+                  `${g.arm}${g.runId ? ` ${g.runId}` : ''} touch ${g.touchIndex} seeded from touch ${g.seededFromTouch}`,
+              )
+              .join('; '),
+          )}.</div>`
+        : '';
+      const outcomeSeries = s.touchRows.map((a) => ({
+        arm: a.arm,
+        points: a.rows
+          .filter((r) => typeof r.outcome === 'number')
+          .map((r) => ({ x: r.touchIndex, y: r.outcome })),
+      }));
+      const costSeries = s.touchRows.map((a) => ({
+        arm: a.arm,
+        points: a.rows
+          .filter((r) => typeof r.cost === 'number')
+          .map((r) => ({ x: r.touchIndex, y: r.cost })),
+      }));
+      const armTables = s.touchRows
+        .map((a) => {
+          const rows = a.rows
+            .map(
+              (r) =>
+                `<tr><td>${r.touchIndex}</td><td>${r.n}</td><td>${num(r.outcome, 3)}</td><td>${num(r.cost, 4)}</td><td>${num(r.regressionRate, 3)}</td><td>${num(r.cleanRate, 3)}</td><td>${r.materialized}</td><td>${r.landed}</td><td>${r.advanced}</td></tr>`,
+            )
+            .join('');
+          return `<h4>Per-touch line data — ${esc(a.arm)}</h4><table><thead><tr><th>Touch</th><th>n</th><th>Outcome</th><th>Cost (USD)</th><th>Regression rate</th><th>Convention cleanRate</th><th>Materialized</th><th>Landed</th><th>Advanced</th></tr></thead><tbody>${rows}</tbody></table>`;
+        })
+        .join('');
+      const summaryRows = s.summary
+        .map(
+          (r) =>
+            `<tr><td>${esc(r.arm)}</td><td>${r.summary.cells}</td><td>${r.summary.touchesTotal}</td><td>${r.summary.landedCountTotal}</td><td>${r.summary.landedTrueTotal}</td><td>${num(r.summary.costPerLandedChange.mean)}</td><td>${band(r.summary.costPerLandedChange.band)}</td></tr>`,
+        )
+        .join('');
+      return `<h3>${esc(s.scenario)}</h3>
+<table><thead><tr><th>Metric</th><th>Mandrel</th><th>Control</th><th>&Delta; (M&minus;C)</th><th>Noise floor</th><th>Verdict</th></tr></thead><tbody>${slopeRows}</tbody></table>
+${gapNote}
+<div class="chain-charts" style="display:flex;gap:12px;flex-wrap:wrap">${chainLineChartSvg({ series: outcomeSeries, title: 'Outcome per touch (mean per arm)', yMax: 1 })}${chainLineChartSvg({ series: costSeries, title: 'Cost (USD) per touch (mean per arm)' })}</div>
+${armTables}
+<h4>Landed changes &amp; cost per landed change</h4>
+<table><thead><tr><th>Arm</th><th>Cells</th><th>Touches</th><th>Landed (total)</th><th>landed:true</th><th>Cost/landed (mean)</th><th>Band</th></tr></thead><tbody>${summaryRows}</tbody></table>`;
+    })
+    .join('');
+  return `<section>
+<h2>Touch chain (degradation slope)</h2>
+<div class="sub">Chained change requests over the frozen seed (issue #124): per arm, every cell contributes ONE OLS slope of per-touch outcome (and cost) on touch index; the band forms over the per-cell slopes and the headline is mandrel slope &minus; control slope under the real-delta rule. Mandrel's thesis predicts a FLATTER slope. Null outcomes (unmaterialized touches) are excluded from the quality regression but their cost stays in the cost regression; seeded-from gaps are annotated, never silently pooled.</div>
+<div class="panel chain">
+${blocks}
+</div>
+</section>`;
+}
+
 /**
  * Render the self-contained dashboard HTML for the aggregated scorecard corpus.
  *
@@ -1112,7 +1320,7 @@ export function renderDashboard({ scorecards } = {}) {
 ${renderGuardrailSection(model.guardrail)}
 ${renderPhaseCostSectionHtml(model.phaseCost)}
 ${renderTrapAxisSectionHtml(model.trapAxis)}
-${renderContinuitySectionHtml(model.continuity)}
+${renderContinuitySectionHtml(model.continuity)}${model.chain ? `\n${renderChainSectionHtml(model.chain)}` : ''}
 </main>
 <div class="modal-backdrop" id="modal-backdrop">
 <div class="modal" id="modal" role="dialog" aria-modal="true"><div id="modal-body"></div></div>

@@ -1,0 +1,637 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mandrel Self-Benchmark — Results Dashboard</title>
+<style>
+:root {
+  --bg: #0f1115; --panel: #181b22; --border: #2a2f3a; --fg: #e6e8ec;
+  --muted: #9aa3b2; --accent: #6ea8fe; --mandrel: #6ea8fe; --control: #f0883e;
+  --good: #56d364; --bad: #f85149;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  background: var(--bg); color: var(--fg);
+}
+header { padding: 20px 24px; border-bottom: 1px solid var(--border); }
+h1 { margin: 0 0 4px; font-size: 18px; }
+.sub { color: var(--muted); font-size: 13px; }
+main { padding: 20px 24px; }
+section { margin-bottom: 28px; }
+h2 { font-size: 15px; margin: 0 0 12px; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; align-items: center; }
+.controls label { color: var(--muted); font-size: 12px; }
+select, input[type=text] {
+  background: var(--panel); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 5px 8px; font: inherit;
+}
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+.trap-axis h3 { font-size: 13px; margin: 16px 0 6px; font-weight: 600; }
+.trap-axis h3:first-child { margin-top: 0; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th { cursor: pointer; user-select: none; color: var(--muted); font-weight: 600; }
+th.sorted-asc::after { content: " \25B2"; }
+th.sorted-desc::after { content: " \25BC"; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: rgba(110,168,254,0.08); }
+.empty { color: var(--muted); padding: 24px; text-align: center; }
+.legend { display: flex; gap: 16px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.legend span::before { content: "\25CF "; }
+.legend .mandrel::before { color: var(--mandrel); }
+.legend .control::before { color: var(--control); }
+.metric-caption { margin-top: 10px; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.metric-caption .pill { color: var(--fg); }
+.delta-readout { margin-top: 8px; font-size: 12px; }
+.delta-readout .delta { display: inline-block; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border); }
+.delta-readout .delta.good { color: var(--good); border-color: rgba(86,211,100,0.4); }
+.delta-readout .delta.bad { color: var(--bad); border-color: rgba(248,81,73,0.4); }
+details.help { margin-bottom: 12px; font-size: 12px; color: var(--muted); }
+details.help summary { cursor: pointer; color: var(--accent); }
+details.help ul { margin: 8px 0 0; padding-left: 18px; }
+details.help li { margin: 3px 0; }
+details.help b { color: var(--fg); font-weight: 600; }
+.up { color: var(--good); } .down { color: var(--good); }
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  display: none; align-items: center; justify-content: center; padding: 24px;
+}
+.modal-backdrop.open { display: flex; }
+.modal {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  max-width: 720px; width: 100%; max-height: 84vh; overflow: auto; padding: 20px;
+}
+.modal h3 { margin: 0 0 4px; font-size: 16px; }
+.modal .close { float: right; cursor: pointer; color: var(--muted); font-size: 20px; line-height: 1; background: none; border: none; }
+.modal table { margin-top: 12px; }
+.modal .links a { color: var(--accent); margin-right: 14px; }
+.modal .links { margin-top: 14px; }
+.dim-group { margin-top: 14px; }
+.dim-group h4 { margin: 0 0 2px; font-size: 13px; color: var(--accent); }
+.dim-group .gloss { margin: 0 0 6px; font-size: 11px; color: var(--muted); }
+svg { display: block; width: 100%; height: auto; }
+.metric-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.metric-btns button {
+  background: var(--panel); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 4px 10px; cursor: pointer; font: inherit;
+}
+.metric-btns button.active { border-color: var(--accent); color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+<h1>Mandrel Self-Benchmark — Results Dashboard</h1>
+<div class="sub">Generated artifact (Epic #2). 8 run(s) across every cohort. Pure, deterministic, zero-dependency — regenerated at the end of every <code>bench/run.js</code> run.</div>
+</header>
+<main>
+<section>
+<h2>Trend over framework versions</h2>
+<details class="help">
+<summary>How to read this chart</summary>
+<ul>
+<li>The <b>x-axis is the framework version</b> (one point per cohort), oldest on the left. When more than one model is in view a second tick line shows the model, and the line breaks across a model change — we never draw a cross-model "trend" (only like-model-to-like is comparable).</li>
+<li>Each point is the <b>median</b> across that cohort's N runs for one arm; the faint vertical bar is the <b>inter-quartile (Q1–Q3) spread</b>. Hover a point for n and the exact band.</li>
+<li><b><span class="up">mandrel</span></b> = clone carries <code>.agents/</code> and runs <code>/plan</code>→<code>/deliver</code>; <b>control</b> = bare task prompt, no scaffolding. The gap between the two arms is what the scaffolding buys (value) or charges (cost).</li>
+<li><b>Value side</b> (Quality, Autonomy, Maintainability, Security) — <b>higher is better</b>. <b>Cost side</b> (Tokens, USD, Overhead ratio) — <b>lower is cheaper</b>; cheaper only "wins" at equal quality. The caption under the chart states the direction and what good looks like for the selected metric.</li>
+</ul>
+</details>
+<div class="controls">
+<label for="chart-model">Model</label>
+<select id="chart-model"><option value="">All models</option></select>
+<div class="metric-btns" id="metric-btns"></div>
+</div>
+<div class="panel"><div id="chart"></div>
+<div class="legend"><span class="mandrel">mandrel</span><span class="control">control</span></div>
+<div class="metric-caption" id="chart-caption"></div>
+<div class="delta-readout" id="chart-delta"></div>
+</div>
+</section>
+<section>
+<h2>Run index</h2>
+<details class="help">
+<summary>What the dimension numbers mean</summary>
+<ul>
+<li><b>Quality</b> (value · 0–1 · ▲ better) — fraction of the frozen acceptance suite that passes, cross-checked by an LLM judge. 1.0 = fully correct; 0 = no runnable app.</li>
+<li><b>Planning</b> (value · 0–1 · ▲ better) — how well the plan predicted reality (story-count, re-plan, file-footprint). <code>—</code> for control: it authors no plan.</li>
+<li><b>Autonomy</b> (value · 0–1 · ▲ better) — 1.0 = fully unattended; each human intervention drops it (0.5 = one, 0.33 = two). Any value &lt; 1.0 is a finding.</li>
+<li><b>Maintainability</b> (value · 0–1 · ▲ better) — 1.0 = clean, well-structured, easy-to-change code; lower scores indicate complexity or structural debt.</li>
+<li><b>Security</b> (value · 0–1 · ▲ better) — 1.0 = no known vulnerabilities or unsafe patterns; lower scores indicate secrets, injection risks, or other findings.</li>
+<li><b>Tokens</b> (cost · ▼ cheaper) — total tokens the run spent. Lower is cheaper, but only meaningful at equal Quality.</li>
+<li><b>Overhead</b> (cost · ▼ cheaper) — ceremony tokens per shippable-codegen token. Control ≈ 0; the mandrel−control gap is the ceremony tax.</li>
+</ul>
+</details>
+<div class="controls">
+<label for="f-scenario">Scenario</label>
+<select id="f-scenario"><option value="">all</option></select>
+<label for="f-arm">Arm</label>
+<select id="f-arm"><option value="">all</option></select>
+<label for="f-model">Model</label>
+<select id="f-model"><option value="">all</option></select>
+<label for="f-version">Version</label>
+<select id="f-version"><option value="">all</option></select>
+<input type="text" id="f-text" placeholder="free-text filter…">
+</div>
+<div class="panel">
+<table><thead id="idx-head"></thead><tbody id="idx-body"></tbody></table>
+<div class="empty" id="idx-empty" style="display:none">No runs match the current filters.</div>
+</div>
+</section>
+<section>
+<h2>Autonomy guardrail (mandrel arm)</h2>
+<div class="sub">Autonomy is a pass/fail guardrail against a cohort threshold (default 0.99) — never a mandrel-vs-control delta (Epic #66, Story #77/#79): the bare control arm's zero-intervention baseline is defined, not measured, so a delta against it was never a meaningful comparison. A drop below threshold is itself a finding.</div>
+<div class="panel">
+<table><thead><tr><th>Scenario</th><th>n</th><th>Met</th><th>Dropped</th><th>Unmeasured</th><th>Threshold</th></tr></thead><tbody><tr><td>hello-world</td><td>2</td><td>2</td><td>0</td><td>0</td><td>0.99</td></tr><tr><td>story-scope</td><td>2</td><td>2</td><td>0</td><td>0</td><td>0.99</td></tr></tbody></table>
+</div>
+</section>
+<section>
+<h2>Per-phase cost (mandrel arm)</h2>
+<div class="sub">The mandrel arm runs <code>/plan</code> and <code>/deliver</code> as two separate headless sessions (D-019), so cost is attributable to the planning half vs the delivery half. Mean USD cost per phase across the cell's mandrel runs; the control arm is a single session and carries no per-phase split.</div>
+<div class="panel">
+<table><thead><tr><th>Scenario</th><th>n</th><th>Plan cost (USD)</th><th>Deliver cost (USD)</th><th>Total (USD)</th></tr></thead><tbody><tr><td>hello-world</td><td>2</td><td>0.31</td><td>0.515</td><td>0.825</td></tr><tr><td>story-scope</td><td>2</td><td>1.55</td><td>2.55</td><td>4.1</td></tr></tbody></table>
+</div>
+</section>
+<section>
+<h2>Trap axis (differential — separate from the seven dimensions)</h2>
+<div class="sub">Per-class adversarial trap-oracle verdicts the frozen suite is blind to, plus <code>cleanRate</code> (the mean of the declared classes). Higher is better (1 = clean, 0 = planted defect present). Never folded into the seven composite dimensions (Epic #66, Story #74/#79).</div>
+<div class="panel trap-axis">
+<h3>story-scope</h3><table><thead><tr><th>Class</th><th>Mandrel</th><th>Control</th></tr></thead><tbody><tr><td>plaintext-password</td><td>1 (spread 0, min 1, n=2)</td><td>0 (spread 0, min 0, n=2)</td></tr><tr><td>token-generation</td><td>0.75 (spread 0.5, min 0.5, n=2)</td><td>1 (spread 0, min 1, n=2)</td></tr><tr><td>cleanRate (mean of classes)</td><td>0.875 (spread 0.25, min 0.75, n=2)</td><td>0.5 (spread 0, min 0.5, n=2)</td></tr></tbody></table>
+</div>
+</section>
+<section>
+<h2>Continuity delta (the second touch)</h2>
+<div class="sub">Mandrel-vs-control delta of the FROZEN change request scored against the delivered tree — mandrel inherits its full pipeline output, control inherits delivered code only. Positive outcome delta / negative cost delta favour Mandrel. The persistence-thesis measurement (Epic #86, Story #96); never folded into the seven composite dimensions.</div>
+<div class="panel continuity">
+<h3>story-scope</h3><table><thead><tr><th>Metric</th><th>Mandrel</th><th>Control</th><th>&Delta; (M&minus;C)</th><th>Verdict</th></tr></thead><tbody><tr><td>outcome (quality of the 2nd change; higher is better)</td><td>0.85</td><td>0.65</td><td>0.2</td><td>real</td></tr><tr><td>cost (USD for the 2nd change; lower is better)</td><td>1.25</td><td>1.6</td><td>-0.35</td><td>real</td></tr></tbody></table>
+</div>
+</section>
+</main>
+<div class="modal-backdrop" id="modal-backdrop">
+<div class="modal" id="modal" role="dialog" aria-modal="true"><div id="modal-body"></div></div>
+</div>
+<script type="application/json" id="corpus">{"rows":[{"runId":"hello-world-mandrel-r1","reportsDir":"claude-opus-4-8-1m/1.89.0/reports/","timestamp":"2026-07-01T10:00:00.000Z","scenario":"hello-world","arm":"mandrel","model":"claude-opus-4-8[1m]","frameworkVersion":"1.89.0","benchmarkVersion":"0.11.0","env":{"node":"v24.16.0","os":"darwin","host":""},"quality":1,"planningFidelity":0.9,"autonomy":1,"maintainability":0.9,"security":1,"totalTokens":90000,"costUsd":0.8,"overheadRatio":6,"phases":[{"phase":"plan","costUsd":0.3,"totalTokens":30000,"wallClockMs":120000},{"phase":"deliver","costUsd":0.5,"totalTokens":60000,"wallClockMs":280000}],"dimensions":{"quality":{"score":1,"frozenSuitePassRate":1},"planningFidelity":{"score":0.9},"autonomy":{"score":1,"hitlStops":0,"blockedEvents":0,"manualRescues":0,"guardrail":{"threshold":0.99,"met":true}},"maintainability":{"score":0.9},"security":{"score":1},"efficiency":{"wallClockMs":400000,"totalTokens":90000,"dispatches":2,"costUsd":0.8},"overheadRatio":{"tokenRatio":6}},"rawRefs":null},{"runId":"hello-world-control-r1","reportsDir":"claude-opus-4-8-1m/1.89.0/reports/","timestamp":"2026-07-01T11:00:00.000Z","scenario":"hello-world","arm":"control","model":"claude-opus-4-8[1m]","frameworkVersion":"1.89.0","benchmarkVersion":"0.11.0","env":{"node":"v24.16.0","os":"darwin","host":""},"quality":1,"planningFidelity":null,"autonomy":1,"maintainability":0.85,"security":1,"totalTokens":20000,"costUsd":0.2,"overheadRatio":0.2,"phases":null,"dimensions":{"quality":{"score":1,"frozenSuitePassRate":1},"planningFidelity":{"score":null},"autonomy":{"score":1,"hitlStops":0,"blockedEvents":0,"manualRescues":0,"guardrail":{"threshold":0.99,"met":true}},"maintainability":{"score":0.85},"security":{"score":1},"efficiency":{"wallClockMs":120000,"totalTokens":20000,"dispatches":1,"costUsd":0.2},"overheadRatio":{"tokenRatio":0.2}},"rawRefs":null},{"runId":"hello-world-mandrel-r2","reportsDir":"claude-opus-4-8-1m/1.89.0/reports/","timestamp":"2026-07-02T10:00:00.000Z","scenario":"hello-world","arm":"mandrel","model":"claude-opus-4-8[1m]","frameworkVersion":"1.89.0","benchmarkVersion":"0.11.0","env":{"node":"v24.16.0","os":"darwin","host":""},"quality":1,"planningFidelity":0.92,"autonomy":1,"maintainability":0.9,"security":1,"totalTokens":92000,"costUsd":0.8500000000000001,"overheadRatio":7,"phases":[{"phase":"plan","costUsd":0.32,"totalTokens":30000,"wallClockMs":120000},{"phase":"deliver","costUsd":0.53,"totalTokens":60000,"wallClockMs":280000}],"dimensions":{"quality":{"score":1,"frozenSuitePassRate":1},"planningFidelity":{"score":0.92},"autonomy":{"score":1,"hitlStops":0,"blockedEvents":0,"manualRescues":0,"guardrail":{"threshold":0.99,"met":true}},"maintainability":{"score":0.9},"security":{"score":1},"efficiency":{"wallClockMs":410000,"totalTokens":92000,"dispatches":2,"costUsd":0.8500000000000001},"overheadRatio":{"tokenRatio":7}},"rawRefs":null},{"runId":"hello-world-control-r2","reportsDir":"claude-opus-4-8-1m/1.89.0/reports/","timestamp":"2026-07-02T11:00:00.000Z","scenario":"hello-world","arm":"control","model":"claude-opus-4-8[1m]","frameworkVersion":"1.89.0","benchmarkVersion":"0.11.0","env":{"node":"v24.16.0","os":"darwin","host":""},"quality":1,"planningFidelity":null,"autonomy":1,"maintainability":0.85,"security":1,"totalTokens":21000,"costUsd":0.21000000000000002,"overheadRatio":0.2,"phases":null,"dimensions":{"quality":{"score":1,"frozenSuitePassRate":1},"planningFidelity":{"score":null},"autonomy":{"score":1,"hitlStops":0,"blockedEvents":0,"manualRescues":0,"guardrail":{"threshold":0.99,"met":true}},"maintainability":{"score":0.85},"security":{"score":1},"efficiency":{"wallClockMs":125000,"totalTokens":21000,"dispatches":1,"costUsd":0.21000000000000002},"overheadRatio":{"tokenRatio":0.2}},"rawRefs":null},{"runId":"story-scope-mandrel-r1","reportsDir":"claude-opus-4-8-1m/1.89.0/reports/","timestamp":"2026-07-03T10:00:00.000Z","scenario":"story-scope","arm":"mandrel","model":"claude-opus-4-8[1m]","frameworkVersion":"1.89.0","benchmarkVersion":"0.11.0","env":{"node":"v24.16.0","os":"darwin","host":""},"quality":0.95,"planningFidelity":0.85,"autonomy":1,"maintainability":0.9,"security":1,"totalTokens":250000,"costUsd":4,"overheadRatio":3,"phases":[{"phase":"plan","costUsd":1.5,"totalTokens":80000,"wallClockMs":300000},{"phase":"deliver","costUsd":2.5,"totalTokens":170000,"wallClockMs":600000}],"dimensions":{"quality":{"score":0.95,"frozenSuitePassRate":0.95},"planningFidelity":{"score":0.85},"autonomy":{"score":1,"hitlStops":0,"blockedEvents":0,"manualRescues":0,"guardrail":{"threshold":0.99,"met":true}},"maintainability":{"score":0.9},"security":{"score":1},"efficiency":{"wallClockMs":900000,"totalTokens":250000,"dispatches":3,"costUsd":4},"overheadRatio":{"tokenRatio":3}},"rawRefs":null},{"runId":"story-scope-control-r1","reportsDir":"claude-opus-4-8-1m/1.89.0/reports/","timestamp":"2026-07-03T11:00:00.000Z","scenario":"story-scope","arm":"control","model":"claude-opus-4-8[1m]","frameworkVersion":"1.89.0","benchmarkVersion":"0.11.0","env":{"node":"v24.16.0","os":"darwin","host":""},"quality":0.85,"planningFidelity":null,"autonomy":1,"maintainability":0.8,"security":0.9,"totalTokens":60000,"costUsd":0.6,"overheadRatio":0.3,"phases":null,"dimensions":{"quality":{"score":0.85,"frozenSuitePassRate":0.85},"planningFidelity":{"score":null},"autonomy":{"score":1,"hitlStops":0,"blockedEvents":0,"manualRescues":0,"guardrail":{"threshold":0.99,"met":true}},"maintainability":{"score":0.8},"security":{"score":0.9},"efficiency":{"wallClockMs":300000,"totalTokens":60000,"dispatches":1,"costUsd":0.6},"overheadRatio":{"tokenRatio":0.3}},"rawRefs":null},{"runId":"story-scope-mandrel-r2","reportsDir":"claude-opus-4-8-1m/1.89.0/reports/","timestamp":"2026-07-04T10:00:00.000Z","scenario":"story-scope","arm":"mandrel","model":"claude-opus-4-8[1m]","frameworkVersion":"1.89.0","benchmarkVersion":"0.11.0","env":{"node":"v24.16.0","os":"darwin","host":""},"quality":0.97,"planningFidelity":0.85,"autonomy":1,"maintainability":0.9,"security":1,"totalTokens":255000,"costUsd":4.2,"overheadRatio":2.8,"phases":[{"phase":"plan","costUsd":1.6,"totalTokens":80000,"wallClockMs":300000},{"phase":"deliver","costUsd":2.6,"totalTokens":170000,"wallClockMs":600000}],"dimensions":{"quality":{"score":0.97,"frozenSuitePassRate":0.97},"planningFidelity":{"score":0.85},"autonomy":{"score":1,"hitlStops":0,"blockedEvents":0,"manualRescues":0,"guardrail":{"threshold":0.99,"met":true}},"maintainability":{"score":0.9},"security":{"score":1},"efficiency":{"wallClockMs":920000,"totalTokens":255000,"dispatches":3,"costUsd":4.2},"overheadRatio":{"tokenRatio":2.8}},"rawRefs":null},{"runId":"story-scope-control-r2","reportsDir":"claude-opus-4-8-1m/1.89.0/reports/","timestamp":"2026-07-04T11:00:00.000Z","scenario":"story-scope","arm":"control","model":"claude-opus-4-8[1m]","frameworkVersion":"1.89.0","benchmarkVersion":"0.11.0","env":{"node":"v24.16.0","os":"darwin","host":""},"quality":0.7999999999999999,"planningFidelity":null,"autonomy":1,"maintainability":0.8,"security":0.9,"totalTokens":62000,"costUsd":0.65,"overheadRatio":0.3,"phases":null,"dimensions":{"quality":{"score":0.7999999999999999,"frozenSuitePassRate":0.7999999999999999},"planningFidelity":{"score":null},"autonomy":{"score":1,"hitlStops":0,"blockedEvents":0,"manualRescues":0,"guardrail":{"threshold":0.99,"met":true}},"maintainability":{"score":0.8},"security":{"score":0.9},"efficiency":{"wallClockMs":310000,"totalTokens":62000,"dispatches":1,"costUsd":0.65},"overheadRatio":{"tokenRatio":0.3}},"rawRefs":null}],"metrics":[{"key":"quality","label":"Quality","side":"value","better":"higher","range":"0–1","good":"1.0 = every frozen acceptance assertion passes and the LLM judge agrees; below ~0.9 means assertions failed."},{"key":"autonomy","label":"Autonomy","side":"value","better":"higher","range":"0–1","good":"1.0 = fully unattended (zero human interventions); each one drops it (0.5 = one, 0.33 = two). Reclassified as a mandrel-arm GUARDRAIL against a cohort threshold (default 0.99, see the Autonomy guardrail panel below) — never a mandrel-vs-control delta (Epic #66, Story #77/#79).","deltaExempt":true},{"key":"maintainability","label":"Maintainability","side":"value","better":"higher","range":"0–1","good":"1.0 = code is clean, well-structured, and easy to change; lower scores indicate complexity, poor naming, or structural debt."},{"key":"security","label":"Security","side":"value","better":"higher","range":"0–1","good":"1.0 = no known vulnerabilities or unsafe patterns detected; lower scores indicate secrets, injection risks, or other security findings."},{"key":"totalTokens","label":"Total tokens","side":"cost","better":"lower","range":"≥0 (count)","good":"Absolute token cost for the whole run. Cheaper is better only at equal quality — read it alongside Quality."},{"key":"costUsd","label":"Cost (USD)","side":"cost","better":"lower","range":"≥0 ($)","good":"Absolute USD from the claude -p envelope. Lower is cheaper at equal quality; the mandrel−control gap is the price of the scaffolding."},{"key":"overheadRatio","label":"Overhead ratio","side":"cost","better":"lower","range":"≥0","good":"Ceremony tokens per shippable-codegen token. Control sits near 0; the mandrel−control gap IS the ceremony tax. Should fall as tasks get bigger."}],"guardrail":[{"scenario":"hello-world","n":2,"met":2,"dropped":0,"unmeasured":0,"threshold":0.99},{"scenario":"story-scope","n":2,"met":2,"dropped":0,"unmeasured":0,"threshold":0.99}],"trapAxis":[{"scenario":"story-scope","rows":[{"metric":"trap.plaintext-password","label":"plaintext-password","mandrel":{"mean":1,"spread":0,"min":1,"n":2},"control":{"mean":0,"spread":0,"min":0,"n":2}},{"metric":"trap.token-generation","label":"token-generation","mandrel":{"mean":0.75,"spread":0.5,"min":0.5,"n":2},"control":{"mean":1,"spread":0,"min":1,"n":2}},{"metric":"trap.cleanRate","label":"cleanRate (mean of classes)","mandrel":{"mean":0.875,"spread":0.25,"min":0.75,"n":2},"control":{"mean":0.5,"spread":0,"min":0.5,"n":2}}]}],"phaseCost":[{"scenario":"hello-world","n":2,"planCostUsd":0.31,"deliverCostUsd":0.515,"totalCostUsd":0.825},{"scenario":"story-scope","n":2,"planCostUsd":1.55,"deliverCostUsd":2.55,"totalCostUsd":4.1}],"continuity":[{"scenario":"story-scope","rows":[{"metric":"touch2.outcome","label":"outcome (quality of the 2nd change; higher is better)","mandrelCenter":0.8500000000000001,"controlCenter":0.6499999999999999,"delta":0.20000000000000018,"verdict":"real"},{"metric":"touch2.cost","label":"cost (USD for the 2nd change; lower is better)","mandrelCenter":1.25,"controlCenter":1.6,"delta":-0.3500000000000001,"verdict":"real"}]}]}</script>
+<script>
+"use strict";
+(function () {
+  var dataEl = document.getElementById("corpus");
+  var MODEL = dataEl ? JSON.parse(dataEl.textContent) : { rows: [], metrics: [] };
+  var ROWS = MODEL.rows || [];
+  var METRICS = MODEL.metrics || [];
+
+  // ---- helpers ----------------------------------------------------------
+  function uniq(vals) {
+    var seen = {}; var out = [];
+    vals.forEach(function (v) { if (v !== "" && !seen[v]) { seen[v] = 1; out.push(v); } });
+    out.sort();
+    return out;
+  }
+  function fmtNum(v) {
+    if (v === null || v === undefined) return "—";
+    if (Math.abs(v) >= 1000) return String(Math.round(v));
+    return String(Math.round(v * 1000) / 1000);
+  }
+  // type-7 quantile (the same estimator the IQR noise-band uses in
+  // bench/metrics/README.md), so the chart's median + whisker match the report.
+  function quantile(sorted, p) {
+    var n = sorted.length;
+    if (n === 0) return null;
+    if (n === 1) return sorted[0];
+    var h = (n - 1) * p;
+    var lo = Math.floor(h);
+    var hi = Math.ceil(h);
+    return sorted[lo] + (h - lo) * (sorted[hi] - sorted[lo]);
+  }
+  function summarize(values) {
+    var vals = values
+      .filter(function (v) { return typeof v === "number" && isFinite(v); })
+      .slice()
+      .sort(function (a, b) { return a - b; });
+    if (vals.length === 0) return null;
+    return {
+      n: vals.length,
+      median: quantile(vals, 0.5),
+      q1: quantile(vals, 0.25),
+      q3: quantile(vals, 0.75)
+    };
+  }
+  function metricMeta(key) {
+    for (var i = 0; i < METRICS.length; i++) if (METRICS[i].key === key) return METRICS[i];
+    return null;
+  }
+
+  // ---- cohorts (the x-axis) --------------------------------------------
+  // A cohort is one (model, frameworkVersion, benchmarkVersion) cell (D-014):
+  // the benchmark version joins the key so records from different benchmark
+  // versions never collapse into one trend point. ROWS arrive timestamp-sorted
+  // from the server, so first-seen order is chronological.
+  var COHORTS = (function () {
+    var seen = {}; var list = [];
+    ROWS.forEach(function (r) {
+      var id = r.model + " @ " + r.frameworkVersion + " · bench " + r.benchmarkVersion;
+      if (!seen[id]) {
+        seen[id] = {
+          id: id,
+          model: r.model,
+          version: r.frameworkVersion,
+          benchmarkVersion: r.benchmarkVersion
+        };
+        list.push(seen[id]);
+      }
+    });
+    return list;
+  })();
+  var MODELS = uniq(ROWS.map(function (r) { return r.model; }));
+
+  // ---- index table ------------------------------------------------------
+  var COLUMNS = [
+    { key: "timestamp", label: "Timestamp", type: "str" },
+    { key: "scenario", label: "Scenario", type: "str" },
+    { key: "arm", label: "Arm", type: "str" },
+    { key: "model", label: "Model", type: "str" },
+    { key: "frameworkVersion", label: "Version", type: "str" },
+    { key: "benchmarkVersion", label: "Bench", type: "str", hint: "Benchmark harness version (D-014) — joins the cohort key; records across different benchmark versions never pool" },
+    { key: "quality", label: "Quality", type: "num", hint: "Value side · 0–1 · higher is better (1.0 = all assertions pass + judge agrees)" },
+    { key: "planningFidelity", label: "Planning", type: "num", hint: "Value side · 0–1 · higher is better · null for control (it authors no plan)" },
+    { key: "autonomy", label: "Autonomy", type: "num", hint: "Value side · 0–1 · higher is better (1.0 = fully unattended; <1 = a human stepped in)" },
+    { key: "maintainability", label: "Maintainability", type: "num", hint: "Value side · 0–1 · higher is better · clean, well-structured code scores near 1.0" },
+    { key: "security", label: "Security", type: "num", hint: "Value side · 0–1 · higher is better · 1.0 = no vulnerabilities or unsafe patterns detected" },
+    { key: "totalTokens", label: "Tokens", type: "num", hint: "Cost side · lower is cheaper (read against Quality)" },
+    { key: "overheadRatio", label: "Overhead", type: "num", hint: "Cost side · lower is cheaper · ceremony tokens per codegen token (control ≈ 0)" },
+    { key: "env", label: "Env", type: "str" }
+  ];
+  var sortKey = "timestamp";
+  var sortDir = 1;
+
+  function envStr(r) { return (r.env.os || "") + " / " + (r.env.node || ""); }
+  function cell(r, key) {
+    if (key === "env") return envStr(r);
+    var v = r[key];
+    if (v === null || v === undefined) return "—";
+    if (typeof v === "number") {
+      return Math.abs(v) >= 1000 ? String(v) : (Math.round(v * 1000) / 1000);
+    }
+    return v;
+  }
+
+  function activeFilters() {
+    return {
+      scenario: document.getElementById("f-scenario").value,
+      arm: document.getElementById("f-arm").value,
+      model: document.getElementById("f-model").value,
+      version: document.getElementById("f-version").value,
+      text: document.getElementById("f-text").value.toLowerCase().trim()
+    };
+  }
+
+  function filteredRows() {
+    var f = activeFilters();
+    return ROWS.filter(function (r) {
+      if (f.scenario && r.scenario !== f.scenario) return false;
+      if (f.arm && r.arm !== f.arm) return false;
+      if (f.model && r.model !== f.model) return false;
+      if (f.version && r.frameworkVersion !== f.version) return false;
+      if (f.text) {
+        var hay = (r.runId + " " + r.scenario + " " + r.arm + " " + r.model +
+          " " + r.frameworkVersion + " " + r.benchmarkVersion + " " + envStr(r)).toLowerCase();
+        if (hay.indexOf(f.text) === -1) return false;
+      }
+      return true;
+    });
+  }
+
+  function sortRows(rows) {
+    var col = COLUMNS.filter(function (c) { return c.key === sortKey; })[0] || COLUMNS[0];
+    return rows.slice().sort(function (a, b) {
+      var av = col.key === "env" ? envStr(a) : a[col.key];
+      var bv = col.key === "env" ? envStr(b) : b[col.key];
+      if (col.type === "num") {
+        var an = (av === null || av === undefined) ? -Infinity : av;
+        var bn = (bv === null || bv === undefined) ? -Infinity : bv;
+        return (an - bn) * sortDir;
+      }
+      av = av || ""; bv = bv || "";
+      return (av < bv ? -1 : av > bv ? 1 : 0) * sortDir;
+    });
+  }
+
+  function renderTable() {
+    var rows = sortRows(filteredRows());
+    var thead = document.getElementById("idx-head");
+    var tbody = document.getElementById("idx-body");
+    thead.innerHTML = "";
+    var tr = document.createElement("tr");
+    COLUMNS.forEach(function (c) {
+      var th = document.createElement("th");
+      th.textContent = c.label;
+      if (c.hint) th.title = c.hint;
+      if (c.key === sortKey) th.className = sortDir === 1 ? "sorted-asc" : "sorted-desc";
+      th.addEventListener("click", function () {
+        if (sortKey === c.key) { sortDir = -sortDir; } else { sortKey = c.key; sortDir = 1; }
+        renderTable();
+      });
+      tr.appendChild(th);
+    });
+    thead.appendChild(tr);
+
+    tbody.innerHTML = "";
+    var emptyEl = document.getElementById("idx-empty");
+    emptyEl.style.display = rows.length === 0 ? "block" : "none";
+    rows.forEach(function (r) {
+      var trb = document.createElement("tr");
+      trb.setAttribute("data-runid", r.runId);
+      COLUMNS.forEach(function (c) {
+        var td = document.createElement("td");
+        td.textContent = cell(r, c.key);
+        trb.appendChild(td);
+      });
+      trb.addEventListener("click", function () { openModal(r.runId); });
+      tbody.appendChild(trb);
+    });
+  }
+
+  // ---- modal ------------------------------------------------------------
+  var GLOSS = {
+    "Quality": "Higher is better (0–1). 1.0 = every frozen assertion passes and the LLM judge agrees.",
+    "Planning fidelity": "Higher is better (0–1). How well the plan predicted reality; null for control (no plan authored).",
+    "Autonomy": "Higher is better (0–1]. 1.0 = fully unattended; each human intervention lowers it (0.5 = one, 0.33 = two).",
+    "Maintainability": "Higher is better (0–1). 1.0 = clean, well-structured, easy-to-change code; lower scores indicate complexity, poor naming, or structural debt.",
+    "Security": "Higher is better (0–1). 1.0 = no known vulnerabilities or unsafe patterns; lower scores indicate secrets, injection risks, or other security findings.",
+    "Efficiency": "Absolute cost vector — lower is cheaper: wall-clock ms, total tokens, dispatches, USD. Judge against Quality.",
+    "Overhead ratio": "Lower is cheaper (≥0). Ceremony tokens per shippable-codegen token; control ≈ 0, so the gap is Mandrel's tax."
+  };
+  function rowById(id) {
+    for (var i = 0; i < ROWS.length; i++) { if (ROWS[i].runId === id) return ROWS[i]; }
+    return null;
+  }
+  function dimTable(obj) {
+    if (!obj) return "<p class='empty'>—</p>";
+    var html = "<table>";
+    Object.keys(obj).forEach(function (k) {
+      var v = obj[k];
+      html += "<tr><td>" + k + "</td><td>" + (v === null || v === undefined ? "—" : v) + "</td></tr>";
+    });
+    return html + "</table>";
+  }
+  function openModal(id) {
+    var r = rowById(id);
+    if (!r) return;
+    var body = document.getElementById("modal-body");
+    var dims = r.dimensions || {};
+    var html = "<button class='close' aria-label='Close'>&times;</button>";
+    html += "<h3></h3><div class='sub'></div>";
+    var groups = [
+      ["Quality", dims.quality], ["Planning fidelity", dims.planningFidelity],
+      ["Autonomy", dims.autonomy], ["Maintainability", dims.maintainability],
+      ["Security", dims.security], ["Efficiency", dims.efficiency],
+      ["Overhead ratio", dims.overheadRatio]
+    ];
+    groups.forEach(function (g) {
+      html += "<div class='dim-group'><h4></h4><p class='gloss'></p>" + dimTable(g[1]) + "</div>";
+    });
+    html += "<div class='links'></div>";
+    body.innerHTML = html;
+    body.querySelector("h3").textContent = r.runId;
+    body.querySelector(".sub").textContent =
+      r.scenario + " · " + r.arm + " · " + r.model + " @ " + r.frameworkVersion +
+      " · bench " + r.benchmarkVersion + " · " + r.timestamp;
+    var h4s = body.querySelectorAll(".dim-group h4");
+    var glosses = body.querySelectorAll(".dim-group .gloss");
+    for (var i = 0; i < h4s.length; i++) {
+      h4s[i].textContent = groups[i][0];
+      glosses[i].textContent = GLOSS[groups[i][0]] || "";
+    }
+
+    var links = body.querySelector(".links");
+    var refs = r.rawRefs || {};
+    function addLink(href, label) {
+      if (!href) return;
+      var a = document.createElement("a");
+      a.href = href; a.textContent = label; a.target = "_blank"; a.rel = "noopener";
+      links.appendChild(a);
+    }
+    if (refs.costEnvelope) addLink(refs.costEnvelope, "cost envelope");
+    if (refs.lifecycleNdjson) addLink(refs.lifecycleNdjson, "lifecycle");
+    if (refs.signalsNdjson) {
+      refs.signalsNdjson.forEach(function (s, i) { addLink(s, "signals " + i); });
+    }
+    if (refs.acceptanceEvalVerdict) addLink(refs.acceptanceEvalVerdict, "verdict");
+    // Link to this run's cohort Markdown report directory.
+    if (r.reportsDir) addLink(r.reportsDir, "Markdown report");
+
+    body.querySelector(".close").addEventListener("click", closeModal);
+    document.getElementById("modal-backdrop").classList.add("open");
+  }
+  function closeModal() { document.getElementById("modal-backdrop").classList.remove("open"); }
+
+  // ---- trend chart (x-axis = cohort/version) ----------------------------
+  var selectedMetric = METRICS.length ? METRICS[0].key : null;
+  var selectedModel = "";
+
+  function visibleCohorts() {
+    return COHORTS.filter(function (c) { return !selectedModel || c.model === selectedModel; });
+  }
+  function cohortValues(cohort, arm) {
+    return ROWS.filter(function (r) {
+      return r.arm === arm && r.model === cohort.model &&
+        r.frameworkVersion === cohort.version &&
+        r.benchmarkVersion === cohort.benchmarkVersion;
+    }).map(function (r) { return r[selectedMetric]; });
+  }
+
+  function renderChart() {
+    var host = document.getElementById("chart");
+    var meta = metricMeta(selectedMetric);
+    var cohorts = visibleCohorts();
+    var arms = ["mandrel", "control"];
+    var colors = { mandrel: "#6ea8fe", control: "#f0883e" };
+
+    // Aggregate each cohort to one summary per arm (median + IQR).
+    var data = cohorts.map(function (c) {
+      return {
+        cohort: c,
+        mandrel: summarize(cohortValues(c, "mandrel")),
+        control: summarize(cohortValues(c, "control"))
+      };
+    });
+    var allVals = [];
+    data.forEach(function (d) {
+      arms.forEach(function (a) {
+        if (d[a]) { allVals.push(d[a].q1, d[a].q3, d[a].median); }
+      });
+    });
+    if (allVals.length === 0) {
+      host.innerHTML = "<p class='empty'>No data for this metric / model.</p>";
+      renderCaption(meta, []);
+      return;
+    }
+
+    var W = 760, H = 300, padL = 64, padR = 16, padT = 16, padB = 56;
+    var plotW = W - padL - padR, plotH = H - padT - padB;
+    var nC = data.length;
+    function x(i) { return padL + (nC === 1 ? plotW / 2 : (i / (nC - 1)) * plotW); }
+    var minV = Math.min.apply(null, allVals);
+    var maxV = Math.max.apply(null, allVals);
+    if (minV === maxV) { minV = minV - 1; maxV = maxV + 1; }
+    var pad = (maxV - minV) * 0.08;
+    minV -= pad; maxV += pad;
+    function y(v) { return padT + plotH - ((v - minV) / (maxV - minV)) * plotH; }
+
+    var svg = "<svg viewBox='0 0 " + W + " " + H + "' role='img' aria-label='Trend over versions'>";
+    // gridlines + y labels (min / mid / max)
+    [minV, (minV + maxV) / 2, maxV].forEach(function (yv) {
+      svg += "<line x1='" + padL + "' y1='" + y(yv).toFixed(1) + "' x2='" + (W - padR) + "' y2='" + y(yv).toFixed(1) + "' stroke='#1e2230'/>";
+      svg += "<text x='" + (padL - 8) + "' y='" + (y(yv) + 3).toFixed(1) + "' fill='#9aa3b2' font-size='10' text-anchor='end'>" + fmtNum(yv) + "</text>";
+    });
+    // axes
+    svg += "<line x1='" + padL + "' y1='" + padT + "' x2='" + padL + "' y2='" + (padT + plotH) + "' stroke='#2a2f3a'/>";
+    svg += "<line x1='" + padL + "' y1='" + (padT + plotH) + "' x2='" + (W - padR) + "' y2='" + (padT + plotH) + "' stroke='#2a2f3a'/>";
+    // y-axis direction hint
+    if (meta && (meta.better === "higher" || meta.better === "lower")) {
+      var dirTxt = meta.better === "higher" ? "▲ better" : "▼ better";
+      var cy = (padT + plotH / 2).toFixed(1);
+      svg += "<text x='14' y='" + cy + "' fill='#9aa3b2' font-size='10' text-anchor='middle' transform='rotate(-90 14 " + cy + ")'>" + dirTxt + "</text>";
+    }
+    // x ticks: framework version, plus a benchmark-version sub-line when more
+    // than one benchmark version is in view (so distinct-bench cohorts sharing
+    // a framework version read apart), plus a model sub-line when multi-model.
+    var multiModel = uniq(cohorts.map(function (c) { return c.model; })).length > 1;
+    var multiBench = uniq(cohorts.map(function (c) { return c.benchmarkVersion; })).length > 1;
+    data.forEach(function (d, i) {
+      var px = x(i).toFixed(1);
+      var yb = padT + plotH + 18;
+      svg += "<text x='" + px + "' y='" + yb + "' fill='#9aa3b2' font-size='10' text-anchor='middle'>" + d.cohort.version + "</text>";
+      if (multiBench) { yb += 12; svg += "<text x='" + px + "' y='" + yb + "' fill='#6b7280' font-size='9' text-anchor='middle'>bench " + d.cohort.benchmarkVersion + "</text>"; }
+      if (multiModel) { yb += 12; svg += "<text x='" + px + "' y='" + yb + "' fill='#6b7280' font-size='9' text-anchor='middle'>" + d.cohort.model + "</text>"; }
+    });
+    svg += "<text x='" + (padL + plotW / 2).toFixed(1) + "' y='" + (H - 6) + "' fill='#6b7280' font-size='10' text-anchor='middle'>framework version" + (multiBench ? " / benchmark version" : "") + (multiModel ? " / model" : "") + "</text>";
+
+    // series: per-arm segmented line over medians (break when model changes) +
+    // IQR whisker + median dot per cohort.
+    arms.forEach(function (arm) {
+      var pts = [];
+      data.forEach(function (d, i) { if (d[arm]) pts.push({ i: i, s: d[arm], model: d.cohort.model }); });
+      for (var k = 0; k < pts.length; k++) {
+        var p = pts[k];
+        var px = x(p.i);
+        if (k > 0 && pts[k - 1].model === p.model) {
+          var q = pts[k - 1];
+          svg += "<line x1='" + x(q.i).toFixed(2) + "' y1='" + y(q.s.median).toFixed(2) +
+            "' x2='" + px.toFixed(2) + "' y2='" + y(p.s.median).toFixed(2) +
+            "' stroke='" + colors[arm] + "' stroke-width='2'/>";
+        }
+        if (p.s.q3 !== p.s.q1) {
+          svg += "<line x1='" + px.toFixed(2) + "' y1='" + y(p.s.q1).toFixed(2) +
+            "' x2='" + px.toFixed(2) + "' y2='" + y(p.s.q3).toFixed(2) +
+            "' stroke='" + colors[arm] + "' stroke-width='1' opacity='0.5'/>";
+        }
+        svg += "<circle cx='" + px.toFixed(2) + "' cy='" + y(p.s.median).toFixed(2) +
+          "' r='4' fill='" + colors[arm] + "'><title>" + arm + " · " + data[p.i].cohort.version +
+          " · median " + fmtNum(p.s.median) + " (n=" + p.s.n + ", IQR " + fmtNum(p.s.q1) + "–" + fmtNum(p.s.q3) + ")</title></circle>";
+      }
+    });
+    svg += "</svg>";
+    host.innerHTML = svg;
+
+    renderCaption(meta, data);
+  }
+
+  function renderCaption(meta, data) {
+    var capEl = document.getElementById("chart-caption");
+    var deltaEl = document.getElementById("chart-delta");
+    if (!capEl || !deltaEl) return;
+    if (!meta) { capEl.textContent = ""; deltaEl.innerHTML = ""; return; }
+    var sideTxt = meta.side === "value"
+      ? "value side (what the scaffolding buys)"
+      : "cost side (what the scaffolding charges)";
+    var dirTxt = meta.better === "higher" ? "▲ higher is better"
+      : meta.better === "lower" ? "▼ lower is cheaper" : "";
+    capEl.innerHTML = "";
+    var strong = document.createElement("span");
+    strong.className = "pill";
+    strong.textContent = meta.label + " — " + sideTxt + " · range " + meta.range + " · " + dirTxt + ". ";
+    capEl.appendChild(strong);
+    capEl.appendChild(document.createTextNode(meta.good));
+
+    // Delta vs control on the most recent visible cohort with both arms.
+    deltaEl.innerHTML = "";
+    if (meta.deltaExempt) {
+      // Epic #66, Story #77/#79: autonomy is a mandrel-arm GUARDRAIL against
+      // a cohort threshold, never a mandrel-vs-control delta — the bare
+      // control's zero-intervention baseline is defined, not measured, so a
+      // delta badge here would misrepresent it as a comparison. See the
+      // "Autonomy guardrail" panel below the run index for the real verdict.
+      var note = document.createElement("span");
+      note.className = "delta";
+      note.textContent = "Guardrail metric — see the Autonomy guardrail panel below, not a mandrel-vs-control delta.";
+      deltaEl.appendChild(note);
+      return;
+    }
+    var latest = null;
+    for (var i = data.length - 1; i >= 0; i--) {
+      if (data[i].mandrel && data[i].control) { latest = data[i]; break; }
+    }
+    if (!latest) return;
+    var m = latest.mandrel.median, c = latest.control.median;
+    var diff = m - c;
+    var better = meta.better === "higher" ? diff > 0
+      : meta.better === "lower" ? diff < 0 : null;
+    var cls = diff === 0 ? "" : (better ? "good" : "bad");
+    var arrow = diff === 0 ? "=" : (diff > 0 ? "▲" : "▼");
+    var verdict = diff === 0 ? "no difference"
+      : better ? "mandrel better" : "mandrel worse";
+    var span = document.createElement("span");
+    span.className = "delta " + cls;
+    span.textContent = "Latest cohort " + latest.cohort.version + " — mandrel " + fmtNum(m) +
+      " vs control " + fmtNum(c) + "  " + arrow + " " + fmtNum(Math.abs(diff)) + " (" + verdict + ")";
+    deltaEl.appendChild(span);
+  }
+
+  function renderMetricButtons() {
+    var host = document.getElementById("metric-btns");
+    host.innerHTML = "";
+    METRICS.forEach(function (m) {
+      var b = document.createElement("button");
+      b.textContent = m.label;
+      b.title = (m.side === "value" ? "Value side · " : "Cost side · ") +
+        (m.better === "higher" ? "higher is better" : "lower is cheaper");
+      if (m.key === selectedMetric) b.className = "active";
+      b.addEventListener("click", function () { selectedMetric = m.key; renderMetricButtons(); renderChart(); });
+      host.appendChild(b);
+    });
+  }
+
+  // ---- wire up ----------------------------------------------------------
+  function fillSelect(id, values) {
+    var sel = document.getElementById(id);
+    values.forEach(function (v) {
+      var o = document.createElement("option"); o.value = v; o.textContent = v;
+      sel.appendChild(o);
+    });
+  }
+  fillSelect("f-scenario", uniq(ROWS.map(function (r) { return r.scenario; })));
+  fillSelect("f-arm", uniq(ROWS.map(function (r) { return r.arm; })));
+  fillSelect("f-model", uniq(ROWS.map(function (r) { return r.model; })));
+  fillSelect("f-version", uniq(ROWS.map(function (r) { return r.frameworkVersion; })));
+  ["f-scenario", "f-arm", "f-model", "f-version", "f-text"].forEach(function (id) {
+    var el = document.getElementById(id);
+    el.addEventListener("input", renderTable);
+    el.addEventListener("change", renderTable);
+  });
+
+  var modelSel = document.getElementById("chart-model");
+  fillSelect("chart-model", MODELS);
+  modelSel.addEventListener("change", function () { selectedModel = modelSel.value; renderChart(); });
+
+  document.getElementById("modal-backdrop").addEventListener("click", function (e) {
+    if (e.target === this) closeModal();
+  });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeModal(); });
+
+  renderMetricButtons();
+  renderChart();
+  renderTable();
+})();
+</script>
+</body>
+</html>

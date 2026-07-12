@@ -10,6 +10,7 @@
 //   - an empty corpus renders a valid, non-crashing (empty) dashboard.
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
 import {
@@ -17,6 +18,8 @@ import {
   renderDashboard,
   toRow,
 } from '../../../bench/report/html.js';
+import { chainCard } from '../fixtures/chain-cards.js';
+import { nonChainCorpus } from './fixtures/nonchain-corpus.js';
 
 function card(overrides = {}) {
   return {
@@ -419,5 +422,70 @@ describe('buildDashboardModel — guardrail + trap axis (Epic #66, Story #79)', 
     assert.equal(row.n, 1);
     // The full index-table rows still reflect the WHOLE corpus.
     assert.equal(model.rows.length, 4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Touch-chain dashboard panel (issue #124, PR-D)
+// ---------------------------------------------------------------------------
+
+describe('renderDashboard — touch-chain panel (issue #124 PR-D)', () => {
+  const chainCorpus = () => [
+    chainCard({ run: 1, outcomeSlope: -0.01, costSlope: 0.05 }),
+    chainCard({ run: 2, outcomeSlope: -0.02, costSlope: 0.06 }),
+    chainCard({ arm: 'control', run: 1, outcomeSlope: -0.08, costSlope: 0.3 }),
+    chainCard({ arm: 'control', run: 2, outcomeSlope: -0.09, costSlope: 0.35 }),
+  ];
+
+  it('buildDashboardModel carries the chain model only for chain corpora', () => {
+    const model = buildDashboardModel(chainCorpus());
+    assert.ok(Array.isArray(model.chain), 'chain model missing');
+    assert.equal(model.chain.length, 1);
+    assert.equal(model.chain[0].scenario, 'brownfield-longitudinal');
+    assert.equal(model.chain[0].slope.present, true);
+    assert.equal(
+      model.chain[0].slope.metrics['chain.outcomeSlope'].verdict,
+      'real',
+    );
+    assert.equal(model.chain[0].touchRows.length, 2);
+
+    // The key is ABSENT (not an empty array) for a non-chain corpus, so the
+    // inlined JSON — and thus the dashboard bytes — stay pre-chain-identical.
+    const nonChain = buildDashboardModel(nonChainCorpus());
+    assert.ok(!('chain' in nonChain), 'chain key must be absent for non-chain');
+  });
+
+  it('renders the chain section with slope table, SVG line charts and summary', () => {
+    const html = renderDashboard({ scorecards: chainCorpus() });
+    assert.match(html, /<h2>Touch chain \(degradation slope\)<\/h2>/);
+    assert.match(
+      html,
+      /Outcome slope \(quality per touch; flatter is better\)/,
+    );
+    assert.match(html, /Cost slope \(USD per touch; flatter is cheaper\)/);
+    // Two server-rendered SVG line charts (outcome + cost), one polyline per arm.
+    const svgs = html.match(/class="chain-chart"/g) ?? [];
+    assert.equal(svgs.length, 2);
+    assert.match(html, /Outcome per touch \(mean per arm\)/);
+    assert.match(html, /Cost \(USD\) per touch \(mean per arm\)/);
+    assert.ok((html.match(/<polyline /g) ?? []).length >= 4);
+    assert.match(html, /Per-touch line data — mandrel/);
+    assert.match(html, /Per-touch line data — control/);
+    assert.match(html, /Landed changes &amp; cost per landed change/);
+  });
+
+  it('omits the chain section entirely for a non-chain corpus', () => {
+    const html = renderDashboard({ scorecards: nonChainCorpus() });
+    assert.doesNotMatch(html, /Touch chain/);
+    assert.doesNotMatch(html, /chain-chart/);
+  });
+
+  it('is BYTE-IDENTICAL to the pre-chain renderer for a non-chain corpus (snapshot guard)', () => {
+    const expected = readFileSync(
+      new URL('./fixtures/nonchain-dashboard.html', import.meta.url),
+      'utf8',
+    );
+    const actual = renderDashboard({ scorecards: nonChainCorpus() });
+    assert.equal(actual, expected);
   });
 });

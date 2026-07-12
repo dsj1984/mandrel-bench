@@ -14,6 +14,8 @@ import { fileURLToPath } from 'node:url';
 import Ajv2020 from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 
+import { chainCard } from '../fixtures/chain-cards.js';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // tests/bench/schemas/ → repo root is three levels up.
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -64,6 +66,17 @@ describe('scorecard schema — validates the committed fixture', () => {
       ok,
       `fixture failed validation: ${JSON.stringify(validate.errors, null, 2)}`,
     );
+  });
+
+  it('accepts the shared chain-card test fixture (issue #124, PR-D drift guard)', () => {
+    const validate = buildValidator();
+    for (const arm of ['mandrel', 'control']) {
+      const ok = validate(chainCard({ arm }));
+      assert.ok(
+        ok,
+        `chainCard(${arm}) failed validation: ${JSON.stringify(validate.errors, null, 2)}`,
+      );
+    }
   });
 
   it('the fixture exercises all seven dimensions', () => {

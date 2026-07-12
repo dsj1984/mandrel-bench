@@ -15,7 +15,9 @@
       "!results",
       "!bench/scenarios/*/sandbox",
       "!bench/scenarios/*/frozen-suite",
-      "!bench/scenarios/*/touches"
+      "!bench/scenarios/*/touches",
+      "!tests/bench/report/fixtures/*.html",
+      "!tests/bench/report/fixtures/*.md"
     ]
   },
   "formatter": {
