@@ -1,0 +1,72 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "api_error_status": null,
+  "duration_ms": 34771,
+  "duration_api_ms": 33566,
+  "ttft_ms": 1768,
+  "ttft_stream_ms": 1247,
+  "time_to_request_ms": 28,
+  "num_turns": 6,
+  "result": "Done. Committed to `main`.\n\n**What I built:**\n- `server.js` — ESM HTTP server using Node's built-in `node:http` (no external framework). Listens on `PORT` (default 3000). `GET /` returns HTTP 200 with `Content-Type: text/html` and a body containing `Hello, World!`; other paths return 404.\n- `package.json` — added a `start` script (`node server.js`) to the existing file, preserving its other scripts.\n\n**Verified** end-to-end with curl: 200 + correct content-type + body, and a 404 for unknown paths.",
+  "stop_reason": "end_turn",
+  "session_id": "3c0a6a9a-68a7-43a2-b27c-c8c4df411cdc",
+  "total_cost_usd": 0.213704,
+  "usage": {
+    "input_tokens": 12,
+    "cache_creation_input_tokens": 10295,
+    "cache_read_input_tokens": 150348,
+    "output_tokens": 1391,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 10295,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 192,
+        "cache_read_input_tokens": 27590,
+        "cache_creation_input_tokens": 250,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 250
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 655,
+      "outputTokens": 18,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000745,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 12,
+      "outputTokens": 1391,
+      "cacheReadInputTokens": 150348,
+      "cacheCreationInputTokens": 10295,
+      "webSearchRequests": 0,
+      "costUSD": 0.212959,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "uuid": "0a48c4e8-b4e9-4d05-989c-1670ee0a902a"
+}

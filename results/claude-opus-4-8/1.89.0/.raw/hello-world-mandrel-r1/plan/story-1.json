@@ -1,0 +1,19 @@
+{
+  "body": "# Minimal Node.js HTTP server serving \"Hello, World!\" on `/`\n\n## Context\n\nWe need a minimal HTTP server built on the Node.js standard library alone —\nno Express, Fastify, Koa, or any other external web framework. The project is\nalready configured as an ESM package (`package.json` has `\"type\": \"module\"`),\nso the server is authored with ESM `import` syntax using the built-in `node:http`\nmodule.\n\nRequirements the implementation must satisfy:\n\n- Listen on the port given by the `PORT` environment variable, defaulting to\n  `3000` when `PORT` is unset.\n- A `GET` request to path `/` returns HTTP `200` with a `Content-Type` header\n  of `text/html` and a response body containing the exact text\n  `Hello, World!`.\n- Expose an npm `start` script that launches the server.\n- Keep the footprint to a single source file plus `package.json` — no extra\n  modules, config files, or dependencies.\n\nThis is a self-contained capability with no dependency on other subsystems and\nno external packages, so it fits a single standalone Story.\n\n## Acceptance Criteria\n\n- [ ] A single server source file exists (e.g. `server.js` at the repo root),\n      authored in ESM syntax and importing only Node.js built-ins (`node:http`);\n      the project has zero runtime dependencies added to `package.json`.\n- [ ] The server binds to `process.env.PORT` when set and to `3000` when\n      `PORT` is unset (verified by starting with and without `PORT`).\n- [ ] A `GET /` request returns HTTP status `200`, a `Content-Type` response\n      header whose value is `text/html` (charset suffix permitted, e.g.\n      `text/html; charset=utf-8`), and a response body containing the exact\n      substring `Hello, World!`.\n- [ ] `package.json` defines a `\"start\"` script that launches the server via\n      `node <server-file>`, and `npm start` boots the server successfully.\n- [ ] The implementation is limited to one source file plus `package.json`\n      (no additional source files, framework dependencies, or build step).\n\n## Out of Scope\n\n- Routing for any path other than `/` (a basic non-`/` fallback such as a 404\n  is acceptable but not required by this Story).\n- HTTPS/TLS termination, HTTP/2, or reverse-proxy configuration.\n- Request logging, metrics, graceful-shutdown handling, or health-check\n  endpoints beyond what the acceptance criteria require.\n- Any external web framework or added npm dependency.\n- Automated test tooling or CI wiring beyond the repo's existing scripts.\n\n## Notes\n\n- The repo's `package.json` already sets `\"type\": \"module\"`, so ESM `import`\n  works without a rename to `.mjs`.\n- Node's built-in `node:http` module is sufficient; `createServer` with a\n  request handler that inspects `req.method` and `req.url` covers the `GET /`\n  contract.\n- Set the status code and `Content-Type` explicitly (`res.writeHead(200,\n  { 'Content-Type': 'text/html' })`) so the response satisfies the exact\n  header contract.\n- Read the port once at startup: `const port = process.env.PORT || 3000;`.\n",
+  "labels": [
+    {
+      "id": "LA_kwDOTVuWpM8AAAACrT1EQw",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTVuWpM8AAAACrT1ERA",
+      "name": "persona::engineer",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 1,
+  "title": "Minimal Node.js HTTP server serving \"Hello, World!\" on `/`"
+}

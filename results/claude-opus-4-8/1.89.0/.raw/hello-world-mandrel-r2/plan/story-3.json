@@ -1,0 +1,19 @@
+{
+  "body": "# Minimal Node.js HTTP server returning \"Hello, World!\"\n\n## Context\n\nWe need a minimal HTTP server implemented with the Node.js built-in `http`\nmodule only — **no external web framework** (no Express, Fastify, Koa, etc.)\nand no third-party runtime dependencies. The server is written as ESM\n(`import` syntax; `\"type\": \"module\"` in `package.json`).\n\nBehavior:\n\n- Listens on the port given by the `PORT` environment variable, defaulting to\n  `3000` when `PORT` is unset or empty.\n- A `GET` request to path `/` returns HTTP `200` with a `Content-Type` header\n  of `text/html` and a response body containing the exact text\n  `Hello, World!`.\n- An npm `start` script launches the server.\n\nThe whole implementation stays to **a single source file plus\n`package.json`** — no build step, no bundler, no config sprawl.\n\n## Acceptance Criteria\n\n- [ ] `package.json` exists with `\"type\": \"module\"` and a `\"start\"` script\n      that launches the server (e.g. `node server.js`), and declares **no**\n      runtime dependencies (a web framework is explicitly disallowed).\n- [ ] A single ESM source file creates an HTTP server using only the Node.js\n      built-in `http` (or `node:http`) module.\n- [ ] The server binds to `process.env.PORT` when set, and defaults to `3000`\n      when `PORT` is unset or empty.\n- [ ] A `GET /` request responds with status `200`, a `Content-Type` header\n      equal to `text/html`, and a body whose text contains exactly\n      `Hello, World!`.\n- [ ] `npm start` (or `PORT=<n> npm start`) boots the server and the running\n      server can be verified end-to-end with `curl -i http://localhost:<port>/`\n      showing `200`, `Content-Type: text/html`, and the `Hello, World!` body.\n\n## Out of Scope\n\n- Any external web framework or third-party runtime dependency.\n- Routing beyond `GET /` (other paths/methods may return a simple default such\n  as `404`, but no router abstraction is introduced).\n- HTTPS/TLS, HTTP/2, clustering, graceful-shutdown handling, or process\n  managers.\n- Logging frameworks, environment-file loaders (`dotenv`), linters, or a\n  test-runner setup beyond what is needed to verify the acceptance criteria.\n- Containerization / deployment manifests.\n\n## Notes\n\n- Keep `Content-Type` exactly `text/html` (the acceptance check compares the\n  media type; adding `; charset=utf-8` would change the header value the\n  criterion pins — match `text/html` unless the driver tolerates a charset\n  suffix).\n- Read the port as `process.env.PORT || 3000` (or `Number(process.env.PORT) ||\n  3000`) so an unset/empty value falls back to `3000`.\n- Suggested file name: `server.js`, referenced by the `start` script as\n  `node server.js`.\n- No `Epic: #N` reference — this is a standalone Story.\n",
+  "labels": [
+    {
+      "id": "LA_kwDOTVuWpM8AAAACrT1EQw",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTVuWpM8AAAACrT1ERA",
+      "name": "persona::engineer",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 3,
+  "title": "Minimal Node.js HTTP server returning \"Hello, World!\""
+}
