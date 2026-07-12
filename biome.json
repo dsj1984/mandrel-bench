@@ -7,7 +7,14 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "includes": ["**", "!temp", "!node_modules", "!.agents", "!results"]
+    "includes": [
+      "**",
+      "!temp",
+      "!node_modules",
+      "!.agents",
+      "!results",
+      "!bench/scenarios/*/sandbox"
+    ]
   },
   "formatter": {
     "enabled": true,

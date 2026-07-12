@@ -243,10 +243,24 @@ export function repoRoot() {
  * app-code-only. The control arm never receives the framework tree at all, so
  * the same inline-program shape keeps both arms' `package.json` byte-identical.
  *
+ * ── Seed reconciliation (issue #124, brownfield rungs) ── A scenario whose
+ * `sandbox/` seed layer ships its OWN `package.json` (e.g. the
+ * brownfield-longitudinal Ledgerline app, whose `test`/`start` scripts are
+ * part of the frozen instrument) must not have those scripts clobbered by
+ * the composed gates. Pass the seed's parsed `package.json` as `existingPkg`
+ * and the merge is seed-wins at both levels: the seed's top-level fields
+ * override the gate defaults, and within `scripts` every seed-declared
+ * script wins while the gate scripts (`lint`/`typecheck`/`test`) fill only
+ * the gaps. With no `existingPkg` (every seedless scenario) the output is
+ * byte-identical to the historical gate `package.json`.
+ *
+ * @param {object|null} [existingPkg]  The seed layer's parsed `package.json`,
+ *   when the provisioned workspace already carries one. Its fields and
+ *   scripts take precedence over the composed gate defaults.
  * @returns {object}
  */
-export function buildTargetPackageJson() {
-  return {
+export function buildTargetPackageJson(existingPkg = null) {
+  const gatePkg = {
     name: 'mandrel-bench-target',
     version: '0.0.0',
     private: true,
@@ -255,6 +269,20 @@ export function buildTargetPackageJson() {
       typecheck: NODE_CHECK_SWEEP,
       lint: `if [ -f biome.json ] || [ -f biome.jsonc ]; then npx --no-install biome ci .; else ${NODE_CHECK_SWEEP}; fi`,
       test: 'node --test',
+    },
+  };
+  if (existingPkg == null) return gatePkg;
+  if (typeof existingPkg !== 'object' || Array.isArray(existingPkg)) {
+    throw new TypeError(
+      'buildTargetPackageJson existingPkg must be a package.json object',
+    );
+  }
+  return {
+    ...gatePkg,
+    ...existingPkg,
+    scripts: {
+      ...gatePkg.scripts,
+      ...(existingPkg.scripts ?? {}),
     },
   };
 }
@@ -270,10 +298,19 @@ export function buildTargetPackageJson() {
  * test scripts as the mandrel arm so gate-based signals are measured
  * identically for both arms.
  *
+ * When the provisioned workspace already carries a `package.json` — a
+ * scenario whose `sandbox/` seed layer ships one (issue #124) — the write is
+ * a seed-wins merge via {@link buildTargetPackageJson}: the seed's own
+ * scripts (`test`, `start`, …) are preserved and the gate scripts fill only
+ * the gaps. A workspace with no `package.json` gets the pure gate file,
+ * exactly as before.
+ *
  * @param {object} opts
  * @param {string} opts.workspacePath  Absolute path of the provisioned clone.
  * @param {object} [deps]
  * @param {(p: string, data: string) => void} [deps.writeFileFn]
+ * @param {(p: string, enc: string) => string} [deps.readFileFn]
+ * @param {(p: string) => boolean} [deps.existsFn]
  * @returns {{ workspacePath: string, pkg: object }}
  */
 export function writeGatePackageJson(opts = {}, deps = {}) {
@@ -284,11 +321,18 @@ export function writeGatePackageJson(opts = {}, deps = {}) {
     );
   }
   const writeFile = deps.writeFileFn ?? writeFileSync;
-  const pkg = buildTargetPackageJson();
-  writeFile(
-    path.join(workspacePath, 'package.json'),
-    `${JSON.stringify(pkg, null, 2)}\n`,
-  );
+  const readFile = deps.readFileFn ?? readFileSync;
+  const exists = deps.existsFn ?? existsSync;
+  const pkgPath = path.join(workspacePath, 'package.json');
+  // Seed reconciliation (issue #124): a scenario seed layer's own
+  // package.json wins over the composed gate scripts. A malformed seed
+  // package.json throws loudly — that is a broken frozen instrument, never
+  // something to silently clobber.
+  const existingPkg = exists(pkgPath)
+    ? JSON.parse(readFile(pkgPath, 'utf8'))
+    : null;
+  const pkg = buildTargetPackageJson(existingPkg);
+  writeFile(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
   return { workspacePath, pkg };
 }
 
@@ -454,7 +498,10 @@ export function overlayFrameworkUnderTest(opts = {}, deps = {}) {
   // Delegates to writeGatePackageJson (the control arm's counterpart) rather
   // than re-inlining the serialize+write, so both arms share one write path
   // (Epic #66 audit remediation, H4).
-  writeGatePackageJson({ workspacePath }, { writeFileFn: writeFile });
+  writeGatePackageJson(
+    { workspacePath },
+    { writeFileFn: writeFile, readFileFn: readFile, existsFn: exists },
+  );
 
   // Rewrite .agentrc.json to target the sandbox repo.
   const agentrc = rewriteAgentrc(

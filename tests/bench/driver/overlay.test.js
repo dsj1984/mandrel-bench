@@ -55,6 +55,9 @@ const AGENTRC_SRC = JSON.stringify({
 
 /**
  * Recording fakes. Every source path "exists" unless listed in `missing`.
+ * The workspace's own `package.json` (the seed-reconciliation read, issue
+ * #124) is absent unless `opts.workspacePkg` supplies its JSON text —
+ * modelling the pre-#124 seedless clone by default.
  */
 function fakes(opts = {}) {
   const cpCalls = [];
@@ -62,6 +65,8 @@ function fakes(opts = {}) {
   const appends = {};
   const mkdirs = [];
   const missing = new Set(opts.missing ?? []);
+  const workspacePkgPath = path.join(WS, 'package.json');
+  if (opts.workspacePkg === undefined) missing.add(workspacePkgPath);
   // The clone's `.git/info/exclude` starts absent — git-clone seeds an empty
   // working tree and never an exclude file. The append fake models how
   // appendFileSync grows the file, and existsFn flips it to "present" once
@@ -73,6 +78,9 @@ function fakes(opts = {}) {
       writes[p] = data;
     },
     readFileFn: (p) => {
+      if (p === workspacePkgPath && opts.workspacePkg !== undefined) {
+        return opts.workspacePkg;
+      }
       if (p.endsWith('.agentrc.json')) return AGENTRC_SRC;
       if (p === excludePath) return appends[p] ?? '';
       throw new Error(`unexpected read: ${p}`);
@@ -281,6 +289,76 @@ test('writeGatePackageJson (control): writes the SAME gate package.json directly
 
 test('writeGatePackageJson: rejects a missing workspacePath', () => {
   assert.throws(() => writeGatePackageJson({}), /non-empty workspacePath/);
+});
+
+test('buildTargetPackageJson: seed reconciliation — the seed layer package.json wins over the composed gates (issue #124)', () => {
+  const seedPkg = {
+    name: 'ledgerline',
+    version: '1.0.0',
+    private: true,
+    type: 'module',
+    engines: { node: '>=22' },
+    scripts: {
+      start: 'node src/server.js',
+      test: 'node --test tests/',
+    },
+  };
+  const merged = buildTargetPackageJson(seedPkg);
+
+  // Seed-declared scripts win; the gate fills only the gaps.
+  assert.equal(merged.scripts.start, 'node src/server.js');
+  assert.equal(merged.scripts.test, 'node --test tests/');
+  const gate = buildTargetPackageJson();
+  assert.equal(merged.scripts.typecheck, gate.scripts.typecheck);
+  assert.equal(merged.scripts.lint, gate.scripts.lint);
+
+  // Seed top-level fields win over the gate defaults too.
+  assert.equal(merged.name, 'ledgerline');
+  assert.equal(merged.version, '1.0.0');
+  assert.deepEqual(merged.engines, { node: '>=22' });
+
+  // No existingPkg ⇒ byte-identical to the historical gate package.json.
+  assert.deepEqual(buildTargetPackageJson(), gate);
+  assert.throws(() => buildTargetPackageJson([]), /package\.json object/);
+});
+
+test('writeGatePackageJson: merges an existing seed package.json instead of clobbering it (issue #124)', () => {
+  const seedPkg = {
+    name: 'ledgerline',
+    version: '1.0.0',
+    private: true,
+    type: 'module',
+    scripts: { start: 'node src/server.js', test: 'node --test tests/' },
+  };
+  const { deps, writes } = fakes({ workspacePkg: JSON.stringify(seedPkg) });
+  const res = writeGatePackageJson({ workspacePath: WS }, deps);
+  const pkg = JSON.parse(writes[path.join(WS, 'package.json')]);
+  assert.deepEqual(pkg, buildTargetPackageJson(seedPkg));
+  assert.equal(pkg.scripts.start, 'node src/server.js');
+  assert.equal(pkg.scripts.test, 'node --test tests/');
+  assert.match(pkg.scripts.typecheck, /--check/);
+  assert.equal(res.pkg.name, 'ledgerline');
+});
+
+test('overlay (mandrel): a seed-layer package.json in the clone survives the overlay with gate gaps filled (issue #124)', () => {
+  const seedPkg = {
+    name: 'ledgerline',
+    version: '1.0.0',
+    private: true,
+    type: 'module',
+    scripts: { start: 'node src/server.js', test: 'node --test tests/' },
+  };
+  const { deps, writes } = fakes({ workspacePkg: JSON.stringify(seedPkg) });
+  overlayFrameworkUnderTest(
+    { workspacePath: WS, arm: 'mandrel', sandbox: SANDBOX, sourceRoot: SOURCE },
+    deps,
+  );
+  const pkg = JSON.parse(writes[path.join(WS, 'package.json')]);
+  assert.equal(pkg.name, 'ledgerline');
+  assert.equal(pkg.scripts.start, 'node src/server.js');
+  assert.equal(pkg.scripts.test, 'node --test tests/');
+  assert.match(pkg.scripts.typecheck, /--check/);
+  assert.match(pkg.scripts.lint, /biome ci|--check/);
 });
 
 test('overlay (mandrel): copies the framework tree + node_modules and writes config', () => {

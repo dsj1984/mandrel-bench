@@ -3,5 +3,10 @@
   // authored prose — exempt them from markdownlint (both `npm run lint:md`
   // and the lint-staged pre-commit hook read this `ignores`). Authored docs
   // under results/ (e.g. results/README.md) stay linted.
-  "ignores": ["results/**/reports/**"]
+  //
+  // Scenario sandbox seed layers (bench/scenarios/<id>/sandbox/) are FROZEN
+  // benchmark instrument content (issue #124): once merged, any edit is a
+  // benchmarkVersion bump by policy, so linter/formatter upgrades must never
+  // force churn inside them.
+  "ignores": ["results/**/reports/**", "bench/scenarios/*/sandbox/**"]
 }
