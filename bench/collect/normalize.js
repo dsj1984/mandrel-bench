@@ -30,6 +30,13 @@
 
 import { readFileSync } from 'node:fs';
 
+import {
+  baseArm,
+  isControlArm,
+  isMandrelArm,
+  KNOWN_ARMS,
+  routingOverrideForArm,
+} from '../driver/arms.js';
 import { computeDimensions } from '../score/dimensions.js';
 import { computeAttribution } from '../score/plan-quality.js';
 
@@ -593,12 +600,12 @@ function resolveTelemetrySource({
   // UNMEASURED and must score `null` rather than a misleading default. The
   // control arm never has a ledger.
   const ledgerObserved = emitted.length > 0;
-  // Standalone fallback (Story #48): when the mandrel arm produced no Epic
+  // Standalone fallback (Story #48): when a mandrel-base arm produced no Epic
   // ledger but the run recovered the standalone Story's GitHub telemetry,
   // those signals stand in for the ledger so planning-fidelity + autonomy are
-  // MEASURED rather than null. The control arm has neither source.
+  // MEASURED rather than null. The control-base arms have neither source.
   const standaloneObserved =
-    !ledgerObserved && standalone != null && run.arm === 'mandrel';
+    !ledgerObserved && standalone != null && isMandrelArm(run.arm);
   const valueObserved = ledgerObserved || standaloneObserved;
   // The routing Mandrel actually took for this cell — `epic` (ledger found),
   // `story` (standalone telemetry), or null (control / undetermined).
@@ -607,18 +614,25 @@ function resolveTelemetrySource({
     : standaloneObserved
       ? (standalone.routingVerdict ?? 'story')
       : null;
-  // Routing contract enforcement (Epic #66, Story #76): a mandrel-arm record
-  // whose OBSERVED routing diverges from the scenario's DECLARED contract
-  // measured a different pipeline than the one the contract promises, so it
-  // is excluded from the cell's noise-band pool downstream. Both the
-  // contract and the observed verdict must be known for a comparison to be
-  // meaningful — an undetermined verdict (no ledger, no standalone recovery)
-  // is never itself treated as a divergence.
+  // Routing contract enforcement (Epic #66, Story #76), ARM-AWARE per Ticket
+  // #123: a mandrel-base record whose OBSERVED routing diverges from its
+  // EXPECTED routing measured a different pipeline than the one promised, so
+  // it is excluded from the cell's noise-band pool downstream. The expected
+  // routing is the ARM's forced routing override when it declares one — for
+  // `mandrel-story-routed` the forced `story` routing IS the treatment, so a
+  // story verdict on an `epic`-contract scenario is exactly what the arm
+  // promises (no mismatch), while an arm-4 run that disobeys the override and
+  // routes as an Epic is still a mismatch (the treatment failed to apply).
+  // Arms with no override keep comparing against the scenario contract
+  // unchanged. Both the expected routing and the observed verdict must be
+  // known for a comparison to be meaningful — an undetermined verdict (no
+  // ledger, no standalone recovery) is never itself treated as a divergence.
+  const expectedRouting = routingOverrideForArm(run.arm) ?? scenarioRouting;
   const routingMismatch =
-    run.arm === 'mandrel' &&
-    typeof scenarioRouting === 'string' &&
+    isMandrelArm(run.arm) &&
+    typeof expectedRouting === 'string' &&
     routingVerdict != null &&
-    routingVerdict !== scenarioRouting;
+    routingVerdict !== expectedRouting;
   const planningInput = standaloneObserved ? standalone.planning : planning;
 
   return {
@@ -668,7 +682,7 @@ function resolveTokenSplit({
   usage,
   wallClockMs,
 }) {
-  if (arm === 'control') {
+  if (isControlArm(arm)) {
     return {
       ceremonyTokens: 0,
       codegenTokens: usage.totalTokens,
@@ -839,9 +853,9 @@ export function buildScorecard({
       throw new TypeError(`buildScorecard: run.${key} is required`);
     }
   }
-  if (run.arm !== 'mandrel' && run.arm !== 'control') {
+  if (!KNOWN_ARMS.includes(run.arm)) {
     throw new TypeError(
-      `buildScorecard: run.arm must be "mandrel" or "control", got ${String(run.arm)}`,
+      `buildScorecard: run.arm must be one of ${KNOWN_ARMS.join(', ')}, got ${String(run.arm)}`,
     );
   }
   if (!quality || typeof quality !== 'object') {
@@ -892,7 +906,7 @@ export function buildScorecard({
   // Loud null (§8): the mandrel arm produced NEITHER an Epic ledger NOR
   // recovered standalone telemetry, so planning-fidelity, autonomy, and the
   // overhead split are all genuinely unmeasured — not silently defaulted.
-  const telemetryAbsent = run.arm === 'mandrel' && !valueObserved;
+  const telemetryAbsent = isMandrelArm(run.arm) && !valueObserved;
   // Footprint on an Epic-routed run (which threads only story counts, no
   // plan-vs-actual path set) is now DROPPED from the planning-fidelity mean by
   // `computePlanningFidelity` rather than silently defaulting to a perfect 1.0.
@@ -902,7 +916,10 @@ export function buildScorecard({
 
   // ---- Dimension math (delegated to the scorer) ------------------------
   const dimensions = computeDimensions({
-    arm: run.arm,
+    // The dimension scorers key arm-conditional logic (the control arm's
+    // planning-fidelity null) off the BASE arm, so the Ticket #123 variants
+    // score under the identical rules as their base shape.
+    arm: baseArm(run.arm),
     quality: {
       // `measured: false` (an unmaterialized mandrel delivery) forces a null
       // quality score, so it must survive the reshape into the scorer input.
@@ -910,7 +927,7 @@ export function buildScorecard({
       frozenSuitePassed: quality.frozenSuitePassed,
       frozenSuiteTotal: quality.frozenSuiteTotal,
       acceptanceEvalScore:
-        run.arm === 'control' && quality.acceptanceEvalScore === undefined
+        isControlArm(run.arm) && quality.acceptanceEvalScore === undefined
           ? null
           : (quality.acceptanceEvalScore ?? null),
     },
@@ -1069,7 +1086,7 @@ export function buildScorecard({
   // run envelope is their sum). The control arm is a single session, so it
   // carries no `phases` block — and an absent/empty array leaves the block off
   // entirely, keeping control records valid without it.
-  if (run.arm === 'mandrel' && Array.isArray(phases) && phases.length > 0) {
+  if (isMandrelArm(run.arm) && Array.isArray(phases) && phases.length > 0) {
     scorecard.phases = phases.map((p) => ({
       phase: p.phase,
       costUsd:
@@ -1171,7 +1188,7 @@ export function buildScorecard({
   // renderer honours a stored classification instead of recomputing it. A
   // null/absent planQuality, or the control arm, leaves the block off entirely.
   if (
-    run.arm === 'mandrel' &&
+    isMandrelArm(run.arm) &&
     planQuality &&
     typeof planQuality === 'object' &&
     typeof planQuality.score === 'number'

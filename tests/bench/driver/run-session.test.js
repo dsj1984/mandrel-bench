@@ -185,7 +185,7 @@ test('buildArmPrompt: control arm is bare — no Mandrel pipeline', () => {
 test('buildArmPrompt: rejects bad arm and missing scenario fields', () => {
   assert.throws(
     () => buildArmPrompt({ arm: 'nope', scenario: SCENARIO }),
-    /must be "mandrel" or "control"/,
+    /must be one of mandrel, control/,
   );
   assert.throws(
     () => buildArmPrompt({ arm: 'mandrel', scenario: {} }),
@@ -541,7 +541,7 @@ test('aggregateEnvelopes: sums cost/tokens/duration and folds nulls', () => {
 test('runSession: rejects bad arm and empty cwd', () => {
   assert.throws(
     () => runSession({ arm: 'nope', scenario: SCENARIO, cwd: '/tmp/s' }, {}),
-    /must be "mandrel" or "control"/,
+    /must be one of mandrel, control/,
   );
   assert.throws(
     () => runSession({ arm: 'mandrel', scenario: SCENARIO, cwd: '' }, {}),
@@ -714,4 +714,126 @@ test('rethrowIfTransientClaudeError — throws on transient, no-op on genuine', 
     rethrowIfTransientClaudeError(new Error('app crashed')),
     undefined,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Ticket #123 — variant arms: control-claudemd (arm 3) and
+// mandrel-story-routed (arm 4). Arm 3 is a workspace seed, NOT a prompt
+// delta; arm 4 is a plan-phase routing override on the existing two-session
+// mandrel machinery, not a fork of it.
+// ---------------------------------------------------------------------------
+
+test('buildMandrelPlanPrompt (storyRouted): carries the single-Story routing override on the --idea drive', () => {
+  const prompt = buildMandrelPlanPrompt({
+    scenario: SCENARIO,
+    storyRouted: true,
+  });
+  assert.match(prompt, /ROUTING OVERRIDE/);
+  assert.match(prompt, /ONE standalone Story/);
+  assert.match(prompt, /do NOT decompose it into an Epic/);
+  assert.match(prompt, /one spec, one close-validate, one review, one PR/);
+  assert.match(prompt, /\/plan --idea/);
+  assert.match(prompt, /do NOT deliver/);
+  assert.match(prompt, /hello-world/);
+});
+
+test('buildMandrelPlanPrompt (storyRouted): ignores a seed Epic id — entering at an Epic would contradict the override', () => {
+  const prompt = buildMandrelPlanPrompt({
+    scenario: { ...SCENARIO, epicId: 42 },
+    storyRouted: true,
+  });
+  assert.match(prompt, /\/plan --idea/);
+  assert.doesNotMatch(prompt, /\/plan 42/);
+  assert.doesNotMatch(prompt, /#42/);
+});
+
+test('buildArmPrompt (control-claudemd): byte-identical to the control prompt — arm 3 differs only by the seeded CLAUDE.md', () => {
+  assert.equal(
+    buildArmPrompt({ arm: 'control-claudemd', scenario: SCENARIO }),
+    buildControlPrompt({ scenario: SCENARIO }),
+  );
+});
+
+test('buildArmPrompt (mandrel-story-routed): plan phase carries the override; deliver phase is the shared builder', () => {
+  const plan = buildArmPrompt({
+    arm: 'mandrel-story-routed',
+    scenario: SCENARIO,
+    phase: 'plan',
+  });
+  assert.match(plan, /ROUTING OVERRIDE/);
+  // The plain mandrel plan prompt carries no override.
+  assert.doesNotMatch(
+    buildArmPrompt({ arm: 'mandrel', scenario: SCENARIO, phase: 'plan' }),
+    /ROUTING OVERRIDE/,
+  );
+  assert.equal(
+    buildArmPrompt({
+      arm: 'mandrel-story-routed',
+      scenario: SCENARIO,
+      phase: 'deliver',
+      deliverTarget: 7,
+    }),
+    buildMandrelDeliverPrompt({ scenario: SCENARIO, deliverTarget: 7 }),
+  );
+});
+
+test('runSession (control-claudemd): ONE bare session with the control prompt; phases null; arm preserved', () => {
+  const invoke = fakeInvoke();
+  const result = runSession(
+    { arm: 'control-claudemd', scenario: SCENARIO, cwd: '/tmp/s' },
+    { invokeFn: invoke },
+  );
+  assert.equal(invoke.calls.length, 1);
+  assert.equal(
+    invoke.calls[0].prompt,
+    buildControlPrompt({ scenario: SCENARIO }),
+  );
+  assert.equal(result.arm, 'control-claudemd');
+  assert.equal(result.phases, null);
+});
+
+test('runSession (mandrel-story-routed): TWO ordered sessions; the plan prompt carries the routing override', () => {
+  const invoke = fakeInvoke();
+  const result = runSession(
+    { arm: 'mandrel-story-routed', scenario: SCENARIO, cwd: '/tmp/s' },
+    { invokeFn: invoke },
+  );
+  assert.equal(invoke.calls.length, 2);
+  assert.match(invoke.calls[0].prompt, /ROUTING OVERRIDE/);
+  assert.match(invoke.calls[0].prompt, /ONE standalone Story/);
+  assert.match(invoke.calls[1].prompt, /\/deliver/);
+  assert.equal(result.arm, 'mandrel-story-routed');
+  assert.equal(result.phases.length, 2);
+  assert.deepEqual(
+    result.phases.map((p) => p.phase),
+    ['plan', 'deliver'],
+  );
+});
+
+test('runSession (mandrel-story-routed): betweenPhases deliverTarget threads into the deliver prompt; a seed Epic id is NOT the fallback target', () => {
+  // With a betweenPhases hook: the discovered standalone Story id drives /deliver.
+  const invoke = fakeInvoke();
+  runSession(
+    {
+      arm: 'mandrel-story-routed',
+      scenario: { ...SCENARIO, epicId: 42 },
+      cwd: '/tmp/s',
+    },
+    { invokeFn: invoke, betweenPhases: () => ({ deliverTarget: 101 }) },
+  );
+  assert.match(invoke.calls[1].prompt, /\/deliver 101 --yes/);
+
+  // Without a hook: the seed Epic id must NOT become the deliver target (the
+  // story-routed plan session ignored it); the prompt falls back to in-session
+  // discovery.
+  const invoke2 = fakeInvoke();
+  runSession(
+    {
+      arm: 'mandrel-story-routed',
+      scenario: { ...SCENARIO, epicId: 42 },
+      cwd: '/tmp/s',
+    },
+    { invokeFn: invoke2 },
+  );
+  assert.doesNotMatch(invoke2.calls[1].prompt, /\/deliver 42/);
 });

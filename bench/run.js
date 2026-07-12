@@ -47,6 +47,12 @@ import { fileURLToPath } from 'node:url';
 import { buildScorecard, parseNdjson } from './collect/normalize.js';
 import { withRunningApp as defaultWithRunningApp } from './driver/app-runner.js';
 import {
+  armSeedsStaticClaudeMd,
+  isMandrelArm,
+  parseBenchArms,
+  routingOverrideForArm,
+} from './driver/arms.js';
+import {
   defaultCliLogger,
   runIfMain,
   sanitizeIdent,
@@ -54,6 +60,7 @@ import {
 import { DEFAULT_TTL_HOURS, sweepLeakedRepos } from './driver/janitor.js';
 import {
   overlayFrameworkUnderTest,
+  seedStaticClaudeMd,
   writeGatePackageJson,
 } from './driver/overlay.js';
 import {
@@ -1100,7 +1107,7 @@ export async function loadScenario(scenarioId, deps = {}) {
  * @returns {{ touch2Cwd: string, inheritance: 'full-pipeline'|'delivered-code-only' }}
  */
 export function prepareTouch2Workspace({ arm, workspacePath }, deps = {}) {
-  if (arm === 'mandrel') {
+  if (isMandrelArm(arm)) {
     // Full pipeline output travels forward untouched.
     return { touch2Cwd: workspacePath, inheritance: 'full-pipeline' };
   }
@@ -1229,8 +1236,9 @@ export async function runTouch2(opts, deps = {}) {
           2,
         )}\n`,
       );
-      // Lifecycle ledger, when the mandrel arm produced one in the touch-2 tree.
-      if (arm === 'mandrel') {
+      // Lifecycle ledger, when a mandrel-base arm produced one in the touch-2
+      // tree.
+      if (isMandrelArm(arm)) {
         const found = discoverLedger(
           { workspacePath: workspaceForLedger },
           deps.discoverDeps,
@@ -1313,7 +1321,7 @@ export async function runTouch2(opts, deps = {}) {
     // honest autonomy signal that the unattended PR failed to land) rather than a
     // false quality score on stale code.
     let materialized = true;
-    if (arm === 'mandrel') {
+    if (isMandrelArm(arm)) {
       let preSha = null;
       try {
         preSha = gitFn(['rev-parse', 'origin/main'], touch2Cwd).trim();
@@ -1395,7 +1403,7 @@ export async function runTouch2(opts, deps = {}) {
       { workspacePath: touch2Cwd, app: scenario.app },
       async (baseUrl, appInfo) => {
         const restart = appInfo?.restart;
-        if (arm === 'mandrel') {
+        if (isMandrelArm(arm)) {
           const r = await scoreQualityFn({
             evaluate: touch2Evaluate,
             baseUrl,
@@ -1526,7 +1534,7 @@ export async function runTouch2(opts, deps = {}) {
       scenarioRouting:
         typeof scenario?.routing === 'string' ? scenario.routing : null,
       // The touch-2 change LANDED (materialized onto main); feeds autonomy.
-      landed: arm === 'mandrel' ? true : null,
+      landed: isMandrelArm(arm) ? true : null,
     });
 
     const outcome = subCard.dimensions.quality.score;
@@ -1624,6 +1632,7 @@ export async function runOneRun(opts, deps = {}) {
   const resetSandbox = deps.resetSandboxFn ?? resetSandboxBaseline;
   const overlay = deps.overlayFn ?? overlayFrameworkUnderTest;
   const writeGatePkgJson = deps.writeGatePackageJsonFn ?? writeGatePackageJson;
+  const seedClaudeMd = deps.seedStaticClaudeMdFn ?? seedStaticClaudeMd;
   const runTrapOraclesFn = deps.runTrapOraclesFn ?? defaultRunTrapOracles;
   const runSessionFn = deps.runSessionFn ?? defaultRunSession;
   const withRunningAppFn = deps.withRunningAppFn ?? defaultWithRunningApp;
@@ -1660,6 +1669,10 @@ export async function runOneRun(opts, deps = {}) {
   const bridged = {
     id: scenario.id,
     taskPrompt: scenario.seed.prompt,
+    // Seed Epic ids drive the plain mandrel arm ONLY: the story-routed
+    // variant (arm 4, Ticket #123) authors its own standalone Story via the
+    // --idea drive (entering at a seed Epic would contradict its routing
+    // override), and control-base arms never touch the pipeline.
     ...(arm === 'mandrel' && scenario.epicId != null
       ? { epicId: scenario.epicId }
       : {}),
@@ -1699,7 +1712,7 @@ export async function runOneRun(opts, deps = {}) {
     deps.provisionDeps,
   );
   try {
-    if (arm === 'mandrel') {
+    if (isMandrelArm(arm)) {
       overlay(
         {
           workspacePath: handle.workspacePath,
@@ -1711,13 +1724,20 @@ export async function runOneRun(opts, deps = {}) {
       );
     } else {
       // Control provisioning path (Story #74): no framework tree to overlay,
-      // but the control arm still needs the SAME real gate package.json as
-      // the mandrel arm so gate-based signals are measured identically for
+      // but the control-base arms still need the SAME real gate package.json
+      // as the mandrel arm so gate-based signals are measured identically for
       // both arms (buildTargetPackageJson is now arm-agnostic).
       writeGatePkgJson(
         { workspacePath: handle.workspacePath },
         deps.overlayDeps,
       );
+      // Arm 3 (`control-claudemd`, Ticket #123): the identical control path
+      // plus ONE static generic CLAUDE.md seeded into the workspace — the
+      // only delta from the control arm, so `(arm3 − control)` isolates the
+      // value of any static structure.
+      if (armSeedsStaticClaudeMd(arm)) {
+        seedClaudeMd({ workspacePath: handle.workspacePath }, deps.overlayDeps);
+      }
     }
 
     // Both arms get the permission args so each can act headlessly; the mandrel
@@ -1754,31 +1774,52 @@ export async function runOneRun(opts, deps = {}) {
     // when the delivery does not land. Stays null for the control arm and on a
     // discovery failure (then no PR-head branch can be recovered).
     let deliveredTarget = null;
-    const betweenPhases =
-      arm === 'mandrel'
-        ? ({ planEnvelope }) => {
-            try {
-              const modelForRaw = resolveModelId(planEnvelope, model);
-              const planDir = path.join(
-                cohortDir({
-                  resultsDir,
-                  scorecard: { model: { id: modelForRaw }, frameworkVersion },
-                }),
-                '.raw',
-                idStampForRaw,
-                'plan',
+    // The routing this cell EXPECTS (arm-aware, Ticket #123): the arm's
+    // forced routing override when it declares one (`mandrel-story-routed`
+    // forces `story` — the override IS the treatment), else the scenario
+    // contract's declared routing. The override also nulls the seed Epic id:
+    // the story-routed plan session authors its own standalone Story, so the
+    // discovery below must take the story path, never enter at a seed Epic.
+    const forcedRouting = routingOverrideForArm(arm);
+    const effectiveRouting =
+      forcedRouting ??
+      (typeof scenario?.routing === 'string'
+        ? scenario.routing
+        : scenario.epicId != null
+          ? 'epic'
+          : null);
+    const seedEpicId =
+      forcedRouting === 'story' ? null : (scenario.epicId ?? null);
+    const betweenPhases = isMandrelArm(arm)
+      ? ({ planEnvelope }) => {
+          try {
+            const modelForRaw = resolveModelId(planEnvelope, model);
+            const planDir = path.join(
+              cohortDir({
+                resultsDir,
+                scorecard: { model: { id: modelForRaw }, frameworkVersion },
+              }),
+              '.raw',
+              idStampForRaw,
+              'plan',
+            );
+            const routing = effectiveRouting;
+            let epicId = seedEpicId;
+            let storyNumber = null;
+            let deliverTarget = null;
+            if (routing === 'story' && epicId == null) {
+              storyNumber = discoverStandaloneStory(
+                {
+                  owner: sandbox.owner,
+                  repo: sandbox.repo,
+                  sinceIso: runStartedAt,
+                },
+                { ghJson: planGhJson },
               );
-              const routing =
-                typeof scenario?.routing === 'string'
-                  ? scenario.routing
-                  : scenario.epicId != null
-                    ? 'epic'
-                    : null;
-              let epicId = scenario.epicId ?? null;
-              let storyNumber = null;
-              let deliverTarget = null;
-              if (routing === 'story' && epicId == null) {
-                storyNumber = discoverStandaloneStory(
+              deliverTarget = storyNumber;
+            } else {
+              if (epicId == null) {
+                epicId = discoverPlannedEpicId(
                   {
                     owner: sandbox.owner,
                     repo: sandbox.repo,
@@ -1786,58 +1827,42 @@ export async function runOneRun(opts, deps = {}) {
                   },
                   { ghJson: planGhJson },
                 );
-                deliverTarget = storyNumber;
-              } else {
-                if (epicId == null) {
-                  epicId = discoverPlannedEpicId(
-                    {
-                      owner: sandbox.owner,
-                      repo: sandbox.repo,
-                      sinceIso: runStartedAt,
-                    },
-                    { ghJson: planGhJson },
-                  );
-                }
-                deliverTarget = epicId;
               }
-              planSnapshot = snapshotPlanArtifacts(
-                {
-                  owner: sandbox.owner,
-                  repo: sandbox.repo,
-                  routing,
-                  epicId,
-                  storyNumber,
-                  planDir,
-                  sinceIso: runStartedAt,
-                  capturedAt: runStartedAt,
-                },
-                {
-                  ghJson: planGhJson,
-                  mkdirImpl: mkdir,
-                  writeFileImpl: writeFile,
-                  logger,
-                },
-              );
-              deliveredTarget = { routing, epicId, storyNumber };
-              return { deliverTarget };
-            } catch (err) {
-              logger?.warn?.(
-                `[run] plan-phase id-discovery/snapshot failed (continuing): ${err?.message ?? err}`,
-              );
-              deliveredTarget = {
-                routing:
-                  typeof scenario?.routing === 'string'
-                    ? scenario.routing
-                    : scenario.epicId != null
-                      ? 'epic'
-                      : null,
-                epicId: scenario.epicId ?? null,
-                storyNumber: null,
-              };
-              return { deliverTarget: scenario.epicId ?? null };
+              deliverTarget = epicId;
             }
+            planSnapshot = snapshotPlanArtifacts(
+              {
+                owner: sandbox.owner,
+                repo: sandbox.repo,
+                routing,
+                epicId,
+                storyNumber,
+                planDir,
+                sinceIso: runStartedAt,
+                capturedAt: runStartedAt,
+              },
+              {
+                ghJson: planGhJson,
+                mkdirImpl: mkdir,
+                writeFileImpl: writeFile,
+                logger,
+              },
+            );
+            deliveredTarget = { routing, epicId, storyNumber };
+            return { deliverTarget };
+          } catch (err) {
+            logger?.warn?.(
+              `[run] plan-phase id-discovery/snapshot failed (continuing): ${err?.message ?? err}`,
+            );
+            deliveredTarget = {
+              routing: effectiveRouting,
+              epicId: seedEpicId,
+              storyNumber: null,
+            };
+            return { deliverTarget: seedEpicId };
           }
-        : undefined;
+        }
+      : undefined;
 
     const session = runSessionFn(
       {
@@ -1862,7 +1887,7 @@ export async function runOneRun(opts, deps = {}) {
     // The control arm commits directly and always materializes (landed: N/A).
     let delivered = true;
     let landed = null;
-    if (arm === 'mandrel') {
+    if (isMandrelArm(arm)) {
       const deliveryBranch = resolveDeliveryBranch(deliveredTarget);
       const m = materializeMandrelDelivery(
         {
@@ -1898,7 +1923,7 @@ export async function runOneRun(opts, deps = {}) {
     let standalone = null;
     const rawDir = path.join(cohortDirPath, '.raw');
     // idStampForRaw was resolved before the session (the plan snapshot needs it).
-    if (arm === 'mandrel') {
+    if (isMandrelArm(arm)) {
       const found = discoverLedger(
         { workspacePath: handle.workspacePath },
         deps.discoverDeps,
@@ -1983,7 +2008,7 @@ export async function runOneRun(opts, deps = {}) {
             // persistence criterion can test survival across an actual server
             // restart (Ticket #122, item 5).
             const restart = appInfo?.restart;
-            if (arm === 'mandrel') {
+            if (isMandrelArm(arm)) {
               const r = await scoreQualityFn({
                 evaluate,
                 baseUrl,
@@ -2184,20 +2209,19 @@ export async function runOneRun(opts, deps = {}) {
     // renderer's attribution table already tolerates. The attribution decision
     // table itself is attached downstream by `buildScorecard`, which crosses
     // this score with the delivered dimensions it computes.
-    const planQuality =
-      arm === 'mandrel'
-        ? buildPlanQualityBlock(
-            {
-              snapshot: planSnapshot,
-              scenario,
-              trapClasses: Array.isArray(trap?.classes)
-                ? trap.classes.map((c) => c.class)
-                : [],
-              judgeScore: null,
-            },
-            { readFileImpl: deps.readFileImpl },
-          )
-        : null;
+    const planQuality = isMandrelArm(arm)
+      ? buildPlanQualityBlock(
+          {
+            snapshot: planSnapshot,
+            scenario,
+            trapClasses: Array.isArray(trap?.classes)
+              ? trap.classes.map((c) => c.class)
+              : [],
+            judgeScore: null,
+          },
+          { readFileImpl: deps.readFileImpl },
+        )
+      : null;
 
     const scorecard = buildScorecard({
       run,
@@ -2205,7 +2229,7 @@ export async function runOneRun(opts, deps = {}) {
       signals,
       envelope: session.envelope,
       quality,
-      planning: arm === 'mandrel' ? planningInputs(lifecycle) : {},
+      planning: isMandrelArm(arm) ? planningInputs(lifecycle) : {},
       maintainabilityInputs,
       securityInputs,
       trap,
@@ -2225,11 +2249,11 @@ export async function runOneRun(opts, deps = {}) {
       // neither a merged main nor a PR-head branch (distinct from a
       // delivered-but-broken app, and distinct from an unlanded-but-scored
       // PR-head tree, which now scores normally with landed:false).
-      deliveryNotMaterialized: arm === 'mandrel' && !delivered,
+      deliveryNotMaterialized: isMandrelArm(arm) && !delivered,
       // Landing datum (Ticket #121, item 1): true = PR merged onto main; false =
       // an unlanded PR-head tree was scored; null = control / undetermined. Feeds
       // the autonomy dimension as unattended-landing.
-      landed: arm === 'mandrel' ? landed : null,
+      landed: isMandrelArm(arm) ? landed : null,
     });
     return scorecard;
   } finally {
@@ -2803,7 +2827,9 @@ function reportRunResult(result) {
  *   BENCH_GITHUB_TOKEN (required) — token with repo create/delete scopes.
  *   BENCH_SANDBOX_OWNER (required) — the account/org ephemeral repos are
  *     created under.
- * Optional: BENCH_SCENARIOS (csv), BENCH_ARMS (csv), BENCH_N.
+ * Optional: BENCH_SCENARIOS (csv), BENCH_ARMS (csv — any of
+ *   mandrel|control|control-claudemd|mandrel-story-routed; default
+ *   mandrel,control — the Ticket #123 variant arms are opt-in), BENCH_N.
  * Per-scenario seed Epic ids (mandrel arm):
  *   BENCH_EPIC_ID (single-scenario back-compat → scenarios[0]),
  *   BENCH_EPIC_IDS (JSON map keyed by scenario id),
@@ -2846,9 +2872,20 @@ export async function main(env = process.env, deps = {}) {
 
   const cohort = env.BENCH_COHORT ?? new Date().toISOString().slice(0, 10);
   const ephemeralRoot = defaultEphemeralRoot();
-  const arms = (env.BENCH_ARMS ?? 'mandrel,control')
-    .split(',')
-    .map((s) => s.trim());
+  // Validated arm parse (Ticket #123): the default arm set is unchanged
+  // (mandrel,control); the arm-3/arm-4 variant cells are OPT-IN via
+  // BENCH_ARMS (e.g. `BENCH_ARMS=control,control-claudemd` or
+  // `BENCH_ARMS=mandrel,mandrel-story-routed`). An unknown arm name fails
+  // fast HERE — before any sandbox is provisioned or cost is spent — because
+  // a typo'd arm would otherwise run a mislabelled cell into the cohort.
+  let arms;
+  try {
+    arms = parseBenchArms(env.BENCH_ARMS);
+  } catch (err) {
+    logger.error(`[run] FATAL: invalid BENCH_ARMS: ${err?.message ?? err}`);
+    process.exitCode = 1;
+    return;
+  }
   // H1: an explicit BENCH_N is an operator override applied uniformly to
   // every scenario; when unset, leave `n` undefined so
   // `runFirstBenchmark`/`runCell` resolve each scenario's own declared

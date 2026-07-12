@@ -35,6 +35,8 @@ import {
 import { homedir } from 'node:os';
 import path from 'node:path';
 
+import { baseArm, KNOWN_ARMS, routingOverrideForArm } from './arms.js';
+
 /**
  * Pinned default model id. The harness records the exact model on every
  * scorecard and only ever compares like-model to like-model (Epic Non-Goal:
@@ -120,13 +122,35 @@ export function buildControlPrompt(input) {
  *     unknown to the harness until the between-session id-discovery seam recovers
  *     it (see bench/run.js), so this prompt does not reference an id.
  *
+ * **Story-routing override (arm 4, Ticket #123).** When `storyRouted` is true
+ * the prompt drives the `--idea` path (a seed Epic id is deliberately ignored —
+ * entering at an existing Epic would contradict the override) and instructs
+ * the scope-triage step to route the task as ONE standalone Story regardless
+ * of apparent scope — one guarded session: spec once, close-validate once,
+ * review once, one PR. The override is the arm-4 treatment; the harness's
+ * routing-mismatch exclusion is made arm-aware to match (see
+ * bench/driver/arms.js `routingOverrideForArm`).
+ *
  * @param {object} input
  * @param {{ id: string, taskPrompt: string, epicId?: number|string }} input.scenario
+ * @param {boolean} [input.storyRouted]  Force single-standalone-Story routing.
  * @returns {string}
  */
 export function buildMandrelPlanPrompt(input) {
-  const { scenario } = input ?? {};
+  const { scenario, storyRouted = false } = input ?? {};
   assertScenario(scenario, 'buildMandrelPlanPrompt');
+  if (storyRouted) {
+    const drive =
+      `Author the plan with \`/plan --idea "<the task described below>" --yes\` ` +
+      `(the --yes flag drives /plan headlessly through its HITL stop gates). ` +
+      `ROUTING OVERRIDE: at the scope-triage decision, route this task as ONE ` +
+      `standalone Story — do NOT decompose it into an Epic with child Stories, ` +
+      `regardless of how large the task appears. The entire task must be ` +
+      `specified, delivered, and reviewed as a single Story: one spec, one ` +
+      `close-validate, one review, one PR. Run ONLY the planning pipeline in ` +
+      `this session — do NOT deliver, and do not pre-stage any planning artifact.`;
+    return `${MANDREL_UNATTENDED_PREAMBLE}${drive}\n\nTask (${scenario.id}):\n${scenario.taskPrompt}`;
+  }
   const drive =
     scenario.epicId !== undefined && scenario.epicId !== null
       ? `An Epic issue (#${scenario.epicId}) capturing the task below has already ` +
@@ -175,11 +199,16 @@ export function buildMandrelDeliverPrompt(input) {
 
 /**
  * Compose the prompt sent to `claude -p` for a given arm + scenario (+ phase).
- * A thin phase-aware dispatcher over the per-phase builders above:
+ * A thin phase-aware dispatcher over the per-phase builders above, keyed on
+ * the arm's BASE shape (bench/driver/arms.js) so the Ticket #123 variants
+ * reuse the existing builders:
  *
- * - **control** arm: the bare task via `buildControlPrompt` (single session).
- * - **mandrel** arm + `phase: 'plan'`  → `buildMandrelPlanPrompt`.
- * - **mandrel** arm + `phase: 'deliver'` → `buildMandrelDeliverPrompt`.
+ * - **control-base** arms (`control`, `control-claudemd`): the bare task via
+ *   `buildControlPrompt` (single session; arm 3's static CLAUDE.md is a
+ *   workspace seed, not a prompt delta).
+ * - **mandrel-base** arms + `phase: 'plan'`  → `buildMandrelPlanPrompt`
+ *   (with the story-routing override for `mandrel-story-routed`).
+ * - **mandrel-base** arms + `phase: 'deliver'` → `buildMandrelDeliverPrompt`.
  * - **mandrel** arm with NO phase → the legacy combined `/plan then /deliver`
  *   prompt (back-compat for callers that still want one prompt; `runSession`
  *   itself now uses the per-phase builders).
@@ -187,7 +216,7 @@ export function buildMandrelDeliverPrompt(input) {
  * Exported so docs tooling and tests reference one canonical builder.
  *
  * @param {object} input
- * @param {'mandrel'|'control'} input.arm
+ * @param {string} input.arm  Any arm in bench/driver/arms.js KNOWN_ARMS.
  * @param {{ id: string, taskPrompt: string, epicId?: number|string }} input.scenario
  * @param {'plan'|'deliver'} [input.phase]  Mandrel phase selector.
  * @param {number|string|null} [input.deliverTarget]  Passed through to the
@@ -196,13 +225,17 @@ export function buildMandrelDeliverPrompt(input) {
  */
 export function buildArmPrompt(input) {
   const { arm, scenario, phase, deliverTarget } = input ?? {};
+  const base = KNOWN_ARMS.includes(arm) ? baseArm(arm) : arm;
 
-  if (arm === 'control') {
+  if (base === 'control') {
     return buildControlPrompt({ scenario });
   }
 
-  if (arm === 'mandrel') {
-    if (phase === 'plan') return buildMandrelPlanPrompt({ scenario });
+  if (base === 'mandrel') {
+    const storyRouted = routingOverrideForArm(arm) === 'story';
+    if (phase === 'plan') {
+      return buildMandrelPlanPrompt({ scenario, storyRouted });
+    }
     if (phase === 'deliver') {
       return buildMandrelDeliverPrompt({ scenario, deliverTarget });
     }
@@ -224,7 +257,7 @@ export function buildArmPrompt(input) {
   }
 
   throw new TypeError(
-    `buildArmPrompt arm must be "mandrel" or "control", got: ${String(arm)}`,
+    `buildArmPrompt arm must be one of ${KNOWN_ARMS.join(', ')}, got: ${String(arm)}`,
   );
 }
 
@@ -755,9 +788,9 @@ export function runSession(opts = {}, deps = {}) {
     timeoutMs = DEFAULT_SESSION_TIMEOUT_MS,
   } = opts;
 
-  if (arm !== 'mandrel' && arm !== 'control') {
+  if (!KNOWN_ARMS.includes(arm)) {
     throw new TypeError(
-      `runSession arm must be "mandrel" or "control", got: ${String(arm)}`,
+      `runSession arm must be one of ${KNOWN_ARMS.join(', ')}, got: ${String(arm)}`,
     );
   }
   if (typeof cwd !== 'string' || cwd.length === 0) {
@@ -768,9 +801,11 @@ export function runSession(opts = {}, deps = {}) {
 
   const invokeFn = deps.invokeFn ?? defaultInvokeClaudeSession;
   const logger = deps.logger;
+  const base = baseArm(arm);
 
-  // Control arm: a single bare session.
-  if (arm === 'control') {
+  // Control-base arms (`control`, `control-claudemd`): a single bare session.
+  // Arm 3's only delta is the CLAUDE.md the driver seeded into `cwd`.
+  if (base === 'control') {
     const prompt = buildControlPrompt({ scenario });
     const { status, envelope } = invokeOneSession({
       prompt,
@@ -794,8 +829,13 @@ export function runSession(opts = {}, deps = {}) {
     };
   }
 
-  // Mandrel arm: two ordered sessions (plan → deliver), D-019.
-  const planPrompt = buildMandrelPlanPrompt({ scenario });
+  // Mandrel-base arms: two ordered sessions (plan → deliver), D-019. The
+  // `mandrel-story-routed` variant (arm 4, Ticket #123) threads the
+  // story-routing override into the plan-phase prompt; everything else —
+  // between-phases discovery, deliver phase, envelope aggregation — is the
+  // identical machinery.
+  const storyRouted = routingOverrideForArm(arm) === 'story';
+  const planPrompt = buildMandrelPlanPrompt({ scenario, storyRouted });
   const plan = invokeOneSession({
     prompt: planPrompt,
     arm,
@@ -817,8 +857,14 @@ export function runSession(opts = {}, deps = {}) {
     const between =
       deps.betweenPhases({ scenario, planEnvelope: plan.envelope, cwd }) ?? {};
     deliverTarget = between.deliverTarget ?? null;
-  } else if (scenario.epicId !== undefined && scenario.epicId !== null) {
+  } else if (
+    !storyRouted &&
+    scenario.epicId !== undefined &&
+    scenario.epicId !== null
+  ) {
     // No hook, but a seed Epic id is known up front — deliver it directly.
+    // (Not for the story-routed variant: its plan session ignored the seed
+    // Epic and authored a standalone Story, so the Epic id is not the target.)
     deliverTarget = scenario.epicId;
   }
 
