@@ -1716,6 +1716,54 @@ test('runFirstBenchmark: the touch-2 session spend counts against maxCostUsd (au
   assert.ok(result.stopped.costUsd > 0.6);
 });
 
+test('runFirstBenchmark: skipTouch2 skips the change-request touch — no touch2 block, no touch-2 spend folded (BENCH_SKIP_TOUCH2 diagnostic)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  // The SAME scenario-with-changeRequest shape as the H2 spend test above —
+  // but with skipTouch2 the second touch must never run: the scorecard omits
+  // the touch2 block entirely (continuity unmeasured, not failed) and the
+  // accumulated cost stays at touch-1's 0.42 (below the 0.60 ceiling that the
+  // H2 test proves a touch-2 run would cross).
+  deps.loadDeps = {
+    readFileImpl: () =>
+      JSON.stringify({
+        ...FAKE_SCENARIO,
+        changeRequest: {
+          id: 'cr-1',
+          prompt: 'Evolve it',
+          acceptanceSuite: './acceptance.touch2.test.js',
+        },
+      }),
+    importImpl: async () => ({
+      evaluate: async () => ({
+        scenario: 'hello-world',
+        passed: true,
+        criteria: [{ met: true }, { met: true }],
+      }),
+    }),
+  };
+
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel'],
+      n: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+      maxCostUsd: 0.6,
+      skipTouch2: true,
+    },
+    deps,
+  );
+
+  assert.equal(result.scorecards.length, 1);
+  const sc = result.scorecards[0];
+  // No touch2 block — identical shape to a scenario with no changeRequest.
+  assert.equal(sc.touch2, undefined);
+  // Only touch-1 spend accumulated; the 0.60 ceiling was NOT crossed.
+  assert.notEqual(result.stopped?.reason, 'maxCostUsd');
+});
+
 test('runFirstBenchmark: with no explicit n, resolves per-scenario run count from each scenario.targetN (Epic #66 audit remediation, H1)', async () => {
   const record = freshRecord();
   const deps = benchDeps(record);
