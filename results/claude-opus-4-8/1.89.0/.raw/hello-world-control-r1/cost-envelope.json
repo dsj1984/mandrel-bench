@@ -1,0 +1,72 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "api_error_status": null,
+  "duration_ms": 32634,
+  "duration_api_ms": 32807,
+  "ttft_ms": 1939,
+  "ttft_stream_ms": 1413,
+  "time_to_request_ms": 17,
+  "num_turns": 7,
+  "result": "Done. Built and committed a minimal Node.js HTTP server.\n\n**What was created:**\n- `server.js` — ESM server using the built-in `node:http` module (no external framework). Listens on `process.env.PORT || 3000`; `GET /` returns HTTP 200 with `Content-Type: text/html` and a body containing `Hello, World!`.\n- `package.json` — added a `\"start\": \"node server.js\"` script (and `main`), preserving the existing `typecheck`/`lint`/`test` scripts rather than overwriting them.\n\n**Verified end-to-end:** started the server and `curl`'d `/` — got `200 OK`, `Content-Type: text/html`, and the \"Hello, World!\" body. Committed as `2de719f`.",
+  "stop_reason": "end_turn",
+  "session_id": "733941cb-63f3-4681-8635-b78fa17e1c8e",
+  "total_cost_usd": 0.22764099999999998,
+  "usage": {
+    "input_tokens": 11,
+    "cache_creation_input_tokens": 10676,
+    "cache_read_input_tokens": 151032,
+    "output_tokens": 1783,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 10676,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 1,
+        "output_tokens": 248,
+        "cache_read_input_tokens": 27807,
+        "cache_creation_input_tokens": 414,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 414
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 655,
+      "outputTokens": 16,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000735,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 11,
+      "outputTokens": 1783,
+      "cacheReadInputTokens": 151032,
+      "cacheCreationInputTokens": 10676,
+      "webSearchRequests": 0,
+      "costUSD": 0.226906,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "uuid": "50088ec6-ea36-4299-b794-8b424e0c5e1d"
+}
