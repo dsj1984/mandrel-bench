@@ -1572,3 +1572,122 @@ describe('normalizeRunFromPaths — file-reading shell', () => {
     );
   });
 });
+
+describe('buildScorecard — arm-aware routing-mismatch + variant arms (Ticket #123)', () => {
+  const EPIC_LEDGER = [
+    {
+      kind: 'emitted',
+      ts: '2026-06-16T19:00:00.000Z',
+      event: 'story.dispatch.start',
+    },
+    {
+      kind: 'emitted',
+      ts: '2026-06-16T19:30:00.000Z',
+      event: 'story.dispatch.end',
+    },
+  ];
+  const STANDALONE = {
+    planning: { plannedStoryCount: 1, deliveredStoryCount: 1, rePlanCount: 0 },
+    autonomy: { hitlStops: 0, blockedEvents: 0, manualRescues: 0 },
+    routingVerdict: 'story',
+  };
+
+  it('mandrel-story-routed: story routing on an epic-contract scenario is the TREATMENT, not a mismatch', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel-story-routed', scenario: 'epic-scope' }),
+      lifecycle: [], // no Epic ledger — the standalone path
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
+      standalone: STANDALONE,
+      scenarioRouting: 'epic',
+    });
+    assert.equal(sc.arm, 'mandrel-story-routed');
+    assert.equal(sc.routingVerdict, 'story');
+    // The exclusion is ARM-AWARE, not globally weakened: this arm's expected
+    // routing is its own 'story' override, so the divergence from the
+    // scenario contract is exactly what the arm promises.
+    assert.equal(sc.routingMismatch, false);
+    // The standalone telemetry stands in for the ledger — value dims MEASURED.
+    assert.equal(typeof sc.dimensions.planningFidelity.score, 'number');
+  });
+
+  it('mandrel-story-routed: an EPIC verdict is still a mismatch — the treatment failed to apply', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel-story-routed', scenario: 'epic-scope' }),
+      lifecycle: EPIC_LEDGER, // the run disobeyed the override and epic-routed
+      planning: { plannedStoryCount: 1, deliveredStoryCount: 1 },
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
+      scenarioRouting: 'epic',
+    });
+    assert.equal(sc.routingVerdict, 'epic');
+    assert.equal(sc.routingMismatch, true);
+  });
+
+  it('plain mandrel keeps the scenario-contract comparison unchanged (not weakened by the arm-4 exemption)', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel', scenario: 'epic-scope' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
+      standalone: STANDALONE,
+      scenarioRouting: 'epic',
+    });
+    assert.equal(sc.routingVerdict, 'story');
+    assert.equal(sc.routingMismatch, true);
+  });
+
+  it('mandrel-story-routed attaches the per-phase envelopes like the base mandrel arm', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel-story-routed' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+      phases: [
+        { phase: 'plan', costUsd: 0.1, tokens: 100, wallClockMs: 1000 },
+        { phase: 'deliver', costUsd: 0.3, tokens: 300, wallClockMs: 3000 },
+      ],
+    });
+    assert.equal(sc.phases.length, 2);
+  });
+
+  it('control-claudemd scores under the control shape: all-codegen split, null planning fidelity, null default acceptanceEvalScore, no mismatch', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'control-claudemd' }),
+      lifecycle: [],
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+      scenarioRouting: 'story',
+    });
+    assert.equal(sc.arm, 'control-claudemd');
+    assert.equal(sc.dimensions.planningFidelity.score, null);
+    assert.equal(sc.dimensions.quality.acceptanceEvalScore, null);
+    assert.equal(sc.dimensions.overheadRatio.ceremonyTokens, 0);
+    assert.equal(sc.routingMismatch, false);
+    // No standalone-telemetry-absent loud null — that marker is mandrel-base only.
+    assert.ok(!sc.warnings.includes('standalone-telemetry-absent'));
+  });
+
+  it('variant-arm scorecards validate against scorecard.schema.json; an unknown arm still throws', () => {
+    const validate = buildValidator();
+    for (const arm of ['control-claudemd', 'mandrel-story-routed']) {
+      const sc = buildScorecard({
+        run: runStamp({ arm }),
+        lifecycle: [],
+        envelope: normalizedEnvelope(),
+        quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+      });
+      assert.equal(validate(sc), true, JSON.stringify(validate.errors));
+    }
+    assert.throws(
+      () =>
+        buildScorecard({
+          run: runStamp({ arm: 'contrl' }),
+          lifecycle: [],
+          envelope: normalizedEnvelope(),
+          quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+        }),
+      /run\.arm must be one of/,
+    );
+  });
+});
