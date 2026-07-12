@@ -361,6 +361,10 @@ export const STATIC_CLAUDEMD_FIXTURE_PATH = path.join(
  *
  * @param {object} opts
  * @param {string} opts.workspacePath  Absolute path of the provisioned clone.
+ * @param {string} [opts.fixturePath]  Per-scenario fixture override (issue
+ *   #124 review note 3): the caller resolves `scenario.controlClaudeMd` to an
+ *   absolute path so arm 3's CLAUDE.md content is scenario-addressable. Wins
+ *   over `deps.fixturePath`; absent, the shared generic default applies.
  * @param {object} [deps]
  * @param {(p: string, enc: string) => string} [deps.readFileFn]
  * @param {(p: string, data: string) => void} [deps.writeFileFn]
@@ -376,7 +380,8 @@ export function seedStaticClaudeMd(opts = {}, deps = {}) {
   }
   const readFile = deps.readFileFn ?? readFileSync;
   const writeFile = deps.writeFileFn ?? writeFileSync;
-  const fixturePath = deps.fixturePath ?? STATIC_CLAUDEMD_FIXTURE_PATH;
+  const fixturePath =
+    opts.fixturePath ?? deps.fixturePath ?? STATIC_CLAUDEMD_FIXTURE_PATH;
   const content = readFile(fixturePath, 'utf8');
   const claudeMdPath = path.join(workspacePath, 'CLAUDE.md');
   writeFile(claudeMdPath, content);

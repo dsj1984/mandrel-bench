@@ -93,6 +93,12 @@ import {
   renderCohortReport,
   renderDashboardFile,
 } from './report/render-tree.js';
+import {
+  cellCostUsd,
+  normalizeScenarioTouches,
+  resolveControlClaudeMdFixture,
+  runTouchChain,
+} from './run-chain.js';
 import { scoreScenarioQuality as defaultScoreScenarioQuality } from './scenarios/acceptance-eval-adapter.js';
 import {
   collectSourceExcerpt as defaultCollectSourceExcerpt,
@@ -1049,17 +1055,44 @@ export function appendCheckpoint({ checkpointPath, cell }, deps = {}) {
  * `changeRequest` (e.g. hello-world) resolves `touch2Evaluate` to `null`, and
  * the driver skips touch 2 for it.
  *
+ * When the scenario declares a `touches[]` CHAIN (issue #124, PR-C — the
+ * brownfield-longitudinal rung), the touches are normalized + validated via
+ * `normalizeScenarioTouches` (prompt text loaded from `promptPath` at load
+ * time) and returned as `touches`; the chain is MUTUALLY EXCLUSIVE with
+ * `changeRequest` (the seed overlay is the baseline — there is no greenfield
+ * touch-1 build or single frozen change request), so no top-level acceptance
+ * suite or touch-2 oracle is resolved for it (`evaluate`/`touch2Evaluate` are
+ * null — scoring runs through the scenario's suite-evolution runner instead).
+ * A scenario with no `touches[]` returns `touches: null` and behaves exactly
+ * as before.
+ *
  * @param {string} scenarioId
  * @param {object} [deps]
  * @param {(p: string, enc: string) => string} [deps.readFileImpl]
  * @param {(spec: string) => Promise<object>} [deps.importImpl]
- * @returns {Promise<{ scenario: object, evaluate: Function, scenarioDir: string, touch2Evaluate: Function|null }>}
+ * @returns {Promise<{ scenario: object, evaluate: Function|null, scenarioDir: string, touch2Evaluate: Function|null, touches: Array<object>|null }>}
  */
 export async function loadScenario(scenarioId, deps = {}) {
   const read = deps.readFileImpl ?? readFileSync;
   const importImpl = deps.importImpl ?? ((spec) => import(spec));
   const dir = path.join(__dirname, 'scenarios', scenarioId);
   const scenario = JSON.parse(read(path.join(dir, 'scenario.json'), 'utf8'));
+  if (scenario.touches !== undefined) {
+    // Touch-chain scenario (issue #124, PR-C): normalize + validate the chain
+    // declaration (this also rejects a `changeRequest` sibling). The chain
+    // path scores through the scenario's suite-evolution runner, so no
+    // greenfield acceptance module is imported here.
+    const touches = normalizeScenarioTouches(scenario, dir, {
+      readFileImpl: read,
+    });
+    return {
+      scenario,
+      evaluate: null,
+      scenarioDir: dir,
+      touch2Evaluate: null,
+      touches,
+    };
+  }
   const suiteRel = scenario.acceptanceSuite ?? './acceptance.test.js';
   const mod = await importImpl(path.join(dir, suiteRel));
   let touch2Evaluate = null;
@@ -1069,7 +1102,13 @@ export async function loadScenario(scenarioId, deps = {}) {
     const touch2Mod = await importImpl(path.join(dir, touch2Rel));
     touch2Evaluate = touch2Mod.evaluate;
   }
-  return { scenario, evaluate: mod.evaluate, scenarioDir: dir, touch2Evaluate };
+  return {
+    scenario,
+    evaluate: mod.evaluate,
+    scenarioDir: dir,
+    touch2Evaluate,
+    touches: null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1611,6 +1650,9 @@ export async function runOneRun(opts, deps = {}) {
     touch2Evaluate = null, // the frozen touch-2 oracle (Story #96); present only
     // when the scenario declares a `changeRequest`. null ⇒ the driver skips
     // touch 2 for this scenario (e.g. hello-world).
+    touches = null, // normalized touch-chain declarations (issue #124, PR-C),
+    // present only for a `touches[]` scenario. Routes the cell to
+    // `runTouchChain` below; `changeRequest` scenarios are untouched.
     arm,
     runIndex,
     model = DEFAULT_BENCH_MODEL,
@@ -1623,6 +1665,37 @@ export async function runOneRun(opts, deps = {}) {
     timeoutMs = DEFAULT_SESSION_TIMEOUT_MS,
     skipTouch2 = false, // BENCH_SKIP_TOUCH2 diagnostic (touch-1-only runs)
   } = opts;
+
+  // Touch-chain routing (issue #124, PR-C): a scenario declaring `touches[]`
+  // runs as a CHAIN — the seed overlay is the baseline (no greenfield
+  // build-from-prompt phase), each touch advances or skips forward per the
+  // design §3 rules. `changeRequest` scenarios continue on the existing
+  // touch-1 + touch-2 path below, byte-for-byte.
+  const chainTouches =
+    touches ??
+    (Array.isArray(scenario?.touches) && scenario.touches.length > 0
+      ? normalizeScenarioTouches(scenario, scenarioDir, {
+          readFileImpl: deps.readFileImpl,
+        })
+      : null);
+  if (Array.isArray(chainTouches) && chainTouches.length > 0) {
+    return runTouchChain(
+      {
+        scenario,
+        touches: chainTouches,
+        scenarioDir,
+        arm,
+        runIndex,
+        model,
+        sandbox,
+        sourceRoot,
+        resultsDir,
+        ephemeralRoot,
+        timeoutMs,
+      },
+      deps,
+    );
+  }
 
   const baselineRef = sandbox.baselineRef ?? 'bench-baseline';
   const baselineSha = sandbox.baselineSha ?? undefined;
@@ -1733,11 +1806,26 @@ export async function runOneRun(opts, deps = {}) {
         deps.overlayDeps,
       );
       // Arm 3 (`control-claudemd`, Ticket #123): the identical control path
-      // plus ONE static generic CLAUDE.md seeded into the workspace — the
-      // only delta from the control arm, so `(arm3 − control)` isolates the
-      // value of any static structure.
+      // plus ONE static CLAUDE.md seeded into the workspace — the only delta
+      // from the control arm, so `(arm3 − control)` isolates the value of any
+      // static structure. The CONTENT is per-scenario resolvable (issue #124
+      // review note 3): a scenario may declare `controlClaudeMd` (relative to
+      // its scenario dir) to point arm 3 at scenario-specific content; absent,
+      // the generic `bench/fixtures/control-claudemd.md` default applies.
       if (armSeedsStaticClaudeMd(arm)) {
-        seedClaudeMd({ workspacePath: handle.workspacePath }, deps.overlayDeps);
+        const controlClaudeMdFixture = resolveControlClaudeMdFixture(
+          scenario,
+          scenarioDir,
+        );
+        seedClaudeMd(
+          {
+            workspacePath: handle.workspacePath,
+            ...(controlClaudeMdFixture
+              ? { fixturePath: controlClaudeMdFixture }
+              : {}),
+          },
+          deps.overlayDeps,
+        );
       }
     }
 
@@ -2393,7 +2481,7 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
   };
 
   outer: for (const scenarioId of scenarios) {
-    const { scenario, evaluate, scenarioDir, touch2Evaluate } =
+    const { scenario, evaluate, scenarioDir, touch2Evaluate, touches } =
       await loadScenario(scenarioId, deps.loadDeps);
     if (epicIds[scenarioId] != null) scenario.epicId = epicIds[scenarioId];
     // Per-scenario run count (H1): an explicit operator override
@@ -2427,6 +2515,7 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
             evaluate,
             scenarioDir,
             touch2Evaluate,
+            touches,
             arm,
             runIndex,
             model,
@@ -2442,14 +2531,12 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
         // so a ceiling stop never abandons a partial / un-checkpointed cell.
         persistCell(scorecard, cell);
         completed += 1;
-        const cellCost = scorecard?.dimensions?.efficiency?.costUsd;
-        if (typeof cellCost === 'number') costUsd += cellCost;
-        // A mandrel cell runs FOUR sessions (touch-1 plan+deliver, touch-2
-        // plan+deliver), but efficiency.costUsd counts only touch 1. Fold the
-        // second-touch session spend in too, or a BENCH_MAX_COST_USD ceiling is
-        // undercounted by ~2× on change-request scenarios (audit H2).
-        const cellTouch2Cost = scorecard?.touch2?.cost;
-        if (typeof cellTouch2Cost === 'number') costUsd += cellTouch2Cost;
+        // Invocation-cost accounting (audit H2, extended for touch chains):
+        // a change-request cell folds `efficiency.costUsd` + `touch2.cost`;
+        // a chain cell sums EVERY `chain.touches[].cost` instead (its
+        // record-level efficiency.costUsd is a per-touch MEAN, so adding it
+        // would double-count) — see `cellCostUsd` in bench/run-chain.js.
+        costUsd += cellCostUsd(scorecard);
 
         // Ceiling check fires AFTER the cell is fully persisted + checkpointed,
         // so the loop stops cleanly between cells.
@@ -2994,12 +3081,9 @@ export async function main(env = process.env, deps = {}) {
       lastDashboard = cellResult.dashboard;
       completedTotal += cellResult.scorecards.length;
       for (const sc of cellResult.scorecards) {
-        const c = sc?.dimensions?.efficiency?.costUsd;
-        if (typeof c === 'number') costTotal += c;
-        // Fold in the second-touch session spend too (audit H2) — see the
-        // matching accumulator in runFirstBenchmark.
-        const t2 = sc?.touch2?.cost;
-        if (typeof t2 === 'number') costTotal += t2;
+        // Fold in the second-touch / chain-touch session spend too (audit H2,
+        // extended for chains) — the same accounting as runFirstBenchmark.
+        costTotal += cellCostUsd(sc);
       }
       if (cellResult.stopped) {
         overallStopped = {
