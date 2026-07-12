@@ -13,7 +13,9 @@
       "!node_modules",
       "!.agents",
       "!results",
-      "!bench/scenarios/*/sandbox"
+      "!bench/scenarios/*/sandbox",
+      "!bench/scenarios/*/frozen-suite",
+      "!bench/scenarios/*/touches"
     ]
   },
   "formatter": {
