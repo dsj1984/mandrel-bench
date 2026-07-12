@@ -586,19 +586,39 @@ describe('computeEfficiency', () => {
     const e = computeEfficiency({
       wallClockMs: 612000,
       totalTokens: 184320,
+      reportedTokens: 120000,
       inputTokens: 151200,
       outputTokens: 33120,
+      cacheReadTokens: 5000,
+      cacheWriteTokens: 2000,
       dispatches: 2,
+      gateRetries: 3,
       costUsd: 1.47,
     });
     assert.deepEqual(e, {
       wallClockMs: 612000,
       totalTokens: 184320,
+      reportedTokens: 120000,
       inputTokens: 151200,
       outputTokens: 33120,
+      cacheReadTokens: 5000,
+      cacheWriteTokens: 2000,
       dispatches: 2,
+      gateRetries: 3,
       costUsd: 1.47,
     });
+  });
+
+  it('defaults reportedTokens to totalTokens and the new fields to 0 (Ticket #122/#121)', () => {
+    const e = computeEfficiency({
+      wallClockMs: 100,
+      totalTokens: 5000,
+      dispatches: 1,
+    });
+    assert.equal(e.reportedTokens, 5000);
+    assert.equal(e.cacheReadTokens, 0);
+    assert.equal(e.cacheWriteTokens, 0);
+    assert.equal(e.gateRetries, 0);
   });
 
   it('coerces a missing/negative costUsd to null', () => {

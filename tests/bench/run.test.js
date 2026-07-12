@@ -30,6 +30,7 @@ import {
   loadScenario,
   main,
   makeClaudeJudgeTransport,
+  materializeMandrelDelivery,
   parseOptionalNumericEnv,
   planningInputs,
   prepareTouch2Workspace,
@@ -38,12 +39,14 @@ import {
   readBenchmarkVersion,
   readCheckpoint,
   readFrameworkVersion,
+  resolveDeliveryBranch,
   resolveEpicIds,
   resolveModelId,
   runFirstBenchmark,
   runOneRun,
   runTouch2,
   sanitizeRunId,
+  scenarioApplicableMusts,
   scenarioEnvSuffix,
   snapshotPlanArtifacts,
   validateSandboxEnv,
@@ -303,6 +306,175 @@ test('derivedSecurityInputs: secrets detected → objectiveSecurityScore drops, 
 test('derivedSecurityInputs: judge scores thread through', () => {
   const inputs = derivedSecurityInputs({}, { security: 0.75 });
   assert.equal(inputs.securityJudgeScore, 0.75);
+});
+
+test('derivedSecurityInputs: applicable MUST set scores only reachable MUSTs (Ticket #122, item 3)', () => {
+  // Only the two reachable MUSTs are present; the three unreachable ones absent.
+  const sigs = {
+    secretScanCount: 0,
+    depAuditVulnCount: 0,
+    hasEdgeInputValidation: false,
+    hasPasswordHashing: true,
+    hasSafeTokenStorage: false,
+    hasServerSideAuthz: true,
+    hasAuthRateLimiting: false,
+  };
+  // Under the OLD /5 scoring, mustPresenceScore = 2/5 = 0.4 (spine floor).
+  const allFive = derivedSecurityInputs(sigs, null);
+  // With the applicable set, both applicable MUSTs are present → mustPresence 1.
+  const scoped = derivedSecurityInputs(sigs, null, [
+    'passwordHashing',
+    'serverSideAuthz',
+  ]);
+  assert.ok(
+    scoped.objectiveSecurityScore > allFive.objectiveSecurityScore,
+    'scoping to reachable MUSTs lifts the spine off the floor',
+  );
+  // 0.30 (secret) + 0.20 (vuln) + 0.50·1 (must) = 1.0.
+  assert.equal(scoped.objectiveSecurityScore, 1);
+});
+
+test('derivedSecurityInputs: an unknown/empty applicable set falls back to all five', () => {
+  const sigs = {
+    secretScanCount: 0,
+    depAuditVulnCount: 0,
+    hasEdgeInputValidation: true,
+    hasPasswordHashing: true,
+    hasSafeTokenStorage: true,
+    hasServerSideAuthz: true,
+    hasAuthRateLimiting: true,
+  };
+  assert.equal(derivedSecurityInputs(sigs, null, []).objectiveSecurityScore, 1);
+  assert.equal(
+    derivedSecurityInputs(sigs, null, null).objectiveSecurityScore,
+    1,
+  );
+});
+
+test('scenarioApplicableMusts: reads scenario.security.applicableMusts, else null', () => {
+  assert.deepEqual(
+    scenarioApplicableMusts({
+      security: { applicableMusts: ['passwordHashing'] },
+    }),
+    ['passwordHashing'],
+  );
+  assert.equal(scenarioApplicableMusts({}), null);
+  assert.equal(scenarioApplicableMusts({ security: {} }), null);
+  assert.equal(
+    scenarioApplicableMusts({ security: { applicableMusts: [] } }),
+    null,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// resolveDeliveryBranch + materializeMandrelDelivery (Ticket #121, item 1)
+// ---------------------------------------------------------------------------
+
+test('resolveDeliveryBranch: epic routing → epic/<id>, story routing → story-<n>', () => {
+  assert.equal(
+    resolveDeliveryBranch({ routing: 'epic', epicId: 42, storyNumber: null }),
+    'epic/42',
+  );
+  assert.equal(
+    resolveDeliveryBranch({
+      routing: 'story',
+      epicId: null,
+      storyNumber: 77,
+    }),
+    'story-77',
+  );
+  assert.equal(resolveDeliveryBranch({ routing: null }), null);
+  assert.equal(resolveDeliveryBranch(null), null);
+});
+
+/**
+ * Build a fake gitFn that resolves rev-parse against a scripted branch→SHA map
+ * and records the fetch/checkout calls. `origin/main` resolves to `mainSha`;
+ * after a `checkout -B bench-pr-head origin/<branch>`, HEAD resolves to the
+ * branch's SHA. Unknown fetches throw (branch missing).
+ */
+function makeGit({ mainSha, branches = {} }) {
+  const calls = [];
+  let head = mainSha;
+  const fn = (args, _cwd) => {
+    calls.push(args.join(' '));
+    if (args[0] === 'fetch') {
+      const ref = args[2];
+      if (ref !== 'main' && !(ref in branches)) {
+        throw new Error(`couldn't find remote ref ${ref}`);
+      }
+      return '';
+    }
+    if (args[0] === 'checkout') {
+      // `checkout -B bench-pr-head origin/<branch>` moves HEAD to that branch.
+      const from = args[args.length - 1];
+      const m = /^origin\/(.+)$/.exec(from);
+      if (m && m[1] in branches) head = branches[m[1]];
+      return '';
+    }
+    if (args[0] === 'reset') {
+      head = mainSha; // reset --hard origin/main
+      return '';
+    }
+    if (args[0] === 'rev-parse') {
+      return `${head}\n`;
+    }
+    return '';
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+test('materializeMandrelDelivery: main advanced past baseline → landed:true, source main', () => {
+  const gitFn = makeGit({ mainSha: 'MERGED_SHA' });
+  const m = materializeMandrelDelivery({
+    gitFn,
+    workspacePath: '/ws',
+    baselineSha: 'BASELINE',
+    deliveryBranch: 'epic/42',
+  });
+  assert.deepEqual(m, { landed: true, delivered: true, source: 'main' });
+});
+
+test('materializeMandrelDelivery: unlanded but PR-head branch exists → landed:false, source branch', () => {
+  // main is unchanged (== baseline), but the delivery branch has commits.
+  const gitFn = makeGit({
+    mainSha: 'BASELINE',
+    branches: { 'epic/42': 'PRHEAD_SHA' },
+  });
+  const m = materializeMandrelDelivery({
+    gitFn,
+    workspacePath: '/ws',
+    baselineSha: 'BASELINE',
+    deliveryBranch: 'epic/42',
+  });
+  assert.deepEqual(m, { landed: false, delivered: true, source: 'branch' });
+  assert.ok(
+    gitFn.calls.some((c) => c === 'fetch origin epic/42'),
+    'fetched the PR-head branch',
+  );
+});
+
+test('materializeMandrelDelivery: unlanded and no PR-head branch → delivered:false (no false 0)', () => {
+  const gitFn = makeGit({ mainSha: 'BASELINE' }); // no branches
+  const m = materializeMandrelDelivery({
+    gitFn,
+    workspacePath: '/ws',
+    baselineSha: 'BASELINE',
+    deliveryBranch: 'epic/42',
+  });
+  assert.deepEqual(m, { landed: false, delivered: false, source: 'none' });
+});
+
+test('materializeMandrelDelivery: unknown baseline → landed:null but main scored (prior behaviour)', () => {
+  const gitFn = makeGit({ mainSha: 'SOME_SHA' });
+  const m = materializeMandrelDelivery({
+    gitFn,
+    workspacePath: '/ws',
+    baselineSha: null,
+    deliveryBranch: 'epic/42',
+  });
+  assert.deepEqual(m, { landed: null, delivered: true, source: 'main' });
 });
 
 test('derivedSecurityInputs: empty signals → conservative partial score (no secrets = secret ok, no MUSTs = low must score)', () => {
@@ -2965,6 +3137,10 @@ test('runOneRun (mandrel): an UNMATERIALIZED delivery → quality null, trap abs
     (scorecard.warnings ?? []).includes('delivery-not-materialized'),
     'the failed landing is surfaced as a loud autonomy warning',
   );
+  // Ticket #121, item 1: the landing datum flows through to the scorecard —
+  // nothing landed and nothing PR-head was scoreable here → landed:false.
+  assert.equal(scorecard.landed, false);
+  assert.equal(scorecard.dimensions.autonomy.landed, false);
 });
 
 test('runOneRun: a GENUINE judge failure degrades gracefully (cell completes, spine-only)', async () => {

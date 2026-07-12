@@ -354,30 +354,45 @@ export function computeAutonomyGuardrail(
 /**
  * Autonomy — *how little human intervention?* (value side)
  *
- *   interventions = hitlStops + blockedEvents + manualRescues
+ *   interventions = unattendedLandingFailure + terminal blockedEvents
+ *                   + manualRescues + hitlStops
  *   score = 1 / (1 + interventions)                                  ∈ (0, 1]
  *
- * `score === 1.0` ⇔ zero interventions (fully unattended).
+ * `score === 1.0` ⇔ a fully-unattended run that also LANDED unattended.
  *
- * `observed` is the caller's signal that the intervention counters were
- * actually read from a lifecycle ledger (default: assume observed). When the
- * mandrel arm produces no ledger, the counters default to 0 — which would
- * otherwise score a PERFECT 1.0 (fully unattended) for a run whose autonomy was
- * never measured. That unmeasured case scores `null` so the report excludes it.
- * The bare control arm has no ledger by design and is passed `observed: true`:
- * its zero-intervention 1.0 is the intended baseline, not a missing measurement.
+ * **Redefinition (Ticket #121, item 2).** Autonomy is now unattended-landing
+ * rate + terminal `agent::blocked` at run end + manual rescues ONLY:
+ *   - `landed === false` (the mandrel PR did not land unattended) is itself an
+ *     intervention — the one genuine reliability failure the old formula turned
+ *     into an invisible null now costs an autonomy point. `landed === true` or
+ *     `null` (control / undetermined) adds nothing.
+ *   - `blockedEvents` is TERMINAL blocks only. Self-recovered close-validate
+ *     gate retries were moved OUT of this counter into `efficiency.gateRetries`
+ *     (they are priced in tokens, not a human-intervention signal) by
+ *     `deriveAutonomyCounters`, so they no longer drag every gated run to 0.50.
+ *   - `hitlStops` (a STOP the run actually halted at) is retained — a genuine
+ *     human-in-the-loop pause is the opposite of autonomy.
  *
- * **Guardrail (§8).** The formula above is unchanged; the record additionally
- * carries a `guardrail` verdict — the score compared against a cohort
- * threshold (default `DEFAULT_AUTONOMY_GUARDRAIL_THRESHOLD`, 0.99) — so
- * reporting can present autonomy as a pass/fail gate rather than a
- * mandrel-vs-control delta. `guardrail.met` is `null` when the score is
+ * `observed` is the caller's signal that a real telemetry source existed for
+ * this run (Epic ledger or recovered standalone telemetry). When absent the
+ * counters default to 0 — which would otherwise score a PERFECT 1.0 for a run
+ * whose autonomy was never measured — so that unmeasured case scores `null`.
+ * The bare control arm has NO telemetry source and is no longer handed a free
+ * `observed: true`: its autonomy is null (N/A), not an unearned 1.0 baseline
+ * (Ticket #121, item 2).
+ *
+ * **Guardrail (§8).** The record additionally carries a `guardrail` verdict —
+ * the score compared against a cohort threshold (default
+ * `DEFAULT_AUTONOMY_GUARDRAIL_THRESHOLD`, 0.99) — so reporting can present
+ * autonomy as a pass/fail gate. `guardrail.met` is `null` when the score is
  * unmeasured.
  *
  * @param {object} input
  * @param {number} [input.hitlStops]
- * @param {number} [input.blockedEvents]
+ * @param {number} [input.blockedEvents]  TERMINAL blocks only (gate retries excluded).
  * @param {number} [input.manualRescues]
+ * @param {boolean|null} [input.landed]  Unattended-landing datum: `false` ⇒ an
+ *   intervention; `true`/`null` ⇒ none.
  * @param {boolean} [input.observed=true]  False ⇒ score is `null` (unmeasured).
  * @param {number} [input.guardrailThreshold=DEFAULT_AUTONOMY_GUARDRAIL_THRESHOLD]
  * @returns {{
@@ -385,6 +400,7 @@ export function computeAutonomyGuardrail(
  *   hitlStops: number,
  *   blockedEvents: number,
  *   manualRescues: number,
+ *   landed: boolean|null,
  *   guardrail: { threshold: number, met: boolean|null }
  * }}
  */
@@ -392,7 +408,10 @@ export function computeAutonomy(input = {}) {
   const hitlStops = nonNegInt(input.hitlStops);
   const blockedEvents = nonNegInt(input.blockedEvents);
   const manualRescues = nonNegInt(input.manualRescues);
-  const interventions = hitlStops + blockedEvents + manualRescues;
+  const landed = typeof input.landed === 'boolean' ? input.landed : null;
+  const unattendedLandingFailure = landed === false ? 1 : 0;
+  const interventions =
+    hitlStops + blockedEvents + manualRescues + unattendedLandingFailure;
   const observed = input.observed !== false;
   const score = observed ? 1 / (1 + interventions) : null;
   return {
@@ -400,6 +419,7 @@ export function computeAutonomy(input = {}) {
     hitlStops,
     blockedEvents,
     manualRescues,
+    landed,
     guardrail: computeAutonomyGuardrail(score, input.guardrailThreshold),
   };
 }
@@ -641,19 +661,34 @@ export function computeSecurity(input = {}) {
  *   dispatches  = count of Story sub-agent launches
  *   costUsd     = total USD from the envelope when reported, else null
  *
+ * `totalTokens` is the TRUE, sub-agent-inclusive figure (from `modelUsage`);
+ * `reportedTokens` preserves the parent-session-only figure, and the
+ * input/cacheRead/cacheWrite/output kind split is persisted so scoring never
+ * equates a cache read with an output token (Ticket #122, item 1).
+ * `gateRetries` (self-recovered close-validate churn) is reported here as a
+ * cost signal rather than an autonomy penalty (Ticket #121, item 2).
+ *
  * @param {object} input
  * @param {number} input.wallClockMs
  * @param {number} input.totalTokens
  * @param {number} input.dispatches
+ * @param {number} [input.reportedTokens]
  * @param {number} [input.inputTokens]
  * @param {number} [input.outputTokens]
+ * @param {number} [input.cacheReadTokens]
+ * @param {number} [input.cacheWriteTokens]
+ * @param {number} [input.gateRetries]
  * @param {number|null} [input.costUsd]
  * @returns {{
  *   wallClockMs: number,
  *   totalTokens: number,
+ *   reportedTokens: number,
  *   inputTokens: number,
  *   outputTokens: number,
+ *   cacheReadTokens: number,
+ *   cacheWriteTokens: number,
  *   dispatches: number,
+ *   gateRetries: number,
  *   costUsd: number|null
  * }}
  */
@@ -662,19 +697,35 @@ export function computeEfficiency(input = {}) {
   const totalTokens = nonNegInt(input.totalTokens);
   const inputTokens = nonNegInt(input.inputTokens);
   const outputTokens = nonNegInt(input.outputTokens);
+  const cacheReadTokens = nonNegInt(input.cacheReadTokens);
+  const cacheWriteTokens = nonNegInt(input.cacheWriteTokens);
   const dispatches = nonNegInt(input.dispatches);
+  const gateRetries = nonNegInt(input.gateRetries);
   const costUsd =
     typeof input.costUsd === 'number' &&
     Number.isFinite(input.costUsd) &&
     input.costUsd >= 0
       ? input.costUsd
       : null;
+  // `reportedTokens` (the parent-session-only figure) defaults to the true
+  // `totalTokens` when the caller does not thread it, so a legacy caller that
+  // only supplies one figure keeps reported == true (Ticket #122, item 1).
+  const reportedTokens =
+    typeof input.reportedTokens === 'number' &&
+    Number.isFinite(input.reportedTokens) &&
+    input.reportedTokens >= 0
+      ? Math.trunc(input.reportedTokens)
+      : totalTokens;
   return {
     wallClockMs,
     totalTokens,
+    reportedTokens,
     inputTokens,
     outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
     dispatches,
+    gateRetries,
     costUsd,
   };
 }

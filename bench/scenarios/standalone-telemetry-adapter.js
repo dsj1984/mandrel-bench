@@ -43,9 +43,20 @@
 
 import { execFileSync as defaultExecFileSync } from 'node:child_process';
 
-/** Markers that count as autonomy interventions in the standalone flow. */
-const BLOCKED_RE =
-  /ap:structured-comment\s+type="(?:epic|story)?-?blocked"|agent::blocked/i;
+/**
+ * Markers that count as autonomy interventions in the standalone flow.
+ *
+ * MUST match the STRUCTURED-COMMENT blocked form only — NOT the bare
+ * `agent::blocked` substring (Ticket #121, item 3). The bare-substring
+ * alternative counted ANY issue comment merely mentioning the label (e.g. a
+ * delivery-summary comment that says "the run never went agent::blocked") as
+ * an intervention, so every standalone cell scored exactly blockedEvents=1 →
+ * autonomy 0.50, including hello-world. The genuine terminal-block signal is
+ * the actual label-state transition, which `collectStandaloneTelemetry` reads
+ * separately via `labels.includes('agent::blocked')` — the bare substring here
+ * only double-counted delivery prose.
+ */
+const BLOCKED_RE = /ap:structured-comment\s+type="(?:epic|story)?-?blocked"/i;
 const INTERVENTION_RE = /ap:structured-comment\s+type="intervention"/i;
 const HITL_STOP_RE = /ap:structured-comment\s+type="hitl-stop"|hitl[-\s]?stop/i;
 /** A re-plan / decomposition-revision structured comment. */
@@ -133,7 +144,7 @@ export function discoverStandaloneStory({ owner, repo, sinceIso }, ports = {}) {
  * @param {{ ghJson?: typeof defaultGhJson }} [ports]
  * @returns {{
  *   planning: { plannedStoryCount: number, deliveredStoryCount: number, rePlanCount: number, actualPaths?: string[] },
- *   autonomy: { hitlStops: number, blockedEvents: number, manualRescues: number },
+ *   autonomy: { hitlStops: number, blockedEvents: number, manualRescues: number, gateRetries: number },
  *   routingVerdict: 'story',
  *   phases: { createdAt: string|null, closedAt: string|null, prMergedAt: string|null, codegenMs: number|null }
  * } | null}
@@ -242,7 +253,11 @@ export function collectStandaloneTelemetry(
       rePlanCount,
       ...(actualPaths ? { actualPaths } : {}),
     },
-    autonomy: { hitlStops, blockedEvents, manualRescues },
+    // gateRetries is a lifecycle-ledger signal (self-recovered close-validate
+    // churn, Ticket #121 item 2); the standalone GitHub telemetry has no
+    // close-validate boundary to read, so it is 0 here (never inflates the
+    // terminal blockedEvents count either — the two are disjoint by design).
+    autonomy: { hitlStops, blockedEvents, manualRescues, gateRetries: 0 },
     routingVerdict: 'story',
     phases: { createdAt, closedAt, prMergedAt, codegenMs },
   };

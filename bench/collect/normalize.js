@@ -156,10 +156,30 @@ export function deriveDispatchCount(records) {
 }
 
 /**
+ * A `story.blocked` reason string emitted by a FAILED close-validate gate
+ * (`pre-merge-validation.js` fires `story.blocked` with
+ * `reason: 'close-validate-failed:<gate>'` on every gate failure, including
+ * the ones the pipeline auto-recovers). These are self-recovered GATE RETRIES,
+ * not terminal human-intervention blocks — Ticket #121, item 2 moves them out
+ * of the autonomy tally into a separate `gateRetries` counter (they are
+ * already priced in tokens).
+ */
+const CLOSE_VALIDATE_BLOCK_RE = /^close-validate-failed:/;
+
+/**
  * Derive the autonomy counters from the lifecycle ledger plus the per-Story
  * signals.
  *
- *   blockedEvents — `epic.blocked` + `story.blocked` records.
+ *   blockedEvents — TERMINAL `epic.blocked` + `story.blocked` records: genuine
+ *                   agent::blocked pauses that need a human. EXCLUDES
+ *                   `story.blocked` records whose reason is a
+ *                   `close-validate-failed:*` gate failure — those are
+ *                   self-recovered close-validate retries counted separately as
+ *                   `gateRetries` (Ticket #121, item 2), NOT interventions.
+ *   gateRetries   — self-recovered close-validate gate failures (the
+ *                   `story.blocked` `close-validate-failed:*` records). A cost
+ *                   signal (already paid in tokens), reported under efficiency
+ *                   rather than penalizing autonomy.
  *   manualRescues — `intervention.recorded` records.
  *   hitlStops     — STOP gates the run actually halted at. In a correctly
  *                   configured unattended run these auto-proceed (count 0); a
@@ -172,21 +192,31 @@ export function deriveDispatchCount(records) {
  * @param {object} args
  * @param {Array<object>} args.lifecycle  Emitted lifecycle records.
  * @param {Array<object>} [args.signals]  Flattened per-Story signal records.
- * @returns {{ hitlStops: number, blockedEvents: number, manualRescues: number }}
+ * @returns {{ hitlStops: number, blockedEvents: number, manualRescues: number, gateRetries: number }}
  */
 export function deriveAutonomyCounters({ lifecycle, signals = [] }) {
   let blockedEvents = 0;
   let manualRescues = 0;
+  let gateRetries = 0;
   for (const r of lifecycle) {
-    if (r.event === EPIC_BLOCKED || r.event === STORY_BLOCKED)
+    if (r.event === EPIC_BLOCKED) {
       blockedEvents += 1;
-    else if (r.event === INTERVENTION_RECORDED) manualRescues += 1;
+    } else if (r.event === STORY_BLOCKED) {
+      const reason = r?.payload?.reason;
+      if (typeof reason === 'string' && CLOSE_VALIDATE_BLOCK_RE.test(reason)) {
+        gateRetries += 1;
+      } else {
+        blockedEvents += 1;
+      }
+    } else if (r.event === INTERVENTION_RECORDED) {
+      manualRescues += 1;
+    }
   }
   let hitlStops = 0;
   for (const s of signals) {
     if (s?.kind === 'hitl-stop' || s?.signal === 'hitl-stop') hitlStops += 1;
   }
-  return { hitlStops, blockedEvents, manualRescues };
+  return { hitlStops, blockedEvents, manualRescues, gateRetries };
 }
 
 /**
@@ -306,55 +336,183 @@ export function deriveTokenSplitFromCodegenMs({
 }
 
 /**
+ * Resolve the `modelUsage` map off a parsed envelope, tolerating both the
+ * normalized top-level `modelUsage` (from `parseSessionEnvelope` /
+ * `aggregateEnvelopes`) and a raw envelope carrying it under `raw.modelUsage`.
+ *
+ * @param {object} envelope
+ * @returns {Record<string, object>|null}
+ */
+function resolveModelUsage(envelope) {
+  if (envelope.modelUsage && typeof envelope.modelUsage === 'object') {
+    return envelope.modelUsage;
+  }
+  if (
+    envelope.raw &&
+    typeof envelope.raw === 'object' &&
+    envelope.raw.modelUsage &&
+    typeof envelope.raw.modelUsage === 'object'
+  ) {
+    return envelope.raw.modelUsage;
+  }
+  return null;
+}
+
+/**
+ * Sum the per-model `modelUsage` entries into ONE input/cacheRead/cacheWrite/
+ * output split (Ticket #122, item 1). `modelUsage` is the sub-agent-INCLUSIVE
+ * usage record: it carries a per-model entry for the parent session AND every
+ * sub-agent session, whereas the top-level `usage` envelope reports the parent
+ * session only. Field names tolerate both the camelCase envelope shape
+ * (`inputTokens`, `cacheReadInputTokens`, …) and a snake_case raw shape.
+ *
+ * @param {Record<string, object>|null} modelUsage
+ * @returns {{
+ *   present: boolean,
+ *   inputTokens: number,
+ *   outputTokens: number,
+ *   cacheReadTokens: number,
+ *   cacheWriteTokens: number,
+ *   total: number
+ * }}
+ */
+function sumModelUsage(modelUsage) {
+  const acc = {
+    present: false,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    total: 0,
+  };
+  if (!modelUsage || typeof modelUsage !== 'object') return acc;
+  for (const entry of Object.values(modelUsage)) {
+    if (!entry || typeof entry !== 'object') continue;
+    acc.present = true;
+    acc.inputTokens += nonNeg(entry.inputTokens ?? entry.input_tokens);
+    acc.outputTokens += nonNeg(entry.outputTokens ?? entry.output_tokens);
+    acc.cacheReadTokens += nonNeg(
+      entry.cacheReadInputTokens ?? entry.cache_read_input_tokens,
+    );
+    acc.cacheWriteTokens += nonNeg(
+      entry.cacheCreationInputTokens ?? entry.cache_creation_input_tokens,
+    );
+  }
+  acc.total =
+    acc.inputTokens +
+    acc.outputTokens +
+    acc.cacheReadTokens +
+    acc.cacheWriteTokens;
+  return acc;
+}
+
+/**
  * Extract the usage/cost fields the scorecard needs from a parsed `claude -p`
  * envelope. Accepts either the normalized shape returned by
- * `run-session.js#parseSessionEnvelope` (`{ usage: { totalTokens, … }, cost:
- * { totalUsd } }`) or a raw envelope (`{ usage: { input_tokens, … },
- * total_cost_usd }`), so the normalizer is robust to being handed either.
+ * `run-session.js#parseSessionEnvelope` (`{ usage: { totalTokens, … },
+ * modelUsage, cost: { totalUsd } }`) or a raw envelope (`{ usage: {
+ * input_tokens, … }, modelUsage, total_cost_usd }`), so the normalizer is
+ * robust to being handed either.
+ *
+ * **True vs reported tokens (Ticket #122, item 1).** The top-level `usage`
+ * envelope reports the PARENT session's tokens only; a Mandrel Epic run fans
+ * out to sub-agents whose tokens land in `modelUsage` and are NEVER in the
+ * top-level `usage`, so summing only `usage` undercounts true spend 2–3× while
+ * the dollar figure (`total_cost_usd`) is already sub-agent-inclusive — the
+ * two columns end up mutually inconsistent. This function therefore records
+ * BOTH figures: `reportedTokens` (the top-level `usage` total) and
+ * `totalTokens` (the sub-agent-inclusive TRUE total, from `modelUsage` when it
+ * is present and at least as large as the reported total). It also persists the
+ * input / cacheRead / cacheWrite / output kind split rather than one conflated
+ * total, so efficiency scoring never equates a ~$0.65/M cache read with a
+ * ~$21.6/M output token. A control cell has no sub-agents, so its single
+ * `modelUsage` entry equals the top-level `usage` and `totalTokens ==
+ * reportedTokens`. A degenerate/incomplete `modelUsage` (sum < reported) falls
+ * back to the reported split so the true figure can never UNDER-count.
  *
  * @param {object} envelope
  * @returns {{
  *   totalTokens: number,
+ *   reportedTokens: number,
  *   inputTokens: number,
  *   outputTokens: number,
+ *   cacheReadTokens: number,
+ *   cacheWriteTokens: number,
  *   costUsd: number|null
  * }}
  */
 export function extractUsage(envelope) {
   if (!envelope || typeof envelope !== 'object') {
-    return { totalTokens: 0, inputTokens: 0, outputTokens: 0, costUsd: null };
+    return {
+      totalTokens: 0,
+      reportedTokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      costUsd: null,
+    };
   }
   const usage =
     envelope.usage && typeof envelope.usage === 'object' ? envelope.usage : {};
 
-  // Normalized shape (from parseSessionEnvelope).
+  // Reported split (top-level `usage` — the PARENT session only).
+  let reported;
+  let totalUsd;
   if (typeof usage.totalTokens === 'number') {
-    const totalUsd =
+    // Normalized shape (from parseSessionEnvelope).
+    reported = {
+      inputTokens: nonNeg(usage.inputTokens),
+      outputTokens: nonNeg(usage.outputTokens),
+      cacheReadTokens: nonNeg(usage.cacheReadInputTokens),
+      cacheWriteTokens: nonNeg(usage.cacheCreationInputTokens),
+    };
+    totalUsd =
       envelope.cost && typeof envelope.cost === 'object'
         ? envelope.cost.totalUsd
         : null;
-    return {
-      totalTokens: nonNeg(usage.totalTokens),
-      inputTokens: nonNeg(usage.inputTokens),
-      outputTokens: nonNeg(usage.outputTokens),
-      costUsd: typeof totalUsd === 'number' && totalUsd >= 0 ? totalUsd : null,
+  } else {
+    // Raw `claude -p` envelope shape.
+    reported = {
+      inputTokens: nonNeg(usage.input_tokens),
+      outputTokens: nonNeg(usage.output_tokens),
+      cacheReadTokens: nonNeg(usage.cache_read_input_tokens),
+      cacheWriteTokens: nonNeg(usage.cache_creation_input_tokens),
     };
+    totalUsd =
+      typeof envelope.total_cost_usd === 'number'
+        ? envelope.total_cost_usd
+        : null;
   }
+  const reportedTotal =
+    reported.inputTokens +
+    reported.outputTokens +
+    reported.cacheReadTokens +
+    reported.cacheWriteTokens;
 
-  // Raw envelope shape.
-  const inputTokens = nonNeg(usage.input_tokens);
-  const outputTokens = nonNeg(usage.output_tokens);
-  const cacheCreate = nonNeg(usage.cache_creation_input_tokens);
-  const cacheRead = nonNeg(usage.cache_read_input_tokens);
-  const totalUsd =
-    typeof envelope.total_cost_usd === 'number' && envelope.total_cost_usd >= 0
-      ? envelope.total_cost_usd
-      : null;
+  // True (sub-agent-inclusive) split from `modelUsage`, when present AND at
+  // least as large as the reported total (guards against a degenerate /
+  // incomplete modelUsage that would otherwise UNDER-count the true figure).
+  const mu = sumModelUsage(resolveModelUsage(envelope));
+  const useModelUsage = mu.present && mu.total >= reportedTotal;
+  const split = useModelUsage
+    ? {
+        inputTokens: mu.inputTokens,
+        outputTokens: mu.outputTokens,
+        cacheReadTokens: mu.cacheReadTokens,
+        cacheWriteTokens: mu.cacheWriteTokens,
+        total: mu.total,
+      }
+    : { ...reported, total: reportedTotal };
+
   return {
-    totalTokens: inputTokens + outputTokens + cacheCreate + cacheRead,
-    inputTokens,
-    outputTokens,
-    costUsd: totalUsd,
+    totalTokens: split.total,
+    reportedTokens: reportedTotal,
+    inputTokens: split.inputTokens,
+    outputTokens: split.outputTokens,
+    cacheReadTokens: split.cacheReadTokens,
+    cacheWriteTokens: split.cacheWriteTokens,
+    costUsd: typeof totalUsd === 'number' && totalUsd >= 0 ? totalUsd : null,
   };
 }
 
@@ -661,6 +819,7 @@ export function buildScorecard({
   standalone = null,
   scenarioRouting = null,
   deliveryNotMaterialized = false,
+  landed = null,
 }) {
   if (!run || typeof run !== 'object') {
     throw new TypeError('buildScorecard: run identity is required');
@@ -691,7 +850,6 @@ export function buildScorecard({
 
   const emitted = emittedRecords(lifecycle);
   const {
-    ledgerObserved,
     standaloneObserved,
     valueObserved,
     routingVerdict,
@@ -767,10 +925,17 @@ export function buildScorecard({
     },
     autonomy: {
       ...autonomy,
-      // The control arm's zero-intervention baseline is defined, not measured,
-      // so it is always "observed"; the mandrel arm is observed when EITHER its
-      // Epic ledger was found OR the standalone telemetry was recovered (#48).
-      observed: run.arm === 'control' ? true : valueObserved,
+      // Autonomy is a MANDREL-arm guardrail measured from the run's own
+      // telemetry (Ticket #121, item 2). The control arm's former definitional
+      // `observed: true` 1.0 was an unearned baseline — it has no gates that can
+      // fail — so it is dropped: the arm is "observed" only when a real
+      // telemetry source exists (Epic ledger or recovered standalone telemetry).
+      // Control has neither, so its autonomy is null (N/A), not a free 1.0.
+      observed: valueObserved,
+      // Unattended-landing is a first-class autonomy input now: a mandrel
+      // delivery that did not land unattended (landed:false) is a reliability
+      // failure that must show up in autonomy, not vanish into a null.
+      landed,
     },
     maintainability: {
       // `measured: false` (unmaterialized delivery) forces a null score — must
@@ -794,11 +959,22 @@ export function buildScorecard({
     },
     efficiency: {
       wallClockMs,
+      // `totalTokens` is the TRUE (sub-agent-inclusive) figure so the token
+      // column matches the sub-agent-inclusive dollar column; `reportedTokens`
+      // preserves the top-level `usage` figure, and the kind split
+      // (input/cacheRead/cacheWrite/output) is persisted so efficiency scoring
+      // never equates cache reads with output tokens (Ticket #122, item 1).
       totalTokens: usage.totalTokens,
+      reportedTokens: usage.reportedTokens,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
+      cacheReadTokens: usage.cacheReadTokens,
+      cacheWriteTokens: usage.cacheWriteTokens,
       dispatches,
       costUsd: usage.costUsd,
+      // Self-recovered close-validate gate churn (Ticket #121, item 2), moved
+      // off the autonomy tally and reported here as a cost signal.
+      gateRetries: autonomy.gateRetries,
     },
     overheadRatio: {
       ceremonyTokens: split.ceremonyTokens,
@@ -850,6 +1026,17 @@ export function buildScorecard({
     dimensions,
     warnings,
   };
+
+  // Landing datum (Ticket #121, item 1): whether the mandrel delivery LANDED
+  // on the default branch (PR merged) — recorded SEPARATELY from whether the
+  // delivered tree was scoreable. `true` = merged; `false` = an unlanded
+  // PR-head tree was scored instead (a reliability failure that feeds autonomy,
+  // NOT a data-destroying null); `null` = not applicable / undetermined
+  // (control arm commits directly, so landing is not a concept). Present only
+  // as an explicit boolean so control records stay unchanged.
+  if (typeof landed === 'boolean') {
+    scorecard.landed = landed;
+  }
 
   // Multi-class differential trap signal (Epic #66, Story #74). Present only
   // when the scenario declares at least one trap class; the SEPARATE

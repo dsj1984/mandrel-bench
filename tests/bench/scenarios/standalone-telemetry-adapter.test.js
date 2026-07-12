@@ -104,6 +104,7 @@ describe('collectStandaloneTelemetry', () => {
       hitlStops: 0,
       blockedEvents: 0,
       manualRescues: 0,
+      gateRetries: 0,
     });
   });
 
@@ -206,6 +207,32 @@ describe('collectStandaloneTelemetry', () => {
     assert.equal(t.autonomy.blockedEvents, 1);
     assert.equal(t.autonomy.manualRescues, 1);
     assert.equal(t.autonomy.hitlStops, 1);
+  });
+
+  it('does NOT count a bare `agent::blocked` mention in a delivery-summary comment (Ticket #121, item 3)', () => {
+    const t = collectStandaloneTelemetry(
+      { owner: OWNER, repo: REPO, storyNumber: 72 },
+      {
+        ghJson: makeGh({
+          ...cleanRoutes,
+          'issue view': {
+            number: 72,
+            state: 'CLOSED',
+            labels: [{ name: 'type::story' }, { name: 'agent::done' }],
+            comments: [
+              // A prose delivery summary that merely mentions the label — the
+              // old bare-substring BLOCKED_RE scored this as an intervention,
+              // pinning every standalone cell at blockedEvents=1 → autonomy 0.50.
+              {
+                body: 'Delivery complete. The run never transitioned to agent::blocked and needed no intervention.',
+              },
+            ],
+          },
+        }),
+      },
+    );
+    assert.equal(t.autonomy.blockedEvents, 0);
+    assert.equal(t.autonomy.gateRetries, 0);
   });
 
   it('returns null when the issue cannot be read', () => {
