@@ -26,7 +26,7 @@ scorecards.ndjson` (one per line), validated against the schema on emit.
 | `frameworkVersion` | string | The `mandrel` version under test — the `version` of the pinned `mandrel` dependency (`node_modules/mandrel/package.json`), read by `bench/run.js#readFrameworkVersion`. |
 | `benchmarkVersion` | string | The benchmark harness version this record was produced under — THIS repo's own `version` (the `mandrel-bench` `package.json`, read by `bench/run.js#readBenchmarkVersion`), NOT the pinned `mandrel` dependency version `frameworkVersion` records. Joins the cohort key (D-014) — see [The triple cohort key](#the-triple-cohort-key-d-014) below. |
 | `env.node` / `env.os` | string | Execution environment stamp — part of the cohort key (see below). |
-| `scenario` | enum | `hello-world` \| `story-scope` \| `epic-scope` — the Epic #66 3-rung corpus (see `docs/architecture.md` § 6). |
+| `scenario` | enum | `hello-world` \| `story-scope` \| `epic-scope` \| `brownfield-longitudinal` — the Epic #66 3-rung corpus plus the issue-#124 touch-chain rung (see `docs/architecture.md` § 6). |
 | `arm` | enum | `mandrel` \| `control`. |
 
 ## The triple cohort key (D-014)
@@ -257,6 +257,91 @@ cohort's `.raw/`.
 `renderPhaseCostSection` and `bench/report/html.js`'s per-phase cost panel
 render the mandrel arm's `/plan` vs `/deliver` cost per scenario; the control
 arm carries no per-phase split, so it is omitted by construction.
+
+## `chain` block (issue #124, D-022/D-023)
+
+The **touch-chain** block — a SEPARATE top-level scorecard block (a sibling of
+`dimensions`/`trap`/`touch2`/`phases`, never folded into the seven composite
+dimensions). Present only for a scenario declaring `touches[]` in its
+`scenario.json` (`brownfield-longitudinal`); **mutually exclusive with
+`touch2`** (a chain scenario declares no `changeRequest` — `loadScenario`
+rejects the combination). The cell stays ONE record (the D-014/checkpoint
+invariant): the per-touch results live inside `chain.touches[]`, and the
+record-level `dimensions` is the MEAN over materialized touches' dimension
+blocks, stamped with the record-level warning `chain-aggregate-dimensions`
+(per-touch dimensions stay exact inside the block).
+
+`bench/run-chain.js#runTouchChain` produces it: per touch, a fresh session
+against the CURRENT chain baseline, scored with the scenario's evolved frozen
+suite (the `frozen-suite/` mirror + accumulated `touches/<k>/` additions,
+minus superseded base ids — never the agent-editable in-sandbox copy), the
+convention grep-oracles, and the full dimension set; then the advance
+decision (`delivered && baseSuitePassRate ≥ advanceThreshold && appBoots`,
+failing closed on a missing verdict).
+
+```json
+"chain": {
+  "advanceThreshold": 0.9,
+  "landedCount": 4,
+  "costPerLandedChange": 12.4,
+  "touches": [
+    {
+      "touchIndex": 1,
+      "changeRequestId": "credit-notes",
+      "landed": true,
+      "materialized": true,
+      "advanced": true,
+      "seededFromTouch": 0,
+      "appBoots": true,
+      "outcome": 0.93,
+      "cost": 9.8,
+      "regression": { "baseTotal": 102, "retainedTotal": 102, "retainedPassed": 102, "regressionRate": 0, "additionsTotal": 10, "additionsPassed": 9 },
+      "conventions": { "classes": [{ "class": "error-envelope", "clean": true, "findings": [] }], "cleanRate": 1 },
+      "dimensions": { "...": "the full seven-dimension set for THIS touch" },
+      "phases": [{ "phase": "plan", "costUsd": 4.1, "tokens": 60000, "wallClockMs": 300000 }]
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `chain.advanceThreshold` | number `[0,1]` | The resolved base-suite pass-rate gate (`scenario.chainAdvanceThreshold`, default **0.90**) a touch must clear — alongside `delivered` and `appBoots` — to advance the chain baseline (D-022). |
+| `chain.landedCount` | integer `≥ 0` | Touches whose change reached the sandbox `main` (`landed: true`), plus advanced touches on arms where landing is not a concept (the control arm commits directly — its advanced touches ARE its landed changes). |
+| `chain.costPerLandedChange` | number \| `null` | Σ EVERY touch's cost ÷ `landedCount` — an unlanded-but-spent touch counts in the numerator only (the autonomy penalty in dollars). `null` when nothing landed. |
+| `touches[].touchIndex` | integer `≥ 1` | 1-based position in the declared chain. |
+| `touches[].changeRequestId` | string | The touch's stable id (`scenario.json` `touches[].id`, e.g. `credit-notes`). |
+| `touches[].landed` | boolean \| `null` | Mandrel arms: did the delivery merge onto `main`? `null` on control arms (landing is not a concept there). |
+| `touches[].materialized` | boolean | Was there a delivered tree to score at all? `false` ⇒ real spend recorded, but outcome/suite/conventions unmeasured (never a false 0 on the stale last-good tree). |
+| `touches[].advanced` | boolean | The advance decision — this touch's tree became the next chain baseline. A failed baseline force-push demotes an otherwise-passing touch to `false`. |
+| `touches[].seededFromTouch` | integer `≥ 0` | Which touch's tree this touch was seeded from — `k−1` on a healthy chain; `< k−1` records a **skip-forward** from the last-good touch (0 = the pristine seed). |
+| `touches[].appBoots` | boolean \| `null` | The app-boot probe verdict on the delivered tree (`null` when unmaterialized). |
+| `touches[].outcome` | number `[0,1]` \| `null` | The touch's composite quality (its `dimensions.quality.score`); `null` when unmaterialized. |
+| `touches[].cost` | number \| `null` | The touch's session cost in USD (its `dimensions.efficiency.costUsd`). |
+| `touches[].regression` | object (optional) | The evolved frozen-suite verdict: `baseTotal`, `retainedTotal`/`retainedPassed` (base minus superseded ids), `regressionRate` (failures among RETAINED base tests ÷ retained; a deleted/missing test counts as failed), `additionsTotal`/`additionsPassed` (accumulated per-touch frozen additions). Absent when the suite did not run. |
+| `touches[].conventions` | object (optional) | The convention grep-oracle verdict: `classes[]` (`{ class, clean, findings[] }` with `file:line` evidence) + `cleanRate`. Absent when no oracle ran. |
+| `touches[].dimensions` | object | The FULL seven-dimension set for THIS touch — exact, unlike the record-level mean. |
+| `touches[].phases` | array (optional) | The mandrel arm's per-phase cost envelopes for this touch's `/plan` + `/deliver` sessions (same shape as the top-level `phases[]`). |
+
+**Raw provenance.** Each touch persists its cost envelope + session result
+under `.raw/<run-stamp>/touch<k>/` (plus `lifecycle.ndjson` on mandrel arms),
+and one append-only ledger line per touch lands in
+`.raw/<run-stamp>/chain.ndjson` (`{ touch, headSha, landed, materialized,
+advanced, seededFromTouch, baseSuite, costUsd }`) — a partial chain stays
+attributable after a crash (checkpoint/resume is cell-granular, v1).
+
+**Consumption.** `bench/score/differential.js#degradationSlope` derives the
+headline **degradation slope** (per-cell OLS of per-touch outcome and cost on
+touch index; mandrel slope − control slope under the real-delta rule; null
+outcomes excluded from the quality regression but their cost retained in the
+cost regression; skip-forward gaps annotated per run) and
+`chainArmSummary` the per-arm cost-per-landed-change aggregation.
+`bench/report/render.js#renderChainSection` and `bench/report/html.js`'s
+"Touch chain" panel render the slope table, per-touch line data, and the
+landed-change summary. `bench/run-chain.js#cellCostUsd` folds Σ
+`chain.touches[].cost` into the `BENCH_MAX_COST_USD` / `BENCH_MAX_RUNS`
+ceilings (the record-level `efficiency.costUsd` is a per-touch MEAN and is
+deliberately not added on top).
 
 ## `planQuality` block (Epic #86, Story #95)
 

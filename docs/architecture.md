@@ -25,8 +25,11 @@ The unit of work is one **run** = one **arm** driven over one **scenario**. The
 an *ordered set of two phase-scoped sessions* (`/plan`, then `/deliver`) whose
 per-phase cost envelopes sum to the run total (D-019). On rungs 2–3 both arms
 then take a **second touch** — a fresh session running the scenario's frozen
-change request against the delivered tree (D-020). For each `(scenario × arm ×
-run)`:
+change request against the delivered tree (D-020). A scenario that declares a
+`touches[]` **chain** instead (`brownfield-longitudinal`, D-022) skips the
+greenfield build entirely — its seed overlay IS the baseline, and the run is
+N chained touch sessions with advance/skip-forward seeding
+(`bench/run-chain.js`; see § 6). For each `(scenario × arm × run)`:
 
 ```text
 provision → run → collect → score → report → teardown
@@ -140,6 +143,23 @@ axis, all three are mandrel-relevant blocks reported apart from the composite
 dimensions — see [`data-dictionary.md`](data-dictionary.md) for the
 `phases[]` / `planQuality` / `touch2` field shapes.
 
+**The touch chain is a separate top-level block as well (issue #124,
+D-022/D-023).** A chain cell's record carries `chain: { advanceThreshold,
+landedCount, costPerLandedChange, touches[] }` — one entry per touch with its
+own outcome/cost, frozen-suite regression verdict, convention clean-rate, and
+full per-touch dimensions; the record-level `dimensions` is the MEAN over
+materialized touches, flagged with the `chain-aggregate-dimensions` warning.
+Downstream, `bench/score/differential.js` derives the headline **degradation
+slope** (per-cell OLS of per-touch outcome — and cost — on touch index; band
+over the per-cell slopes; mandrel slope − control slope under the real-delta
+rule — mandrel's thesis predicts a FLATTER slope) and the per-arm
+**cost-per-landed-change** summary (Σ every touch's cost ÷ landed count —
+unlanded spend stays in the numerator, the autonomy penalty in dollars). Null
+outcomes (unmaterialized touches) are excluded from the quality regression but
+their cost stays in the cost regression; skip-forward gaps are annotated,
+never silently pooled. See [`data-dictionary.md`](data-dictionary.md) for the
+`chain` field shape.
+
 **Routing contract enforcement (Epic #66, Story #76; arm-aware per #123).**
 Each scenario declares a `routing` contract (`"story"` or `"epic"`); a
 mandrel-arm record whose OBSERVED `routingVerdict` diverges from its
@@ -176,7 +196,7 @@ near-zero work).
 
 ## 6. Scenario corpus
 
-`bench/scenarios/` holds the corpus. Each scenario ships:
+`bench/scenarios/` holds the corpus. A **greenfield** scenario ships:
 
 - a `scenario.json` task seed shared by both arms — declaring `difficulty`,
   `rung`, `routing` (`"story"` | `"epic"` — the delivery route the harness
@@ -194,14 +214,76 @@ near-zero work).
   prompts stay terse with no trap hints, so the headroom the trap needs is
   never destroyed by an accidental spoiler.
 
-**The Epic #66 3-rung matrix** (retired the prior `crud-db`/`project-api`
-ladder and the single-oracle spike scenario it grew alongside, Story #79):
+A **touch-chain** scenario (issue #124, the brownfield variant) replaces the
+greenfield `seed.prompt` + `changeRequest` shape with a different anatomy —
+the two shapes are mutually exclusive and `loadScenario` enforces it:
+
+- `touches: [{ id, promptPath, acceptanceSuite }, …]` — the N frozen change
+  requests, in chain order; prompt text is read from
+  `touches/<k>/prompt.md` at load time. There is NO spec-bearing seed prompt:
+  the per-scenario `sandbox/` overlay is the baseline codebase, and reading
+  its docs/conventions is part of what the rung measures,
+- `chainAdvanceThreshold` (default 0.90) — the retained-base-suite pass-rate
+  gate a touch must clear (with `delivered` and a booting app) to advance the
+  chain baseline,
+- a `frozen-suite/` mirror of the seed's test suite plus a
+  `suite-evolution.js` runner (`suiteEvolutionModule`) — scoring always runs
+  the mirror, never the agent-editable in-sandbox copy; per-touch
+  `supersedes.json` retires base tests a touch legitimately changes and
+  `touches/<k>/acceptance.test.js` adds frozen behavioural probes,
+- `conventionOracles: [...]` — grep-oracle modules (each exporting
+  `evaluate(deliveredTreePath)`) scoring adherence to the seed's documented
+  conventions, each with mandatory discrimination fixtures,
+- `controlClaudeMd` — an optional per-scenario arm-3 fixture (the generic
+  `bench/fixtures/control-claudemd.md` is the default): for the brownfield
+  rung it points arm 3 at the repo's own docs *generically*, never restating
+  convention contents.
+
+**The corpus matrix** (Epic #66's 3-rung ladder, which retired the prior
+`crud-db`/`project-api` ladder and the single-oracle spike scenario, Story
+\#79; plus the issue-#124 brownfield chain rung):
 
 | Scenario | Difficulty | Routing | Role |
 | --- | --- | --- | --- |
 | `hello-world` | 1 | story | Instrumentation only — overhead floor + pipeline smoke. Never a value-delta rung; reported under the floor/calibration framing. |
 | `story-scope` | 3 | story | The story-routed value rung — persisted-auth API with per-user notes; traps `plaintext-password` + `token-generation`. |
+| `brownfield-longitudinal` | 4 | story | The brownfield touch-CHAIN rung (issue #124, B4) — five chained change requests over the frozen ~55-file Ledgerline seed (documented conventions, ~100-test frozen suite, three latent landmines later touches punish). Headline: the **degradation slope**; also regression rate, convention adherence, cost-per-landed-change. One scorecard per cell with `chain.touches[]`; targetN 4. |
 | `epic-scope` | 5 | epic | The epic-routed value rung — multi-user project/task management API sized to decompose into 4–6 Stories; traps `plaintext-password`, `idor`, `missing-input-validation`, `hardcoded-secret`. |
+
+### The touch chain (`brownfield-longitudinal`)
+
+`bench/run-chain.js#runTouchChain` executes a chain cell: per touch k, a
+fresh workspace clone of the CURRENT chain baseline → the touch session →
+raw telemetry persisted to `.raw/<stamp>/touch<k>/` → PR-head
+materialization against the chain baseline → scoring (evolved frozen suite +
+convention oracles + full dimensions + app-boot probe) → the **advance
+decision**: `delivered && baseSuitePassRate ≥ chainAdvanceThreshold &&
+appBoots`. An advanced touch's tree is force-pushed as the new baseline; a
+failed touch is rewound and the next touch seeds from the last-good tree
+(**skip-forward**), recorded as `seededFromTouch`. One NDJSON line per touch
+lands in `.raw/<stamp>/chain.ndjson`; checkpoint/resume stays cell-granular
+(v1). The `sandbox/`, `frozen-suite/`, and `touches/` trees are **frozen
+instrument content** — any edit is a `benchmarkVersion` bump (D-024).
+
+**Cost guard — read before dispatching a brownfield cohort.** Every touch is
+its own session spend, so a chain cell costs ≈ 5 × the per-touch figure, and
+the design's cohort model (issue #124 §6) puts a full 4-arm × N=4 cohort at
+roughly **$180–420** (post-M3 mandrel; ~$340–630 pre-M3) — dominated by the
+mandrel arms at ~$4–15/touch vs ~$0.30–0.80 for the control arms:
+
+| | per touch | per cell (5 touches) | per arm (N=4) |
+| --- | --- | --- | --- |
+| control / control-claudemd | $0.30–0.80 | $2–4 | $8–16 |
+| mandrel (pre-M3, 1.90) | $8–15 | $40–75 | $160–300 |
+| mandrel (post-M3) | $4–10 | $20–50 | $80–200 |
+
+Operating rules: run an **N=1 single-cell mandrel smoke first** (~$25–60)
+before any fan-out; always set **`BENCH_MAX_COST_USD`** — the invocation
+ceiling sums every `chain.touches[].cost` (`bench/run-chain.js#cellCostUsd`),
+so a runaway chain stops mid-batch; and consider starting at N=2 (~$90–210)
+or dropping `control-claudemd` from the first cohort (the issue-#124 review
+options). The rung is opt-in like every scenario: `BENCH_SCENARIOS` defaults
+to `hello-world`, so no CI dispatch picks the chain up implicitly.
 
 **Every scenario's sandbox gets real, un-stubbed lint/typecheck/test gates**
 for both arms (`bench/driver/overlay.js` `buildTargetPackageJson`) — the
