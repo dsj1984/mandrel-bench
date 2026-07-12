@@ -72,15 +72,21 @@ provision → run → collect → score → report → teardown
    `bench-sbx-` prefix older than a TTL (default 24h); it runs at the start
    of every `bench/run.js` invocation and as a standalone script.
 
-## 3. The two arms
+## 3. The arms
 
 | Arm | Prompt | `.agents/` | Purpose |
 | --- | --- | --- | --- |
 | **mandrel** | drive `/plan`→`/deliver` (auto-proceed under headless drive) | present (materialized) | the framework under test |
 | **control** | the bare task, no scaffolding | stripped | the baseline; value-add is `mandrel − control` |
+| **control-claudemd** (opt-in, #123) | identical to control | stripped, plus one static generic `CLAUDE.md` seed | `arm3 − control` = value of ANY static structure; `mandrel − arm3` = marginal value of orchestration |
+| **mandrel-story-routed** (opt-in, #123) | mandrel pipeline, plan-phase prompt forces ONE standalone Story (no Epic decomposition) | present (materialized) | the empirical Epic/Story merge A/B: `epic-arm − arm4` at ~1/3 the ceremony |
 
-Both arms are launched by the same driver and costed by the same `claude -p`
-envelope, so the overhead comparison is apples-to-apples by construction.
+All arms are launched by the same driver and costed by the same `claude -p`
+envelope, so the overhead comparison is apples-to-apples by construction. The
+two variant arms are **opt-in via `BENCH_ARMS`** (the default arm set is
+unchanged) and map onto their base arm's pipeline shape in
+`bench/driver/arms.js`; they are additional cells within the same cohort
+(the D-014 identity is unchanged).
 
 ## 4. Dimensions & derived metrics
 
@@ -134,12 +140,19 @@ axis, all three are mandrel-relevant blocks reported apart from the composite
 dimensions — see [`data-dictionary.md`](data-dictionary.md) for the
 `phases[]` / `planQuality` / `touch2` field shapes.
 
-**Routing contract enforcement (Epic #66, Story #76).** Each scenario
-declares a `routing` contract (`"story"` or `"epic"`); a mandrel-arm record
-whose OBSERVED `routingVerdict` diverges from that contract is marked
-`routingMismatch: true` and excluded from the cell's noise-band pool, with
-the per-cell mismatch rate surfaced explicitly (>25% is itself a scope-triage
-calibration finding).
+**Routing contract enforcement (Epic #66, Story #76; arm-aware per #123).**
+Each scenario declares a `routing` contract (`"story"` or `"epic"`); a
+mandrel-arm record whose OBSERVED `routingVerdict` diverges from its
+EXPECTED routing is marked `routingMismatch: true` and excluded from the
+cell's noise-band pool, with the per-cell mismatch rate surfaced explicitly
+(>25% is itself a scope-triage calibration finding). The expected routing is
+**arm-aware**, not globally weakened: an arm that forces a routing override
+(`mandrel-story-routed` forces `story` — the override IS the treatment) is
+compared against its own override instead of the scenario contract, so its
+story-routed cells stay in the pool while a run that disobeys the override
+and epic-routes is still excluded (see `bench/driver/arms.js`
+`routingOverrideForArm` and `bench/collect/normalize.js`
+`resolveTelemetrySource`).
 
 **Cross-scenario derived metrics** (relationships, not per-run scores): the
 **difficulty-monotonicity** check (Efficiency ↑ / Overhead ratio ↓ across the
