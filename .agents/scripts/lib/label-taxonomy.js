@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import {
   ACCEPTANCE_LABELS,
   AGENT_LABELS,
+  DELIVERY_LABELS,
   LABEL_COLORS,
   PERSONA_LABEL_PREFIX,
   PLANNING_LABELS,
@@ -108,14 +109,24 @@ export const LABEL_TAXONOMY = [
 
   // Planning axis — operator-applied waivers for the planning → delivery
   // handoff gates. Currently the sole entry is the `healthcheck-waived`
-  // override consumed by the persist half of `epic-plan-decompose.js`
-  // when `epic-plan-healthcheck.js` returned `ok: false` for a reason
-  // the operator has triaged and accepted.
+  // override consumed by `plan-persist.js` when the inline healthcheck
+  // (`runPlanHealthcheck`) returned `ok: false` for a reason the
+  // operator has triaged and accepted.
   {
     name: PLANNING_LABELS.HEALTHCHECK_WAIVED,
     color: LABEL_COLORS.PLANNING,
     description:
       'Operator override — allows agent::ready handoff despite a failing post-plan healthcheck',
+  },
+
+  // Delivery routing — applied by `plan-persist.js` when the risk verdict
+  // declares `deliveryShape: "single"` (Epic #4474 PR4). Inert until #4475
+  // lands the deliver-side reader.
+  {
+    name: DELIVERY_LABELS.SINGLE,
+    color: LABEL_COLORS.DELIVERY,
+    description:
+      'Single-delivery plan — no Story tree; the Delivery Slicing table is the audit trail (#4474/#4475)',
   },
 ];
 

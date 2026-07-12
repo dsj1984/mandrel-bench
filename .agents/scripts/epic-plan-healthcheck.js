@@ -5,9 +5,12 @@
 /**
  * epic-plan-healthcheck.js — Post-Plan Readiness Check
  *
- * Runs at the end of /plan (Phase 10) to validate the backlog and
- * optionally prime the execution environment before handing off to
- * /epic-deliver.
+ * Library home of `runPlanHealthcheck`, the **inline** blocking check the
+ * collapsed persist surface runs as the `agent::ready` exit condition
+ * (`plan-persist.js` step 9 — the authoritative invocation since Epic
+ * #4474 retired the standalone Phase 10 workflow step). The CLI form
+ * remains for manual re-validation and the opt-in slow paths below; no
+ * workflow mandates running it standalone.
  *
  * Modes (additive — the fast checks below always run):
  *   (default)         — config validation + git remote check only.
@@ -30,7 +33,7 @@
  *   node epic-plan-healthcheck.js --epic <EPIC_ID> \
  *     [--paranoid] [--prime-install] [--dry-run]
  *
- * @see .agents/workflows/helpers/plan-epic.md Phase 10
+ * @see .agents/workflows/helpers/plan-epic.md (persist step — inline gate)
  */
 
 import { spawnSync } from 'node:child_process';
@@ -47,6 +50,7 @@ import {
 import { gitSpawn } from './lib/git-utils.js';
 import { Logger } from './lib/Logger.js';
 import { TYPE_LABELS } from './lib/label-constants.js';
+import { recordPlanInvocation } from './lib/orchestration/plan-metrics.js';
 import { createProvider } from './lib/provider-factory.js';
 
 const progress = Logger.createProgress('plan-healthcheck', { stderr: true });
@@ -454,7 +458,11 @@ async function timed(name, fn) {
  *   checks: Array<{name: string, ok: boolean, durationMs: number, detail: string}>}>}
  */
 // exported for tests — direct-unit coverage of the reachability semantics.
-export { checkReachability, extractStoryPaths, globToRegExp };
+// (`resolveNavConfig` / `extractStoryPaths` / `globToRegExp` are also the
+// shared mechanics of the persist-side draft reachability check —
+// `lib/orchestration/plan-reachability.js`, Epic #4474 PR6 — so the two
+// surfaces can never drift apart.)
+export { checkReachability, extractStoryPaths, globToRegExp, resolveNavConfig };
 
 // exported for tests — Story-level reuse runner reserved for future test coverage
 export async function runPlanHealthcheck(opts = {}) {
@@ -543,6 +551,31 @@ export async function runPlanHealthcheck(opts = {}) {
 // Main guard
 // ---------------------------------------------------------------------------
 
-runAsCli(import.meta.url, runPlanHealthcheck, {
+/**
+ * CLI wrapper: stamp the plan-metrics ledger (#4474 PR1) around the direct
+ * invocation only. In-process callers (the decompose persist gate imports
+ * `runPlanHealthcheck` directly) are already covered by their own CLI's
+ * stamp — wrapping here too would double-count the inline gate.
+ */
+async function cliMain() {
+  const { epicId } = parseHealthcheckArgs();
+  let config;
+  try {
+    config = resolveConfig();
+  } catch {
+    config = undefined;
+  }
+  return recordPlanInvocation(
+    {
+      cli: 'epic-plan-healthcheck',
+      mode: 'healthcheck',
+      epicId: epicId ?? null,
+      config,
+    },
+    () => runPlanHealthcheck(),
+  );
+}
+
+runAsCli(import.meta.url, cliMain, {
   source: 'epic-plan-healthcheck',
 });

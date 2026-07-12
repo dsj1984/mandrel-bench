@@ -102,7 +102,7 @@ or stale locks.
 
 `.worktrees/.pending-cleanup.json` accumulates entries when
 `story-close.js` cannot remove a worktree on Windows because of an
-EBUSY-class lock. Plan boot ([`drainPendingCleanupAtBoot`](../../scripts/epic-plan-spec.js) → [`worktree-sweep.js`](../../scripts/lib/orchestration/plan-runner/worktree-sweep.js))
+EBUSY-class lock. Plan boot ([`drainPendingCleanupAtBoot`](../../scripts/lib/orchestration/epic-plan-spec/phases/drain.js), run by `plan-persist.js` → [`worktree-sweep.js`](../../scripts/lib/orchestration/plan-runner/worktree-sweep.js))
 retries the entries — but if the holder
 is a long-lived user-mode process (a stranded test runner, a lingering
 biome/tsc, a node REPL), the lock never clears and the entry pins.
@@ -127,7 +127,7 @@ PowerShell `Get-CimInstance Win32_Process`, terminating them with
 | Trigger          | Caller                                                                       |
 | ---------------- | ---------------------------------------------------------------------------- |
 | `/deliver`    | [`Cleaner` lifecycle listener](../../scripts/lib/orchestration/lifecycle/listeners/cleaner.js) at the close-tail cleanup phase (before `wm.gc()`)   |
-| `/plan`     | [`drainPendingCleanupAtBoot`](../../scripts/epic-plan-spec.js) → [`worktree-sweep.js`](../../scripts/lib/orchestration/plan-runner/worktree-sweep.js) |
+| `/plan`     | [`drainPendingCleanupAtBoot`](../../scripts/lib/orchestration/epic-plan-spec/phases/drain.js) (run by `plan-persist.js`) → [`worktree-sweep.js`](../../scripts/lib/orchestration/plan-runner/worktree-sweep.js) |
 | Story merge close | [`story-close.js`](../../scripts/story-close.js) (`drainPendingCleanupAfterClose`) |
 
 All automatic paths call `forceDrainPendingCleanup()` (or are folded into
@@ -242,7 +242,8 @@ Symlink strategy:
   content-addressable store at `~/.local/share/pnpm/store` (or the platform
   equivalent) — reused packages are hard-linked into the worktree instead of
   re-downloaded and re-extracted. First-run on a cold store is no faster than
-  `per-worktree`, and `epic-plan-healthcheck.js` primes the store in the
+  `per-worktree`, and the plan healthcheck (`epic-plan-healthcheck.js
+  --prime-install`, an opt-in manual run) primes the store in the
   main checkout to avoid paying that cost in parallel story windows.
 
 ## Windows notes
@@ -334,8 +335,9 @@ Set `delivery.worktreeIsolation.enabled: false` (or omit the block) to
 restore v5.5.1 single-tree behavior:
 
 - No `git worktree add` / `remove` calls.
-- `assert-branch.js` and `computeStoryWaves` focus-area serialization remain in
-  place as the primary race guards.
+- The native `git branch --show-current` pre-commit check and
+  `computeStoryWaves` focus-area serialization remain in place as the primary
+  race guards.
 - All existing v5.5.1 tests pass in this mode.
 
 Pick single-tree mode when:
@@ -370,8 +372,8 @@ Human reviewers should **keep using the main checkout** — not a worktree:
 - **Always** use the main checkout for code review — not a per-story worktree.
 - **Always** respect `delivery.worktreeIsolation.enabled: false` as a
   first-class fallback mode, not a degraded one. v5.5.1 single-tree guards
-  (`assert-branch.js`, focus-area serialization) remain the primary defense in
-  that mode.
+  (the `git branch --show-current` pre-commit check, focus-area serialization)
+  remain the primary defense in that mode.
 
 ## Operator escape hatches
 

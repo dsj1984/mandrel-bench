@@ -151,13 +151,17 @@ host's equivalent structured-choice surface.
 
 This skill is the engine behind two operator-facing entry points:
 
-- [`/explain`](../../../workflows/explain.md) — runs the loop over a realized
-  change (a PR, branch, or diff).
-- [`/plan`](../../../workflows/helpers/plan-epic.md) **Phase 11 — Plan
-  Comprehension Gate** — runs the loop over a freshly planned backlog before
-  the operator hands off to `/deliver`. That phase decides *whether* to
-  run via an LM-judgment predicate; this skill owns *how* it runs once
-  invoked.
+- **An ad-hoc conversational walkthrough** of a realized change (a PR,
+  branch, or diff) — the host's native mode. Read this skill and run the
+  loop directly when the operator asks to be walked through a change.
+  (The former `/explain` workflow wrapper was retired in #4482.)
+- **A post-plan backlog walkthrough** — run the loop over a freshly planned
+  backlog (the Epic body's Tech Spec sections, the Stories, the wave table)
+  before the operator hands off to `/deliver`. Offer it by LM judgment on
+  non-trivial plans; it is no longer a wired phase of
+  [`/plan`](../../../workflows/helpers/plan-epic.md) (the comprehension gate
+  was unwired from the pipeline in Epic #4474), always advisory, and never
+  blocks the hand-off.
 
 It is discovered through the standard skill-activation contract in
 [`.agents/instructions.md` § 1.B](../../../instructions.md) — no separate
