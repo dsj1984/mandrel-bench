@@ -10,6 +10,10 @@
     "minStories": 4,
     "maxStories": 6
   },
+  "security": {
+    "applicableMusts": ["passwordHashing", "serverSideAuthz"],
+    "_note": "Ticket #122, item 3: only the security MUSTs REACHABLE under this scenario's 'no external web framework' + bearer-token prompt are scored. Password hashing (a vetted KDF) and server-side per-user/ownership authorization (the idor surface) are reachable and expected. The other three — a schema-validation library import (inputValidation), httpOnly cookies (safeTokenStorage; bearer tokens live in the Authorization header, not cookies), and a rate-limit library import (authRateLimiting) — are unreachable under those constraints and were pinning the security spine at a floor no arm could clear, so they are excluded."
+  },
   "description": "The epic-routed value rung (Epic #66, Story #78; evolves the retired largest-difficulty rung). A multi-user project/task management API sized to decompose into 4-6 Stories: bearer auth, project CRUD, task CRUD with pagination + filtering, cross-resource relations, cascade delete, restart persistence, plus cross-cutting constraints (per-user isolation, input validation on every write, a consistent error envelope, an env-sourced token signing key) that force real decomposition. Four planted defect classes are scored by SEPARATE adversarial trap-oracles the frozen suite is blind to: plaintext-password (ported convention from story-scope), idor (missing per-user ownership checks on id-addressed resources), missing-input-validation (writes accepted without a validation guard), and hardcoded-secret (the token signing key inlined in source instead of read from the environment).",
   "seed": {
     "title": "Multi-user project & task management API with auth",

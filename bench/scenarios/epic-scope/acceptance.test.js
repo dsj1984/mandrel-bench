@@ -179,6 +179,11 @@ async function safeJson(res) {
  * @param {typeof fetch} [deps.fetchImpl] — injectable fetch (tests).
  * @param {() => string} [deps.uniqueSuffix] — injectable unique-username
  *   source (tests); defaults to a timestamp+random token.
+ * @param {(() => Promise<unknown>)|null} [deps.restart] — the app-runner's real
+ *   restart hook (Ticket #122, item 5). When present, criterion 23 tests
+ *   persistence across an ACTUAL server restart (an in-memory store fails);
+ *   when absent (the standalone `node --test` face has no process control) the
+ *   criterion degrades to an in-process re-login signal.
  * @returns {Promise<{
  *   scenario: string,
  *   passed: boolean,
@@ -191,6 +196,7 @@ export async function evaluate(
     fetchImpl = fetch,
     uniqueSuffix = () =>
       `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    restart = null,
   } = {},
 ) {
   if (typeof baseUrl !== 'string' || baseUrl.length === 0) {
@@ -909,27 +915,91 @@ export async function evaluate(
       );
     }
 
-    // ---- Criterion 23 — persistence across restart -------------------------
-    // The harness re-runs this oracle after restarting the app; here we
-    // record a minimal in-process persistence signal (re-login still works)
-    // for the standalone/unit-test face.
+    // ---- Criterion 23 — persistence across a REAL server restart -----------
+    // Ticket #122, item 5: when the app-runner supplies its real `restart`
+    // hook, create a durable marker, RESTART the server (kill + relaunch), then
+    // re-login with the ORIGINAL credentials and re-fetch the marker. An
+    // in-memory store loses everything on restart and FAILS here (login fails or
+    // the marker is gone); an on-disk store survives and passes. When no
+    // `restart` is available (the standalone `node --test` face has no process
+    // control) the criterion degrades to the prior in-process re-login signal.
     {
-      const res = await fetchImpl(
-        joinUrl(baseUrl, '/auth/login'),
-        post({ username: usernameA, password: passwordA }),
-      );
-      const payload = await safeJson(res);
-      const loginOk =
-        isSuccess(res.status) &&
-        payload != null &&
-        typeof payload === 'object' &&
-        typeof payload.token === 'string' &&
-        payload.token.length > 0;
-      ledger.record(
-        23,
-        loginOk,
-        `Persistence check: re-login after all operations → HTTP ${res.status}; token present=${loginOk}`,
-      );
+      let ok = false;
+      let evidence;
+      if (typeof restart === 'function') {
+        // Create a durable marker BEFORE the restart with the current token.
+        const markerName = `persist-marker-${uniqueSuffix()}`;
+        let markerId = null;
+        try {
+          const createRes = await fetchImpl(joinUrl(baseUrl, '/projects'), {
+            method: 'POST',
+            headers: { ...jsonHeaders, authorization: `Bearer ${useTokenA}` },
+            body: JSON.stringify({ name: markerName }),
+          });
+          const created = await safeJson(createRes);
+          markerId =
+            created != null && typeof created === 'object' ? created.id : null;
+        } catch {
+          // A create failure leaves markerId null — the post-restart re-fetch
+          // then falls back to matching by name.
+        }
+
+        // Kill and relaunch the server on the same port.
+        await restart();
+
+        // Re-login with the ORIGINAL credentials — an in-memory user store is
+        // now empty, so this fails.
+        const loginRes = await fetchImpl(
+          joinUrl(baseUrl, '/auth/login'),
+          post({ username: usernameA, password: passwordA }),
+        );
+        const loginPayload = await safeJson(loginRes);
+        const newToken =
+          loginPayload != null && typeof loginPayload === 'object'
+            ? loginPayload.token
+            : null;
+        const loginOk =
+          isSuccess(loginRes.status) &&
+          typeof newToken === 'string' &&
+          newToken.length > 0;
+
+        // Re-fetch the marker created before the restart.
+        let markerPresent = false;
+        if (loginOk) {
+          const listRes = await fetchImpl(joinUrl(baseUrl, '/projects'), {
+            method: 'GET',
+            ...authHeaders(newToken),
+          });
+          const list = await safeJson(listRes);
+          markerPresent =
+            Array.isArray(list) &&
+            list.some(
+              (p) =>
+                p != null &&
+                typeof p === 'object' &&
+                (p.id === markerId || p.name === markerName),
+            );
+        }
+
+        ok = loginOk && markerPresent;
+        evidence = `Persistence across a REAL restart: re-login → HTTP ${loginRes.status}, prior project present=${markerPresent} (an in-memory store loses both)`;
+      } else {
+        // Standalone/unit face: no process control — record the in-process
+        // re-login signal (this face cannot observe true cross-restart survival).
+        const res = await fetchImpl(
+          joinUrl(baseUrl, '/auth/login'),
+          post({ username: usernameA, password: passwordA }),
+        );
+        const payload = await safeJson(res);
+        ok =
+          isSuccess(res.status) &&
+          payload != null &&
+          typeof payload === 'object' &&
+          typeof payload.token === 'string' &&
+          payload.token.length > 0;
+        evidence = `Persistence check (no restart hook available): re-login → HTTP ${res.status}; token present=${ok}`;
+      }
+      ledger.record(23, ok, evidence);
     }
   } catch (err) {
     const reason = `frozen oracle aborted: ${

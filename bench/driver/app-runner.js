@@ -207,7 +207,10 @@ export async function killApp(child, opts = {}) {
  * @param {(pid: number, signal: string|number) => void} [deps.killFn]
  * @param {{ info?: Function, warn?: Function }} [deps.logger]
  * @template T
- * @param {(baseUrl: string, info: { ready: boolean, port: number }) => Promise<T> | T} fn
+ * @param {(baseUrl: string, info: { ready: boolean, port: number, restart: () => Promise<{ ready: boolean, port: number, baseUrl: string }> }) => Promise<T> | T} fn
+ *   `info.restart` genuinely reaps and respawns the app on the same port
+ *   (Ticket #122, item 5), so an oracle can test real persistence across a
+ *   restart.
  * @returns {Promise<T>}
  */
 export async function withRunningApp(opts, fn, deps = {}) {
@@ -265,20 +268,50 @@ export async function withRunningApp(opts, fn, deps = {}) {
   }
 
   const { cmd, args } = parseStartCommand(app.startCommand);
-  logger?.info?.(
-    `[app-runner] starting "${app.startCommand}" on ${app.portEnvVar}=${port}`,
-  );
-  const child = spawnImpl(cmd, args, {
-    cwd: workspacePath,
-    env: { ...process.env, [app.portEnvVar]: String(port) },
-    stdio: 'pipe',
-    detached: process.platform !== 'win32',
-  });
 
   // Capture output for diagnostics (best-effort; streams may be absent in fakes).
   const out = [];
-  child.stdout?.on?.('data', (d) => out.push(String(d)));
-  child.stderr?.on?.('data', (d) => out.push(String(d)));
+
+  // Spawn a fresh app process on the SAME port (env-injected). Factored out so a
+  // restart (below) can respawn identically. `detached` on POSIX makes the child
+  // lead its own process group so killApp reaps the whole npm→node tree.
+  const spawnChild = () => {
+    const c = spawnImpl(cmd, args, {
+      cwd: workspacePath,
+      env: { ...process.env, [app.portEnvVar]: String(port) },
+      stdio: 'pipe',
+      detached: process.platform !== 'win32',
+    });
+    c.stdout?.on?.('data', (d) => out.push(String(d)));
+    c.stderr?.on?.('data', (d) => out.push(String(d)));
+    return c;
+  };
+
+  logger?.info?.(
+    `[app-runner] starting "${app.startCommand}" on ${app.portEnvVar}=${port}`,
+  );
+  let child = spawnChild();
+
+  // Restart hook (Ticket #122, item 5): the app-runner OWNS the process, so it
+  // can genuinely restart it — reap the current child, respawn on the SAME port,
+  // and re-poll readiness. The scenario oracle uses this to test PERSISTENCE
+  // (data must survive a real restart): an in-memory store loses its state on
+  // restart and fails the persistence criterion, while an on-disk store passes.
+  // Yielded to the oracle callback so it can drive a real restart mid-probe.
+  const restart = async () => {
+    logger?.info?.('[app-runner] restarting app (persistence probe)…');
+    await killApp(child, { sleepFn: deps.sleepFn, killFn: deps.killFn });
+    child = spawnChild();
+    const { ready } = await pollReadiness({
+      url: baseUrl + readinessPath,
+      timeoutMs: readinessTimeoutMs,
+      intervalMs: readinessIntervalMs,
+      fetchImpl: deps.fetchImpl,
+      sleepFn: deps.sleepFn,
+    });
+    logger?.info?.(`[app-runner] app restarted (ready=${ready})`);
+    return { ready, port, baseUrl };
+  };
 
   try {
     const { ready, attempts } = await pollReadiness({
@@ -296,7 +329,7 @@ export async function withRunningApp(opts, fn, deps = {}) {
     } else {
       logger?.info?.(`[app-runner] app ready at ${baseUrl}${readinessPath}`);
     }
-    return await fn(baseUrl, { ready, port });
+    return await fn(baseUrl, { ready, port, restart });
   } finally {
     await killApp(child, { sleepFn: deps.sleepFn, killFn: deps.killFn });
     logger?.info?.('[app-runner] app reaped');
