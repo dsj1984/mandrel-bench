@@ -4,9 +4,18 @@
   // and the lint-staged pre-commit hook read this `ignores`). Authored docs
   // under results/ (e.g. results/README.md) stay linted.
   //
-  // Scenario sandbox seed layers (bench/scenarios/<id>/sandbox/) are FROZEN
-  // benchmark instrument content (issue #124): once merged, any edit is a
-  // benchmarkVersion bump by policy, so linter/formatter upgrades must never
-  // force churn inside them.
-  "ignores": ["results/**/reports/**", "bench/scenarios/*/sandbox/**"]
+  // Scenario sandbox seed layers (bench/scenarios/<id>/sandbox/), the frozen
+  // oracle suite mirror (frozen-suite/), and the per-touch change-request
+  // artifacts (touches/<k>/ — prompt.md, acceptance suites, supersede lists)
+  // are FROZEN benchmark instrument content (issue #124): once merged, any
+  // edit is a benchmarkVersion bump by policy, so linter/formatter upgrades
+  // must never force churn inside them. Harness-side oracle CODE next to
+  // them (suite-evolution.js, conventions/*.js) stays linted — fixing a
+  // detector bug is not a change to measured instrument content.
+  "ignores": [
+    "results/**/reports/**",
+    "bench/scenarios/*/sandbox/**",
+    "bench/scenarios/*/frozen-suite/**",
+    "bench/scenarios/*/touches/**"
+  ]
 }

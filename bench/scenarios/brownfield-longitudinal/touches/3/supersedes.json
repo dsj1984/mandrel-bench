@@ -1,0 +1,21 @@
+[
+  "customers.create.01",
+  "customers.create.02",
+  "customers.get.03",
+  "customers.get.04",
+  "customers.update.05",
+  "customers.update.06",
+  "customers.update.07",
+  "customers.update.08",
+  "customers.delete.09",
+  "customers.delete.10",
+  "customers.delete.11",
+  "pagination.customers.01",
+  "pagination.customers.02",
+  "pagination.customers.03",
+  "pagination.customers.04",
+  "pagination.customers.05",
+  "pagination.customers.06",
+  "pagination.customers.07",
+  "pagination.customers.10"
+]
