@@ -50,6 +50,15 @@ const SCENARIOS_DIR = path.resolve(
 // the ladder or the seven composite dimensions).
 const SCENARIO_IDS = ['hello-world', 'story-scope', 'epic-scope'];
 
+// Seed-only scenario directories (issue #124, PR-A): the
+// brownfield-longitudinal rung ships its frozen sandbox seed layer first.
+// It deliberately has NO scenario.json yet — `loadScenario` resolves
+// scenarios strictly via `bench/scenarios/<id>/scenario.json`, so the rung
+// cannot be picked up by a cohort until PR-B/PR-C land the oracles + chain
+// semantics. Its own contract lives in
+// tests/bench/scenarios/brownfield-longitudinal/seed-green.test.js.
+const SEED_ONLY_DIRS = ['brownfield-longitudinal'];
+
 /**
  * Security-hint terms a trap-scenario prompt must never contain (Epic #66,
  * Story #75 / Story #78) — naming the planted defect class in the prompt
@@ -163,8 +172,22 @@ describe('scenario seeds (AC1: task seed shared by both arms)', () => {
       .filter((d) => d.isDirectory())
       .map((d) => d.name)
       .sort();
-    assert.deepEqual(dirs, [...SCENARIO_IDS].sort());
+    assert.deepEqual(dirs, [...SCENARIO_IDS, ...SEED_ONLY_DIRS].sort());
   });
+
+  for (const id of SEED_ONLY_DIRS) {
+    it(`${id} is seed-only: a sandbox layer with no scenario.json (not loadable until its oracle/chain PRs)`, () => {
+      assert.ok(
+        readdirSync(path.join(SCENARIOS_DIR, id)).includes('sandbox'),
+        `${id} must carry its sandbox/ seed layer`,
+      );
+      assert.equal(
+        readdirSync(path.join(SCENARIOS_DIR, id)).includes('scenario.json'),
+        false,
+        `${id} must not declare scenario.json yet — that file makes it loadable`,
+      );
+    });
+  }
 
   for (const id of SCENARIO_IDS) {
     it(`${id}/scenario.json defines a non-empty task seed and acceptance contract`, () => {
