@@ -19,11 +19,10 @@
  *      the 1:1 test↔id contract is asserted here (TAP-reported test count ==
  *      marker count) before any oracle depends on it.
  *
- * The seed is also deliberately NOT a loadable scenario yet: it ships no
- * `scenario.json`, and `loadScenario` resolves scenarios strictly by reading
- * `bench/scenarios/<id>/scenario.json` — that file arrives with the
- * chain-semantics PRs (PR-B/PR-C). Asserted below so the not-yet-runnable
- * contract is explicit.
+ * Since PR-E the rung is DISPATCHABLE: `scenario.json` exists (declaring the
+ * `touches[]` chain), and `loadScenario` resolves it strictly via
+ * `bench/scenarios/<id>/scenario.json`. Asserted below so a stray deletion
+ * of the scenario file cannot silently drop the rung from the corpus.
  */
 
 import assert from 'node:assert/strict';
@@ -86,12 +85,11 @@ test('the seed suite carries unique, well-formed @suite-id markers (PR-B superse
   }
 });
 
-test('the seed is not yet a loadable scenario — no scenario.json until PR-B/PR-C', () => {
+test('the rung is dispatchable: scenario.json exists alongside the frozen seed layer (issue #124, PR-E)', () => {
   assert.ok(existsSync(SANDBOX_DIR), 'the sandbox seed layer exists');
-  assert.equal(
+  assert.ok(
     existsSync(path.join(SCENARIO_DIR, 'scenario.json')),
-    false,
-    'scenario.json must not exist yet: loadScenario picks scenarios up strictly via bench/scenarios/<id>/scenario.json',
+    'scenario.json makes the rung loadable — loadScenario resolves scenarios strictly via bench/scenarios/<id>/scenario.json',
   );
 });
 

@@ -1,0 +1,56 @@
+{
+  "id": "brownfield-longitudinal",
+  "title": "Brownfield longitudinal — five chained change requests over the Ledgerline seed",
+  "difficulty": 4,
+  "rung": "brownfield-longitudinal",
+  "routing": "story",
+  "targetN": 4,
+  "chainAdvanceThreshold": 0.9,
+  "storyCountContract": {
+    "mode": "standalone",
+    "minStories": 1,
+    "maxStories": 1
+  },
+  "description": "The brownfield touch-CHAIN rung (issue #124, B4). There is no greenfield build phase: the ~55-file Ledgerline invoicing/orders API under sandbox/ IS the baseline (seeded via the per-scenario overlay), with documented conventions in docs/CONVENTIONS.md and a frozen ~100-test suite. Each run executes the five frozen change requests under touches/ as a chain — a touch that lands, keeps the app booting, and passes >= chainAdvanceThreshold of the retained frozen base suite ADVANCES the baseline; otherwise the next touch seeds from the last-good tree (skip-forward). Scoring runs the frozen-suite mirror through suite-evolution.js (never the agent-editable in-sandbox copy) plus the four convention grep-oracles; the cell emits ONE scorecard carrying chain.touches[]. The headline metric is the degradation slope (per-touch outcome/cost regressed on touch index), with cost-per-landed-change and regression rate alongside. Touch prompts are terse, realistic change requests: they never mention CONVENTIONS.md, the landmines, or the oracles — reading the repo is the thing being measured. All four arms receive the identical seed (CONVENTIONS.md included); arms differ in scaffolding, never information.",
+  "app": {
+    "startCommand": "npm start",
+    "readinessPath": "/health",
+    "defaultPort": 3000,
+    "portEnvVar": "PORT"
+  },
+  "suiteEvolutionModule": "./suite-evolution.js",
+  "conventionOracles": [
+    "./conventions/error-envelope.js",
+    "./conventions/validation-call.js",
+    "./conventions/layering.js",
+    "./conventions/money-integer.js"
+  ],
+  "controlClaudeMd": "./control-claudemd.md",
+  "touches": [
+    {
+      "id": "credit-notes",
+      "promptPath": "./touches/1/prompt.md",
+      "acceptanceSuite": "./touches/1/acceptance.test.js"
+    },
+    {
+      "id": "role-enforcement",
+      "promptPath": "./touches/2/prompt.md",
+      "acceptanceSuite": "./touches/2/acceptance.test.js"
+    },
+    {
+      "id": "client-rename",
+      "promptPath": "./touches/3/prompt.md",
+      "acceptanceSuite": "./touches/3/acceptance.test.js"
+    },
+    {
+      "id": "name-split",
+      "promptPath": "./touches/4/prompt.md",
+      "acceptanceSuite": "./touches/4/acceptance.test.js"
+    },
+    {
+      "id": "receivables-perf",
+      "promptPath": "./touches/5/prompt.md",
+      "acceptanceSuite": "./touches/5/acceptance.test.js"
+    }
+  ]
+}

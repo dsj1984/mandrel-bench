@@ -699,3 +699,129 @@ a second, measured touch.
 folded the touch-2 session spend into the `BENCH_MAX_COST_USD` accumulators
 (previously only touch-1 counted), added discrimination tests for the touch-2
 acceptance oracles, and cleaned up the control arm's reduced touch-2 workspace.
+
+---
+
+## D-022 — Touch-chain advance gate at 0.90 with skip-forward-from-last-good (issue #124, decided 2026-07-12)
+
+**Decision.** The brownfield-longitudinal rung's chain advances touch k's tree
+to become touch k+1's baseline only when **all three** gates hold:
+`delivered && baseSuitePassRate ≥ 0.90 && appBoots` — where
+`baseSuitePassRate` is passes among the RETAINED frozen base tests (base minus
+the touches' accumulated `supersedes.json` ids; a deleted or missing test
+counts as failed), the threshold is per-scenario configurable
+(`scenario.chainAdvanceThreshold`, explicit at `0.9` on the rung's
+`scenario.json`), and a missing suite verdict or boot failure **fails
+closed** — the chain never advances onto an unverified tree. A touch that
+does not advance is recorded honestly (`advanced: false`, its spend and
+whatever was measurable retained) and the sandbox `main` is rewound so the
+next touch **seeds from the last-good tree** (`seededFromTouch < k−1` — the
+skip-forward rule; 0 is the pristine seed). A failed baseline force-push
+demotes an otherwise-passing touch the same way.
+
+**Why.**
+
+1. **Chain starvation vs contamination.** A hard "every touch must land or
+   the cell aborts" rule starves the chain on one bad touch (autonomy
+   failures are common enough that a 5-touch cell would rarely finish); a
+   "always advance" rule contaminates every later touch's measurement with an
+   earlier touch's broken tree. Skip-forward records the failure as autonomy
+   data while keeping touches k+1..N measurable from a known-good baseline.
+2. **0.90, not 1.00.** The frozen base suite is ~100 tests; demanding
+   perfection would gate advances on single-assertion flake or a legitimate
+   borderline judgment call the supersede lists missed, and the design's
+   tighteners (convention oracles, regression rate, slope) already price
+   partial breakage. One-in-ten retained-test failures is the point where
+   the tree stops being a credible baseline for the NEXT change.
+3. **Fail closed.** An unverifiable tree (no suite verdict, no boot) must
+   not become the baseline by default — the gate exists to protect the
+   later touches' validity, so uncertainty resolves against advancing.
+
+**Trade-off accepted.** Skip-forward makes later touches conditionally easier
+after a failure (they run against an older, cleaner tree), which slightly
+biases the degradation slope toward flatness on failing arms. The gaps are
+therefore first-class data: `seededFromTouch` is persisted per touch, and the
+slope scoring annotates seeded-gap runs rather than silently pooling them
+(see D-023's consumption notes).
+
+---
+
+## D-023 — One scorecard per chain cell, carrying `chain.touches[]` (issue #124, decided 2026-07-12)
+
+**Decision.** A brownfield chain cell emits **ONE scorecard record** — not
+five per-touch records. The per-touch results (outcome, cost, landing,
+advance/seeding, frozen-suite regression verdict, convention verdict, exact
+per-touch `dimensions`, mandrel per-phase envelopes) live inside a top-level
+`chain.touches[]` block, a sibling of `trap`/`touch2`/`phases` and mutually
+exclusive with `touch2`. The record-level `dimensions` is the **mean over
+materialized touches**, stamped with the `warnings[]` marker
+`chain-aggregate-dimensions` so no consumer mistakes the aggregate for a
+single-session measurement.
+
+**Why.**
+
+1. **The D-014 identity survives untouched.** Cohort membership, pooling,
+   noise-bands, the checkpoint ledger, `targetN` accounting, and the
+   `results/` store all key on one-record-per-`(scenario × arm × run)`.
+   Five records per cell would either break that invariant everywhere or
+   demand a parallel "sub-run" identity — for no analytical gain, since the
+   chain is the unit the thesis is about (the slope is a property of the
+   CELL, not of any touch).
+2. **`touch2` established the pattern.** D-020 already records a second
+   scored session as a block on the one cell record; `chain` generalizes
+   that shape from 1 fixed extra touch to N declared touches.
+3. **Aggregation is explicit, never silent.** Per-touch dimensions stay
+   exact inside the block; the record-level mean exists only so cross-rung
+   consumers (dashboard rows, corpus scoring) have *something* comparable,
+   and it is loudly flagged. Cost ceilings do NOT use the mean:
+   `cellCostUsd` sums every `chain.touches[].cost` (the record-level
+   `efficiency.costUsd` would undercount a 5-touch cell 5×).
+
+**Trade-off accepted.** Crash granularity is the cell (checkpoint/resume v1):
+a crash mid-chain re-runs the whole cell. The per-touch `.raw/<stamp>/touch<k>/`
+artifacts and the append-only `chain.ndjson` ledger keep a partial chain
+attributable; intra-cell resume is an explicit v2 note in
+`bench/run-chain.js`.
+
+---
+
+## D-024 — Frozen-instrument policy for `sandbox/` + `frozen-suite/` + `touches/` (issue #124, decided 2026-07-12)
+
+**Decision.** A scenario's seed layer (`bench/scenarios/<id>/sandbox/`), its
+frozen-suite mirror (`frozen-suite/`), and its per-touch change-request
+artifacts (`touches/<k>/` — prompts, acceptance suites, supersede lists) are
+**frozen benchmark instrument content**: once merged, ANY edit to them is by
+definition a `benchmarkVersion` bump (the D-014 cohort key already refuses to
+pool across benchmark versions, so an instrument edit correctly opens a new
+cohort rather than silently moving existing numbers). Accordingly all three
+trees are exempted from biome and markdownlint (`biome.json`,
+`.markdownlint-cli2.jsonc`), and repo CI pins them instead by *behavioural*
+guards — seed-green (the seed boots and its suite passes under the current
+Node), mirror byte-fidelity, supersede-id integrity, prompt-leak scans, and
+the chain end-to-end smoke.
+
+**Why.**
+
+1. **The instrument must not drift under the measurement.** Scores from two
+   cohorts are comparable only if the seed, the oracles' inputs, and the
+   prompts were byte-identical between them. A formatter upgrade that
+   "harmlessly" rewraps a prompt or reorders imports in the seed IS an
+   instrument change — the lint exemption removes the one mechanism that
+   forces such churn on unrelated PRs.
+2. **Behavioural guards, not style guards, keep the freeze honest.** The
+   risk to frozen content is rot (a Node upgrade breaking `node:sqlite`
+   usage, a typo'd supersede id, a prompt leaking convention vocabulary),
+   and each of those has a dedicated CI test; none of them is a lint
+   concern.
+3. **Oracle CODE stays linted.** `suite-evolution.js`, `conventions/*.js`,
+   and the harness modules next to the frozen trees remain fully linted —
+   fixing a detector bug changes the *measurement code*, not the measured
+   instrument content, and detector fixes must stay cheap. (A detector fix
+   that changes verdicts on existing trees still warrants a
+   `benchmarkVersion` bump — the policy keys on whether scoring output can
+   move, not on which directory the diff touches.)
+
+**Trade-off accepted.** Frozen trees can accumulate style the repo has moved
+past, and a genuine bug found in frozen content costs a version bump to fix.
+Both are the intended price: the alternative — silently patched instruments —
+is unusable longitudinal data.

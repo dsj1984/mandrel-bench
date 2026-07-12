@@ -50,14 +50,13 @@ const SCENARIOS_DIR = path.resolve(
 // the ladder or the seven composite dimensions).
 const SCENARIO_IDS = ['hello-world', 'story-scope', 'epic-scope'];
 
-// Seed-only scenario directories (issue #124, PR-A): the
-// brownfield-longitudinal rung ships its frozen sandbox seed layer first.
-// It deliberately has NO scenario.json yet — `loadScenario` resolves
-// scenarios strictly via `bench/scenarios/<id>/scenario.json`, so the rung
-// cannot be picked up by a cohort until PR-B/PR-C land the oracles + chain
-// semantics. Its own contract lives in
-// tests/bench/scenarios/brownfield-longitudinal/seed-green.test.js.
-const SEED_ONLY_DIRS = ['brownfield-longitudinal'];
+// Touch-chain scenario ids (issue #124, PR-E): brownfield rungs whose
+// scenario.json declares `touches[]` instead of a greenfield `seed` prompt —
+// the per-scenario sandbox overlay IS the baseline, so the generic seed-and-
+// acceptance contract below does not apply to them. Their chain contract is
+// asserted in its own describe block further down, and the full end-to-end
+// wiring in tests/bench/scenarios/brownfield-longitudinal/chain-e2e.test.js.
+const CHAIN_SCENARIO_IDS = ['brownfield-longitudinal'];
 
 /**
  * Security-hint terms a trap-scenario prompt must never contain (Epic #66,
@@ -172,22 +171,8 @@ describe('scenario seeds (AC1: task seed shared by both arms)', () => {
       .filter((d) => d.isDirectory())
       .map((d) => d.name)
       .sort();
-    assert.deepEqual(dirs, [...SCENARIO_IDS, ...SEED_ONLY_DIRS].sort());
+    assert.deepEqual(dirs, [...SCENARIO_IDS, ...CHAIN_SCENARIO_IDS].sort());
   });
-
-  for (const id of SEED_ONLY_DIRS) {
-    it(`${id} is seed-only: a sandbox layer with no scenario.json (not loadable until its oracle/chain PRs)`, () => {
-      assert.ok(
-        readdirSync(path.join(SCENARIOS_DIR, id)).includes('sandbox'),
-        `${id} must carry its sandbox/ seed layer`,
-      );
-      assert.equal(
-        readdirSync(path.join(SCENARIOS_DIR, id)).includes('scenario.json'),
-        false,
-        `${id} must not declare scenario.json yet — that file makes it loadable`,
-      );
-    });
-  }
 
   for (const id of SCENARIO_IDS) {
     it(`${id}/scenario.json defines a non-empty task seed and acceptance contract`, () => {
@@ -226,18 +211,128 @@ describe('scenario seeds (AC1: task seed shared by both arms)', () => {
     });
   }
 
-  it('difficulty is monotonic across the ladder (hello-world < story-scope < epic-scope)', () => {
+  it('difficulty is monotonic across the ladder (hello-world < story-scope < brownfield-longitudinal < epic-scope)', () => {
     const hello = loadScenario('hello-world');
     const storyScope = loadScenario('story-scope');
+    const brownfield = loadScenario('brownfield-longitudinal');
     const epicScope = loadScenario('epic-scope');
     assert.ok(
       Number(hello.difficulty) < Number(storyScope.difficulty),
       'story-scope must out-rank hello-world on difficulty for the monotonicity check',
     );
     assert.ok(
-      Number(storyScope.difficulty) < Number(epicScope.difficulty),
-      'epic-scope must out-rank story-scope on difficulty for the monotonicity check',
+      Number(storyScope.difficulty) < Number(brownfield.difficulty),
+      'brownfield-longitudinal must out-rank story-scope on difficulty for the monotonicity check',
     );
+    assert.ok(
+      Number(brownfield.difficulty) < Number(epicScope.difficulty),
+      'epic-scope must out-rank brownfield-longitudinal on difficulty for the monotonicity check',
+    );
+  });
+
+  describe('brownfield-longitudinal chain-scenario contract (issue #124, PR-E)', () => {
+    const s = loadScenario('brownfield-longitudinal');
+    const dir = path.join(SCENARIOS_DIR, 'brownfield-longitudinal');
+
+    it('declares the chain identity: routing story, targetN 4, explicit 0.90 advance threshold', () => {
+      assert.equal(s.id, 'brownfield-longitudinal');
+      assert.equal(s.routing, 'story');
+      assert.equal(s.targetN, 4);
+      assert.equal(s.chainAdvanceThreshold, 0.9);
+      assert.equal(s.difficulty, 4);
+    });
+
+    it('is a touches[] chain, NOT a greenfield seed — no seed prompt, no changeRequest, no top-level acceptance suite', () => {
+      // The sandbox overlay is the baseline; a spec-bearing seed prompt here
+      // would leak the conventions the rung exists to measure reading.
+      assert.equal(s.seed, undefined);
+      assert.equal(s.changeRequest, undefined);
+      assert.equal(s.acceptanceSuite, undefined);
+      assert.ok(Array.isArray(s.touches), 'declares touches[]');
+    });
+
+    it('declares the five design touches in order, each wired to real on-disk artifacts', () => {
+      assert.deepEqual(
+        s.touches.map((t) => t.id),
+        [
+          'credit-notes',
+          'role-enforcement',
+          'client-rename',
+          'name-split',
+          'receivables-perf',
+        ],
+      );
+      for (const [i, t] of s.touches.entries()) {
+        const k = i + 1;
+        assert.equal(t.promptPath, `./touches/${k}/prompt.md`);
+        assert.equal(t.acceptanceSuite, `./touches/${k}/acceptance.test.js`);
+        const prompt = readFileSync(path.join(dir, t.promptPath), 'utf8');
+        assert.ok(
+          prompt.trim().length >= 120,
+          `touch ${k} prompt is a real change request`,
+        );
+        assert.ok(
+          readdirSync(path.join(dir, 'touches', String(k))).includes(
+            'supersedes.json',
+          ),
+          `touch ${k} carries its supersedes.json (read by the evolution runner, not scenario.json)`,
+        );
+      }
+    });
+
+    it('carries the seed layer, the frozen-suite mirror, the evolution runner, and an app launch contract', () => {
+      const entries = readdirSync(dir);
+      for (const required of [
+        'sandbox',
+        'frozen-suite',
+        'suite-evolution.js',
+      ]) {
+        assert.ok(entries.includes(required), `${required} present`);
+      }
+      assert.equal(s.suiteEvolutionModule, './suite-evolution.js');
+      assert.equal(s.app.startCommand, 'npm start');
+      assert.equal(s.app.readinessPath, '/health');
+      assert.equal(s.app.portEnvVar, 'PORT');
+    });
+
+    it('declares all four convention grep-oracles and each module exists', () => {
+      assert.deepEqual(s.conventionOracles, [
+        './conventions/error-envelope.js',
+        './conventions/validation-call.js',
+        './conventions/layering.js',
+        './conventions/money-integer.js',
+      ]);
+      for (const rel of s.conventionOracles) {
+        assert.doesNotThrow(() => readFileSync(path.join(dir, rel), 'utf8'));
+      }
+    });
+
+    it('the arm-3 controlClaudeMd fixture exists, points at the repo docs generically, and restates NO convention or landmine content', () => {
+      assert.equal(s.controlClaudeMd, './control-claudemd.md');
+      const fixture = readFileSync(path.join(dir, s.controlClaudeMd), 'utf8');
+      assert.ok(
+        /docs\//.test(fixture),
+        'points the agent at the repo documentation',
+      );
+      // Restating convention specifics (or hinting at the landmines) in the
+      // arm-3 fixture would collapse the "does the doc alone suffice" probe
+      // into "we told it the answers".
+      for (const leak of [
+        /CONVENTIONS\.md/i,
+        /E_[A-Z_]+/, // concrete error-code vocabulary
+        /sendError/,
+        /amountCents|integer cents|_cents/i,
+        /repositor(y|ies).{0,40}db\.js/is,
+        /page\s?size|pagination default/i,
+        /re-reads? the user row|token-embedded role/i,
+        /customer_name|denormali[sz]ed/i,
+      ]) {
+        assert.ok(
+          !leak.test(fixture),
+          `control-claudemd fixture leaks instrument content (${leak})`,
+        );
+      }
+    });
   });
 
   describe('story-scope scenario contract (Epic #66, Story #75)', () => {
