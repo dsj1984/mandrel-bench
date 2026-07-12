@@ -85,8 +85,13 @@
     },
     "scenario": {
       "type": "string",
-      "enum": ["hello-world", "story-scope", "epic-scope"],
-      "description": "Scenario this run exercised — the Epic #66 3-rung corpus, by rising difficulty: 'hello-world' (the overhead floor + end-to-end smoke, instrumentation only — never a value-delta rung), 'story-scope' (routing: story — persisted-auth API with per-user notes; carries a `trap` block for plaintext-password + token-generation), and 'epic-scope' (routing: epic — multi-user project/task management API; carries a `trap` block for plaintext-password, idor, missing-input-validation, and hardcoded-secret). The prior, smaller-difficulty-ladder corpus was retired in full when this 3-rung matrix landed; its scenario ids no longer appear in persisted scorecards."
+      "enum": [
+        "hello-world",
+        "story-scope",
+        "epic-scope",
+        "brownfield-longitudinal"
+      ],
+      "description": "Scenario this run exercised — the Epic #66 3-rung corpus, by rising difficulty: 'hello-world' (the overhead floor + end-to-end smoke, instrumentation only — never a value-delta rung), 'story-scope' (routing: story — persisted-auth API with per-user notes; carries a `trap` block for plaintext-password + token-generation), and 'epic-scope' (routing: epic — multi-user project/task management API; carries a `trap` block for plaintext-password, idor, missing-input-validation, and hardcoded-secret). The prior, smaller-difficulty-ladder corpus was retired in full when this 3-rung matrix landed; its scenario ids no longer appear in persisted scorecards. 'brownfield-longitudinal' (issue #124, B4) is the touch-CHAIN rung over the frozen Ledgerline seed: its record carries a `chain` block instead of `touch2`, and its record-level `dimensions` is a per-touch mean (warning: chain-aggregate-dimensions)."
     },
     "arm": {
       "type": "string",
@@ -161,6 +166,9 @@
     },
     "touch2": {
       "$ref": "#/$defs/touch2Block"
+    },
+    "chain": {
+      "$ref": "#/$defs/chainBlock"
     },
     "planQuality": {
       "$ref": "#/$defs/planQualityBlock"
@@ -419,6 +427,192 @@
         },
         "regression": {
           "$ref": "#/$defs/trapBlock"
+        }
+      }
+    },
+    "chainBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "advanceThreshold",
+        "landedCount",
+        "costPerLandedChange",
+        "touches"
+      ],
+      "description": "Touch-chain block (issue #124, PR-C; brownfield-longitudinal design §3/§5). For a scenario declaring `touches[]`, the seed overlay IS the baseline and the cell runs N declared touches as a CHAIN: each touch's session runs against the CURRENT chain baseline, is scored (evolved frozen suite + convention oracles + full dimensions), and either ADVANCES the baseline (delivered && baseSuitePassRate ≥ advanceThreshold && appBoots ⇒ the scored tree is force-pushed as the new baseline) or is skipped forward (the next touch seeds from the last-good tree). ONE scorecard per cell (the D-014/checkpoint invariant): the per-touch results live in `touches[]` here, the record-level `dimensions` is the MEAN over materialized touches (stamped with the `chain-aggregate-dimensions` warning), and this block is a sibling of `trap`/`touch2`/`phases` — never folded into the seven composite dimensions. Mutually exclusive with `touch2` (a chain scenario declares no `changeRequest`).",
+      "properties": {
+        "advanceThreshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "The base-suite pass-rate gate a touch must clear to advance the chain baseline (`scenario.chainAdvanceThreshold`, default 0.90)."
+        },
+        "landedCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Touches whose change LANDED: merged onto the sandbox default branch (landed:true), plus advanced touches on arms where landing is not a concept (the control arm commits directly). An unlanded-but-advanced mandrel touch is NOT counted — its spend still appears in the numerator of costPerLandedChange (the autonomy penalty in dollars)."
+        },
+        "costPerLandedChange": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Σ every touch's session cost (landed or not) ÷ landedCount, in USD; null when no touch landed."
+        },
+        "touches": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/chainTouchEntry"
+          },
+          "description": "Per-touch chain entries, in chain order (touchIndex 1..N)."
+        }
+      }
+    },
+    "chainTouchEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "touchIndex",
+        "materialized",
+        "advanced",
+        "seededFromTouch",
+        "outcome",
+        "cost"
+      ],
+      "description": "One touch of a chain cell (design §5): the change request it exercised, whether its delivery materialized/landed, the advance decision and the touch it was seeded from, its outcome/cost, and its exact per-touch scoring blocks (regression, conventions, dimensions, phases).",
+      "properties": {
+        "touchIndex": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-based position in the declared chain."
+        },
+        "changeRequestId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable id of the touch's change request (scenario.json `touches[].id`, e.g. 'credit-notes', 'role-enforcement')."
+        },
+        "landed": {
+          "type": ["boolean", "null"],
+          "description": "Whether the touch's delivery LANDED on the sandbox default branch (mandrel arms: true = merged, false = an unlanded PR-head tree was scored). Null for arms where landing is not a concept (control commits directly) and when undetermined."
+        },
+        "materialized": {
+          "type": "boolean",
+          "description": "Whether a scoreable delivered tree existed for this touch (merged main OR a differing PR-head branch). `false` ⇒ `outcome` is null (unmeasured, never a fabricated 0 on the stale last-good tree) and the touch cannot advance."
+        },
+        "advanced": {
+          "type": "boolean",
+          "description": "The advance decision: delivered && baseSuitePassRate ≥ advanceThreshold && appBoots (and the force-push of the scored tree as the new chain baseline succeeded). `false` ⇒ the next touch seeds from the last-good tree (skip-forward)."
+        },
+        "seededFromTouch": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The last-good touch index whose tree this touch's baseline was seeded from; 0 = the pristine scenario seed."
+        },
+        "appBoots": {
+          "type": ["boolean", "null"],
+          "description": "Whether the delivered tree still boots and reports ready (the third advance gate). Null when unmeasured (unmaterialized delivery)."
+        },
+        "outcome": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "The touch's composite quality score (`dimensions.quality.score` over the evolved frozen suite: retained base tests + accumulated additions). Null when the delivery did not materialize or the suite produced no verdict."
+        },
+        "cost": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "The touch's session cost in USD (its `dimensions.efficiency.costUsd`), or null when the envelope reported none. The BENCH_MAX_COST_USD accounting sums THIS field across the chain."
+        },
+        "regression": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["retainedTotal", "retainedPassed", "regressionRate"],
+          "description": "The evolved frozen-suite verdict at this touch (PR-B's suite-evolution runner): retained base tests vs failures/missing, plus the accumulated per-touch additions.",
+          "properties": {
+            "baseTotal": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Total tests in the frozen base-suite inventory (before supersedes)."
+            },
+            "retainedTotal": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Base tests retained at this touch (base − superseded 1..k)."
+            },
+            "retainedPassed": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Retained base tests that passed. retainedPassed ÷ retainedTotal is the baseSuitePassRate the advance gate compares against advanceThreshold."
+            },
+            "regressionRate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Failures (including never-reported tests, conservatively) among retained base tests ÷ retained count."
+            },
+            "additionsTotal": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Frozen behavioural ADDITIONS accumulated across touches 1..k."
+            },
+            "additionsPassed": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Accumulated additions that passed."
+            }
+          }
+        },
+        "conventions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["classes", "cleanRate"],
+          "description": "Convention grep-oracle verdicts over the delivered tree (PR-B's conventions/, e.g. error-envelope / validation-call / layering / money-integer).",
+          "properties": {
+            "classes": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["class", "clean"],
+                "properties": {
+                  "class": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Convention oracle id (e.g. 'error-envelope')."
+                  },
+                  "clean": {
+                    "type": "boolean",
+                    "description": "True when the delivered tree carries no violation of this convention."
+                  },
+                  "findings": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "\"<relative-path>:<line> — <explanation>\" violation evidence lines."
+                  }
+                }
+              }
+            },
+            "cleanRate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Fraction of convention oracles the tree passed clean."
+            }
+          }
+        },
+        "dimensions": {
+          "$ref": "#/properties/dimensions",
+          "description": "The FULL dimension set scored for this touch — the same seven-dimension shape as the record's `dimensions`, computed over this touch's delivered tree (exact, unlike the record-level chain aggregate)."
+        },
+        "phases": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/phaseEnvelope"
+          },
+          "description": "Per-phase session envelopes for this touch's mandrel-arm plan+deliver run (D-019); absent for control-arm touches (single session)."
         }
       }
     },
