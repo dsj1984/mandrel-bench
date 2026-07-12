@@ -41,6 +41,16 @@
  *   node .agents/scripts/analyze-execution.js --story <sid> --epic <eid> \
  *       [--phase-timings <path>]
  *   node .agents/scripts/analyze-execution.js --epic <eid>
+ *   node .agents/scripts/analyze-execution.js --epic <eid> --plan-metrics-json
+ *
+ * `--plan-metrics-json` (Epic #4474 PR7 — the G2 extraction surface) is a
+ * **local read-only** mode: it reads the per-Epic plan-metrics ledger
+ * (`temp/epic-<eid>/plan-metrics.json`), rolls it up with
+ * `summarizePlanMetrics`, and prints one compact JSON envelope
+ * `{ epicId, planMetrics, summaryLine }` to stdout — no provider call, no
+ * comment write, all logs on stderr — so a bench cohort can extract
+ * turns-per-plan / per-mode invocation counts / critic skips without
+ * scraping GitHub or the human log.
  *
  * @see docs/data-dictionary.md §StoryPerfSummary, §EpicPerfReport
  */
@@ -51,7 +61,7 @@ import { parseArgs } from 'node:util';
 import { runAsCli } from './lib/cli-utils.js';
 import { signalsFile } from './lib/config/temp-paths.js';
 import { PROJECT_ROOT, resolveConfig } from './lib/config-resolver.js';
-import { Logger } from './lib/Logger.js';
+import { Logger, routeAllOutputToStderr } from './lib/Logger.js';
 import { computeBaselineRefreshRate } from './lib/observability/baseline-refresh-rate.js';
 import {
   computeEpicPerfReport,
@@ -72,6 +82,11 @@ import {
   renderStoryBody,
   STORY_PERF_TYPE,
 } from './lib/observability/perf-report-render.js';
+import {
+  readPlanMetrics,
+  renderPlanMetricsSummaryLine,
+  summarizePlanMetrics,
+} from './lib/orchestration/plan-metrics.js';
 import { upsertStructuredComment } from './lib/orchestration/ticketing.js';
 import { createProvider } from './lib/provider-factory.js';
 
@@ -284,11 +299,34 @@ export async function runEpicMode(ctx) {
   logger.info?.(
     `[analyze-execution] epic-perf-report upserted on Epic #${epicId} (commentId=${result.commentId}, stories=${summaries.length})`,
   );
+
+  // Plan-metrics roll-up (#4474 PR1) — surface the plan-CLI invocation
+  // ledger (`temp/epic-<id>/plan-metrics.json`) alongside the perf report.
+  // Additive and non-fatal: a missing or unreadable ledger yields `null`.
+  let planMetrics = null;
+  try {
+    planMetrics = summarizePlanMetrics(
+      await readPlanMetrics(epicId, ctx.config),
+    );
+    if (planMetrics) {
+      logger.info?.(
+        `[analyze-execution] ${renderPlanMetricsSummaryLine(planMetrics)}`,
+      );
+    }
+  } catch (err) {
+    logger.warn?.(
+      `[analyze-execution] plan-metrics read failed (non-fatal): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+
   return {
     commentId: result.commentId,
     payload,
     baselineRefreshRate,
     qualityGateFriction,
+    planMetrics,
   };
 }
 
@@ -300,6 +338,7 @@ function parseCli(argv) {
       epic: { type: 'string' },
       'phase-timings': { type: 'string' },
       'window-days': { type: 'string' },
+      'plan-metrics-json': { type: 'boolean', default: false },
       cwd: { type: 'string' },
     },
     strict: false,
@@ -316,7 +355,30 @@ function parseCli(argv) {
     phaseTimingsPath: values['phase-timings'] ?? null,
     windowDays:
       Number.isInteger(windowDays) && windowDays > 0 ? windowDays : null,
+    planMetricsJson: values['plan-metrics-json'] === true,
     cwd: values.cwd ?? null,
+  };
+}
+
+/**
+ * `--plan-metrics-json` — local, read-only G2 extraction surface (Epic
+ * #4474 PR7). Reads the per-Epic plan-metrics ledger and prints one
+ * compact JSON envelope to stdout. No provider, no comment write; stdout
+ * is reserved for the envelope (all logs on stderr). A missing ledger is
+ * not an error — it yields `planMetrics: null` so a cohort script can
+ * branch on the field instead of the exit code.
+ *
+ * @param {{ epicId: number, config: object }} input
+ * @returns {Promise<{ epicId: number, planMetrics: object|null, summaryLine: string }>}
+ */
+export async function runPlanMetricsJsonMode({ epicId, config }) {
+  const planMetrics = summarizePlanMetrics(
+    await readPlanMetrics(epicId, config),
+  );
+  return {
+    epicId,
+    planMetrics,
+    summaryLine: renderPlanMetricsSummaryLine(planMetrics),
   };
 }
 
@@ -331,6 +393,19 @@ async function main(argv = process.argv.slice(2)) {
 
   const cwd = path.resolve(args.cwd ?? PROJECT_ROOT);
   const config = resolveConfig({ cwd });
+
+  if (args.planMetricsJson) {
+    // Stdout is reserved for the compact envelope — flip every log sink to
+    // stderr before any pipeline code runs (Story #2278 discipline).
+    routeAllOutputToStderr();
+    const result = await runPlanMetricsJsonMode({
+      epicId: args.epicId,
+      config,
+    });
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return;
+  }
+
   const provider = createProvider(config);
 
   if (args.storyId) {

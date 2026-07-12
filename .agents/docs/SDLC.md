@@ -26,70 +26,39 @@ From zero to shipped:
    Epic, and transitions the Epic to `agent::ready`.
 
    The entry point you use selects where the run begins:
-   - With **no arguments** (or `--idea "<seed>"`), the workflow enters at
-     Phase 1 and runs the ideation phases (1–4) to open a fresh
-     `type::epic` Issue before authoring.
-   - With **`<epicId>`**, the workflow skips ideation and enters at
-     Phase 5 for an Epic Issue you have already opened.
+   - With **no arguments** (or `--idea "<seed>"`), the workflow enters the
+     ideation form of the interrogate step; the Epic Issue itself is opened
+     by the persist step.
+   - With **`<epicId>`**, the workflow interrogates against an Epic Issue
+     you have already opened.
 
-   > **Phase numbering note.** The numbered phases below are
-   > `/plan`'s **internal** phases (1–11), not the SDLC-level
-   > Phase 0–4 used by the Mermaid diagram in [§ End-to-End
-   > Process](#end-to-end-process). Phases 1–4 run **only** on the
-   > ideation entry; an existing-Epic invocation starts at Phase 5.
+   > **Step note.** `/plan`'s Epic path runs **three steps** (Epic #4474):
+   > all GitHub reads happen in `plan-context.js`, all GitHub writes in
+   > `plan-persist.js`, and two HITL gates bracket the authoring middle.
 
-   1. **Phase 1 — idea refinement** *(ideation entry only)* — the
-      `idea-refinement` skill drives a divergent → convergent → sharpen
-      loop and emits a one-pager with the five canonical Epic sections.
-      Stops for operator confirmation of the one-pager.
-   2. **Phase 2 — cross-Epic duplicate search** *(ideation entry only)*
-      — `lib/duplicate-search.js` ranks open Epics whose scope overlaps
-      the one-pager; the operator confirms the idea is distinct or folds
-      it into an existing Epic (in which case `/plan` exits).
-   3. **Phase 3 — render Epic body** *(ideation entry only)* — renders
-      the confirmed one-pager into the canonical Epic-from-idea template
-      and stops for a final wording confirmation.
-   4. **Phase 4 — open the Epic Issue** *(ideation entry only)* — opens
-      the GitHub Issue with **only** the `type::epic` label; the captured
-      id flows into the rest of the pipeline.
-   5. **Phase 5 — re-plan detection** — checks whether the Epic body
-      already carries the folded Tech Spec sections (keyed on the
-      `## Delivery Slicing` managed section — Story #4324) and, if so,
-      prompts before overwriting the Tech Spec / Acceptance Table
-      sections in place and recreating the child Story tickets. Legacy
-      context tickets on historical Epics are ignored (never fetched).
-   6. **Phase 6 — Epic clarity gate** — scores the Epic body against the
-      five canonical sections. A `clear` verdict requires ≥ 4 of 5
-      sections present **and** the Acceptance Criteria section present (AC
-      is required, not optional). A `clear` verdict proceeds silently;
-      `needs-refinement` drops into a one-shot refinement loop with a HITL
-      diff before persisting the sharpened body.
-   7. **Phase 7 — Tech Spec & Acceptance Spec** — the
-      `epic-plan-spec-author` skill authors both planning artifacts;
-      the persist half folds them into the Epic body's managed
-      sections, flips the Epic to `agent::review-spec`,
-      and routes high-risk Epics to a HITL review stop (low-risk Epics
-      auto-proceed).
-   8. **Phase 8 — work-breakdown decomposition** — the
-      `epic-plan-decompose-author` skill emits the Epic → Story
-      tree (with inline `acceptance[]` / `verify[]` per Story); the
-      validator enforces hierarchy, DAG acyclicity, and file-assumption
-      invariants.
-   9. **Phase 9 — execution roadmap** — runs the dispatcher in dry-run to
-      compute waves and posts the `dispatch-manifest` structured comment
-      that `/deliver` consumes.
-   10. **Phase 10 — readiness health check** — `epic-plan-healthcheck.js`
-       runs the default config + git-remote checks; a non-OK result is a
-       **blocking** exit condition for the `agent::ready` flip (overridable
-       only via the `planning::healthcheck-waived` label).
-   11. **Phase 11 — plan comprehension gate** — an opt-in, advisory
-       walkthrough of the planned backlog driven by the
-       `core/knowledge-transfer` skill. Offered by LM judgment only on
-       non-trivial plans, runs **after** the `agent::ready` flip, and is
-       interruptible at every checkpoint — it never blocks the hand-off.
-   12. **Phase 12 — notification & hand-off** — posts the backlog summary
-       comment, @mentions the operator, and names `/deliver` as the
-       next step.
+   1. **Interrogate** — the `idea-refinement` skill (ideation) or the
+      envelope's clarity/re-plan signals (existing Epic) drive a
+      question-at-a-time interrogation; `plan-context.js` emits the single
+      authoring envelope (duplicate candidates, clarity rubric, re-plan
+      signals, codebase snapshot, system prompts, delivery-shape signal).
+      The scope-triage verdict, duplicate review, and re-plan / refined-body
+      decisions fold into **gate #1**, one operator confirm at the step's
+      exit.
+   2. **Author** — the `epic-plan-spec-author` skill writes the Tech Spec
+      (opening `## Delivery Slicing`), the risk verdict (with its
+      `deliveryShape`), and the Acceptance Table; the
+      `epic-plan-decompose-author` skill writes `tickets.json` in fan-out
+      shape (a single-delivery plan authors no tickets). Fresh-context
+      consolidation and pre-mortem critics run conditionally before the
+      review.
+   3. **Persist** — **gate #2** (risk-routed) shows spec + tickets + risk +
+      `deliveryShape` in one view; then `plan-persist.js` runs every
+      deterministic gate in one ordered, fail-closed pass (section gate,
+      ticket validator, file-assumption gate, DAG, budget, Epic lease,
+      managed sections, story creation or the `delivery::single` marker,
+      inline healthcheck) and flips the Epic to `agent::ready` **once** —
+      no intermediate `agent::review-spec` — closing with a `plan-summary`
+      comment that carries the dry-run wave table.
 
 2. **Deliver the Epic.** Run `/deliver <epicId>` in your IDE. The
    skill drives the merged execute + close flow end-to-end.
@@ -343,7 +312,7 @@ mode:
    convergent → sharpen loop and emits a markdown one-pager with the
    five canonical Epic sections (Context, Goal, Non-Goals, Scope,
    Acceptance Criteria).
-2. **Scope triage (Phase 1.5).** Before the ceremony is paid for, the
+2. **Scope triage.** Before the ceremony is paid for, the
    one-pager is judged against the story-vs-epic rubric (see the
    subsection below). On a `story` / `borderline` verdict the operator may
    route the work to `/plan` instead of opening an Epic.
@@ -353,16 +322,18 @@ mode:
    new idea is genuinely distinct or folds it into an existing Epic
    (`/plan` exits and the operator resumes work on the existing
    id).
-4. **Render and confirm the Epic body.** The one-pager is rendered into
-   the canonical Epic-from-idea template; the operator confirms before
-   the GitHub Issue is opened.
-5. **Open the Epic.** The Issue is opened with **only** the `type::epic`
-   label — no `state::*` label is applied at creation. Spec authoring in
-   Phase 1b advances it to `agent::review-spec`.
+4. **Confirm at gate #1.** The one-pager, the triage verdict, and the
+   duplicate review fold into one operator confirmation at the exit of
+   the interrogate step.
+5. **Open the Epic (persist step).** `plan-persist.js` renders the
+   one-pager into the canonical Epic-from-idea template and opens the
+   Issue with **only** the `type::epic` label — no `state::*` label at
+   creation; the same persist pass folds in the authored sections and
+   flips the Epic straight to `agent::ready`.
 
 #### Scope triage
 
-`/plan` Phase 1.5 runs the
+The `/plan` Epic path's interrogate step runs the
 [`core/scope-triage`](../skills/core/scope-triage/SKILL.md) rubric over the
 sharpened one-pager so a story-sized scope is not pushed through the full Epic
 ceremony (Tech Spec + Acceptance Spec + Story backlog +
@@ -374,20 +345,21 @@ verdicts — `epic` | `story` | `borderline`.
 
 The verdict is **host-LLM judgment** (no scorer, no schema, no label
 transition) and **advisory** — the operator always decides. It folds into the
-existing Phase 1 HITL confirmation rather than adding a second stop: an `epic`
+existing gate #1 confirmation rather than adding a second stop: an `epic`
 verdict proceeds with a plain confirm, while a `story` / `borderline` verdict
 offers a three-way choice (single Story / plan as Epic anyway / abort). On an
 accepted `story`, `/plan` hands the one-pager off to
-`/plan --from-notes` as a scope-triage handoff and exits. Phase 1.5 is
+`/plan --from-notes` as a scope-triage handoff and exits. The ideation triage is
 skipped when `/plan` is itself entered via a scope-triage handoff, so the
 two workflows never ping-pong a settled decision.
 
 The same rubric also guards the **existing-Epic entry** (1b) as the
-**Phase 5.5 story-sized advisory**, which catches a story-sized scope that was
-hand-opened directly as a `type::epic` issue (the Phase 6 Epic Clarity Gate
+**story-sized advisory**, which catches a story-sized scope that was
+hand-opened directly as a `type::epic` issue (the Epic Clarity Gate rubric
 scores section *presence*, not scope *size*, so a clear-but-thin Epic would
-otherwise sail through). The advisory fires **only** when Phase 5 found no
-folded Tech Spec sections **and** the Epic has no open Story children, so
+otherwise sail through). The advisory fires **only** when the envelope's
+re-plan signal found no folded Tech Spec sections **and** the Epic has no
+open Story children, so
 it never re-triages an Epic that is being re-planned. An `epic` verdict
 proceeds silently; a `story` / `borderline` verdict STOPs with the same
 three-way choice (convert to a standalone Story / proceed as Epic anyway /
@@ -410,10 +382,10 @@ draft-confirmation HITL stop with no extra stop on a `story` verdict; an `epic`
 verdict offers a three-way choice (escalate to `/plan --idea` as a
 scope-triage handoff / persist as a standalone Story anyway / abort). On an
 accepted escalation, `/plan` abandons the draft and hands the notes off to
-`/plan --idea`, marked as a handoff so `/plan` skips its own Phase 1.5
-gate. This gate is itself skipped when `/plan` was entered via a
-scope-triage handoff (from `/plan` Phase 1.5 or the Phase 5.5 conversion
-path), so the two workflows never ping-pong a settled decision. As with the
+`/plan --idea`, marked as a handoff so `/plan` skips its own ideation
+triage gate. This gate is itself skipped when `/plan` was entered via a
+scope-triage handoff (from the Epic path's ideation triage or its
+story-sized conversion path), so the two workflows never ping-pong a settled decision. As with the
 inbound gates, the verdict is advisory and host-LLM judgment — no auto-routing,
 no scorer, no schema, and no label transition.
 
@@ -450,7 +422,7 @@ The framework reads the Epic and autonomously builds the entire work breakdown.
 > "do not modify existing issues without permission" Constraint — every
 > body rewrite is operator-confirmed.
 
-1. **Epic Planner** (`epic-plan-spec.js`):
+1. **Epic Planner** (the spec half of `plan-persist.js`):
    - Synthesizes the Epic body with project documentation.
    - Folds the authored **Tech Spec** (opening with `## Delivery
      Slicing`) and the **Acceptance Table** (the AC-ID table) into
@@ -488,8 +460,8 @@ BDD runner + pending-tag (e.g. `playwright-bdd supports @skip`) for the
 features-first Story to consume.
 
 The spec is persisted by
-`epic-plan-spec.js --epic [Epic_ID] --tech-spec ... --acceptance-table ...`
-— the persist half folds both artifacts into the Epic body's managed
+`plan-persist.js --epic [Epic_ID] --tech-spec ... --acceptance-table ...`
+— the persist step folds both artifacts into the Epic body's managed
 sections in one atomic, section-scoped write (everything outside the
 managed regions is byte-preserved) and fails loudly if any input is
 missing or empty. At delivery time, hydration strips the
@@ -502,7 +474,7 @@ authoring/close-time machinery, not delivery context.
 **`planningRisk`** envelope from a **planner-authored risk verdict**
 (`risk-verdict.json`, the third planning artifact the
 `epic-plan-spec-author` Skill writes from the Epic body / Tech Spec it just
-authored). The persist half of `epic-plan-spec.js` validates the verdict
+authored). `plan-persist.js` validates the verdict
 against `risk-verdict.schema.json` — a malformed verdict fails closed —
 then derives the envelope via `deriveRiskEnvelope`
 (`lib/orchestration/planning-risk.js`). The verdict is recorded as a
@@ -546,8 +518,8 @@ on the Epic ticket records the waiver. There are two routes to the label:
 - **Planner-selected** — `/plan`'s `planning.spec-authoring` state derives a
   `planningRisk` envelope from the planner-authored risk verdict
   (see § Adaptive planning risk routing) and,
-  when `acceptanceDisposition === 'not-applicable'`, the persist half
-  of `epic-plan-spec.js` applies `acceptance::n-a` on the Epic and skips
+  when `acceptanceDisposition === 'not-applicable'`, the persist step
+  of `plan-persist.js` applies `acceptance::n-a` on the Epic and skips
   the Acceptance Table section for that run (stripping a stale one on a
   re-plan). The disposition is also
   recorded in the `epic-plan-state` checkpoint so the decision is
@@ -568,7 +540,7 @@ The waiver is binary — there is no partial opt-out. If an Epic later
 warrants spec coverage, remove the label and run `/plan`'s
 `planning.spec-authoring` state to author the spec.
 
-1. **Ticket Decomposer** (`epic-plan-decompose.js`):
+1. **Ticket Decomposer** (the fan-out half of `plan-persist.js`):
    - Decomposes specs into the **2-tier hierarchy**
      (Epic → Story):
 
@@ -593,16 +565,17 @@ Story-branch → Epic-branch merge model are unchanged; the Feature and
 Task layers are gone, and thematic grouping lives as prose in the Epic
 body (which also carries the folded Tech Spec sections).
 
-When decomposition completes the Epic flips to `agent::ready` and the
-dispatch manifest is posted as a structured comment on the Epic. That
-manifest is the source of truth for the wave layout `/deliver`
-consumes in the `delivery.snapshot` state.
+When the persist step completes the Epic flips to `agent::ready` and the
+`plan-summary` structured comment (with the dry-run wave table) lands on
+the Epic. The live wave manifest is written at deliver time by the
+prepare phase — planning posts no separate dispatch-manifest comment
+(Epic #4474).
 
 ### `agent::ready` exit conditions
 
 The planning → delivery handoff is governed by an explicit checklist.
-The persist half of `epic-plan-decompose.js` refuses to flip the Epic
-to `agent::ready` unless **every** condition below is true. The
+`plan-persist.js` refuses to flip the Epic to `agent::ready`
+unless **every** condition below is true. The
 contract is enforced at the planner boundary so `/deliver` can
 treat `agent::ready` as a load-bearing precondition rather than a
 hopeful signal.
@@ -616,18 +589,13 @@ hopeful signal.
   the Epic's child-Story backlog and written the spec to
   `.agents/epics/<epicId>.yaml`. The `epic-plan-state` checkpoint
   comment records `phase: ready`.
-- **Dispatch manifest posted.** A single `epic-dispatch` structured
-  comment exists on the Epic and validates against
-  `.agents/schemas/dispatch-manifest.json`. The dispatch manifest is
-  the source of truth `/deliver` reads during
-  `delivery.snapshot`.
-- **Healthcheck green.** `epic-plan-healthcheck.js` (run during
-  `/plan` Phase 10) returned `ok: true`. A failing healthcheck
+- **Healthcheck green.** The inline `epic-plan-healthcheck` pass run
+  by the persist CLI returned `ok: true`. A failing healthcheck
   blocks the handoff — there is no advisory degrade-mode for
   `agent::ready`.
-- **Notification posted.** The planner has posted the
-  `planning.handoff` notification on the Epic so the operator and any
-  subscribed listeners know the Epic is ready to fan out.
+- **Summary posted.** The persist CLI has posted the `plan-summary`
+  structured comment (backlog stats + the dry-run wave table) so the
+  operator knows the Epic is ready to fan out.
 
 **Operator override.** The `planning::healthcheck-waived` label, applied
 to the Epic by the operator, is the documented escape hatch for cases
@@ -865,8 +833,8 @@ an exclusive, time-bounded claim on the ticket via
 rides the ticket's GitHub `assignees` field — a substrate every clone can
 read — so a live foreign claim is visible to, and refuses, a second
 operator regardless of which machine they are on. All three delivery and
-planning entry points take the claim: `/plan` acquires the Epic lease
-before Phase 7 (spec) and releases it after Phase 8 (decompose),
+planning entry points take the claim: `/plan`'s persist CLI acquires the
+Epic lease before its first mutation and releases it on every exit path,
 `/deliver` acquires the Epic lease in its prepare guard, and
 `/single-story-deliver` acquires the Story lease at init. For
 `/deliver` and `/single-story-deliver`, liveness is decided by the

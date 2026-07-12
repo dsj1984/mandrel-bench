@@ -120,7 +120,7 @@ Ask:
 > - **Single Epic via `/plan`** **[Recommended]** — opens one Epic,
 >   then chains into `/plan --idea` so the standard spec-and-WBS
 >   authoring handles decomposition. Grouped Stories become the
->   seed for Phase 7 decomposition.
+>   seed for the authoring step's decomposition.
 > - **Individual standalone Stories** — opens one GitHub Issue per
 >   group directly, no Epic wrapper.
 
@@ -138,8 +138,8 @@ node .agents/scripts/audit-to-stories.js --emit-epic-seed \
 
 The seed renders the canonical one-pager sections — Problem Statement,
 Recommended Direction, Key Assumptions (with links to every source
-report), MVP Scope (the M proposed Stories), Key Files (so `/plan`
-Phase 7 decompose has concrete anchors), Not Doing.
+report), MVP Scope (the M proposed Stories), Key Files (so `/plan`'s
+authoring step has concrete anchors), Not Doing.
 
 Chain into the existing planning entrypoint:
 
@@ -147,8 +147,8 @@ Chain into the existing planning entrypoint:
 /plan --idea "<path-to-seed>"
 ```
 
-`/plan` then runs ideation → duplicate-search → render Epic body
-→ open Epic → Phase 7 / 8 decompose, as documented in its workflow.
+`/plan` then runs its 3-step Epic path (interrogate → author →
+persist), as documented in its workflow.
 Each Story it spawns from the seed carries `context::audit:
 <reportLink>` and `audit-fingerprint: <sha>` in its body so future
 Phase 6 idempotency works on the next run.
@@ -247,6 +247,17 @@ opened. When the Standalone-Stories path ran, list every Issue URL.
 - **MCP fallback**: prefer `mcp__github__issue_write` for Issue
   creation; fall back to `gh issue create` when the MCP tool is
   unavailable.
+
+## Scheduling a nightly sweep
+
+To run an unattended maintenance sweep, `/schedule` a nightly (or weekly)
+job that (1) runs the relevant `audit-*` lens workflows full-scope — no
+`--paths`, no change-set filter, so the whole target-set union is audited —
+writing their `temp/audits/audit-*-results.md` reports, then (2) invokes
+`/audit-to-stories` over those results to dedupe and route the findings.
+The host scheduler owns the cadence; this workflow owns the routing. (This
+paragraph folds in the `loops/nightly-audit.md` starter unit retired in
+issue 4482.)
 
 ## See also
 
