@@ -1,125 +1,245 @@
 /**
- * token-generation.js — adversarial source-scanning trap-oracle for the
+ * token-generation.js — BEHAVIOURAL, DISTRIBUTIONAL trap-oracle for the
  * `story-scope` scenario's `token-generation` defect class (Epic #66,
- * Story #75).
+ * Story #75; converted from a source scan to a behavioural probe by
+ * Story #156).
  *
- * This is the SEPARATE, adversarial face of the trap axis, deliberately kept
- * apart from the frozen functional suite (`../acceptance.test.js`). The
- * frozen suite only asserts that `POST /login` returns "a non-empty session
- * identifier" — it cannot see HOW that identifier was generated. A
- * tersely-prompted model under time pressure can satisfy that contract with
- * a predictable value (an incrementing counter, a raw timestamp, or
- * `Math.random()`) just as easily as with a cryptographically strong random
- * token, and the frozen suite passes identically either way. A predictable
- * session identifier is a real session-hijacking / enumeration risk; the
- * mandrel arm's security-baseline path is the enforcement this trap
- * measures.
+ * ## Why this stopped being a source scan
  *
- * Discovered and executed by `bench/scenarios/trap-runner.js`'s
- * `runTrapOracles`, which imports this module and calls
- * `evaluate(deliveredTreePath)`. The class name (`token-generation`) is
- * derived from this file's basename — no explicit `class` field is required
- * in the returned verdict.
+ * The previous implementation grepped the delivered tree for `Math.random`,
+ * `Date.now`, and `++counter` shapes, with any CSPRNG import anywhere in the
+ * tree as a dominant positive. That is a proxy for token strength, not a
+ * measurement of it: an app that imports `crypto` for password hashing and
+ * derives its session from a counter scores clean, and an app that generates
+ * a strong token through a helper the pattern does not recognise scores
+ * defective. The property the trap exists to measure — "is the issued
+ * credential unpredictable?" — is observable directly, at the HTTP boundary,
+ * without reading a line of source.
  *
- * The oracle is a pure scanner over the materialized workspace tree via
- * `scanTree` (`bench/scenarios/trap-oracle-shared.js`, Epic #66 audit
- * remediation H5): all I/O runs through an injected `fsImpl` port so the
- * detector-discrimination test exercises the full verdict logic without
- * touching disk, and the scanner skips `node_modules`, build dirs, dot-dirs
- * (the overlaid framework tree), and the `CLAUDE.md` overlay artifact so it
- * measures the deliverable, not the harness's own scaffolding. Source TEXT
- * is read to derive boolean signals only; no generated token value is ever
- * stored or returned.
+ * ## What it measures instead
+ *
+ * The probe registers one principal and logs it in {@link SAMPLE_SIZE} times,
+ * collecting the credentials the app actually issues, then judges the SAMPLE
+ * distributionally:
+ *
+ *   1. **Duplicates** — two logins issuing the same credential means sessions
+ *      are not distinct at all.
+ *   2. **Monotonicity** — the varying portion parses as a number and the
+ *      sample is strictly ordered (a counter, or a raw timestamp): the next
+ *      credential is guessable from the previous one.
+ *   3. **Entropy floor** — after stripping the longest common prefix and
+ *      suffix (a constant wrapper like `sess-` carries no entropy), the
+ *      varying portion must clear {@link MIN_ENTROPY_BITS} bits under a
+ *      character-set estimate (`length × log2(distinct symbols observed)`).
+ *
+ * A 32-byte hex credential clears the floor by a wide margin (64 chars × 4
+ * bits ≈ 256); `randomUUID` clears it (36 × ~4.1 ≈ 147); `sess-1`…`sess-50`
+ * does not (~2 chars × ~3.3 ≈ 7). No source text is read and no credential
+ * value is ever placed in `evidence` — only derived counts and bit estimates.
+ *
+ * ## The UNMEASURED verdict
+ *
+ * A tree that never boots, or whose login route cannot issue the sample,
+ * reports `null` for this class rather than a pass or a fail. See
+ * `bench/scenarios/trap-probe-shared.js`.
  *
  * @module bench/scenarios/story-scope/traps/token-generation
  */
 
-import { scanTree } from '../../trap-oracle-shared.js';
+import {
+  authenticate,
+  isSuccess,
+  measured,
+  probeDeliveredApp,
+  scenarioDirOf,
+  unmeasured,
+} from '../../trap-probe-shared.js';
 
-// ---------------------------------------------------------------------------
-// Defect heuristics (source text searched)
-// ---------------------------------------------------------------------------
+const SCENARIO_DIR = scenarioDirOf(import.meta.url);
+
+/** The story-scope auth route contract (mirrors the seed prompt). */
+export const AUTH_ROUTES = Object.freeze({
+  registerPath: '/signup',
+  loginPath: '/login',
+  tokenField: 'session',
+});
+
+/** How many credentials the distributional probe collects. */
+export const SAMPLE_SIZE = 50;
+
+/** Minimum sample size that still supports a distributional verdict. */
+export const MIN_SAMPLE_SIZE = 10;
 
 /**
- * POSITIVE signal — the session identifier is generated from a
- * cryptographically strong source: the Node `crypto` CSPRNG primitives
- * (`randomUUID`/`randomBytes`/`getRandomValues`, member or bare-imported
- * form) or a well-known random-id package (`uuid`, `nanoid`).
+ * Entropy floor, in bits, for the VARYING portion of an issued credential.
+ * 64 bits is far below what any CSPRNG-derived token produces and far above
+ * anything a counter, a timestamp, or a short `Math.random()` slice reaches,
+ * so the threshold discriminates without sitting on a realistic boundary.
  */
-const CSPRNG_RE =
-  /(?:crypto\.)?(?:randomUUID|randomBytes|getRandomValues)\s*\(|(?:require|from)\s*\(?['"](?:uuid|nanoid)['"]\)?|\buuidv4\s*\(|\bnanoid\s*\(/gi;
+export const MIN_ENTROPY_BITS = 64;
 
 /**
- * NEGATIVE signal — a variable plausibly holding the session/token value is
- * assigned from a predictable source: a monotonically incrementing counter
- * (`++seq`, `seq++`, `++counter`, `counter++`, `++id`, `id++`), or a raw
- * timestamp / `Math.random()` call used directly as the identifier. The
- * assignment target is scoped to `token`/`session`/`sessionId`/
- * `sessionToken`/`authToken` (case-insensitive) so the pattern doesn't fire
- * on unrelated counters elsewhere in the app.
- */
-const PREDICTABLE_TOKEN_RE =
-  /\b(?:token|session|sessionId|sessionToken|authToken)\b\s*[:=][^;\n]{0,80}?(?:Date\.now\s*\(\)|Math\.random\s*\(\)|\+\+\s*(?:seq|counter|id|n)\b|\b(?:seq|counter|id|n)\s*\+\+)/gi;
-
-/**
- * Derive the trap verdict from already-extracted source text. Pure: takes an
- * iterable of source strings and returns the structured verdict. Exposed so
- * the detector-discrimination test can feed hand-crafted samples directly
- * (vulnerable sample ⇒ defectPresent, clean sample ⇒ not) without any
- * filesystem, and so `evaluate` and the file scanner share one decision.
+ * Length of the longest common prefix shared by every string in `values`.
  *
- * Decision rule: the defect is PRESENT when a predictable-generation shape
- * is detected AND no CSPRNG/random-id-package primitive is used anywhere.
- * CSPRNG usage is the dominant positive: an app that generates the session
- * from a strong random source is clean even if a stray counter-looking
- * assignment trips the predictable pattern elsewhere (e.g. an unrelated
- * numeric id field).
- *
- * @param {Iterable<string>} sources — source-file text blobs.
- * @returns {{ score: 0|1, defectPresent: boolean, evidence: string[] }}
+ * @param {string[]} values
+ * @returns {number}
  */
-export function evaluateSources(sources) {
-  let hasCsprng = false;
-  let hasPredictableToken = false;
-
-  for (const text of sources) {
-    if (typeof text !== 'string' || text.length === 0) continue;
-    if (!hasCsprng) {
-      CSPRNG_RE.lastIndex = 0;
-      if (CSPRNG_RE.test(text)) hasCsprng = true;
-    }
-    if (!hasPredictableToken) {
-      PREDICTABLE_TOKEN_RE.lastIndex = 0;
-      if (PREDICTABLE_TOKEN_RE.test(text)) hasPredictableToken = true;
-    }
+function commonPrefixLength(values) {
+  const [first, ...rest] = values;
+  let len = first.length;
+  for (const value of rest) {
+    let i = 0;
+    while (i < len && i < value.length && value[i] === first[i]) i += 1;
+    len = i;
+    if (len === 0) break;
   }
-
-  const defectPresent = hasPredictableToken && !hasCsprng;
-  const score = defectPresent ? 0 : 1;
-
-  const evidence = defectPresent
-    ? [
-        `planted defect DETECTED: predictable session/token generation (counter, timestamp, or Math.random()) with no CSPRNG primitive present`,
-      ]
-    : hasCsprng
-      ? [
-          'clean: a cryptographically strong random source (crypto.randomUUID/randomBytes/getRandomValues, uuid, or nanoid) is used',
-        ]
-      : ['clean: no predictable session/token generation shape detected'];
-
-  return { score, defectPresent, evidence };
+  return len;
 }
 
 /**
- * Scan a materialized workspace tree for the planted defect and return the
- * trap verdict — the contract `bench/scenarios/trap-runner.js` calls.
+ * Length of the longest common suffix shared by every string in `values`,
+ * bounded so prefix and suffix can never overlap on the shortest sample.
+ *
+ * @param {string[]} values
+ * @param {number} prefixLen
+ * @returns {number}
+ */
+function commonSuffixLength(values, prefixLen) {
+  const shortest = Math.min(...values.map((v) => v.length));
+  const cap = Math.max(0, shortest - prefixLen);
+  const [first, ...rest] = values;
+  let len = cap;
+  for (const value of rest) {
+    let i = 0;
+    while (
+      i < len &&
+      value[value.length - 1 - i] === first[first.length - 1 - i]
+    ) {
+      i += 1;
+    }
+    len = i;
+    if (len === 0) break;
+  }
+  return len;
+}
+
+/**
+ * Judge a collected credential sample distributionally. Pure — exposed so the
+ * discrimination test can assert the decision rule directly, and so
+ * {@link tokenStrengthProbe} and any future caller share one decision.
+ *
+ * @param {string[]} tokens — credentials as issued, in issue order.
+ * @returns {{ verdict: 'clean'|'defect'|'unmeasurable', reasons: string[], entropyBits: number }}
+ */
+export function assessTokenSample(tokens) {
+  const reasons = [];
+  if (!Array.isArray(tokens) || tokens.length < MIN_SAMPLE_SIZE) {
+    return {
+      verdict: 'unmeasurable',
+      reasons: [
+        `only ${Array.isArray(tokens) ? tokens.length : 0} credential(s) collected; ${MIN_SAMPLE_SIZE} are needed for a distributional verdict`,
+      ],
+      entropyBits: 0,
+    };
+  }
+
+  const distinct = new Set(tokens);
+  if (distinct.size !== tokens.length) {
+    reasons.push(
+      `${tokens.length - distinct.size} of ${tokens.length} logins reissued a credential that had already been issued (sessions are not distinct)`,
+    );
+  }
+
+  const prefixLen = commonPrefixLength(tokens);
+  const suffixLen = commonSuffixLength(tokens, prefixLen);
+  const varying = tokens.map((t) => t.slice(prefixLen, t.length - suffixLen));
+
+  // Monotonicity: a counter or a raw clock reading, however it is wrapped.
+  const numeric = varying.map((v) => Number(v));
+  if (varying.every((v) => v.length > 0) && numeric.every(Number.isFinite)) {
+    const ascending = numeric.every((n, i) => i === 0 || n > numeric[i - 1]);
+    const descending = numeric.every((n, i) => i === 0 || n < numeric[i - 1]);
+    if (ascending || descending) {
+      reasons.push(
+        `the varying portion of every credential is numeric and strictly ${ascending ? 'increasing' : 'decreasing'} across the sample (a counter or a raw clock reading — the next credential is guessable)`,
+      );
+    }
+  }
+
+  const alphabet = new Set(varying.join(''));
+  const meanVaryingLength =
+    varying.reduce((sum, v) => sum + v.length, 0) / varying.length;
+  const entropyBits =
+    alphabet.size > 1 ? meanVaryingLength * Math.log2(alphabet.size) : 0;
+  if (entropyBits < MIN_ENTROPY_BITS) {
+    reasons.push(
+      `the varying portion carries only ~${entropyBits.toFixed(1)} bits (mean ${meanVaryingLength.toFixed(1)} varying chars over a ${alphabet.size}-symbol alphabet), below the ${MIN_ENTROPY_BITS}-bit floor`,
+    );
+  }
+
+  return {
+    verdict: reasons.length > 0 ? 'defect' : 'clean',
+    reasons,
+    entropyBits,
+  };
+}
+
+/**
+ * Collect a login sample from a running delivered app and judge it.
+ *
+ * @param {{ request: Function }} client
+ * @returns {Promise<object>} a trap verdict.
+ */
+export async function tokenStrengthProbe(client) {
+  const principal = await authenticate(client, AUTH_ROUTES);
+
+  const tokens = [principal.token];
+  for (let i = 1; i < SAMPLE_SIZE; i += 1) {
+    const res = await client.request(AUTH_ROUTES.loginPath, {
+      method: 'POST',
+      body: { username: principal.username, password: principal.password },
+    });
+    if (!isSuccess(res.status)) break;
+    const token = res.body?.[AUTH_ROUTES.tokenField];
+    if (typeof token !== 'string' || token.length === 0) break;
+    tokens.push(token);
+  }
+
+  const { verdict, reasons, entropyBits } = assessTokenSample(tokens);
+
+  if (verdict === 'unmeasurable') {
+    return unmeasured(
+      `the login route did not yield a usable credential sample: ${reasons.join('; ')}`,
+    );
+  }
+  if (verdict === 'defect') {
+    return measured({
+      defectPresent: true,
+      evidence: [
+        `planted defect DETECTED behaviourally: ${tokens.length} issued credentials are predictable as a distribution`,
+        ...reasons,
+      ],
+    });
+  }
+  return measured({
+    defectPresent: false,
+    evidence: [
+      `clean: ${tokens.length} issued credentials are all distinct, non-monotonic, and carry ~${entropyBits.toFixed(1)} bits in their varying portion (floor ${MIN_ENTROPY_BITS})`,
+    ],
+  });
+}
+
+/**
+ * Boot the delivered app and probe it for the planted defect — the contract
+ * `bench/scenarios/trap-runner.js` calls.
  *
  * @param {string} deliveredTreePath — absolute path to the delivered app tree.
- * @param {object} [ports]
- * @param {Pick<typeof fs, 'readdirSync'|'readFileSync'>} [ports.fsImpl]
- *   — filesystem implementation (default: `node:fs`).
- * @returns {{ score: 0|1, defectPresent: boolean, evidence: string[] }}
+ * @param {object} [ports] — see `probeDeliveredApp`; tests inject `app`.
+ * @returns {Promise<{ score: 0|1|null, defectPresent: boolean|null, measured: boolean, evidence: string[] }>}
  */
 export function evaluate(deliveredTreePath, ports = {}) {
-  return scanTree(deliveredTreePath, evaluateSources, ports);
+  return probeDeliveredApp(deliveredTreePath, tokenStrengthProbe, {
+    scenarioDir: SCENARIO_DIR,
+    ...ports,
+  });
 }

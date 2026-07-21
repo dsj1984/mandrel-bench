@@ -18,6 +18,7 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   DEFAULT_TRAPS_SUBDIR,
@@ -30,6 +31,13 @@ const SCENARIO_DIR = '/repo/bench/scenarios/epic-scope';
 const TRAPS_DIR = path.join(SCENARIO_DIR, 'traps');
 const TRAPS_TOUCH2_DIR = path.join(SCENARIO_DIR, 'traps-touch2');
 const DELIVERED_TREE = '/ws-mandrel';
+/** Repo root — the real-roster tests below read the on-disk traps/ dirs. */
+const REPO_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  '..',
+);
 
 /** Minimal Dirent-shaped fake — only what discoverTrapModules reads. */
 function fileEntry(name) {
@@ -165,18 +173,65 @@ test('runTrapOracles: an oracle without an evidence array omits the field rather
   const result = await runTrapOracles(
     { scenarioDir: SCENARIO_DIR, deliveredTreePath: DELIVERED_TREE },
     {
-      readdirFn: () => [fileEntry('missing-input-validation.js')],
+      readdirFn: () => [fileEntry('pagination-bounds.js')],
       importImpl: async () => ({
         evaluate: async () => ({ score: 1, defectPresent: false }),
       }),
     },
   );
   assert.deepEqual(result.classes[0], {
-    class: 'missing-input-validation',
+    class: 'pagination-bounds',
     score: 1,
     defectPresent: false,
   });
   assert.ok(!('evidence' in result.classes[0]));
+});
+
+// ---------------------------------------------------------------------------
+// Three-valued verdicts (Story #156). A BEHAVIOURAL oracle that could not run
+// reports `null`; the runner must propagate that verbatim and exclude it from
+// the cleanRate denominator rather than coercing it into a free pass.
+// ---------------------------------------------------------------------------
+
+test('runTrapOracles: an UNMEASURED (null-score) verdict is propagated, not coerced to a pass', async () => {
+  const result = await runTrapOracles(
+    { scenarioDir: SCENARIO_DIR, deliveredTreePath: DELIVERED_TREE },
+    {
+      readdirFn: () => [fileEntry('idor.js')],
+      importImpl: async () => ({
+        evaluate: async () => ({
+          score: null,
+          defectPresent: null,
+          measured: false,
+          evidence: ['unmeasured: the app never booted'],
+        }),
+      }),
+    },
+  );
+  assert.equal(result.classes[0].score, null);
+  assert.equal(result.classes[0].defectPresent, null);
+  assert.equal(result.cleanRate, null, 'no measured class ⇒ no rate');
+});
+
+test('runTrapOracles: cleanRate averages only the MEASURED classes', async () => {
+  const verdicts = {
+    'cascade-delete.js': { score: 1, defectPresent: false },
+    'idor.js': { score: 0, defectPresent: true },
+    'session-invalidation.js': { score: null, defectPresent: null },
+  };
+  const result = await runTrapOracles(
+    { scenarioDir: SCENARIO_DIR, deliveredTreePath: DELIVERED_TREE },
+    {
+      readdirFn: () => Object.keys(verdicts).map(fileEntry),
+      importImpl: async (modulePath) => ({
+        evaluate: async () => verdicts[path.basename(modulePath)],
+      }),
+    },
+  );
+  assert.equal(result.classes.length, 3);
+  // Mean of the two MEASURED scores (1 and 0) — the null class is neither a
+  // defect dragging it to 0 nor a pass inflating it to 1.
+  assert.equal(result.cleanRate, 0.5);
 });
 
 test('runTrapOracles: a module missing evaluate() throws a clear error', async () => {
@@ -341,4 +396,36 @@ test('runTrapOracles: trapsSubdir "traps-touch2" scans ONLY the touch-2 regressi
   assert.equal(result.cleanRate, 1);
   // Only touch-2 module paths were imported; no traps/ oracle was touched.
   assert.ok(seenArgs.every((a) => a.modulePath.includes('traps-touch2')));
+});
+
+// ---------------------------------------------------------------------------
+// Real on-disk discovery (Story #156). The trap-class roster is defined by the
+// modules actually present under each scenario's traps/ directory — no
+// registry, no scenario.json list — so this asserts the roster the runner will
+// really see at benchmark time.
+// ---------------------------------------------------------------------------
+
+test('discoverTrapModules: the real epic-scope roster carries the judgment-gradient classes and no entailed input-validation trap', () => {
+  const classes = discoverTrapModules(
+    path.resolve(REPO_ROOT, 'bench/scenarios/epic-scope'),
+  ).map((m) => m.class);
+  for (const expected of [
+    'idor',
+    'pagination-bounds',
+    'cascade-delete',
+    'session-invalidation',
+  ]) {
+    assert.ok(classes.includes(expected), `epic-scope declares ${expected}`);
+  }
+  assert.ok(
+    !classes.some((c) => c.includes('input-validation')),
+    'the entailed input-validation trap is gone',
+  );
+});
+
+test('discoverTrapModules: the real story-scope roster keeps token-generation', () => {
+  const classes = discoverTrapModules(
+    path.resolve(REPO_ROOT, 'bench/scenarios/story-scope'),
+  ).map((m) => m.class);
+  assert.ok(classes.includes('token-generation'));
 });
