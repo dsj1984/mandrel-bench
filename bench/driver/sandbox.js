@@ -25,7 +25,11 @@
  *   - `materializeSandboxTemplate(opts, deps)` — copies the baseline template
  *     tree (`bench/sandbox-template/`) into a working tree, layering a
  *     per-scenario seed directory (`bench/scenarios/<id>/sandbox/`) on top
- *     when present.
+ *     when present, and filling in the dependency-free gate `package.json`
+ *     when the materialized tree declares none (Story #153 — a greenfield
+ *     baseline with no `typecheck`/`lint`/`test` scripts forced the mandrel
+ *     arm to bootstrap them mid-session and charged those turns to the
+ *     measured overhead).
  *   - `seedFromTemplate(opts, deps)` — materializes the template, commits it,
  *     and pushes it as the ephemeral repo's baseline commit, returning the
  *     baseline SHA recorded on the sandbox handle.
@@ -71,12 +75,18 @@ import {
   mkdtempSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { baseArm, isControlArm } from './arms.js';
+// The gate `package.json` builder is shared with the framework overlay so the
+// seeded baseline and the overlay's later seed-wins merge are byte-identical
+// (Story #153). `overlay.js` imports nothing from this module, so this is a
+// one-way edge, not a cycle.
+import { buildTargetPackageJson } from './overlay.js';
 import { sanitizeGitHubTokenEnv } from './token-env.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -479,6 +489,7 @@ export function defaultScenarioSandboxDir(scenarioId) {
  * @property {(p: string) => boolean} [existsFn]  Injected `existsSync`.
  * @property {(p: string, opts: object) => void} [mkdirFn]  Injected `mkdirSync`.
  * @property {(src: string, dest: string) => void} [cpFn]  Injected recursive copy.
+ * @property {(p: string, data: string) => void} [writeFileFn]  Injected `writeFileSync`.
  * @property {{ info?: Function, warn?: Function }} [logger]
  */
 
@@ -489,12 +500,25 @@ export function defaultScenarioSandboxDir(scenarioId) {
  * a scenario can override a baseline file. Missing `scenarioSandboxDir` is not
  * an error (most scenarios carry no seed layer yet).
  *
+ * ── Gate scaffolding in the baseline (Story #153) ── A **greenfield** scenario
+ * (no seed layer, or a seed layer that ships no `package.json`) used to
+ * materialize a tree with no `package.json` at all. That tree becomes the
+ * ephemeral repo's baseline commit, so a Story worktree cut from it had no
+ * `typecheck`/`lint`/`test` scripts and the framework's close gates forced the
+ * headless agent to bootstrap them mid-session — extra turns and a
+ * contaminated diff, both charged to the mandrel arm's measured overhead.
+ * The materializer now fills that gap with the SAME dependency-free
+ * (`node --check`-grade) gate scripts the overlay writes
+ * ({@link buildTargetPackageJson}), so the later overlay write is a
+ * byte-identical seed-wins no-op. A seed layer that ships its own
+ * `package.json` (the brownfield frozen instrument) is never touched.
+ *
  * @param {object} opts
  * @param {string} opts.templateRoot          Baseline template directory.
  * @param {string|null} [opts.scenarioSandboxDir]  Optional per-scenario overlay dir.
  * @param {string} opts.targetDir             Destination working tree.
  * @param {MaterializeDeps} [deps]
- * @returns {{ targetDir: string, templateRoot: string, scenarioSandboxDir: string|null }}
+ * @returns {{ targetDir: string, templateRoot: string, scenarioSandboxDir: string|null, gatePackageJsonSeeded: boolean }}
  */
 export function materializeSandboxTemplate(
   { templateRoot, scenarioSandboxDir = null, targetDir } = {},
@@ -511,6 +535,7 @@ export function materializeSandboxTemplate(
   const mkdirFn = deps.mkdirFn ?? ((p) => mkdirSync(p, { recursive: true }));
   const cpFn =
     deps.cpFn ?? ((src, dest) => cpSync(src, dest, { recursive: true }));
+  const writeFileFn = deps.writeFileFn ?? writeFileSync;
   const logger = deps.logger;
 
   if (!existsFn(templateRoot)) {
@@ -536,7 +561,28 @@ export function materializeSandboxTemplate(
     );
   }
 
-  return { targetDir, templateRoot, scenarioSandboxDir: layeredScenarioDir };
+  // Greenfield gate scaffolding (Story #153): only when nothing in the
+  // materialized tree already declares one — the brownfield seed layer's
+  // frozen `package.json` always wins.
+  const pkgPath = path.join(targetDir, 'package.json');
+  let gatePackageJsonSeeded = false;
+  if (!existsFn(pkgPath)) {
+    writeFileFn(
+      pkgPath,
+      `${JSON.stringify(buildTargetPackageJson(), null, 2)}\n`,
+    );
+    gatePackageJsonSeeded = true;
+    logger?.info?.(
+      `[sandbox] Seeded dependency-free gate package.json → ${pkgPath}`,
+    );
+  }
+
+  return {
+    targetDir,
+    templateRoot,
+    scenarioSandboxDir: layeredScenarioDir,
+    gatePackageJsonSeeded,
+  };
 }
 
 /**
