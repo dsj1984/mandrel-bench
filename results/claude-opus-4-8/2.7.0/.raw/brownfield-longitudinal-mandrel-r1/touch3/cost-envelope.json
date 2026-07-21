@@ -1,0 +1,149 @@
+{
+  "aggregatedFromPhases": true,
+  "phases": [
+    {
+      "type": "result",
+      "subtype": "success",
+      "is_error": false,
+      "api_error_status": null,
+      "duration_ms": 310793,
+      "duration_api_ms": 359911,
+      "ttft_ms": 3908,
+      "ttft_stream_ms": 2872,
+      "time_to_request_ms": 187,
+      "num_turns": 31,
+      "result": "Planning pipeline complete. The Story is live and `agent::ready`.\n\n## Plan persisted — Story #5\n\n**[Serve customers API under `/clients` with `/customers` as a deprecated alias over shared data](https://github.com/dsj1984/bench-sbx-2026-07-21-brownfield-longitudinal-mandrel-54c0f9fe/issues/5)**\n\n### What I found first\nThe \"brownfield\" baseline is effectively **empty** — no app source, no HTTP framework, zero runtime deps, `node --test` runner (confirmed by both the harness codebase snapshot, `fileCount: 0`, and a thorough exploration). So \"move the endpoints\" can't be a refactor of existing handlers; the plan realizes it as **build the canonical `/clients` surface and mount `/customers` as its alias**, with an explicit assumption that if delivery later finds pre-existing handlers it relocates rather than duplicates them.\n\n### Shape of the plan (one cohesive Story, per default-single split)\nOne resource, **one in-process store as the single source of truth**, **two mount points**: `/clients` (canonical) and `/customers` (deprecated alias + `Deprecation` header). Data sharing is structural — both prefixes dispatch to the same handlers over the same store — so \"created via one path, visible via the other\" is guaranteed by construction, not a sync step. Redirecting `/customers` → `/clients` is explicitly ruled out (would break non-3xx-following integrations). Zero-dependency `node:http` keeps `typecheck`/`lint`/`test` working unchanged.\n\n### Acceptance & verification\n9 testable acceptance criteria (full CRUD + pagination on `/clients`; byte-identical parity on `/customers`; the cross-path shared-data invariant; deprecation-header presence/absence; 400/404 error paths; no new dependency) and 6 `node --test` `contract`/`validate` verify entries.\n\n### Pipeline record\n- **Interrogate** → context envelope written (`mode: seed`, no duplicates).\n- **Critics** → consolidation + pre-mortem both `dispatch: false`; text-hygiene clean.\n- **Gates** → dry-run pre-pass green after correcting body-schema formats (structured `## Changes` path entries; tier-suffixed `verify` entries). One advisory soft conflict (`missing-reason-to-exist`), non-blocking.\n- **Persist** → Story #5 created, `agent::ready`. No source tickets to supersede (seed mode).\n\nAs instructed, I ran **only** the planning pipeline. Delivery is not started — next step would be `/deliver 5`.",
+      "stop_reason": "end_turn",
+      "session_id": "889abb2f-e1a7-4f3d-b602-0c15c588ff05",
+      "total_cost_usd": 2.3516667500000006,
+      "usage": {
+        "input_tokens": 54,
+        "cache_creation_input_tokens": 65941,
+        "cache_read_input_tokens": 1874017,
+        "output_tokens": 18080,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 65941,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 886,
+            "cache_read_input_tokens": 83730,
+            "cache_creation_input_tokens": 1402,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 1402
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "modelUsage": {
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 781,
+          "outputTokens": 17,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.000866,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000
+        },
+        "claude-opus-4-8": {
+          "inputTokens": 68,
+          "outputTokens": 21787,
+          "cacheReadInputTokens": 1987539,
+          "cacheCreationInputTokens": 90358,
+          "webSearchRequests": 0,
+          "costUSD": 2.3508007500000003,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000
+        }
+      },
+      "permission_denials": [],
+      "terminal_reason": "completed",
+      "fast_mode_state": "off",
+      "uuid": "4429c2aa-5db1-487b-875d-d29137161a70"
+    },
+    {
+      "type": "result",
+      "subtype": "success",
+      "is_error": false,
+      "api_error_status": null,
+      "duration_ms": 645687,
+      "duration_api_ms": 501979,
+      "ttft_ms": 4112,
+      "ttft_stream_ms": 2077,
+      "time_to_request_ms": 265,
+      "num_turns": 36,
+      "result": "Delivery complete. Story #5 is landed.\n\n## Summary\n\n**Story #5 — \"Serve customers API under `/clients` with `/customers` as a deprecated alias over shared data\"** delivered end-to-end.\n\n- **PR #6 → `main`**: `MERGED` (squash). Issue #5 `CLOSED`, label `agent::done`.\n- **Local `main`** fast-forwarded to `aaa67da`; `story-5` branch reaped.\n\n### What shipped (6 files, one resource / one store / two mounts)\n- `src/store.js` — in-process client store (single source of truth) + test-only `reset()`.\n- `src/handlers.js` — the five resource ops implemented once against the store, transport-agnostic (`{status, body}`).\n- `src/router.js` — prefix-aware `node:http` dispatcher mounting the handler set under `/clients` (canonical) and `/customers` (deprecated alias, decorated with `Deprecation: true`) over the one store.\n- `src/server.js` — `createServer()` factory + runnable entry.\n- `test/clients.test.js`, `test/customers-alias.test.js` — 18 contract tests covering CRUD, pagination envelope, cross-path shared-data invariant (both directions), the deprecation-header presence/absence contract, no-redirect, and 400/404 error paths.\n\nBuilt on `node:http` with **no new runtime dependency**. All gates passed: typecheck, lint, format, **18/18 tests**, code review, base-sync, and `check-baselines`. All 9 acceptance criteria are covered by the passing suite.\n\n### Two infra snags handled during delivery (not code defects)\n1. **`package.json` is a frozen framework overlay** (`.git/info/exclude` → \"never commit\") already providing the exact `typecheck`/`lint`/`test` scripts. The Spec's plan to \"create\" it was superseded by that reality — I committed only `src/` + `test/` and verified against the framework's real scripts (adding no dependency, satisfying AC-9).\n2. **Worktree lacked the `.agents` overlay**, so the first close failed on `check-baselines` (module-not-found). Symlinked the gitignored overlay into the worktree; the gate then passed. A subsequent auto-merge arm-failure (`gh --delete-branch` vs. a stale worktree ref) reported `blocked`, but the PR had in fact merged — the read-only `deliver-recover` probe diagnosed `merged-label-stale` and the idempotent `single-story-confirm-merge` flipped the Story to `agent::done` and ran the land tail. Terminal status: **`landed`**.\n\nSingle-Story run, so the per-run epilogue is skipped (follow-ups captured at merge confirm).",
+      "stop_reason": "end_turn",
+      "session_id": "9f1101b7-7f5a-42c8-bb9f-1544e90f09e5",
+      "total_cost_usd": 3.279769,
+      "usage": {
+        "input_tokens": 61,
+        "cache_creation_input_tokens": 104668,
+        "cache_read_input_tokens": 2869822,
+        "output_tokens": 29507,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 104668,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 1067,
+            "cache_read_input_tokens": 124562,
+            "cache_creation_input_tokens": 907,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 907
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "modelUsage": {
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 784,
+          "outputTokens": 16,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.000864,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000
+        },
+        "claude-opus-4-8": {
+          "inputTokens": 63,
+          "outputTokens": 29927,
+          "cacheReadInputTokens": 2935270,
+          "cacheCreationInputTokens": 106278,
+          "webSearchRequests": 0,
+          "costUSD": 3.278905,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000
+        }
+      },
+      "permission_denials": [],
+      "terminal_reason": "completed",
+      "fast_mode_state": "off",
+      "uuid": "1f5a5e1d-09e2-40c4-93f4-e0e96411376e"
+    }
+  ]
+}

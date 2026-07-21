@@ -1,0 +1,72 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "api_error_status": null,
+  "duration_ms": 119449,
+  "duration_api_ms": 109989,
+  "ttft_ms": 3399,
+  "ttft_stream_ms": 2883,
+  "time_to_request_ms": 49,
+  "num_turns": 19,
+  "result": "Done. I implemented `POST /password` end to end and committed it.\n\n## What I built\n\n**`db.js` — `updatePassword(userId, newPassword)`**\nRehashes the password (salted scrypt, matching the existing scheme) and deletes all of that user's sessions, wrapped in a single `BEGIN`/`COMMIT` transaction (with `ROLLBACK` on error) so the two writes can't diverge.\n\n**`server.js` — the endpoint**\nAdded `POST /password` to the authenticated route block, so it reuses the same bearer-token auth as `/me` and `/notes`. It validates `newPassword` is a non-empty string, then calls `updatePassword` and returns `200 {ok: true}`.\n\n## Security behavior (as required)\n- **Old sessions stop working** — including the one that made the request, since all sessions for the user are deleted.\n- **Old password stops working** and **the new password is required** to log in again.\n- **Bad requests** → `400` (missing/empty/non-string `newPassword`); a rejected change leaves the existing session and password untouched. **Missing/invalid auth** → `401`.\n\n## Verification\n- Added 3 tests covering auth enforcement, bad-body rejection (with a check that a rejected change doesn't rotate anything), and the full credential-rotation flow.\n- All **11 tests pass**, `npm run typecheck` is clean.\n- Updated the README endpoint table and added a note on the invalidation semantics.\n- Initialized the repo (it was a checkout without a `.git`) and committed; the SQLite data files are correctly excluded by the existing `.gitignore`.",
+  "stop_reason": "end_turn",
+  "session_id": "67109197-6a5c-4e70-90e1-50ecbeca50c4",
+  "total_cost_usd": 0.7114345000000002,
+  "usage": {
+    "input_tokens": 28,
+    "cache_creation_input_tokens": 26692,
+    "cache_read_input_tokens": 590793,
+    "output_tokens": 5930,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 26692,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 538,
+        "cache_read_input_tokens": 45515,
+        "cache_creation_input_tokens": 368,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 368
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 663,
+      "outputTokens": 13,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.0007279999999999999,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 28,
+      "outputTokens": 5930,
+      "cacheReadInputTokens": 590793,
+      "cacheCreationInputTokens": 26692,
+      "webSearchRequests": 0,
+      "costUSD": 0.7107065000000001,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "uuid": "244ac6c4-eead-43d8-b1ca-efa64511bf3e"
+}

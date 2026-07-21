@@ -1,0 +1,72 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "api_error_status": null,
+  "duration_ms": 175718,
+  "duration_api_ms": 169364,
+  "ttft_ms": 2379,
+  "ttft_stream_ms": 1825,
+  "time_to_request_ms": 105,
+  "num_turns": 20,
+  "result": "Done. The repository had no application code, so I built a clean, dependency-free Node.js clients API that satisfies every clause of the change request, with tests, and committed it.\n\n**What I built**\n\n- `src/names.js` — `splitName` (everything before the last space → first name, last word → last name, single word → last-name-only) and `fullName` (first + last joined with a space, dropping empties so a last-name-only client has no leading space).\n- `src/store.js` — a JSON-file-backed store that, on construction (i.e. server startup), **migrates existing records in place**: any client with a legacy `name` field gets it split into `firstName`/`lastName`, the stale `name` is dropped, and the change is persisted.\n- `src/server.js` — the HTTP API. Create/update accept `firstName`+`lastName`; responses include both. A write that sends only the old `name` field is split for backward compatibility (explicit fields win when both are present). The `/receivables` report surfaces each client's current full name.\n- `index.js` — entry point (`npm start`), plus README and `package.json` updates.\n\n**Verification** — all 15 tests pass (`node --test`) and `npm run typecheck` passes, covering the split rules, startup migration (including single-word names and leaving already-structured records untouched), and the receivables full-name output. Work is committed as `a0cabab`.\n\nNote: since this was a fresh checkout with no prior app despite the \"brownfield\" framing, I chose conventional REST shapes (`/clients`, `/receivables`) and a JSON-file store. If a later change request expects a different existing structure, those are the two assumptions to revisit.",
+  "stop_reason": "end_turn",
+  "session_id": "831cf17f-4e22-4420-a6c3-b6663cb71879",
+  "total_cost_usd": 0.9340260000000001,
+  "usage": {
+    "input_tokens": 36,
+    "cache_creation_input_tokens": 27131,
+    "cache_read_input_tokens": 713794,
+    "output_tokens": 12193,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 27131,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 531,
+        "cache_read_input_tokens": 45995,
+        "cache_creation_input_tokens": 327,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 327
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 739,
+      "outputTokens": 15,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.0008139999999999999,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 36,
+      "outputTokens": 12193,
+      "cacheReadInputTokens": 713794,
+      "cacheCreationInputTokens": 27131,
+      "webSearchRequests": 0,
+      "costUSD": 0.9332120000000002,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "uuid": "fcaf55a9-7487-424c-8ac3-a03b11b35db9"
+}
