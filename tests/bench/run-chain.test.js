@@ -460,6 +460,9 @@ function chainDeps(record) {
     },
     overlayFn: (o) => {
       record.overlays.push(o.arm);
+      // Story #153/#161: the scenario must reach `overlayExcludePaths()` so
+      // the package.json contract carve-out is reachable in production.
+      record.overlayScenarioIds.push(o.scenario?.id ?? null);
       return { overlaid: true, arm: o.arm, copied: [] };
     },
     writeGatePackageJsonFn: (o) => {
@@ -604,6 +607,7 @@ function freshChainRecord(overrides = {}) {
     teardowns: [],
     resets: [],
     overlays: [],
+    overlayScenarioIds: [],
     gatePackageJsonWrites: [],
     claudeMdSeeds: [],
     sessions: [],
@@ -658,6 +662,14 @@ test('runTouchChain (mandrel): both touches advance — force-pushed baseline, p
 
   // Chain block: both touches landed (main advanced past the chain baseline)
   // and advanced; the second seeded from the first.
+  // Every per-touch overlay carries the scenario, so `overlayExcludePaths()`
+  // can consult its package.json contract (Story #153).
+  assert.deepEqual(record.overlays, ['mandrel', 'mandrel']);
+  assert.deepEqual(record.overlayScenarioIds, [
+    'brownfield-longitudinal',
+    'brownfield-longitudinal',
+  ]);
+
   const chain = scorecard.chain;
   assert.equal(chain.advanceThreshold, 0.9);
   assert.equal(chain.landedCount, 2);

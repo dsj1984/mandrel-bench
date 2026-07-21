@@ -1817,6 +1817,9 @@ export async function runOneRun(opts, deps = {}) {
           arm,
           sandbox: { owner: sandbox.owner, repo: sandbox.repo },
           sourceRoot,
+          // Story #153: the scenario's package.json contract decides whether
+          // package.json stays git-visible in the sandbox clone.
+          scenario,
         },
         deps.overlayDeps,
       );
