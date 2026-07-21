@@ -18,12 +18,16 @@ import {
   computeAutonomyGuardrail,
   computeDimensions,
   computeEfficiency,
+  computeGuardrail,
   computeMaintainability,
   computeOverheadRatio,
   computePlanningFidelity,
   computeQuality,
   computeSecurity,
   DEFAULT_AUTONOMY_GUARDRAIL_THRESHOLD,
+  DEFAULT_MAINTAINABILITY_GUARDRAIL_THRESHOLD,
+  DEFAULT_QUALITY_GUARDRAIL_THRESHOLD,
+  DEFAULT_SECURITY_GUARDRAIL_THRESHOLD,
   fileFootprintDrift,
   MAINTAINABILITY_WEIGHTS,
   QUALITY_WEIGHTS,
@@ -35,6 +39,65 @@ const approx = (actual, expected, eps = 1e-9) =>
     Math.abs(actual - expected) <= eps,
     `expected ${actual} ≈ ${expected} (±${eps})`,
   );
+
+describe('saturated-dimension guardrails (Story #157)', () => {
+  it('computeGuardrail: met true at/above threshold, false below, null when unmeasured', () => {
+    assert.equal(computeGuardrail(0.95, 0.9, 0.9).met, true);
+    assert.equal(computeGuardrail(0.9, 0.9, 0.9).met, true);
+    assert.equal(computeGuardrail(0.85, 0.9, 0.9).met, false);
+    assert.equal(computeGuardrail(null, 0.9, 0.9).met, null);
+    // Non-finite threshold falls back.
+    assert.equal(computeGuardrail(0.95, undefined, 0.9).threshold, 0.9);
+  });
+
+  it('quality exposes a guardrail verdict against its default threshold', () => {
+    const q = computeQuality({ frozenSuitePassed: 10, frozenSuiteTotal: 10 });
+    assert.equal(q.guardrail.threshold, DEFAULT_QUALITY_GUARDRAIL_THRESHOLD);
+    assert.equal(q.guardrail.met, true);
+    const low = computeQuality({ frozenSuitePassed: 1, frozenSuiteTotal: 10 });
+    assert.equal(low.guardrail.met, false);
+  });
+
+  it('quality guardrail is null (undetermined) on an unmaterialized delivery', () => {
+    const q = computeQuality({ measured: false });
+    assert.equal(q.score, null);
+    assert.equal(q.guardrail.met, null);
+  });
+
+  it('maintainability exposes a guardrail verdict', () => {
+    const m = computeMaintainability({ objectiveMaintainabilityScore: 0.95 });
+    assert.equal(
+      m.guardrail.threshold,
+      DEFAULT_MAINTAINABILITY_GUARDRAIL_THRESHOLD,
+    );
+    assert.equal(m.guardrail.met, true);
+    assert.equal(
+      computeMaintainability({ objectiveMaintainabilityScore: 0.5 }).guardrail
+        .met,
+      false,
+    );
+  });
+
+  it('security exposes a guardrail verdict', () => {
+    const s = computeSecurity({ objectiveSecurityScore: 0.95 });
+    assert.equal(s.guardrail.threshold, DEFAULT_SECURITY_GUARDRAIL_THRESHOLD);
+    assert.equal(s.guardrail.met, true);
+    assert.equal(
+      computeSecurity({ objectiveSecurityScore: 0.5 }).guardrail.met,
+      false,
+    );
+  });
+
+  it('honours a caller-supplied guardrailThreshold override', () => {
+    const q = computeQuality({
+      frozenSuitePassed: 7,
+      frozenSuiteTotal: 10,
+      guardrailThreshold: 0.6,
+    });
+    assert.equal(q.guardrail.threshold, 0.6);
+    assert.equal(q.guardrail.met, true);
+  });
+});
 
 describe('computeQuality', () => {
   it('scores NULL (not 0) when the delivery did not materialize (measured:false)', () => {

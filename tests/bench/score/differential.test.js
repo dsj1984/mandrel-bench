@@ -19,11 +19,13 @@ import {
   chainArmSummary,
   computeContinuityDelta,
   computeDifferential,
+  computePairedDifferential,
   degradationSlope,
   difficultyMonotonicity,
   EFFICIENCY_COMPONENTS,
   olsSlope,
   overheadFloor,
+  pairRunsBySeed,
   SCALAR_DIMENSIONS,
   scoreCorpus,
 } from '../../../bench/score/differential.js';
@@ -50,8 +52,9 @@ function card({
   totalTokens = 180000,
   dispatches = 2,
   costUsd = 1.4,
+  seedSha,
 } = {}) {
-  return {
+  const sc = {
     dimensions: {
       quality: { score: quality },
       planningFidelity: { score: planningFidelity },
@@ -62,6 +65,8 @@ function card({
       efficiency: { wallClockMs, totalTokens, dispatches, costUsd },
     },
   };
+  if (seedSha !== undefined) sc.seedSha = seedSha;
+  return sc;
 }
 
 describe('SCALAR_DIMENSIONS — dimension registry', () => {
@@ -285,19 +290,22 @@ describe('difficultyMonotonicity — calibration guardrail', () => {
 describe('overheadFloor — framework finding', () => {
   it('estimates the token + USD floor as mandrel minus control on hello-world', () => {
     const mandrelRuns = [
-      card({ totalTokens: 180000, costUsd: 1.4, quality: 1 }),
-      card({ totalTokens: 184000, costUsd: 1.5, quality: 1 }),
+      card({ totalTokens: 180000, costUsd: 1.4, quality: 1, seedSha: 'aa' }),
+      card({ totalTokens: 184000, costUsd: 1.5, quality: 1, seedSha: 'bb' }),
     ];
     const controlRuns = [
-      card({ totalTokens: 40000, costUsd: 0.3, quality: 1 }),
-      card({ totalTokens: 42000, costUsd: 0.32, quality: 1 }),
+      card({ totalTokens: 40000, costUsd: 0.3, quality: 1, seedSha: 'aa' }),
+      card({ totalTokens: 42000, costUsd: 0.32, quality: 1, seedSha: 'bb' }),
     ];
     const floor = overheadFloor({ mandrelRuns, controlRuns });
     assert.equal(floor.scenario, 'hello-world');
     // median(180k,184k)=182k − median(40k,42k)=41k = 141000
     approx(floor.overheadFloorTokens, 141000);
     assert.ok(floor.overheadFloorUsd > 0);
+    // The floor's own band now comes from SEED-MATCHED pairs (Story #157).
     assert.ok(floor.tokenDiffBand !== null);
+    assert.equal(floor.unpaired.mandrel, 0);
+    assert.equal(floor.unpaired.control, 0);
   });
 
   it('recommends a ceremony-lite path when the floor buys NO quality gain', () => {
@@ -329,6 +337,178 @@ describe('overheadFloor — framework finding', () => {
     assert.equal(floor.noQualityGain, false);
     assert.equal(floor.recommendCeremonyLite, false);
     assert.ok(floor.qualityGain > 0.05);
+  });
+});
+
+describe('seed-keyed pairing (Story #157)', () => {
+  it('AC-1: pairs on the seed SHA, not array position — reordering an arm is invariant', () => {
+    const mandrel = [
+      card({ quality: 1.0, totalTokens: 180000, seedSha: 's1' }),
+      card({ quality: 0.9, totalTokens: 200000, seedSha: 's2' }),
+      card({ quality: 0.8, totalTokens: 220000, seedSha: 's3' }),
+    ];
+    const controlInOrder = [
+      card({ quality: 0.5, totalTokens: 40000, seedSha: 's1' }),
+      card({ quality: 0.4, totalTokens: 42000, seedSha: 's2' }),
+      card({ quality: 0.3, totalTokens: 44000, seedSha: 's3' }),
+    ];
+    // Same runs, shuffled — a resumed cohort that stored them out of order.
+    const controlShuffled = [
+      controlInOrder[2],
+      controlInOrder[0],
+      controlInOrder[1],
+    ];
+
+    const inOrder = computePairedDifferential({
+      mandrelRuns: mandrel,
+      controlRuns: controlInOrder,
+    });
+    const shuffled = computePairedDifferential({
+      mandrelRuns: mandrel,
+      controlRuns: controlShuffled,
+    });
+
+    assert.equal(inOrder.pairs, 3);
+    assert.equal(shuffled.pairs, 3);
+    // The paired difference for every dimension is identical regardless of order.
+    for (const name of ['planningFidelity', 'overheadRatio', 'quality']) {
+      assert.equal(
+        inOrder.dimensions[name].delta,
+        shuffled.dimensions[name].delta,
+        `dimension ${name} paired delta must be order-invariant`,
+      );
+    }
+    for (const name of [
+      'wallClockMs',
+      'totalTokens',
+      'costUsd',
+      'dispatches',
+    ]) {
+      assert.equal(
+        inOrder.efficiency[name].delta,
+        shuffled.efficiency[name].delta,
+        `efficiency.${name} paired delta must be order-invariant`,
+      );
+    }
+  });
+
+  it('AC-2: a run with no seed-SHA counterpart is dropped and counted in unpaired', () => {
+    const mandrel = [
+      card({ totalTokens: 180000, seedSha: 's1' }),
+      card({ totalTokens: 190000, seedSha: 's2' }),
+      card({ totalTokens: 200000, seedSha: 'orphan-m' }),
+    ];
+    const control = [
+      card({ totalTokens: 40000, seedSha: 's1' }),
+      card({ totalTokens: 41000, seedSha: 's2' }),
+    ];
+    const paired = computePairedDifferential({
+      mandrelRuns: mandrel,
+      controlRuns: control,
+    });
+    assert.equal(paired.pairs, 2);
+    // The orphan mandrel run has no counterpart → 1 unpaired mandrel.
+    assert.equal(paired.unpaired.mandrel, 1);
+    assert.equal(paired.unpaired.control, 0);
+    // Its value is excluded — the paired totalTokens band is over 2 pairs only.
+    assert.equal(paired.efficiency.totalTokens.n, 2);
+  });
+
+  it('AC-2: runs carrying no seed SHA at all are all unpaired', () => {
+    const paired = computePairedDifferential({
+      mandrelRuns: [card(), card()],
+      controlRuns: [card(), card()],
+    });
+    assert.equal(paired.pairs, 0);
+    assert.equal(paired.unpaired.mandrel, 2);
+    assert.equal(paired.unpaired.control, 2);
+    assert.equal(paired.dimensions.overheadRatio.verdict, 'incomparable');
+  });
+
+  it('AC-3: each scalar dimension and efficiency component carries a paired band with a zero-exclusion verdict', () => {
+    // Mandrel overheadRatio tightly above control → paired band excludes zero.
+    const mk = (seed, ratio) => card({ tokenRatio: ratio, seedSha: seed });
+    const mandrel = [
+      mk('s1', 4.0),
+      mk('s2', 4.1),
+      mk('s3', 3.9),
+      mk('s4', 4.05),
+    ];
+    const control = [
+      card({ tokenRatio: 0.1, seedSha: 's1' }),
+      card({ tokenRatio: 0.12, seedSha: 's2' }),
+      card({ tokenRatio: 0.09, seedSha: 's3' }),
+      card({ tokenRatio: 0.11, seedSha: 's4' }),
+    ];
+    const paired = computePairedDifferential({
+      mandrelRuns: mandrel,
+      controlRuns: control,
+    });
+    for (const name of SCALAR_DIMENSIONS.map((d) => d.name)) {
+      assert.ok(name in paired.dimensions, `paired missing dimension ${name}`);
+    }
+    for (const name of EFFICIENCY_COMPONENTS.map((d) => d.name)) {
+      assert.ok(name in paired.efficiency, `paired missing efficiency ${name}`);
+    }
+    const ratio = paired.dimensions.overheadRatio;
+    assert.ok(ratio.diffBand !== null);
+    assert.equal(ratio.excludesZero, true);
+    assert.equal(ratio.verdict, 'real');
+  });
+
+  it('a paired difference band straddling zero is within-noise', () => {
+    // Identical arms → differences centered on zero.
+    const mandrel = [
+      card({ planningFidelity: 0.9, seedSha: 's1' }),
+      card({ planningFidelity: 0.9, seedSha: 's2' }),
+      card({ planningFidelity: 0.9, seedSha: 's3' }),
+    ];
+    const control = [
+      card({ planningFidelity: 0.9, seedSha: 's1' }),
+      card({ planningFidelity: 0.9, seedSha: 's2' }),
+      card({ planningFidelity: 0.9, seedSha: 's3' }),
+    ];
+    const paired = computePairedDifferential({
+      mandrelRuns: mandrel,
+      controlRuns: control,
+    });
+    assert.equal(paired.dimensions.planningFidelity.excludesZero, false);
+    assert.equal(paired.dimensions.planningFidelity.verdict, 'within-noise');
+  });
+
+  it('AC-4: computeDifferential keeps the pooled per-arm bands AND adds the paired block', () => {
+    const mandrel = [
+      card({ quality: 1.0, seedSha: 's1' }),
+      card({ quality: 0.98, seedSha: 's2' }),
+    ];
+    const control = [
+      card({ quality: 0.5, seedSha: 's1' }),
+      card({ quality: 0.52, seedSha: 's2' }),
+    ];
+    const diff = computeDifferential({
+      mandrelRuns: mandrel,
+      controlRuns: control,
+    });
+    // Pooled bands (what stored prior-cohort scorecards render) still present.
+    assert.ok(diff.dimensions.quality.comparable);
+    assert.ok(typeof diff.dimensions.quality.mandrelCenter === 'number');
+    // Paired block is additive.
+    assert.equal(diff.paired.pairs, 2);
+    assert.ok('quality' in diff.paired.dimensions);
+    assert.deepEqual(diff.unpaired, { mandrel: 0, control: 0 });
+  });
+
+  it('pairRunsBySeed zips duplicate seeds in order and counts the excess as unpaired', () => {
+    const mandrel = [
+      card({ seedSha: 'dup' }),
+      card({ seedSha: 'dup' }),
+      card({ seedSha: 'dup' }),
+    ];
+    const control = [card({ seedSha: 'dup' }), card({ seedSha: 'dup' })];
+    const { pairs, unpaired } = pairRunsBySeed(mandrel, control);
+    assert.equal(pairs.length, 2);
+    assert.equal(unpaired.mandrel, 1);
+    assert.equal(unpaired.control, 0);
   });
 });
 

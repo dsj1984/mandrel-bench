@@ -97,6 +97,16 @@ quality.score =
 - A run that fails to deliver a runnable app scores `frozenSuitePassRate = 0`
   (every assertion fails), i.e. `quality.score = 0` — not "no data".
 
+**Demoted to a guardrail (Story #157).** The formula above is unchanged, but
+Quality is **saturated** on the current corpus — both arms score at ceiling —
+so it is no longer reported as a Mandrel-vs-control delta. Instead the record
+carries `dimensions.quality.guardrail = { threshold, met }`: a pass/fail verdict
+against a fixed cohort threshold. A drop below threshold is itself a finding,
+surfaced in the saturated-dimension guardrail report section; the numeric delta
+is retained in the report appendix, not the headline scorecard. This holds until
+a weak-model calibration probe demonstrates dynamic range (out of scope for the
+demotion). See [§ Saturated-dimension guardrails](#saturated-dimension-guardrails-story-157).
+
 ### 2. Planning fidelity — _did the plan match reality?_ (value side)
 
 Measures how well the authored plan predicted the delivered work. Three
@@ -194,6 +204,13 @@ Sub-signals recorded for provenance:
 - `null` sub-signals are excluded from the spine mean; if all are `null` the
   spine is 0.
 
+**Demoted to a guardrail (Story #157).** Like Quality, Maintainability is
+saturated — both arms sit at ceiling — so it is reported as a pass/fail
+guardrail (`dimensions.maintainability.guardrail = { threshold, met }`), not a
+Mandrel-vs-control delta. Its numeric delta lives in the report appendix; a drop
+below threshold is a finding. See
+[§ Saturated-dimension guardrails](#saturated-dimension-guardrails-story-157).
+
 ### 5. Security — _how free of vulnerabilities is the output?_ (value side)
 
 Added in Epic #32. Same two-oracle shape: objective spine (scanner signals,
@@ -229,6 +246,14 @@ Sub-signals recorded for provenance:
   before the scorer runs).
 - Both new dimension judge cross-checks share **one batched judge call per run**
   to keep latency and cost contained.
+
+**Demoted to a guardrail (Story #157).** Like Quality and Maintainability,
+Security is saturated — both arms sit at ceiling on the auth-bearing scenarios
+under test — so it is reported as a pass/fail guardrail
+(`dimensions.security.guardrail = { threshold, met }`), not a Mandrel-vs-control
+delta. Its numeric delta lives in the report appendix; a drop below threshold is
+a finding. See
+[§ Saturated-dimension guardrails](#saturated-dimension-guardrails-story-157).
 
 ### 6. Efficiency — _what did it cost absolutely?_ (cost side)
 
@@ -352,6 +377,58 @@ Otherwise the delta is **within noise** and reported as "no significant
 difference." This module produces the bands; the comparison itself lives in the
 scoring slice.
 
+### Seed-paired difference rule (Story #157)
+
+Both arms of a cell run the **same per-replicate seed** by construction, so run
+_i_ of the Mandrel arm and its seed-matched control run are a **matched pair**.
+Pooling each arm into an independent band (the per-arm rule above) discards that
+blocking structure and reports pooled bands with roughly half the effective
+power available at fixed N. The scoring slice therefore also computes a
+**paired** differential, additive to the pooled bands:
+
+```text
+d_i        = mandrel_i − control_i     over seed-matched pairs
+pairedBand = noiseBand({ d_i }, { method })
+pairedIsReal = the paired difference band EXCLUDES ZERO
+             (band.low > 0  OR  band.high < 0)
+```
+
+- **Pairing is keyed on the shared seed SHA, never on array position.** Index
+  alignment silently mispairs the moment a resumed cohort leaves the two arms
+  with different run counts or orders. Pairing groups each arm by its per-run
+  seed SHA (`defaultSeedAccessor` → `scorecard.seedSha`) and matches on that key,
+  so reordering an arm is invariant.
+- A run whose seed SHA has **no counterpart** in the other arm — or that carries
+  no seed SHA at all — is dropped from the paired set and counted in a reported
+  `unpaired` tally, so a shrinking pair count is **visible**, never silent.
+- The **pooled per-arm bands remain** in the output alongside the paired block.
+  They are what the report already renders and what prior cohorts are stored as;
+  removing them would make stored scorecards unreadable. The paired block is
+  **additive** and the report **leads** with it.
+
+The same seed-keyed pairing generalizes the **overhead floor**'s own band
+(§ B below), replacing its former index-aligned `Math.min` pairing.
+
+### Saturated-dimension guardrails (Story #157)
+
+Quality, Maintainability, and Security are **saturated** on the current corpus —
+both arms score at ceiling — so their Mandrel-vs-control deltas are noise
+reported as measurement. They are **demoted** from reported deltas to pass/fail
+**guardrail gates** against a fixed cohort threshold, in the same shape
+`autonomy` already uses (`dimensions.<name>.guardrail = { threshold, met }`):
+
+```text
+guardrail.met = score ≥ threshold   (null when the score is unmeasured)
+```
+
+- A drop below threshold is itself a **finding**, surfaced in the
+  saturated-dimension guardrail report section — not folded into the headline
+  per-dimension delta table.
+- Their numeric deltas move to the **report appendix**, preserved for audit but
+  out of the headline scorecard.
+- Each stays demoted until a **weak-model calibration probe** demonstrates
+  dynamic range (that probe is out of scope for the demotion).
+
 ---
 
 ## Cross-scenario derived metrics
@@ -405,7 +482,9 @@ overheadFloorUsd    = center(efficiency.costUsd,     hello-world, mandrel)
 ```
 
 - Computed on the **band centers** so it inherits the distribution method, and
-  reported with its own band derived from the per-run differences.
+  reported with its own band derived from the per-run differences over
+  **seed-matched pairs** (Story #157) — the same seed-keyed pairing the paired
+  differential uses, not index alignment.
 - A large floor with **no** corresponding `quality.score` gain on `hello-world`
   is the canonical evidence feeding the report's **Recommended improvements**
   section (e.g. _"hello-world overhead ratio is 4.2× with no quality gain →
