@@ -79,10 +79,35 @@ That is what makes superseding work without anyone re-typing ids
 
 The envelope carries docs context, codebase snapshot, BDD probe, risk
 heuristics, the story-author system prompt, `sourceTickets[]` (`--tickets`
-mode), and `duplicates[]` (open **Stories** whose title/body overlap the
-seed — never Epics).
+mode), `duplicates[]` (open **Stories** whose title/body overlap the
+seed — never Epics), and the `complexityRoute` ceremony-lite signal (below).
 Under `--yes`, do not ask free-form operator questions — unresolved
 unknowns land in Key Assumptions.
+
+#### Ceremony-lite complexity gate (`complexityRoute`)
+
+The envelope's `complexityRoute` field is a **deterministic, conservative**
+plan-time gate (Story #4683) that routes a genuinely trivial single-artifact
+seed onto a collapsed path so it stops paying the full two-session
+plan/deliver ceremony that measurably buys no quality at that size:
+
+- **`route: "lite"`** — a trivial scope (seed ≤ `maxSeedWords` words **and** ≤
+  `maxArtifacts` enumerated items). Collapse the ceremony: author **one minimal
+  Story** and skip the fresh-critic / Tech-Spec ceremony a one-artifact scope
+  does not earn. The lite route is **not** licence to drop a non-negotiable —
+  its `preserves` field enumerates exactly what still holds: the Story ticket,
+  the PR-to-`main` landing, every repo quality gate, and the security baseline.
+  Those gates still run in `single-story-close.js` regardless of route.
+- **`route: "full"`** — everything else. The gate fails toward `full` on any
+  doubt (empty seed, over the word ceiling, a multi-capability enumeration, or
+  the gate disabled via `planning.complexityGate.enabled=false`), so a real
+  capability slice never loses ceremony. Author normally under the split policy.
+
+The threshold and its override knob (`planning.complexityGate.{enabled,
+maxSeedWords, maxArtifacts}`) are documented in
+[`.agents/docs/configuration.md`](../docs/configuration.md) under `### planning`;
+the defaults live on `DEFAULT_COMPLEXITY_GATE` in
+[`lib/orchestration/complexity-gate.js`](../scripts/lib/orchestration/complexity-gate.js).
 
 **Gate #1** — STOP to confirm the sharpened plan intent and any
 duplicate-candidate review. Under `--yes`, auto-proceed.
@@ -180,17 +205,21 @@ assumption, thin the Slicing checkpoint) and re-run this step. Empty
   provably have nothing for a critic to find, and each skip is recorded on the
   plan-metrics ledger so under-firing stays auditable.
 - **Either `dispatch: true`** — dispatch **one fresh-context sub-agent per
-  firing critic** (a generic sub-agent), then fold its findings into the
-  Gate #2 view or a re-author round before persist. Each critic is
+  firing critic**, then fold its findings into the Gate #2 view or a re-author
+  round before persist. When `delivery.routing.roleScopedAgents` is enabled
+  (the **default**), dispatch each firing critic with `subagent_type:
+  plan-critic` — it boots on the role-scoped
+  [`plan-critic`](../agents/plan-critic.md) context (its own system prompt, no
+  `CLAUDE.md` @-closure) that carries the maker-blind invariant, the
+  `consolidation` and `pre-mortem` charters, and the output shape standalone.
+  When the kill-switch is off (`roleScopedAgents: false`) or the host cannot
+  spawn at this depth, fall back to a generic sub-agent and hand it the same
+  charter (the `consolidation` / `pre-mortem` definitions in
+  [`plan-critic.md`](../agents/plan-critic.md)). Either way the critic is
   **maker-blind**: hand it the draft artifacts (`stories.json`, and
-  `techspec.md` when present) plus its charter below — never the authoring
-  transcript or the reasons the planner believed its own draft is sound. A
-  critic that reads the maker's case grades the case, not the draft.
-  - `consolidation` — the draft's shape: Stories that should be one cohesive
-    slice, a slice split per-module rather than per-capability, and
-    `depends_on` edges that disagree with the Delivery Slicing table.
-  - `pre-mortem` — assume the plan shipped and failed: name the most likely
-    failure modes and what the draft would have to say to prevent them.
+  `techspec.md` when present) — never the authoring transcript or the reasons
+  the planner believed its own draft is sound. A critic that reads the maker's
+  case grades the case, not the draft.
 
 Fold what survives back into `stories.json` and re-run this step. Findings are
 advisory input to the operator's Gate #2 decision, not an automatic re-author
@@ -201,11 +230,9 @@ mandate.
 **Gate #2** — when the operator passed `--force-review`, STOP for approval of
 the assembled plan before persist. Under `--yes`, auto-proceed.
 
-`--force-review` is the **only** thing that raises this gate. Story #4542
-retired the risk-derived alternative: the planner authored its own risk verdict,
-persist computed a `requiresStop` from it *after* `createStoryIssues` had already
-run, and nothing read the result — the STOP was prose executed by the same
-session that wrote the verdict. A gate a plan can lower for itself is not a gate.
+`--force-review` is the **only** thing that raises this gate — there is no
+risk-derived routing (Story #4542): a gate a plan can lower for itself is not a
+gate.
 
 #### Dry-run pre-pass (always)
 
