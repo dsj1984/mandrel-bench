@@ -337,6 +337,77 @@ export function rethrowIfTransientClaudeError(err) {
   if (isTransientClaudeError(err)) throw err;
 }
 
+// ---------------------------------------------------------------------------
+// Transient-error retry (in-session backoff)
+// ---------------------------------------------------------------------------
+
+/**
+ * How many times a single `claude -p` session is RE-attempted after a transient
+ * infrastructure failure (Anthropic 429/529, network blip) before the error is
+ * re-thrown to the batch's abort-and-resume path. `0` disables retry.
+ *
+ * The default (and the base backoff) are operator-overridable so a run during a
+ * known Anthropic incident can wait longer without a code change. This is an
+ * in-session softening of the pre-existing behaviour, NOT a replacement for it:
+ * once the budget is exhausted the transient error is still thrown, so a
+ * PERSISTENT overload still aborts the cell cleanly for a later resume rather
+ * than baking a degraded session into the cohort.
+ */
+const DEFAULT_SESSION_MAX_RETRIES = toNonNegIntOr(
+  process.env.BENCH_SESSION_MAX_RETRIES,
+  4,
+);
+/** First backoff wait; each subsequent retry doubles it, capped below. */
+const DEFAULT_SESSION_RETRY_BASE_MS = toNonNegIntOr(
+  process.env.BENCH_SESSION_RETRY_BASE_MS,
+  5000,
+);
+/** Hard cap on any single backoff wait, so exponential growth stays bounded. */
+const SESSION_RETRY_MAX_DELAY_MS = 60000;
+
+/**
+ * Parse a non-negative integer from an env string, falling back to `fallback`
+ * for absent/blank/invalid input (so a typo'd env var never yields NaN retries).
+ *
+ * @param {string|undefined} raw
+ * @param {number} fallback
+ * @returns {number}
+ */
+function toNonNegIntOr(raw, fallback) {
+  if (raw == null || String(raw).trim() === '') return fallback;
+  const n = Number.parseInt(String(raw), 10);
+  return Number.isInteger(n) && n >= 0 ? n : fallback;
+}
+
+/**
+ * Backoff delay for retry attempt `n` (1-based): `base × 2^(n-1)`, capped at
+ * `SESSION_RETRY_MAX_DELAY_MS`. With the 5s default: 5s, 10s, 20s, 40s, 60s…
+ *
+ * @param {number} attempt  1-based retry number.
+ * @param {number} baseMs
+ * @returns {number}
+ */
+function backoffDelayMs(attempt, baseMs) {
+  const raw = baseMs * 2 ** (attempt - 1);
+  return Math.min(raw, SESSION_RETRY_MAX_DELAY_MS);
+}
+
+/**
+ * Synchronous blocking sleep, used as the default backoff between retries. The
+ * benchmark runner is a strictly sequential batch that already blocks on
+ * `spawnSync` for minutes per session, so a blocking wait here is consistent
+ * with the surrounding design and keeps the whole call chain synchronous (no
+ * async ripple through `runSession` → `runOneRun` → `main`). Injected in tests
+ * so no test ever actually waits.
+ *
+ * @param {number} ms
+ * @returns {void}
+ */
+export function blockingSleep(ms) {
+  if (!(ms > 0)) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /**
  * Pre-trust a throwaway benchmark workspace for headless `claude -p`.
  *
@@ -546,6 +617,9 @@ export function parseSessionEnvelope(rawStdout) {
  * @param {(input: object) => { status: number, stdout: string, stderr: string }} args.invokeFn
  * @param {{ info?: Function, warn?: Function }} [args.logger]
  * @param {string} [args.phase]  Label for logging ('plan'|'deliver'|undefined).
+ * @param {number} [args.maxRetries]  Transient-error re-attempts (default env-driven).
+ * @param {number} [args.retryBaseMs]  First backoff wait (default env-driven).
+ * @param {(ms: number) => void} [args.sleepFn]  Backoff sleeper (injected in tests).
  * @returns {{ status: number, envelope: ReturnType<typeof parseSessionEnvelope> }}
  */
 function invokeOneSession({
@@ -559,27 +633,51 @@ function invokeOneSession({
   invokeFn,
   logger,
   phase,
+  maxRetries = DEFAULT_SESSION_MAX_RETRIES,
+  retryBaseMs = DEFAULT_SESSION_RETRY_BASE_MS,
+  sleepFn = blockingSleep,
 }) {
   const phaseTag = phase ? ` phase=${phase}` : '';
   logger?.info?.(
     `[run-session] Launching headless session: arm=${arm} scenario=${scenarioId}${phaseTag} model=${model}`,
   );
 
-  const { status, stdout, stderr } = invokeFn({
-    prompt,
-    model,
-    cwd,
-    extraArgs,
-    timeoutMs,
-  });
+  // Retry loop: a TRANSIENT infrastructure failure (Anthropic 429/529, network
+  // blip) is re-attempted with exponential backoff up to `maxRetries` times.
+  // A non-transient failure — or a transient one past the budget — throws, so
+  // the batch's existing abort-and-resume path is unchanged for anything the
+  // retry cannot absorb.
+  let status;
+  let stdout;
+  let stderr;
+  for (let attempt = 0; ; attempt += 1) {
+    ({ status, stdout, stderr } = invokeFn({
+      prompt,
+      model,
+      cwd,
+      extraArgs,
+      timeoutMs,
+    }));
 
-  if (status !== 0) {
-    throw new Error(
+    if (status === 0) break;
+
+    const err = new Error(
       `[run-session] claude -p exited with status ${status} ` +
         `(arm=${arm}, scenario=${scenarioId}${phaseTag}): ${
           stderr || stdout || '<no output>'
         }`,
     );
+    // Retry only a transient error, and only while budget remains.
+    if (isTransientClaudeError(err) && attempt < maxRetries) {
+      const delay = backoffDelayMs(attempt + 1, retryBaseMs);
+      logger?.warn?.(
+        `[run-session] transient error (arm=${arm} scenario=${scenarioId}${phaseTag}); ` +
+          `retry ${attempt + 1}/${maxRetries} after ${delay}ms`,
+      );
+      sleepFn(delay);
+      continue;
+    }
+    throw err;
   }
 
   const envelope = parseSessionEnvelope(stdout);
@@ -786,6 +884,8 @@ export function runSession(opts = {}, deps = {}) {
     model = DEFAULT_BENCH_MODEL,
     extraArgs = [],
     timeoutMs = DEFAULT_SESSION_TIMEOUT_MS,
+    sessionMaxRetries = DEFAULT_SESSION_MAX_RETRIES,
+    sessionRetryBaseMs = DEFAULT_SESSION_RETRY_BASE_MS,
   } = opts;
 
   if (!KNOWN_ARMS.includes(arm)) {
@@ -800,8 +900,15 @@ export function runSession(opts = {}, deps = {}) {
   }
 
   const invokeFn = deps.invokeFn ?? defaultInvokeClaudeSession;
+  const sleepFn = deps.sleepFn ?? blockingSleep;
   const logger = deps.logger;
   const base = baseArm(arm);
+  // Retry config threaded uniformly into every session this run launches.
+  const retryOpts = {
+    maxRetries: sessionMaxRetries,
+    retryBaseMs: sessionRetryBaseMs,
+    sleepFn,
+  };
 
   // Control-base arms (`control`, `control-claudemd`): a single bare session.
   // Arm 3's only delta is the CLAUDE.md the driver seeded into `cwd`.
@@ -817,6 +924,7 @@ export function runSession(opts = {}, deps = {}) {
       timeoutMs,
       invokeFn,
       logger,
+      ...retryOpts,
     });
     return {
       arm,
@@ -847,6 +955,7 @@ export function runSession(opts = {}, deps = {}) {
     invokeFn,
     logger,
     phase: 'plan',
+    ...retryOpts,
   });
 
   // Between-session seam: id-discovery + plan snapshot (bench/run.js wires the
@@ -880,6 +989,7 @@ export function runSession(opts = {}, deps = {}) {
     invokeFn,
     logger,
     phase: 'deliver',
+    ...retryOpts,
   });
 
   const envelope = aggregateEnvelopes([plan.envelope, deliver.envelope]);
