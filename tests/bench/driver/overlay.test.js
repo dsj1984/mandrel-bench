@@ -31,13 +31,17 @@ import test from 'node:test';
 
 import {
   buildTargetPackageJson,
+  buildWorktreeOverlayHook,
   DEFAULT_OVERLAY_PATHS,
   excludeOverlayFromGit,
+  installWorktreeOverlayHook,
   overlayExcludePaths,
   overlayFrameworkUnderTest,
   REWRITTEN_OVERLAY_ARTIFACTS,
+  repoRoot,
   rewriteAgentrc,
   STATIC_CLAUDEMD_FIXTURE_PATH,
+  scenarioClaimsPackageJson,
   seedStaticClaudeMd,
   writeGatePackageJson,
 } from '../../../bench/driver/overlay.js';
@@ -468,11 +472,67 @@ test('overlayExcludePaths: copied tree + rewritten artifacts, de-duplicated', ()
   const paths = overlayExcludePaths();
   for (const rel of DEFAULT_OVERLAY_PATHS) assert.ok(paths.includes(rel));
   for (const rel of REWRITTEN_OVERLAY_ARTIFACTS) assert.ok(paths.includes(rel));
-  // package.json / .agentrc.json must be present (the rewritten artifacts).
-  assert.ok(paths.includes('package.json'));
+  // .agentrc.json is the rewritten artifact that is never a deliverable.
   assert.ok(paths.includes('.agentrc.json'));
   // No duplicates even if an artifact also appears in the overlay list.
   assert.equal(new Set(paths).size, paths.length);
+});
+
+// ---------------------------------------------------------------------------
+// Story #153 — the deliverable-contract carve-out for `package.json`.
+// ---------------------------------------------------------------------------
+
+test('overlayExcludePaths: does NOT exclude package.json for the real hello-world scenario contract (Story #153)', () => {
+  const scenario = JSON.parse(
+    readFileSync(
+      path.join(
+        repoRoot(),
+        'bench',
+        'scenarios',
+        'hello-world',
+        'scenario.json',
+      ),
+      'utf8',
+    ),
+  );
+
+  // The contract claims package.json: `npm start` is only satisfiable by a
+  // delivered package.json, and the seed prompt names it explicitly.
+  assert.equal(scenarioClaimsPackageJson(scenario), true);
+
+  const paths = overlayExcludePaths(DEFAULT_OVERLAY_PATHS, { scenario });
+  assert.deepEqual(paths, [
+    '.agents',
+    '.claude',
+    'CLAUDE.md',
+    'node_modules',
+    '.agentrc.json',
+  ]);
+  assert.ok(!paths.includes('package.json'));
+});
+
+test('overlayExcludePaths: still excludes package.json when the scenario contract does not claim it (Story #153)', () => {
+  const scenario = { id: 'no-app', app: { startCommand: './run.sh' } };
+  assert.equal(scenarioClaimsPackageJson(scenario), false);
+  assert.ok(
+    overlayExcludePaths(DEFAULT_OVERLAY_PATHS, { scenario }).includes(
+      'package.json',
+    ),
+  );
+});
+
+test('scenarioClaimsPackageJson: an explicit deliverables entry claims it (Story #153)', () => {
+  assert.equal(
+    scenarioClaimsPackageJson({ deliverables: ['package.json', 'src/app.js'] }),
+    true,
+  );
+  assert.equal(
+    scenarioClaimsPackageJson({ deliverables: ['src/app.js'] }),
+    false,
+  );
+  // No contract to consult → the baseline seed's tracked package.json wins.
+  assert.equal(scenarioClaimsPackageJson(null), true);
+  assert.equal(scenarioClaimsPackageJson(), true);
 });
 
 test('excludeOverlayFromGit: writes every overlaid path to .git/info/exclude', () => {
@@ -559,11 +619,17 @@ test('overlay (mandrel): git-excludes the overlay and a simulated commit carries
   const staged = simulateStagedFiles(workspaceFiles, patterns);
 
   // Only app code survives — no framework overlay, no rewritten artifacts.
-  assert.deepEqual(staged, ['src/index.js', 'src/lib/util.js', 'README.md']);
+  // `package.json` IS staged (Story #153): it is a scenario deliverable
+  // carried by the baseline seed, not an overlay-only artifact.
+  assert.deepEqual(staged, [
+    'src/index.js',
+    'src/lib/util.js',
+    'README.md',
+    'package.json',
+  ]);
   assert.ok(!staged.some((f) => f.startsWith('.agents/')));
   assert.ok(!staged.includes('CLAUDE.md'));
   assert.ok(!staged.some((f) => f.startsWith('node_modules/')));
-  assert.ok(!staged.includes('package.json'));
   assert.ok(!staged.includes('.agentrc.json'));
 });
 
@@ -633,5 +699,81 @@ test('the committed control-claudemd fixture is generic, ~2KB, and carries conve
     /\bidor\b/i,
   ]) {
     assert.doesNotMatch(content, banned);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Story #153 — worktree overlay visibility: `git worktree add` must yield a
+// tree where `.agents/` scripts resolve, with no agent-side workaround.
+// ---------------------------------------------------------------------------
+
+test('buildWorktreeOverlayHook: refuses an overlay path it cannot shell-quote', () => {
+  assert.throws(
+    () => buildWorktreeOverlayHook(["it's-a-path"]),
+    /cannot shell-quote overlay path/,
+  );
+});
+
+test('installWorktreeOverlayHook: a git worktree cut from an overlaid clone resolves .agents scripts (Story #153)', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'bench-wt-overlay-'));
+  const clone = path.join(root, 'clone');
+  const git = (args, cwd = clone) =>
+    execSync(`git ${args}`, { cwd, encoding: 'utf8', stdio: 'pipe' });
+
+  try {
+    mkdirSync(clone, { recursive: true });
+    git('init --initial-branch=main');
+    git('config user.email bench@noreply.local');
+    git('config user.name mandrel-bench');
+
+    // Tracked deliverable content (what a worktree checkout would carry).
+    writeFileSync(path.join(clone, 'index.js'), "console.log('app');\n");
+    git('add -A');
+    git('commit -m "chore: baseline"');
+
+    // The UNTRACKED framework overlay, exactly as the real overlay leaves it.
+    mkdirSync(path.join(clone, '.agents', 'scripts'), { recursive: true });
+    writeFileSync(
+      path.join(clone, '.agents', 'scripts', 'check-baselines.js'),
+      "console.log('baselines ok');\n",
+    );
+    writeFileSync(path.join(clone, '.agentrc.json'), '{}\n');
+    excludeOverlayFromGit({ workspacePath: clone });
+
+    // Pre-condition: without the hook the overlay is invisible to a worktree.
+    // (Asserted by construction — the overlay is untracked, so a checkout of
+    // the committed tree cannot contain it.)
+    const { hookPath, linkPaths } = installWorktreeOverlayHook({
+      workspacePath: clone,
+    });
+    assert.ok(linkPaths.includes('.agents'));
+    assert.ok(linkPaths.includes('.agentrc.json'));
+    assert.ok(!linkPaths.includes('package.json'));
+
+    const hookBody = readFileSync(hookPath, 'utf8');
+    assert.match(hookBody, /^#!\/bin\/sh/);
+
+    // The real thing: `git worktree add`, exactly as /deliver runs it.
+    const worktree = path.join(clone, '.worktrees', 'story-999');
+    git(`worktree add "${worktree}" -b story-999`);
+
+    // The framework script resolves from INSIDE the worktree — no symlink
+    // workaround authored by the agent, no unresolvable check-baselines gate.
+    const out = execSync('node .agents/scripts/check-baselines.js', {
+      cwd: worktree,
+      encoding: 'utf8',
+    });
+    assert.match(out, /baselines ok/);
+
+    // The tracked deliverable is there too, and the linked overlay stays out
+    // of the worktree's status (the shared .git/info/exclude covers it).
+    assert.ok(readFileSync(path.join(worktree, 'index.js'), 'utf8').length > 0);
+    const status = execSync('git status --porcelain', {
+      cwd: worktree,
+      encoding: 'utf8',
+    });
+    assert.equal(status.trim(), '', `worktree should be clean, got: ${status}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

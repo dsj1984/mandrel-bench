@@ -10,6 +10,9 @@
  *   - the optional per-scenario seed layer (`bench/scenarios/<id>/sandbox/`)
  *     is layered on top when present, and skipped cleanly when absent,
  *   - a missing template root is a hard error (never a silent empty sandbox),
+ *   - the greenfield gate `package.json` is seeded when the materialized tree
+ *     declares none, and NEVER when a seed layer already ships one
+ *     (Story #153),
  *   - `defaultSandboxTemplateRoot` / `defaultScenarioSandboxDir` resolve the
  *     conventional in-repo paths.
  *
@@ -35,6 +38,7 @@ test('materializeSandboxTemplate: copies the baseline template into the target d
       existsFn: (p) => p === '/repo/bench/sandbox-template',
       mkdirFn: (p) => mkdirCalls.push(p),
       cpFn: (src, dest) => cpCalls.push({ src, dest }),
+      writeFileFn: () => {},
       logger: { info() {}, warn() {} },
     },
   );
@@ -43,6 +47,7 @@ test('materializeSandboxTemplate: copies the baseline template into the target d
     targetDir: '/ws/seed',
     templateRoot: '/repo/bench/sandbox-template',
     scenarioSandboxDir: null,
+    gatePackageJsonSeeded: true,
   });
   assert.deepEqual(mkdirCalls, ['/ws/seed']);
   assert.equal(cpCalls.length, 1);
@@ -66,6 +71,7 @@ test('materializeSandboxTemplate: layers the per-scenario seed dir on top when p
         p === '/repo/bench/sandbox-template' || p === scenarioDir,
       mkdirFn: () => {},
       cpFn: (src, dest) => cpCalls.push({ src, dest }),
+      writeFileFn: () => {},
       logger: { info() {}, warn() {} },
     },
   );
@@ -91,12 +97,39 @@ test('materializeSandboxTemplate: a scenario with no seed dir is not an error â€
       existsFn: (p) => p === '/repo/bench/sandbox-template', // scenarioDir absent
       mkdirFn: () => {},
       cpFn: (src, dest) => cpCalls.push({ src, dest }),
+      writeFileFn: () => {},
       logger: { info() {}, warn() {} },
     },
   );
 
   assert.equal(res.scenarioSandboxDir, null);
   assert.equal(cpCalls.length, 1);
+});
+
+test('materializeSandboxTemplate: a seed layer that ships its own package.json is never clobbered (Story #153)', () => {
+  const writes = [];
+  const scenarioDir = '/repo/bench/scenarios/brownfield-longitudinal/sandbox';
+  const res = materializeSandboxTemplate(
+    {
+      templateRoot: '/repo/bench/sandbox-template',
+      scenarioSandboxDir: scenarioDir,
+      targetDir: '/ws/seed',
+    },
+    {
+      // The layered seed left a package.json behind in the target tree.
+      existsFn: (p) =>
+        p === '/repo/bench/sandbox-template' ||
+        p === scenarioDir ||
+        p === path.join('/ws/seed', 'package.json'),
+      mkdirFn: () => {},
+      cpFn: () => {},
+      writeFileFn: (p, data) => writes.push({ p, data }),
+      logger: { info() {}, warn() {} },
+    },
+  );
+
+  assert.equal(res.gatePackageJsonSeeded, false);
+  assert.deepEqual(writes, []);
 });
 
 test('materializeSandboxTemplate: a missing template root is a hard error', () => {

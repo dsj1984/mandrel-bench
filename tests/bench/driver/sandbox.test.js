@@ -14,14 +14,20 @@
  */
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { buildTargetPackageJson } from '../../../bench/driver/overlay.js';
 import {
   assertInsideRoot,
   createEphemeralRepo,
   defaultGhInvoke,
+  defaultSandboxTemplateRoot,
   destroyEphemeralRepo,
+  materializeSandboxTemplate,
   provisionSandbox,
   resetSandboxBaseline,
   SANDBOX_DIR_PREFIX,
@@ -888,4 +894,80 @@ test('withSandbox: tears down even when the body throws', async () => {
   // Teardown still happened.
   assert.equal(rmCalls.length, 1);
   assert.equal(rmCalls[0].path, created);
+});
+
+// ---------------------------------------------------------------------------
+// Story #153 — the greenfield baseline carries dependency-free gate scripts.
+// ---------------------------------------------------------------------------
+
+test('seedFromTemplate: the materialized greenfield baseline ships typecheck/lint/test scripts that each exit 0 with NO dependency install (Story #153)', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'bench-seed-gates-'));
+  const workspacePath = path.join(root, 'seed');
+
+  try {
+    // Drive the REAL materializer through seedFromTemplate over the REAL
+    // in-repo baseline template — only the git effects are injected, so the
+    // assertion is over the tree a real cell would push as its baseline.
+    seedFromTemplate(
+      {
+        repoFullName: 'dsj1984/bench-sbx-c1-hw-mandrel-a1b2',
+        workspacePath,
+        templateRoot: defaultSandboxTemplateRoot(),
+        scenarioSandboxDir: null,
+      },
+      {
+        execFileFn: (_cmd, args) => (args[0] === 'rev-parse' ? 'sha\n' : ''),
+        logger: { info() {}, warn() {} },
+      },
+    );
+
+    const pkgPath = path.join(workspacePath, 'package.json');
+    assert.ok(
+      existsSync(pkgPath),
+      'greenfield baseline must carry a package.json',
+    );
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    for (const script of ['typecheck', 'lint', 'test']) {
+      assert.ok(pkg.scripts?.[script], `expected a ${script} script`);
+    }
+
+    // Dependency-free: nothing to install, and no dependency declarations to
+    // install FROM. The gates must be green on the untouched seeded tree.
+    assert.equal(pkg.dependencies, undefined);
+    assert.equal(pkg.devDependencies, undefined);
+    assert.ok(!existsSync(path.join(workspacePath, 'node_modules')));
+
+    for (const script of ['typecheck', 'lint', 'test']) {
+      const res = spawnSync('npm', ['run', '--silent', script], {
+        cwd: workspacePath,
+        encoding: 'utf8',
+      });
+      assert.equal(
+        res.status,
+        0,
+        `npm run ${script} must exit 0 in the seeded tree; got ${res.status}\n${res.stdout}\n${res.stderr}`,
+      );
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('materializeSandboxTemplate: the seeded gate package.json is byte-identical to the overlay gate file, so the overlay write is a no-op merge (Story #153)', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'bench-seed-gates-eq-'));
+  try {
+    const target = path.join(root, 'seed');
+    materializeSandboxTemplate({
+      templateRoot: defaultSandboxTemplateRoot(),
+      targetDir: target,
+    });
+    const seeded = JSON.parse(
+      readFileSync(path.join(target, 'package.json'), 'utf8'),
+    );
+    assert.deepEqual(seeded, buildTargetPackageJson());
+    // …and re-running the overlay's own writer over that tree changes nothing.
+    assert.deepEqual(buildTargetPackageJson(seeded), seeded);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
