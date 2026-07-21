@@ -1,24 +1,16 @@
 /**
- * plan-context.js — single planner-context envelope build (Epic #4474, M3
- * PR2 — `/plan` collapse step 1).
+ * plan-context.js — single planner-context envelope build for `/plan`.
  *
- * Folds the two `--emit-context` halves of the 12-phase pipeline
- * (`buildAuthoringContext` from `epic-plan-spec/phases/authoring-context.js`
- * and `buildDecompositionContext` from
- * `epic-plan-decompose/phases/context.js`) plus the three currently-no-CLI
- * library calls (`findSimilarOpenEpics`, clarity scoring, re-plan
- * detection) into ONE JSON envelope, so the authoring middle reads a single
- * file instead of shim-scripting library imports (the bench measured
- * ~12–15 turns of shim-writing for the dup search alone).
+ * Folds the authoring-context builders plus the cross-Story dup search into
+ * ONE JSON envelope, so the authoring middle reads a single file instead of
+ * shim-scripting library imports.
  *
- * Two modes (the design's mode matrix):
- *   - `epic`      — the Epic exists. Carries `epic`, `clarity` (the Epic
- *                   Clarity Gate rubric — free, same body fetch), `replan`
- *                   (already-planned signals) and `planState`.
- *   - `one-pager` — ideation; the Epic does not exist yet (creation moves
- *                   to the persist half). Carries `onePager` and
- *                   `duplicates[]` (cross-Epic dup search). Clarity is not
- *                   scored — the ideation path is definitionally clear.
+ * Two operator modes (v2 Story-only):
+ *   - `seed` / `seed-file` — freeform text (chat or on-disk). Carries
+ *     `seed` plus `duplicates[]` (open-Story dup search).
+ *   - `tickets` — one or more existing issue ids to analyze into proper
+ *     Stories. Carries `sourceTickets[]` plus `duplicates[]` (excluding
+ *     the source ids themselves).
  *
  * All fields are JSON-serialisable; the module performs no GitHub writes.
  * The only I/O surfaces are the injected `provider` (reads) and the
@@ -26,35 +18,98 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { getLimits, resolvePreflightCeilings } from '../config-resolver.js';
-import { findSimilarOpenEpics } from '../duplicate-search.js';
-import { hasEpicSection, hasTechSpecContent } from '../epic-body-sections.js';
-import { scoreEpicBody } from '../epic-plan-clarity.js';
+import { getLimits } from '../config-resolver.js';
+import { findSimilarOpenStories } from '../duplicate-search.js';
 import { Logger } from '../Logger.js';
 import {
   renderAcceptanceSpecSystemPrompt,
   renderTechSpecSystemPrompt,
 } from '../templates/spec-author-prompts.js';
+import { concurrentMap } from '../util/concurrent-map.js';
 import { parseDeliverySlicingTable } from './consolidation-precondition.js';
 import { buildDocsDigest } from './docs-digest.js';
-import { buildDecomposerSystemPrompt } from './epic-plan-decompose/phases/context.js';
-import { buildAuthoringContext } from './epic-plan-spec/phases/authoring-context.js';
-import { read as readPlanState } from './epic-plan-state-store.js';
+import { buildAuthoringContext } from './planning/authoring-context.js';
+import { buildDecomposerSystemPrompt } from './planning/decomposer-context.js';
 
+/** Bounded concurrency for `--tickets` source-ticket hydration. */
+const SOURCE_TICKET_FETCH_CONCURRENCY = 4;
 /**
  * Envelope byte ceiling (regression guard for the design's named PR2 risk:
- * two envelopes → one bigger one). The folded envelope's bounded parts are:
- * the `applyBudget`-capped body (`planningContext.maxBytes` = 50 KB), the
- * tier-capped codebase snapshot (~35 KB skinny on this repo), the three
- * rendered system prompts (~15 KB), and the digest-first `docsContext`
- * (outline-only, pointer in epic mode). Measured folded envelopes on this
- * repo land at ~42 KB; 256 KB (~64K tokens at the ≈4-chars/token estimate)
- * gives >2× headroom over a worst-case budgeted body + medium-tier snapshot
- * while staying an order of magnitude under the session budget. The test
- * suite asserts serialized envelopes stay under this value — raise it only
- * with a measured justification.
+ * two envelopes → one bigger one). This is the **only** live bound on
+ * envelope size: Story #4541 removed the `applyBudget` pass from
+ * `buildAuthoringContext`, because both builders below discard that budgeted
+ * body and ship the raw seed on `seed.content` instead — the budget bounded
+ * a field that never left the function.
+ *
+ * The envelope's bounded parts are: the tier-capped codebase snapshot
+ * (~35 KB skinny on this repo), the three rendered system prompts (~15 KB),
+ * and the digest-first `docsContext` (outline-only, or inline digest in
+ * one-pager/seed mode). The seed itself is operator-supplied and carried
+ * verbatim. Measured folded envelopes on this repo land at ~42 KB; 256 KB
+ * (~64K tokens at the ≈4-chars/token estimate) gives >2× headroom over a
+ * worst-case seed + medium-tier snapshot while staying an order of magnitude
+ * under the session budget. The test suite asserts serialized envelopes stay
+ * under this value — raise it only with a measured justification.
  */
 export const PLAN_CONTEXT_ENVELOPE_BYTE_CEILING = 256_000;
+
+/** Fields named in the over-ceiling error, to point at what to trim. */
+const OVERSIZE_REPORT_FIELDS = 3;
+
+/**
+ * Fail closed when an assembled envelope exceeds
+ * {@link PLAN_CONTEXT_ENVELOPE_BYTE_CEILING}.
+ *
+ * Until now the ceiling was enforced *only* by a test assertion over this
+ * repo's own fixtures, which bounds nothing at runtime: the value it actually
+ * has to hold for is a consumer's seed or `--tickets` source bodies, and no
+ * test sees those. That left the documented planner-context cap resting
+ * entirely on `planning.context.maxBytes` — which resolved but was wired to
+ * nothing (its `applyBudget` pass lost its last caller in the v2 cutover), so
+ * in practice no bound existed at all on the path that needed one. That key
+ * and its budget module were removed outright in Story #4541; this ceiling is
+ * the replacement.
+ *
+ * Failing closed is the right direction here and matches how an over-budget
+ * `## Spec` is handled (`spec-spill.js`): an envelope this size does not
+ * degrade the planner gracefully, it silently produces garbage Stories from a
+ * truncated-by-the-host context. Better to refuse and say what to trim. The
+ * bound is deliberately a fixed framework constant rather than an operator
+ * knob — a cap the operator can raise past what the model can read is a cap
+ * that fails silently again.
+ *
+ * Deliberately **not** exported: its only external caller would be a test, and
+ * a test-only export is a production-dead one. It is reachable end to end
+ * through {@link buildPlanContext}, which is where the behaviour matters.
+ *
+ * @param {object} envelope
+ * @param {{ ceiling?: number }} [opts]
+ * @returns {object} `envelope`, unchanged, when it fits.
+ */
+function assertPlanContextWithinCeiling(envelope, opts = {}) {
+  const ceiling = opts.ceiling ?? PLAN_CONTEXT_ENVELOPE_BYTE_CEILING;
+  const bytes = Buffer.byteLength(JSON.stringify(envelope) ?? '', 'utf-8');
+  if (bytes <= ceiling) return envelope;
+
+  const largest = Object.entries(envelope)
+    .map(([field, value]) => [
+      field,
+      Buffer.byteLength(JSON.stringify(value) ?? '', 'utf-8'),
+    ])
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, OVERSIZE_REPORT_FIELDS)
+    .map(([field, size]) => `${field} (${Math.round(size / 1024)} KB)`)
+    .join(', ');
+
+  throw new Error(
+    `[plan-context] the assembled "${envelope?.mode}" envelope is ` +
+      `${Math.round(bytes / 1024)} KB, over the ` +
+      `${Math.round(ceiling / 1024)} KB planner-context ceiling. Largest ` +
+      `fields: ${largest}. Trim the seed, plan fewer --tickets source issues ` +
+      'in one run, or narrow `planning.codebaseSnapshot`. Raising the ceiling ' +
+      'needs a measured justification — see PLAN_CONTEXT_ENVELOPE_BYTE_CEILING.',
+  );
+}
 
 /**
  * Compact, machine-readable descriptor of the `tickets.json` array the
@@ -69,15 +124,116 @@ export const TICKET_SCHEMA_DESCRIPTOR = Object.freeze({
     slug: 'string — ^[a-z0-9][a-z0-9-]*$ (hyphen-case, unique per decompose)',
     type: "string — literal 'story' (2-tier hierarchy: Epic → Story only)",
     title: 'string — short descriptive title',
-    body: 'string — serialized Story-body markdown (never a JSON object)',
-    acceptance: 'string[] — top-level testable criteria (not nested in body)',
-    verify: 'string[] — top-level exact commands/test paths with (<tier>)',
-    labels: "string[] — must include 'type::story' and one 'persona::*'",
+    body: 'string — serialized Story-body markdown (never a JSON object); omit the ## Acceptance / ## Verify sections, persist syncs them in',
+    acceptance:
+      'string[] — top-level testable criteria; the machine contract, authored here and not in the body',
+    verify:
+      'string[] — top-level exact commands/test paths with (<tier>); the machine contract, authored here and not in the body',
+    labels:
+      "string[]? — extra labels to apply; 'type::story' is applied automatically. agent::*, type::*, and persona::* are rejected (runtime-owned or retired axes)",
     depends_on: 'string[]? — sibling Story slugs that block execution',
   }),
   validatedBy:
     'validateAndNormalizeTickets (lib/orchestration/ticket-validator.js) at persist time',
 });
+
+/**
+ * Count top-level enumerated items (`- `, `* `, `1. `) anywhere in a
+ * free-form seed text. Unlike {@link countScopeItems} this does not require
+ * a scope-shaped heading — a raw `--seed` text rarely has one.
+ *
+ * @param {string} text
+ * @returns {number}
+ */
+function countEnumeratedItems(text) {
+  if (typeof text !== 'string' || text.length === 0) return 0;
+  return text
+    .split(/\r?\n/)
+    .filter((line) => /^\s*(?:[-*]|\d+\.)\s+\S/.test(line)).length;
+}
+
+/**
+ * Delta-shaped change-request verbs — the `core/scope-triage` skill's
+ * change-request rubric routes these to `story` by default when the
+ * footprint stays inside Story width.
+ */
+const DELTA_VERB_RE =
+  /\b(fix(?:es)?|tweak(?:s)?|extend(?:s)?|update(?:s)?|adjust(?:s)?|rename(?:s)?|correct(?:s)?|patch(?:es)?|bug|regression|flaky)\b/i;
+
+/**
+ * Deterministic, CLI-applied scope-triage verdict over a raw `--seed` text
+ * (#4496 fix 6). Embedding the verdict in the `--seed` envelope removes the
+ * two skill Reads (`core/scope-triage` + the gate fragment's rubric pass)
+ * from the headless path; the attended path keeps the skill-based judgment.
+ *
+ * The heuristics anchor to the same sizing SSOT the skill anchors to —
+ * `DELIVERABLE_GRANULARITY_GUIDANCE` / `DEFAULT_MODEL_CAPACITY` in
+ * `ticket-validator-sizing.js` (one Story = one coherent capability slice;
+ * multiple independent capabilities = an Epic) — and to the skill's
+ * change-request delta rubric. Like the skill, the verdict is **advisory**:
+ * being wrong in the `epic` direction is cheap (the consolidation critic and
+ * the sizing validator catch an over-planned Story later), and `borderline`
+ * is a first-class output, not a forced call.
+ *
+ * @param {{ seedText?: string }} args
+ * @returns {{ verdict: 'epic'|'story'|'borderline', reasons: string[], advisory: true, appliedBy: 'cli' }}
+ */
+export function buildScopeTriageSignal({ seedText = '' } = {}) {
+  const advisory = /** @type {const} */ (true);
+  const appliedBy = /** @type {const} */ ('cli');
+  const text = typeof seedText === 'string' ? seedText : '';
+  const listItems = countEnumeratedItems(text);
+  const wordCount = text.split(/\s+/).filter(Boolean).length;
+
+  if (listItems >= 3) {
+    return {
+      verdict: 'epic',
+      reasons: [
+        `seed enumerates ${listItems} candidate capabilities — a genuine fan-out surface`,
+      ],
+      advisory,
+      appliedBy,
+    };
+  }
+  if (listItems >= 1) {
+    return {
+      verdict: 'story',
+      reasons: [
+        `seed enumerates ${listItems} capability item(s) — one coherent change with one reason to exist`,
+      ],
+      advisory,
+      appliedBy,
+    };
+  }
+  if (DELTA_VERB_RE.test(text) && wordCount <= 120) {
+    return {
+      verdict: 'story',
+      reasons: [
+        'delta-shaped seed (change-request verb, no capability enumeration) within Story width',
+      ],
+      advisory,
+      appliedBy,
+    };
+  }
+  if (wordCount >= 250) {
+    return {
+      verdict: 'epic',
+      reasons: [
+        `broad prose seed (~${wordCount} words) with no enumeration — plausibly multiple independent capabilities`,
+      ],
+      advisory,
+      appliedBy,
+    };
+  }
+  return {
+    verdict: 'borderline',
+    reasons: [
+      'no capability enumeration and no clear delta signal — could be one ambitious Story or a small Epic; the operator (or the --yes Recommended branch) decides',
+    ],
+    advisory,
+    appliedBy,
+  };
+}
 
 /**
  * Resolve the planning risk heuristics list from the canonical config
@@ -90,7 +246,7 @@ function resolveRiskHeuristics(config = {}) {
   if (Array.isArray(config.planning?.riskHeuristics)) {
     return config.planning.riskHeuristics;
   }
-  return config.agentSettings?.planning?.riskHeuristics || [];
+  return [];
 }
 
 /**
@@ -199,217 +355,117 @@ export function buildDeliveryShapeSignal({ body } = {}) {
 }
 
 /**
- * Re-plan detection signals (folds the workflow's Phase 5 into the
- * envelope): the Tech Spec sections alone are the already-planned signal;
- * the open-Story count and section presence let the authoring middle (and
- * the persist half's `--force` prompt) cite concrete numbers.
- *
- * `openStoryCount` is best-effort: a provider listing failure degrades to
- * `null` rather than aborting the envelope build.
- *
- * @param {{ epicBody: string, provider: object, epicId: number }} args
- * @returns {Promise<{
- *   alreadyPlanned: boolean,
- *   planningSections: { techSpec: boolean, acceptanceTable: boolean },
- *   openStoryCount: number|null,
- * }>}
- */
-export async function buildReplanSignal({ epicBody, provider, epicId }) {
-  const body = epicBody ?? '';
-  let openStoryCount = null;
-  try {
-    const tickets = await provider.getTickets(epicId, { state: 'open' });
-    if (Array.isArray(tickets)) openStoryCount = tickets.length;
-  } catch (err) {
-    Logger.warn(
-      `[plan-context] open-children listing skipped: ${err?.message ?? err}`,
-    );
-  }
-  return {
-    alreadyPlanned: hasTechSpecContent(body),
-    planningSections: {
-      techSpec: hasEpicSection(body, 'techSpec'),
-      acceptanceTable: hasEpicSection(body, 'acceptanceTable'),
-    },
-    openStoryCount,
-  };
-}
-
-/**
  * Render the three authoring system prompts the collapsed pipeline's
  * single authoring pass consumes. The spec/acceptance prompts render from
  * `lib/templates/spec-author-prompts.js` (the M3/M8 handshake — envelope
  * authoritative from day one); the decompose prompt reuses the existing
  * Story #4162 carrier including the risk-heuristics suffix.
  *
- * @param {{ heuristics?: string[], maxTickets?: number, maxTokenBudget?: number, epicId?: number|null }} args
+ * @param {{ heuristics?: string[], maxTickets?: number }} args
  * @returns {{ spec: string, acceptance: string, decompose: string }}
  */
-export function buildSystemPrompts({
-  heuristics = [],
-  maxTickets,
-  maxTokenBudget,
-  epicId = null,
-} = {}) {
+export function buildSystemPrompts({ heuristics = [], maxTickets } = {}) {
+  const decompose = buildDecomposerSystemPrompt(heuristics, {
+    maxTickets,
+  });
   return {
     spec: renderTechSpecSystemPrompt(),
     acceptance: renderAcceptanceSpecSystemPrompt(),
-    decompose: buildDecomposerSystemPrompt(heuristics, {
-      maxTickets,
-      maxTokenBudget,
-      epicId,
-    }),
+    // v2 Stage 3: default-single author prompt (decompose text + split policy).
+    story: `${decompose}
+
+#### v2 DEFAULT-SINGLE SPLIT POLICY:
+
+Emit **exactly one Story** in \`stories.json\` unless the pieces have
+near-zero overlap or sit across an architectural seam. Coupled work stays
+one Story — put intra-session checkpoints in \`## Slicing\` and fold the
+Tech Spec into \`## Spec\` (inline only; over-budget Specs mean split or
+tighten — never write under \`docs/\`). Do **not** emit \`deliveryShape\`.
+When N>1, every acceptance criterion must belong to exactly one Story,
+and each Story carries its own \`## Spec\` (no shared techspec.md fold).
+`,
+    decompose,
   };
 }
 
 /**
- * Read the `epic-plan-state` structured comment, degrading to `null` when
- * the comment is missing/unparseable or the provider fetch fails (same
- * tolerance the decompose context applies).
+ * Run the open-Story duplicate search. Failures degrade to [] — triage
+ * signal, not a gate.
  *
- * @param {{ provider: object, epicId: number }} args
- * @returns {Promise<object|null>}
+ * @param {{
+ *   seed: string,
+ *   provider: object,
+ *   config: object,
+ *   excludeIds?: Iterable<number|string>,
+ * }} args
+ * @returns {Promise<Array<object>>}
  */
-async function readPlanStateTolerant({ provider, epicId }) {
-  try {
-    return await readPlanState({ provider, epicId });
-  } catch (_err) {
-    return null;
-  }
-}
-
-/**
- * Build the epic-mode envelope. One Epic fetch feeds everything: the
- * authoring context (prefetch seam on `buildAuthoringContext`), clarity
- * scoring, re-plan detection, and the delivery-shape heuristics — the
- * fetch-twice shape of the split pipeline is gone.
- */
-async function buildEpicModeEnvelope({
-  epicId,
+async function searchStoryDuplicates({
+  seed,
   provider,
   config,
-  settings,
-  fullContext,
-  cwd,
+  excludeIds = [],
 }) {
-  const epic = await provider.getEpic(epicId);
-  if (!epic) {
-    throw new Error(`[plan-context] Epic #${epicId} not found.`);
-  }
-  const body = epic.body ?? '';
-
-  const authoringOpts = {
-    epic,
-    fullContext,
-    github: config.github ?? null,
-  };
-  if (cwd) authoringOpts.cwd = cwd;
-  const authoring = await buildAuthoringContext(
-    epicId,
-    provider,
-    settings,
-    authoringOpts,
-  );
-
-  const limits = getLimits(config);
-  const heuristics = resolveRiskHeuristics(config);
-  const clarityScore = scoreEpicBody({ body });
-  const [replan, planState] = await Promise.all([
-    buildReplanSignal({ epicBody: body, provider, epicId }),
-    readPlanStateTolerant({ provider, epicId }),
-  ]);
-
-  return {
-    mode: 'epic',
-    epic: authoring.epic,
-    clarity: clarityScore,
-    replan,
-    docsContext: authoring.docsContext,
-    codebaseSnapshot: authoring.codebaseSnapshot,
-    bddRunner: authoring.bddRunner,
-    bddScenarios: authoring.bddScenarios,
-    memoryFreshness: authoring.memoryFreshness,
-    priorFeedback: authoring.priorFeedback,
-    ticketSchema: TICKET_SCHEMA_DESCRIPTOR,
-    maxTickets: limits.maxTickets,
-    maxTokenBudget: limits.maxTokenBudget,
-    preflightCeilings: resolvePreflightCeilings(config),
-    riskHeuristics: heuristics,
-    systemPrompts: buildSystemPrompts({
-      heuristics,
-      maxTickets: limits.maxTickets,
-      maxTokenBudget: limits.maxTokenBudget,
-      epicId,
-    }),
-    deliveryShapeSignal: buildDeliveryShapeSignal({ body }),
-    planState,
-  };
-}
-
-/**
- * Build the one-pager (ideation) envelope. The Epic does not exist yet —
- * creation moves to the persist half — so there is no clarity score, no
- * re-plan signal, and no plan state; the dup search replaces them as the
- * mode's gating input. `docsContext` is inline-digest (the standalone
- * `story-plan.js --emit-context` convention): there is no per-Epic temp
- * directory to anchor a digest file to yet.
- */
-async function buildOnePagerModeEnvelope({
-  onePagerPath,
-  onePagerContent,
-  provider,
-  config,
-  settings,
-  fullContext,
-  cwd,
-}) {
-  const content =
-    onePagerContent ?? (await readFile(onePagerPath ?? '', 'utf-8'));
-  if (typeof content !== 'string' || content.trim().length === 0) {
-    throw new Error(
-      `[plan-context] one-pager at ${onePagerPath} is empty — nothing to plan from.`,
-    );
-  }
-
-  let duplicates = [];
   try {
-    duplicates = await findSimilarOpenEpics({
-      onePager: content,
+    return await findSimilarOpenStories({
+      seed,
       provider,
       owner: config.github?.owner,
       repo: config.github?.repo,
+      excludeIds,
     });
   } catch (err) {
-    // The dup search is a triage signal, not a gate: a provider listing
-    // failure must not abort the envelope build. Surface the degradation
-    // on stderr; the authoring middle sees an empty candidate list.
     Logger.warn(
       `[plan-context] duplicate search degraded to no candidates: ${err?.message ?? err}`,
     );
-    duplicates = [];
+    return [];
+  }
+}
+
+/**
+ * Build the seed-file (ideation) envelope. No parent ticket
+ * exists yet — creation moves to the persist half — so the open-Story
+ * dup search is the mode's gating input. `docsContext` is inline-digest:
+ * there is no plan temp directory to anchor a digest file to yet.
+ */
+async function buildSeedFileModeEnvelope({
+  seedFilePath,
+  seedFileContent,
+  provider,
+  config,
+  settings,
+  cwd,
+  modeLabel = 'seed-file',
+}) {
+  const content =
+    seedFileContent ?? (await readFile(seedFilePath ?? '', 'utf-8'));
+  if (typeof content !== 'string' || content.trim().length === 0) {
+    throw new Error(
+      `[plan-context] seed-file at ${seedFilePath ?? '(inline)'} is empty — nothing to plan from.`,
+    );
   }
 
-  // Fold the same authoring-context builders the epic path uses, grounded
-  // in the one-pager prose instead of an Epic body. Reuse
-  // `buildAuthoringContext` via the prefetch seam so the fold has exactly
-  // one implementation of the snapshot/BDD/memory/feedback pipeline to
-  // drift from. `docsContextFiles` is emptied for this call: the per-Epic
-  // digest-file path needs an Epic id (and a temp directory) that does not
-  // exist yet — the inline digest below replaces it.
+  const duplicates = await searchStoryDuplicates({
+    seed: content,
+    provider,
+    config,
+  });
+
+  // Fold the authoring-context builders grounded in the seed prose.
+  // `docsContextFiles` is emptied for this call: the per-plan digest-file
+  // path needs a plan id that does not exist yet — the inline digest
+  // below replaces it.
   const authoring = await buildAuthoringContext(
     0,
     /* provider (unused behind the prefetch seam) */ {},
     { ...settings, docsContextFiles: [] },
     {
-      epic: { id: 0, title: onePagerPath ?? 'one-pager', body: content },
-      fullContext,
+      epic: { id: 0, title: seedFilePath ?? 'seed', body: content },
       github: config.github ?? null,
       cwd,
     },
   );
 
-  // Replace the per-Epic digest-file pointer with an inline digest — the
-  // Epic (and its temp directory) does not exist yet.
   const paths = settings?.paths ?? {};
   const inlineDigest = await buildDocsDigest({
     docsContextFiles: settings?.docsContextFiles,
@@ -424,8 +480,8 @@ async function buildOnePagerModeEnvelope({
   const heuristics = resolveRiskHeuristics(config);
 
   return {
-    mode: 'one-pager',
-    onePager: { path: onePagerPath ?? null, content },
+    mode: modeLabel,
+    seed: { path: seedFilePath ?? null, content },
     duplicates,
     docsContext,
     codebaseSnapshot: authoring.codebaseSnapshot,
@@ -435,28 +491,188 @@ async function buildOnePagerModeEnvelope({
     priorFeedback: authoring.priorFeedback,
     ticketSchema: TICKET_SCHEMA_DESCRIPTOR,
     maxTickets: limits.maxTickets,
-    maxTokenBudget: limits.maxTokenBudget,
-    preflightCeilings: resolvePreflightCeilings(config),
     riskHeuristics: heuristics,
     systemPrompts: buildSystemPrompts({
       heuristics,
       maxTickets: limits.maxTickets,
-      maxTokenBudget: limits.maxTokenBudget,
-      epicId: null,
     }),
-    deliveryShapeSignal: buildDeliveryShapeSignal({ body: content }),
     planState: null,
+    // N=1 default: author one Story; skip Epic-scale decompose ceremony.
+    planProfile: 'story-default',
+  };
+}
+
+/**
+ * Build the seed-mode (chat text) envelope. The seed-file does not exist
+ * yet: the dup search and the authoring-context fold both run off the raw
+ * seed text (N=1 default — no Epic-scale decompose).
+ */
+async function buildSeedModeEnvelope({
+  seedText,
+  provider,
+  config,
+  settings,
+  cwd,
+}) {
+  if (typeof seedText !== 'string' || seedText.trim().length === 0) {
+    throw new Error(
+      '[plan-context] --seed requires non-empty seed text — nothing to plan from.',
+    );
+  }
+  const base = await buildSeedFileModeEnvelope({
+    seedFilePath: undefined,
+    seedFileContent: seedText,
+    provider,
+    config,
+    settings,
+    cwd,
+    modeLabel: 'seed',
+  });
+  const { seed: _seed, ...rest } = base;
+  return {
+    ...rest,
+    mode: 'seed',
+    seed: { text: seedText, path: null },
+  };
+}
+
+/**
+ * Fetch source tickets for `--tickets` mode.
+ * Hydrates ids concurrently (bounded) while preserving input order.
+ *
+ * @param {number[]} ticketIds
+ * @param {object} provider
+ * @returns {Promise<Array<{ id:number, title:string, body:string, labels:string[], url?:string }>>}
+ */
+async function fetchSourceTickets(ticketIds, provider) {
+  if (!provider || typeof provider.getTicket !== 'function') {
+    throw new Error(
+      '[plan-context] tickets mode requires provider.getTicket()',
+    );
+  }
+  return concurrentMap(
+    ticketIds,
+    async (id) => {
+      const ticket = await provider.getTicket(id);
+      if (!ticket) {
+        throw new Error(`[plan-context] ticket #${id} not found`);
+      }
+      return {
+        id: Number(ticket.id ?? ticket.number ?? id),
+        title: ticket.title ?? '',
+        body: ticket.body ?? '',
+        labels: Array.isArray(ticket.labels)
+          ? ticket.labels
+              .map((l) => (typeof l === 'string' ? l : l?.name))
+              .filter(Boolean)
+          : [],
+        url: ticket.html_url ?? ticket.url ?? undefined,
+        state: ticket.state ?? undefined,
+      };
+    },
+    { concurrency: SOURCE_TICKET_FETCH_CONCURRENCY },
+  );
+}
+
+/**
+ * Build the tickets-mode envelope — analyze existing issue(s) into proper
+ * Stories. Dup search excludes the source ids so a ticket is not reported
+ * as a duplicate of itself.
+ */
+async function buildTicketsModeEnvelope({
+  ticketIds,
+  provider,
+  config,
+  settings,
+  cwd,
+}) {
+  if (!Array.isArray(ticketIds) || ticketIds.length === 0) {
+    throw new Error(
+      '[plan-context] --tickets requires one or more positive issue ids.',
+    );
+  }
+  const sourceTickets = await fetchSourceTickets(ticketIds, provider);
+  const seed = sourceTickets
+    .map((t) => `# ${t.title}\n\n${t.body}`)
+    .join('\n\n---\n\n');
+
+  const duplicates = await searchStoryDuplicates({
+    seed,
+    provider,
+    config,
+    excludeIds: ticketIds,
+  });
+
+  const authoring = await buildAuthoringContext(
+    0,
+    {},
+    { ...settings, docsContextFiles: [] },
+    {
+      epic: {
+        id: 0,
+        title: sourceTickets[0]?.title ?? 'tickets',
+        body: seed,
+      },
+      github: config.github ?? null,
+      cwd,
+    },
+  );
+
+  const paths = settings?.paths ?? {};
+  const inlineDigest = await buildDocsDigest({
+    docsContextFiles: settings?.docsContextFiles,
+    docsRoot: paths.docsRoot,
+  });
+  const docsContext =
+    inlineDigest == null
+      ? null
+      : { mode: 'digest-inline', digest: inlineDigest };
+
+  const limits = getLimits(config);
+  const heuristics = resolveRiskHeuristics(config);
+
+  return {
+    mode: 'tickets',
+    sourceTickets,
+    seed: { text: seed, path: null },
+    duplicates,
+    docsContext,
+    codebaseSnapshot: authoring.codebaseSnapshot,
+    bddRunner: authoring.bddRunner,
+    bddScenarios: authoring.bddScenarios,
+    memoryFreshness: authoring.memoryFreshness,
+    priorFeedback: authoring.priorFeedback,
+    ticketSchema: TICKET_SCHEMA_DESCRIPTOR,
+    maxTickets: limits.maxTickets,
+    riskHeuristics: heuristics,
+    systemPrompts: buildSystemPrompts({
+      heuristics,
+      maxTickets: limits.maxTickets,
+    }),
+    planState: null,
+    planProfile:
+      ticketIds.length === 1 ? 'story-default' : 'story-from-tickets',
+    instruction:
+      'Analyze the source ticket(s) and author proper type::story ' +
+      'ticket(s) under the default-single split policy. Prefer rewriting ' +
+      'the source into one well-formed Story (N=1) unless the split policy ' +
+      'applies. Do not open an Epic.',
   };
 }
 
 /**
  * Build the single planner-context envelope.
  *
+ * Every mode returns through here, which makes this the one place the
+ * envelope's total size is decided — and therefore the only honest place to
+ * bound it (see {@link assertPlanContextWithinCeiling}).
+ *
  * @param {{
- *   mode: 'epic'|'one-pager',
- *   epicId?: number,
- *   onePagerPath?: string,
- *   onePagerContent?: string,
+ *   mode: 'seed-file'|'seed'|'tickets',
+ *   seedFilePath?: string,
+ *   seedFileContent?: string,
+ *   seedText?: string,
+ *   ticketIds?: number[],
  *   provider: object,
  *   config: object,
  *   settings: object,
@@ -466,45 +682,80 @@ async function buildOnePagerModeEnvelope({
  */
 export async function buildPlanContext({
   mode,
-  epicId,
-  onePagerPath,
-  onePagerContent,
+  seedFilePath,
+  seedFileContent,
+  seedText,
+  ticketIds,
   provider,
   config = {},
   settings = {},
-  fullContext = false,
   cwd,
 }) {
-  if (mode === 'epic') {
-    if (!Number.isInteger(epicId)) {
-      throw new Error('[plan-context] epic mode requires a numeric epicId.');
-    }
-    return buildEpicModeEnvelope({
-      epicId,
+  return assertPlanContextWithinCeiling(
+    await buildPlanContextEnvelope({
+      mode,
+      seedFilePath,
+      seedFileContent,
+      seedText,
+      ticketIds,
       provider,
       config,
       settings,
-      fullContext,
+      cwd,
+    }),
+  );
+}
+
+/**
+ * Mode dispatch for {@link buildPlanContext}. Split out so the ceiling check
+ * wraps every mode exactly once.
+ */
+async function buildPlanContextEnvelope({
+  mode,
+  seedFilePath,
+  seedFileContent,
+  seedText,
+  ticketIds,
+  provider,
+  config,
+  settings,
+  cwd,
+}) {
+  if (mode === 'seed-file') {
+    if (!seedFilePath && typeof seedFileContent !== 'string') {
+      throw new Error(
+        '[plan-context] seed-file mode requires --seed-file <path>.',
+      );
+    }
+    return buildSeedFileModeEnvelope({
+      seedFilePath,
+      seedFileContent,
+      provider,
+      config,
+      settings,
+      cwd,
+      modeLabel: 'seed-file',
+    });
+  }
+  if (mode === 'seed') {
+    return buildSeedModeEnvelope({
+      seedText,
+      provider,
+      config,
+      settings,
       cwd,
     });
   }
-  if (mode === 'one-pager') {
-    if (!onePagerPath && typeof onePagerContent !== 'string') {
-      throw new Error(
-        '[plan-context] one-pager mode requires --one-pager <path>.',
-      );
-    }
-    return buildOnePagerModeEnvelope({
-      onePagerPath,
-      onePagerContent,
+  if (mode === 'tickets') {
+    return buildTicketsModeEnvelope({
+      ticketIds,
       provider,
       config,
       settings,
-      fullContext,
       cwd,
     });
   }
   throw new Error(
-    `[plan-context] unknown mode "${mode}" — expected "epic" or "one-pager".`,
+    `[plan-context] unknown mode "${mode}" — expected "seed", "seed-file", or "tickets".`,
   );
 }

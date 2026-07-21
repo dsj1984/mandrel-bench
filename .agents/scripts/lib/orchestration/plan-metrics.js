@@ -5,7 +5,7 @@
  * phase is removed, every plan CLI invocation stamps an entry/exit record so
  * the current 12-phase baseline is captured on disk. Each record is one
  * newline-terminated JSON line appended to
- * `temp/epic-<id>/plan-metrics.json` (per-Epic plan CLIs) or
+ * `temp/run-<id>/plan-metrics.json` (per-Epic plan CLIs) or
  * `temp/standalone/plan-metrics.json` (the standalone `story-plan.js` path
  * and Epic-less healthcheck runs — same standalone routing the friction
  * ledger uses).
@@ -61,7 +61,7 @@ import path from 'node:path';
 
 import {
   anchorTempRoot,
-  epicArtifactPath,
+  runArtifactPath,
   tempRootFrom,
 } from '../config/temp-paths.js';
 import { Logger } from '../Logger.js';
@@ -95,7 +95,7 @@ export function planMetricsPath(epicId, config) {
       PLAN_METRICS_BASENAME,
     );
   }
-  return epicArtifactPath(epicId, PLAN_METRICS_BASENAME, config);
+  return runArtifactPath(epicId, PLAN_METRICS_BASENAME, config);
 }
 
 /**
@@ -314,7 +314,8 @@ export async function readPlanMetrics(epicId, config) {
 
 /**
  * Roll a read ledger up into the compact summary surfaced by the persist
- * summary and `analyze-execution.js`. Returns `null` when there is nothing
+ * summary. (Story #4545 deleted its second consumer, `analyze-execution.js`,
+ * with the execution-analysis surface.) Returns `null` when there is nothing
  * to summarize (missing ledger or zero parseable entries).
  *
  * Critic-skip records (kind: 'critic-skip') are counted separately from
@@ -322,7 +323,15 @@ export async function readPlanMetrics(epicId, config) {
  * them down, so the skip-audit trail is visible in the persist summary
  * without inflating the turns-per-plan proxy.
  *
+ * Pass `opts.since` (an ISO-8601 instant) to scope the roll-up to one plan
+ * run (Story #4541). The Epic-less ledger at `temp/standalone/` is shared by
+ * every plan the repo has ever run, so an unfiltered summary reported
+ * lifetime totals under a line the reader takes to describe the invocation
+ * in front of them. Records are timestamped `startedAt` (invocations) or
+ * `at` (critic skips); either at-or-after `since` is in scope.
+ *
  * @param {{ entries: object[], malformedLines?: number }} ledger
+ * @param {{ since?: string|null }} [opts]
  * @returns {{
  *   invocations: number,
  *   failures: number,
@@ -337,8 +346,31 @@ export async function readPlanMetrics(epicId, config) {
  *   malformedLines: number,
  * }|null}
  */
-export function summarizePlanMetrics(ledger) {
-  const entries = ledger?.entries ?? [];
+/**
+ * Timestamp a ledger record is ordered by: `startedAt` for invocation
+ * records, `at` for critic-skip records.
+ *
+ * @param {object} entry
+ * @returns {string|null}
+ */
+function recordTimestamp(entry) {
+  const stamp =
+    entry?.kind === PLAN_METRICS_KIND_CRITIC_SKIP ? entry.at : entry.startedAt;
+  return typeof stamp === 'string' ? stamp : null;
+}
+
+export function summarizePlanMetrics(ledger, opts = {}) {
+  const all = ledger?.entries ?? [];
+  const since = typeof opts.since === 'string' ? opts.since : null;
+  // ISO-8601 UTC strings sort lexicographically in time order, so a string
+  // compare is a correct (and allocation-free) instant compare here.
+  const entries =
+    since === null
+      ? all
+      : all.filter((e) => {
+          const stamp = recordTimestamp(e);
+          return stamp !== null && stamp >= since;
+        });
   if (entries.length === 0) return null;
   const byCli = {};
   const byMode = {};

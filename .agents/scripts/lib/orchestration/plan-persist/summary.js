@@ -1,21 +1,14 @@
 /**
- * summary.js — plan-persist terminal summary (Epic #4474, PR3).
+ * summary.js — plan-persist terminal summary (v2 Stage 3).
  *
- * Owns the single `plan-summary` structured comment the collapsed persist
- * surface upserts at terminal success, closing with the dry-run wave table.
- * This replaces two retired round-trips of the 12-phase pipeline:
+ * Upserts a single `plan-summary` structured comment on the primary Story
+ * at terminal success. Carries the persist receipts — including whether the
+ * operator forced a review stop — and the dry-run `depends_on` ordering table
+ * for the rare N>1 plan.
  *
- *   - the Phase 9 plan-time `dispatch-manifest` comment, whose claimed
- *     consumer ("Wave Completeness Gate, /deliver Step 0.5") does not exist
- *     — the live manifest is written at deliver time by `wave-record-io.js`
- *     (#4474 design §3: DROP, keep the wave table as summary text only);
- *   - the Phase 12 notify round-trip ("informational — no webhook for
- *     planning").
- *
- * The wave table is computed from the validated ticket set's `depends_on`
- * slug edges via the same `computeStoryWaves` layering the deliver-time
- * dispatch pipeline uses, so the preview matches what `/deliver` will
- * actually fan out (barring later manual ticket edits).
+ * Story #4542 removed the risk / review-routing line: no risk level, gate
+ * decision, or acceptance disposition is computed at plan time any more, so
+ * reporting one here would document a mechanism that does not run.
  *
  * @module lib/orchestration/plan-persist/summary
  */
@@ -23,23 +16,15 @@
 import { computeStoryWaves } from '../dependency-analyzer.js';
 
 /**
- * Structured-comment type for the persist summary. Registered in
- * `ticketing/reads.js` `STRUCTURED_COMMENT_TYPES`; upsert-idempotent so a
- * `--force`/`--resume` re-persist replaces the prior summary in place.
+ * Structured-comment type for the persist summary.
  */
 export const PLAN_SUMMARY_COMMENT_TYPE = 'plan-summary';
 
 /**
  * Compute the dry-run wave assignment for a validated ticket set.
  *
- * Adapts the slug-keyed ticket shape onto `computeStoryWaves`' storyGroups
- * contract (slug → { storyId, tasks: [] }; explicit deps from `depends_on`).
- * Under the 2-tier hierarchy Stories carry no tasks, so all edges are
- * explicit.
- *
  * @param {Array<{ slug: string, title?: string, depends_on?: string[] }>} tickets
  * @returns {Array<{ wave: number, stories: Array<{ slug: string, title: string }> }>}
- *   Waves in execution order.
  */
 export function buildWaveTable(tickets) {
   const list = Array.isArray(tickets) ? tickets : [];
@@ -66,126 +51,88 @@ export function buildWaveTable(tickets) {
 }
 
 /**
- * Render the dry-run wave table as GitHub-flavoured markdown.
- *
  * @param {ReturnType<typeof buildWaveTable>} waveTable
- * @returns {string[]} markdown lines
+ * @returns {string[]}
  */
 function renderWaveTableLines(waveTable) {
   if (!Array.isArray(waveTable) || waveTable.length === 0) {
-    return ['_No stories to wave (empty plan)._'];
+    return ['_No stories to sequence (empty plan)._'];
   }
   const rows = waveTable.map(
     ({ wave, stories }) =>
       `| ${wave + 1} | ${stories.map((s) => `\`${s.slug}\``).join(', ')} |`,
   );
-  return ['| Wave | Stories |', '| --- | --- |', ...rows];
+  return ['| Order | Stories |', '| --- | --- |', ...rows];
 }
 
 /**
- * Build the `plan-summary` structured-comment body: risk + routing +
- * freshness + healthcheck receipts, closing with the mode-specific tail —
- * the dry-run wave table for fan-out/amend, or the single-delivery routing
- * record `{ deliveryShape, sliceCount, routingReasons }` (Epic #4474 PR4)
- * for the spec-only mode.
+ * Build the `plan-summary` structured-comment body.
  *
- * @param {{
- *   epicId: number,
- *   ticketCount: number,
- *   planningRisk: { overallLevel?: string, gateDecision?: string },
- *   reviewRouting: { decision?: string },
- *   freshness?: { stale?: number, ambiguous?: number },
- *   healthcheck?: { ok?: boolean, waived?: boolean, skipped?: boolean },
- *   waveTable: ReturnType<typeof buildWaveTable>,
- *   mode?: 'fan-out'|'single'|'amend',
- *   planMetricsLine?: string|null,
- *   single?: { deliveryShape: 'single', sliceCount: number|null, routingReasons: string[] }|null,
- *   amend?: {
- *     closed: Array<{ slug: string, issueNumber: number }>,
- *     recreated: Array<{ slug: string, oldIssueNumber: number, issueNumber: number }>,
- *     created: Array<{ slug: string, issueNumber: number }>,
- *     keptCount: number,
- *   }|null,
- * }} input
+ * @param {object} input
  * @returns {string}
  */
 export function buildPlanSummaryCommentBody({
   epicId,
   ticketCount,
-  planningRisk,
-  reviewRouting,
+  forceReview = false,
   freshness,
   healthcheck,
   waveTable,
-  mode = 'fan-out',
+  mode = 'stories',
   planMetricsLine = null,
+  stories = null,
+  // legacy unused knobs kept so older test call sites don't crash mid-migration
   single = null,
   amend = null,
 }) {
+  void mode;
+  void single;
+  void amend;
+
   const freshnessLine =
     (freshness?.stale ?? 0) > 0 || (freshness?.ambiguous ?? 0) > 0
-      ? `- ⚠️ Spec freshness: ${freshness.stale} stale / ${freshness.ambiguous} ambiguous reference(s) — see the spec-freshness comment.`
+      ? `- ⚠️ Spec freshness: ${freshness.stale} stale / ${freshness.ambiguous} ambiguous reference(s).`
       : '- Spec freshness: clean.';
   const healthcheckLine = healthcheck?.skipped
-    ? '- Healthcheck: skipped (test seam).'
+    ? '- Healthcheck: skipped (v2 flat Story persist — ticket validators are the gate).'
     : healthcheck?.ok
       ? '- Healthcheck: passed.'
       : `- Healthcheck: failed, waived by operator label.`;
 
-  const headLine =
-    mode === 'single'
-      ? `- Single-delivery plan (\`delivery::single\`): no Story tree — the Delivery Slicing table is the audit trail.`
-      : `- ${ticketCount} Story ticket(s) persisted across ${waveTable.length} wave(s).`;
+  const storyList =
+    Array.isArray(stories) && stories.length > 0
+      ? stories.map((s) => `#${s.id} (\`${s.slug}\`)`).join(', ')
+      : `${ticketCount} Story(ies)`;
 
-  const amendLines = amend
-    ? [
-        `- Amend delta: ${amend.created.length} added, ${amend.recreated.length} modified (closed + recreated), ${amend.closed.length} closed, ${amend.keptCount} kept untouched.`,
-      ]
+  // The only planning-time review gate left (Story #4542): an explicit
+  // operator flag, never a value derived from a self-authored risk verdict.
+  const reviewLines = forceReview
+    ? ['- ⚠️ Review: operator-forced via `--force-review`.']
     : [];
 
-  const tail =
-    mode === 'single'
-      ? [
-          '#### Delivery routing record',
-          '',
-          '```json',
-          JSON.stringify(
-            {
-              deliveryShape: 'single',
-              sliceCount: single?.sliceCount ?? null,
-              routingReasons: single?.routingReasons ?? [],
-            },
-            null,
-            2,
-          ),
-          '```',
-          '',
-          '_Marker is inert until #4475 lands the deliver-side reader — `/deliver` still treats this Epic as fan-out until then._',
-        ]
-      : [
-          '#### Dry-run wave table',
-          '',
-          ...renderWaveTableLines(waveTable),
-          '',
-          '_Preview only — the authoritative dispatch manifest is written at deliver time (`wave-record-io.js`)._',
-        ];
+  // The exact command to run — Story #4540. This comment is posted to
+  // GitHub on every plan, so it is the operator's primary instruction: it
+  // must name real ids, not a batch token that no longer exists.
+  const deliverCommand =
+    Array.isArray(stories) && stories.length > 0
+      ? `/deliver ${stories.map((s) => s.id).join(' ')}`
+      : '/deliver <storyId> [<storyId> ...]';
 
   return [
-    `### 📋 Plan Summary — Epic #${epicId} is \`agent::ready\``,
+    `### 📋 Plan Summary — Story #${epicId} is \`agent::ready\``,
     '',
-    headLine,
-    ...amendLines,
-    `- Risk: ${planningRisk?.overallLevel ?? 'unknown'} · ${planningRisk?.gateDecision ?? 'unknown'} (review routing: ${reviewRouting?.decision ?? 'unknown'}).`,
+    `- ${ticketCount} Story ticket(s) persisted: ${storyList}.`,
+    ...reviewLines,
     freshnessLine,
     healthcheckLine,
-    // G2 measurement receipt (Epic #4474 PR1/PR7): the plan-CLI invocation
-    // ledger roll-up (turns-per-plan proxy, per-mode counts, critic skips)
-    // rides the summary comment so the cohort reader never has to pull the
-    // temp ledger off the runner's disk. Omitted when the ledger is empty.
     ...(typeof planMetricsLine === 'string' && planMetricsLine.length > 0
       ? [`- ${planMetricsLine}`]
       : []),
     '',
-    ...tail,
+    '#### Delivery order (`depends_on`)',
+    '',
+    ...renderWaveTableLines(waveTable),
+    '',
+    `_Deliver with \`${deliverCommand}\` — \`/deliver\` resolves the dependency graph from live state, so edges may point at Stories from earlier plan runs._`,
   ].join('\n');
 }

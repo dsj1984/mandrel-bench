@@ -6,23 +6,16 @@
  * finishes its work without a confirmed merge. Pattern mirrors
  * `emit-story-heartbeat.js`: direct schema validation via Ajv followed by
  * a synchronous `appendFileSync` — this event is NOT routed through the
- * bus (unlike `emit-loop-tick.js`) because it can fire from either the
- * epic-path finalize flow (which already owns an Epic-scoped bus
- * instance for its own run) or the standalone `single-story-close` flow,
- * which has no bus at all. A bare append keeps both call sites simple
- * and dependency-free.
+ * bus (unlike `emit-loop-tick.js`) because it fires from the standalone
+ * `single-story-close` flow, which has no bus at all. A bare append keeps
+ * the call site simple and dependency-free.
  *
- * Ledger destination is scope-driven (Story #4426 AC4):
- *   - `scope: 'epic'`  → `epicLedgerPath(ticketId)` — the same
- *     `temp/epic-<id>/lifecycle.ndjson` every other Epic-scoped event
- *     lands in. `ticketId` is the epicId.
- *   - `scope: 'story'` → `storyLedgerPath(null, ticketId)` — the
- *     standalone story-scope destination
- *     `temp/standalone/stories/story-<id>/lifecycle.ndjson`. `ticketId`
- *     is the storyId. The standalone `single-story-close` path has no
- *     parent Epic to anchor a `temp/epic-<id>/` directory to, mirroring
- *     the `eid === null` standalone convention `signalsFile` already
- *     uses for Story-level signals.
+ * Ledger destination (Story #4426 AC4): `storyLedgerPath(null, ticketId)`
+ * — the standalone story-scope destination
+ * `temp/standalone/stories/story-<id>/lifecycle.ndjson`, where `ticketId`
+ * is the storyId. The `single-story-close` path has no parent Epic to
+ * anchor a run directory to, mirroring the `eid === null` standalone
+ * convention `signalsFile` already uses for Story-level signals.
  *
  * A caller may always override the destination via `ledgerPath` (tests,
  * or a future caller with a non-default temp layout).
@@ -57,50 +50,20 @@
  * `predicate-refused` / a classified arm failure directly.
  */
 
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-import Ajv2020 from 'ajv/dist/2020.js';
-import addFormats from 'ajv-formats';
-
-import { epicLedgerPath, storyLedgerPath } from '../../config/temp-paths.js';
 import { isValidBlockClass } from '../merge-block-class.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SCHEMA_PATH = path.resolve(
-  __dirname,
-  '..',
-  '..',
-  '..',
-  '..',
-  'schemas',
-  'lifecycle',
-  'merge.unlanded.schema.json',
-);
-
-const VALID_SCOPES = new Set(['epic', 'story']);
-
-let _validator;
-
-function getValidator() {
-  if (_validator) return _validator;
-  const schema = JSON.parse(readFileSync(SCHEMA_PATH, 'utf8'));
-  const ajv = new Ajv2020({ allErrors: true, strict: false });
-  addFormats(ajv);
-  _validator = ajv.compile(schema);
-  return _validator;
-}
+import {
+  appendLedgerEvent,
+  assertMergeTerminalFields,
+} from './emit-ledger-event.js';
 
 /**
  * Append exactly one `merge.unlanded` NDJSON record to the resolved
  * lifecycle ledger.
  *
  * @param {object} opts
- * @param {'epic'|'story'} opts.scope  Which delivery path is reporting the
+ * @param {'story'} opts.scope         Which delivery path is reporting the
  *                                     unlanded merge.
- * @param {number} opts.ticketId       epicId when `scope === 'epic'`,
- *                                     storyId when `scope === 'story'`.
+ * @param {number} opts.ticketId       The storyId.
  * @param {number} opts.prNumber       The PR number that did not land.
  * @param {string} opts.blockClass     A valid `merge.unlanded` attribution
  *                                     (`MERGE_UNLANDED_BLOCK_CLASSES` in
@@ -130,64 +93,35 @@ export function emitMergeUnlanded(opts) {
     ledgerPath: ledgerPathOverride,
   } = opts ?? {};
 
-  if (!VALID_SCOPES.has(scope)) {
-    throw new Error(
-      `emitMergeUnlanded: scope "${scope}" must be one of: ${[...VALID_SCOPES].join(', ')}`,
-    );
-  }
-  if (!Number.isInteger(ticketId) || ticketId < 1) {
-    throw new Error('emitMergeUnlanded: ticketId must be a positive integer');
-  }
-  if (!Number.isInteger(prNumber) || prNumber < 1) {
-    throw new Error('emitMergeUnlanded: prNumber must be a positive integer');
-  }
+  assertMergeTerminalFields('emitMergeUnlanded', {
+    scope,
+    ticketId,
+    prNumber,
+    reason,
+    elapsedSeconds,
+  });
   if (!isValidBlockClass(blockClass)) {
     throw new Error(
       `emitMergeUnlanded: blockClass "${blockClass}" is not a recognised merge-block-class value`,
     );
   }
-  if (typeof reason !== 'string' || reason.length === 0) {
-    throw new Error('emitMergeUnlanded: reason must be a non-empty string');
-  }
-  if (typeof elapsedSeconds !== 'number' || elapsedSeconds < 0) {
-    throw new Error(
-      'emitMergeUnlanded: elapsedSeconds must be a non-negative number',
-    );
-  }
 
-  const payload = {
-    event: 'merge.unlanded',
-    scope,
+  return appendLedgerEvent({
+    emitter: 'emitMergeUnlanded',
+    schemaFile: 'merge.unlanded.schema.json',
+    payload: {
+      event: 'merge.unlanded',
+      scope,
+      ticketId,
+      prNumber,
+      blockClass,
+      reason,
+      elapsedSeconds,
+      timestamp,
+    },
     ticketId,
-    prNumber,
-    blockClass,
-    reason,
-    elapsedSeconds,
     timestamp,
-  };
-
-  const validator = getValidator();
-  if (!validator(payload)) {
-    const detail = (validator.errors ?? [])
-      .map((e) => `${e.instancePath || '/'} ${e.message}`)
-      .join('; ');
-    throw new Error(
-      `emitMergeUnlanded: payload failed schema validation: ${detail}`,
-    );
-  }
-
-  const ledgerPath =
-    ledgerPathOverride ??
-    (scope === 'epic'
-      ? epicLedgerPath(ticketId, config)
-      : storyLedgerPath(null, ticketId, config));
-  mkdirSync(path.dirname(ledgerPath), { recursive: true });
-  const record = {
-    kind: 'emitted',
-    ts: timestamp,
-    event: 'merge.unlanded',
-    payload,
-  };
-  appendFileSync(ledgerPath, `${JSON.stringify(record)}\n`, 'utf8');
-  return { ledgerPath, record };
+    config,
+    ledgerPath: ledgerPathOverride,
+  });
 }

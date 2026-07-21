@@ -20,8 +20,8 @@ them in one assistant turn rather than serially. The host runtime executes
 the batch in parallel; serial calls cost N round-trips for no gain.
 
 - **Tool primitives:** `Read`, `Grep`, `Glob`, MCP `list_*` / `get_*` calls.
-- **When:** reading the Epic body (with its folded Tech Spec sections)
-  and Story body up front; grepping
+- **When:** reading the Story body (with its inline `## Spec`)
+  up front; grepping
   for multiple unrelated patterns; globbing several directory trees;
   fetching independent GitHub tickets.
 - **Anti-pattern:** sequential `Read` → wait → `Read` → wait → `Grep` chains
@@ -42,7 +42,7 @@ the full duration and blocks every other parallel opportunity.
   fetches, anything you would have prefixed with `nohup` in a terminal.
 - **Anti-pattern:** synchronous `Bash` with a 600 000 ms timeout used as a
   blocker — that pattern is reserved for scripts whose exit is the
-  signal-to-proceed (e.g., `story-init.js`'s per-tree install, which the
+  signal-to-proceed (e.g., `single-story-init.js`'s per-tree install, which the
   parent skill calls out explicitly).
 - **Don't poll with `sleep`:** `Monitor` returns on each stdout line. Loop
   on `until <condition>; do sleep 2; done` only when no event stream is

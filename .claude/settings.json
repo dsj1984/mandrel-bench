@@ -24,7 +24,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node bin/mandrel.js sync-commands"
+            "command": "node .agents/scripts/sync-claude-commands.js"
           }
         ]
       }
