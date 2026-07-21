@@ -139,6 +139,11 @@ export function computeQuality(input = {}) {
       frozenSuitePassed: 0,
       frozenSuiteTotal: 0,
       acceptanceEvalScore: null,
+      guardrail: computeGuardrail(
+        null,
+        input.guardrailThreshold,
+        DEFAULT_QUALITY_GUARDRAIL_THRESHOLD,
+      ),
     };
   }
   const passed = nonNegInt(input.frozenSuitePassed);
@@ -161,12 +166,18 @@ export function computeQuality(input = {}) {
       QUALITY_WEIGHTS.judge * acceptanceEvalScore;
   }
 
+  const finalScore = clamp(score);
   return {
-    score: clamp(score),
+    score: finalScore,
     frozenSuitePassRate: passRate,
     frozenSuitePassed: passed,
     frozenSuiteTotal: total,
     acceptanceEvalScore,
+    guardrail: computeGuardrail(
+      finalScore,
+      input.guardrailThreshold,
+      DEFAULT_QUALITY_GUARDRAIL_THRESHOLD,
+    ),
   };
 }
 
@@ -328,6 +339,42 @@ export function computePlanningFidelity(input = {}) {
 export const DEFAULT_AUTONOMY_GUARDRAIL_THRESHOLD = 0.99;
 
 /**
+ * Default cohort guardrail thresholds for the SATURATED value dimensions
+ * (Story #157). Quality, maintainability, and security are demoted from
+ * reported mandrel-vs-control deltas to pass/fail GUARDRAIL gates: both arms
+ * score at ceiling on the current corpus, so their deltas are noise reported
+ * as measurement. A gate against a fixed threshold restores a meaningful
+ * signal — a drop below it is itself a finding — and their numeric deltas move
+ * to the report appendix rather than the headline scorecard. These stay
+ * demoted until a weak-model calibration probe demonstrates dynamic range.
+ */
+export const DEFAULT_QUALITY_GUARDRAIL_THRESHOLD = 0.9;
+export const DEFAULT_MAINTAINABILITY_GUARDRAIL_THRESHOLD = 0.9;
+export const DEFAULT_SECURITY_GUARDRAIL_THRESHOLD = 0.9;
+
+/**
+ * Evaluate a pass/fail GUARDRAIL verdict — is this run's (or cohort's) score
+ * at/above the fixed cohort threshold the dimension is gated on? The single
+ * shared primitive behind every guardrail dimension (autonomy, and — Story
+ * #157 — the demoted saturated dimensions quality / maintainability /
+ * security). Unlike a mandrel-vs-control DELTA, this is a gate against a fixed
+ * threshold: a drop below it is itself a finding, not a comparison point.
+ *
+ * @param {number|null} score      Score in [0,1], or null (unmeasured).
+ * @param {number} threshold       Requested threshold.
+ * @param {number} fallback        Threshold used when `threshold` is non-finite.
+ * @returns {{ threshold: number, met: boolean|null }}  `met` is null when the
+ *   score itself is unmeasured — an undetermined guardrail is never reported
+ *   as a pass or a fail.
+ */
+export function computeGuardrail(score, threshold, fallback) {
+  const t = finiteOr(threshold, fallback);
+  const met =
+    typeof score === 'number' && Number.isFinite(score) ? score >= t : null;
+  return { threshold: t, met };
+}
+
+/**
  * Evaluate the autonomy guardrail verdict — is this run's (or cohort's)
  * autonomy score at/above the threshold a fully-unattended pipeline is
  * expected to clear? Unlike the retired mandrel-vs-control autonomy DELTA
@@ -345,10 +392,11 @@ export function computeAutonomyGuardrail(
   score,
   threshold = DEFAULT_AUTONOMY_GUARDRAIL_THRESHOLD,
 ) {
-  const t = finiteOr(threshold, DEFAULT_AUTONOMY_GUARDRAIL_THRESHOLD);
-  const met =
-    typeof score === 'number' && Number.isFinite(score) ? score >= t : null;
-  return { threshold: t, met };
+  return computeGuardrail(
+    score,
+    threshold,
+    DEFAULT_AUTONOMY_GUARDRAIL_THRESHOLD,
+  );
 }
 
 /**
@@ -497,6 +545,11 @@ export function computeMaintainability(input = {}) {
       maintainabilityIndex: null,
       maintainabilityJudgeScore: null,
       warnings: [],
+      guardrail: computeGuardrail(
+        null,
+        input.guardrailThreshold,
+        DEFAULT_MAINTAINABILITY_GUARDRAIL_THRESHOLD,
+      ),
     };
   }
   const lintWarnings = nonNegInt(input.lintWarnings);
@@ -547,13 +600,19 @@ export function computeMaintainability(input = {}) {
       MAINTAINABILITY_WEIGHTS.judge * maintainabilityJudgeScore;
   }
 
+  const finalScore = clamp(score);
   return {
-    score: clamp(score),
+    score: finalScore,
     lintWarnings,
     complexityScore,
     maintainabilityIndex,
     maintainabilityJudgeScore,
     warnings,
+    guardrail: computeGuardrail(
+      finalScore,
+      input.guardrailThreshold,
+      DEFAULT_MAINTAINABILITY_GUARDRAIL_THRESHOLD,
+    ),
   };
 }
 
@@ -608,6 +667,11 @@ export function computeSecurity(input = {}) {
       secretsDetected: false,
       securityJudgeScore: null,
       warnings: [],
+      guardrail: computeGuardrail(
+        null,
+        input.guardrailThreshold,
+        DEFAULT_SECURITY_GUARDRAIL_THRESHOLD,
+      ),
     };
   }
   const criticalFindings = nonNegInt(input.criticalFindings);
@@ -639,13 +703,19 @@ export function computeSecurity(input = {}) {
       SECURITY_WEIGHTS.judge * securityJudgeScore;
   }
 
+  const finalScore = clamp(score);
   return {
-    score: clamp(score),
+    score: finalScore,
     criticalFindings,
     highFindings,
     secretsDetected,
     securityJudgeScore,
     warnings,
+    guardrail: computeGuardrail(
+      finalScore,
+      input.guardrailThreshold,
+      DEFAULT_SECURITY_GUARDRAIL_THRESHOLD,
+    ),
   };
 }
 

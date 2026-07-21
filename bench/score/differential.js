@@ -126,6 +126,216 @@ function bandOrNull(values, method) {
 }
 
 /**
+ * Default accessor for a scorecard's shared per-run SEED SHA — the key that
+ * makes the mandrel arm's run and the control arm's run of the same replicate
+ * a MATCHED PAIR (both arms of a cell run the same seed by construction).
+ * Returns null when the scorecard carries no usable seed SHA, so such a run is
+ * dropped from the paired set and counted as `unpaired` rather than silently
+ * mis-paired on array position.
+ *
+ * @param {object} sc  One scorecard.
+ * @returns {string|null}
+ */
+export function defaultSeedAccessor(sc) {
+  const s = sc?.seedSha;
+  return typeof s === 'string' && s.length > 0 ? s : null;
+}
+
+/**
+ * Pair the mandrel and control arms of ONE cell by their shared SEED SHA —
+ * never by array position. Both arms of a cell run the same per-replicate seed,
+ * so run *i* of one arm and run *i* of the other are a matched pair only insofar
+ * as they share a seed SHA. Grouping by that key is order-independent (two arms
+ * whose runs are stored in different orders pair identically) and correct under
+ * a resumed cohort that leaves the arms with different run counts or orders —
+ * exactly the condition index alignment silently mispairs.
+ *
+ * A run whose seed SHA has no counterpart in the other arm, or that carries no
+ * seed SHA at all, is dropped from the paired set and counted in the reported
+ * `unpaired` tally so a shrinking pair count is visible rather than silent.
+ * Duplicate seed SHAs within one arm are zipped in order against the other
+ * arm's runs for the same seed, with any excess counted as unpaired.
+ *
+ * @param {Array<object>} mandrelRuns
+ * @param {Array<object>} controlRuns
+ * @param {(sc: object) => string|null} [seedAccessor=defaultSeedAccessor]
+ * @returns {{
+ *   pairs: Array<{ seedSha: string, mandrel: object, control: object }>,
+ *   unpaired: { mandrel: number, control: number }
+ * }}
+ */
+export function pairRunsBySeed(
+  mandrelRuns,
+  controlRuns,
+  seedAccessor = defaultSeedAccessor,
+) {
+  const group = (runs) => {
+    const bySeed = new Map();
+    let noSeed = 0;
+    for (const sc of runs ?? []) {
+      const seed = seedAccessor(sc);
+      if (seed === null || seed === undefined || seed === '') {
+        noSeed += 1;
+        continue;
+      }
+      if (!bySeed.has(seed)) bySeed.set(seed, []);
+      bySeed.get(seed).push(sc);
+    }
+    return { bySeed, noSeed };
+  };
+
+  const m = group(mandrelRuns);
+  const c = group(controlRuns);
+
+  const pairs = [];
+  let mUnpaired = m.noSeed;
+  let cUnpaired = c.noSeed;
+
+  // Sorted seed union keeps pairing deterministic regardless of arm order.
+  const seeds = [...new Set([...m.bySeed.keys(), ...c.bySeed.keys()])].sort();
+  for (const seed of seeds) {
+    const mList = m.bySeed.get(seed) ?? [];
+    const cList = c.bySeed.get(seed) ?? [];
+    const pairedCount = Math.min(mList.length, cList.length);
+    for (let i = 0; i < pairedCount; i += 1) {
+      pairs.push({ seedSha: seed, mandrel: mList[i], control: cList[i] });
+    }
+    mUnpaired += mList.length - pairedCount;
+    cUnpaired += cList.length - pairedCount;
+  }
+
+  return { pairs, unpaired: { mandrel: mUnpaired, control: cUnpaired } };
+}
+
+/**
+ * Band a PAIRED difference distribution for one metric and derive its verdict
+ * from whether the band EXCLUDES ZERO — the paired analogue of the pooled
+ * real-delta rule. A paired difference band that excludes zero is a real
+ * difference; one straddling zero is within noise.
+ *
+ * @param {string} name
+ * @param {Array<number>} diffs  Per-pair differences (mandrel − control).
+ * @param {'iqr'|'ci'} method
+ * @returns {{
+ *   metric: string,
+ *   comparable: boolean,
+ *   n: number,
+ *   delta: number|null,
+ *   diffBand: object|null,
+ *   excludesZero: boolean,
+ *   verdict: 'real'|'within-noise'|'incomparable'
+ * }}
+ */
+function pairedCompare(name, diffs, method) {
+  const band = bandOrNull(diffs, method);
+  if (band === null) {
+    return {
+      metric: name,
+      comparable: false,
+      n: diffs.length,
+      delta: null,
+      diffBand: null,
+      excludesZero: false,
+      verdict: 'incomparable',
+    };
+  }
+  const excludesZero = band.low > 0 || band.high < 0;
+  return {
+    metric: name,
+    comparable: true,
+    n: diffs.length,
+    delta: band.center,
+    diffBand: band,
+    excludesZero,
+    verdict: excludesZero ? 'real' : 'within-noise',
+  };
+}
+
+/**
+ * Compute the SEED-PAIRED differential for ONE scenario cell: for each scalar
+ * dimension and efficiency component, the per-pair difference distribution
+ * d_i = mandrel_i − control_i over seed-matched pairs, banded and verdicted by
+ * whether the band excludes zero. At fixed N the paired block recovers roughly
+ * the statistical power the pooled per-arm bands discard, because both arms of a
+ * pair share the seed's difficulty draw (Story #157).
+ *
+ * Additive to — never a replacement for — the pooled bands in
+ * {@link computeDifferential}: the paired result leads the report, the pooled
+ * bands remain so stored prior-cohort scorecards still render.
+ *
+ * @param {object} args
+ * @param {Array<object>} args.mandrelRuns
+ * @param {Array<object>} args.controlRuns
+ * @param {'iqr'|'ci'} [args.method='iqr']
+ * @param {string} [args.scenario]
+ * @param {(sc: object) => string|null} [args.seedAccessor=defaultSeedAccessor]
+ * @returns {{
+ *   scenario: string|undefined,
+ *   method: 'iqr'|'ci',
+ *   pairs: number,
+ *   unpaired: { mandrel: number, control: number },
+ *   dimensions: Record<string, object>,
+ *   efficiency: Record<string, object>
+ * }}
+ */
+export function computePairedDifferential({
+  mandrelRuns,
+  controlRuns,
+  method = 'iqr',
+  scenario,
+  seedAccessor = defaultSeedAccessor,
+}) {
+  if (!Array.isArray(mandrelRuns) || !Array.isArray(controlRuns)) {
+    throw new TypeError(
+      'computePairedDifferential: mandrelRuns and controlRuns must be arrays',
+    );
+  }
+  const { pairs, unpaired } = pairRunsBySeed(
+    mandrelRuns,
+    controlRuns,
+    seedAccessor,
+  );
+  const diffsFor = (accessor) => {
+    const out = [];
+    for (const p of pairs) {
+      const mv = accessor(p.mandrel?.dimensions);
+      const cv = accessor(p.control?.dimensions);
+      if (
+        typeof mv === 'number' &&
+        Number.isFinite(mv) &&
+        typeof cv === 'number' &&
+        Number.isFinite(cv)
+      ) {
+        out.push(mv - cv);
+      }
+    }
+    return out;
+  };
+
+  const dimensions = {};
+  for (const { name, accessor } of SCALAR_DIMENSIONS) {
+    dimensions[name] = pairedCompare(name, diffsFor(accessor), method);
+  }
+  const efficiency = {};
+  for (const { name, accessor } of EFFICIENCY_COMPONENTS) {
+    efficiency[name] = pairedCompare(
+      `efficiency.${name}`,
+      diffsFor(accessor),
+      method,
+    );
+  }
+
+  return {
+    scenario,
+    method,
+    pairs: pairs.length,
+    unpaired,
+    dimensions,
+    efficiency,
+  };
+}
+
+/**
  * Apply the binding real-delta rule to two arms' bands for one metric.
  *
  *   deltaIsReal = |centerMandrel − centerControl| > max(spreadMandrel, spreadControl)
@@ -191,12 +401,16 @@ function compareBands({ name, mandrelBand, controlBand }) {
  * @param {Array<object>} args.controlRuns  Scorecards for the control arm.
  * @param {'iqr'|'ci'} [args.method='iqr']  Band method passed to noiseBand.
  * @param {string} [args.scenario]          Optional scenario id for labelling.
+ * @param {(sc: object) => string|null} [args.seedAccessor=defaultSeedAccessor]
+ *   Seed-SHA accessor for the additive paired block.
  * @returns {{
  *   scenario: string|undefined,
  *   method: 'iqr'|'ci',
  *   n: { mandrel: number, control: number },
+ *   unpaired: { mandrel: number, control: number },
  *   dimensions: Record<string, object>,
- *   efficiency: Record<string, object>
+ *   efficiency: Record<string, object>,
+ *   paired: ReturnType<typeof computePairedDifferential>
  * }}
  */
 export function computeDifferential({
@@ -204,6 +418,7 @@ export function computeDifferential({
   controlRuns,
   method = 'iqr',
   scenario,
+  seedAccessor = defaultSeedAccessor,
 }) {
   if (!Array.isArray(mandrelRuns) || !Array.isArray(controlRuns)) {
     throw new TypeError(
@@ -229,12 +444,25 @@ export function computeDifferential({
     });
   }
 
+  // Seed-paired block (Story #157) — additive. The pooled per-arm bands above
+  // stay in the output so stored prior-cohort scorecards still render; the
+  // paired block recovers the blocking power the pooled comparison discards.
+  const paired = computePairedDifferential({
+    mandrelRuns,
+    controlRuns,
+    method,
+    scenario,
+    seedAccessor,
+  });
+
   return {
     scenario,
     method,
     n: { mandrel: mandrelRuns.length, control: controlRuns.length },
+    unpaired: paired.unpaired,
     dimensions,
     efficiency,
+    paired,
   };
 }
 
@@ -741,9 +969,11 @@ export function difficultyMonotonicity({ cells, method = 'iqr' }) {
  *                        − center(costUsd,     hello-world, control)
  *
  * Computed on the band centers (so it inherits the distribution method) AND
- * reported with its own band derived from the per-run differences (paired
- * across the run index, which is what the README's "reported with its own band
- * derived from the per-run differences" calls for).
+ * reported with its own band derived from the per-run differences over
+ * SEED-MATCHED pairs (Story #157) — the same seed-keyed pairing the paired
+ * differential uses, so the floor's band no longer index-aligns over the
+ * shorter arm and no longer mispairs a resumed cohort whose arms drifted out of
+ * order. Runs with no seed counterpart drop out and surface in `unpaired`.
  *
  * A large floor with NO corresponding `quality.score` gain on `hello-world` is
  * the canonical evidence for the report's "ceremony-lite path for trivial
@@ -755,12 +985,14 @@ export function difficultyMonotonicity({ cells, method = 'iqr' }) {
  * @param {'iqr'|'ci'} [args.method='iqr']
  * @param {number} [args.qualityGainEpsilon=0.05]  A Mandrel quality center
  *   that exceeds control by less than this is treated as "no quality gain".
+ * @param {(sc: object) => string|null} [args.seedAccessor=defaultSeedAccessor]
  * @returns {{
  *   scenario: 'hello-world',
  *   overheadFloorTokens: number|null,
  *   overheadFloorUsd: number|null,
  *   tokenDiffBand: object|null,
  *   usdDiffBand: object|null,
+ *   unpaired: { mandrel: number, control: number },
  *   qualityGain: number|null,
  *   noQualityGain: boolean,
  *   recommendCeremonyLite: boolean
@@ -771,6 +1003,7 @@ export function overheadFloor({
   controlRuns,
   method = 'iqr',
   qualityGainEpsilon = 0.05,
+  seedAccessor = defaultSeedAccessor,
 }) {
   if (!Array.isArray(mandrelRuns) || !Array.isArray(controlRuns)) {
     throw new TypeError(
@@ -794,19 +1027,23 @@ export function overheadFloor({
   const overheadFloorUsd =
     mandrelUsd !== null && controlUsd !== null ? mandrelUsd - controlUsd : null;
 
-  // Per-run paired differences (index-aligned over the shorter arm) give the
-  // floor its own band.
-  const pairCount = Math.min(mandrelRuns.length, controlRuns.length);
+  // Per-run paired differences over SEED-MATCHED pairs give the floor its own
+  // band — the generalized seed-keyed pairing, not index alignment.
+  const { pairs, unpaired } = pairRunsBySeed(
+    mandrelRuns,
+    controlRuns,
+    seedAccessor,
+  );
   const tokenDiffs = [];
   const usdDiffs = [];
-  for (let i = 0; i < pairCount; i += 1) {
-    const mt = tokenAccessor(mandrelRuns[i]?.dimensions);
-    const ct = tokenAccessor(controlRuns[i]?.dimensions);
+  for (const p of pairs) {
+    const mt = tokenAccessor(p.mandrel?.dimensions);
+    const ct = tokenAccessor(p.control?.dimensions);
     if (typeof mt === 'number' && typeof ct === 'number') {
       tokenDiffs.push(mt - ct);
     }
-    const mu = usdAccessor(mandrelRuns[i]?.dimensions);
-    const cu = usdAccessor(controlRuns[i]?.dimensions);
+    const mu = usdAccessor(p.mandrel?.dimensions);
+    const cu = usdAccessor(p.control?.dimensions);
     if (typeof mu === 'number' && typeof cu === 'number') {
       usdDiffs.push(mu - cu);
     }
@@ -834,6 +1071,7 @@ export function overheadFloor({
     overheadFloorUsd,
     tokenDiffBand,
     usdDiffBand,
+    unpaired,
     qualityGain,
     noQualityGain,
     recommendCeremonyLite,
@@ -860,7 +1098,7 @@ export function overheadFloor({
  *   overheadFloor: ReturnType<typeof overheadFloor>|null
  * }}
  */
-export function scoreCorpus({ cells, method = 'iqr' }) {
+export function scoreCorpus({ cells, method = 'iqr', seedAccessor }) {
   if (!Array.isArray(cells)) {
     throw new TypeError('scoreCorpus: cells must be an array');
   }
@@ -871,6 +1109,7 @@ export function scoreCorpus({ cells, method = 'iqr' }) {
       mandrelRuns: c.mandrelRuns ?? [],
       controlRuns: c.controlRuns ?? [],
       method,
+      seedAccessor,
     }),
   );
 
@@ -889,6 +1128,7 @@ export function scoreCorpus({ cells, method = 'iqr' }) {
         mandrelRuns: floorCell.mandrelRuns ?? [],
         controlRuns: floorCell.controlRuns ?? [],
         method,
+        seedAccessor,
       })
     : null;
 

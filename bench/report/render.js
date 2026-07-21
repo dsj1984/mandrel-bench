@@ -67,6 +67,21 @@ const DIMENSION_LABELS = Object.freeze({
 });
 
 /**
+ * The saturated value dimensions DEMOTED from headline mandrel-vs-control
+ * deltas to pass/fail guardrail gates (Story #157). Both arms score at ceiling
+ * on the current corpus, so a reported delta is noise dressed as measurement.
+ * The headline scorecard carries no numeric delta for them — a guardrail
+ * verdict stands in — and their numeric deltas move to the report appendix.
+ * They stay demoted until a weak-model calibration probe demonstrates dynamic
+ * range (out of scope here).
+ */
+const DEMOTED_GUARDRAIL_DIMENSIONS = Object.freeze([
+  'quality',
+  'maintainability',
+  'security',
+]);
+
+/**
  * Round a finite number to a fixed precision for display, leaving non-finite /
  * null values as an em-dash. Never throws.
  *
@@ -236,6 +251,10 @@ function renderHeader(cohort, method) {
 export function dimensionRows(cell, diff, method) {
   const rows = [];
   for (const { name, accessor } of SCALAR_DIMENSIONS) {
+    // Saturated dimensions are demoted to guardrail gates (Story #157): their
+    // numeric delta never appears in the headline scorecard — see the guardrail
+    // section and the appendix.
+    if (DEMOTED_GUARDRAIL_DIMENSIONS.includes(name)) continue;
     const cmp = diff.dimensions[name];
     rows.push({
       metric: name,
@@ -259,6 +278,158 @@ export function dimensionRows(cell, diff, method) {
       noiseFloor: cmp?.noiseFloor ?? null,
       verdict: cmp?.verdict ?? 'incomparable',
     });
+  }
+  return rows;
+}
+
+/**
+ * Build the SEED-PAIRED difference rows for one scenario cell's headline
+ * (Story #157): the per-pair difference band for each NON-demoted scalar
+ * dimension and every efficiency component, read straight off the paired block
+ * the scoring slice computed. The demoted saturated dimensions are excluded
+ * from the headline exactly as `dimensionRows` excludes them; their paired
+ * deltas live in the appendix.
+ *
+ * @param {ReturnType<typeof import('../score/differential.js').computeDifferential>} diff
+ * @returns {Array<{
+ *   metric: string,
+ *   label: string,
+ *   diffBand: object|null,
+ *   delta: number|null,
+ *   n: number,
+ *   verdict: 'real'|'within-noise'|'incomparable'
+ * }>}
+ */
+export function pairedRows(diff) {
+  const rows = [];
+  const pick = (metric, cmp) => ({
+    metric,
+    label: DIMENSION_LABELS[metric] ?? metric,
+    diffBand: cmp?.diffBand ?? null,
+    delta: cmp?.delta ?? null,
+    n: cmp?.n ?? 0,
+    verdict: cmp?.verdict ?? 'incomparable',
+  });
+  for (const { name } of SCALAR_DIMENSIONS) {
+    if (DEMOTED_GUARDRAIL_DIMENSIONS.includes(name)) continue;
+    rows.push(pick(name, diff?.paired?.dimensions?.[name]));
+  }
+  for (const { name } of EFFICIENCY_COMPONENTS) {
+    const key = `efficiency.${name}`;
+    rows.push(pick(key, diff?.paired?.efficiency?.[name]));
+  }
+  return rows;
+}
+
+/**
+ * Build the APPENDIX delta rows for one scenario cell — the pooled per-arm
+ * bands AND paired difference for the DEMOTED saturated dimensions
+ * (quality / maintainability / security). These carry no headline delta any
+ * longer (they are guardrail gates); their numeric deltas are preserved here so
+ * the signal is auditable without cluttering the headline scorecard
+ * (Story #157).
+ *
+ * @param {object} cell
+ * @param {ReturnType<typeof import('../score/differential.js').computeDifferential>} diff
+ * @param {'iqr'|'ci'} method
+ * @returns {Array<{
+ *   metric: string,
+ *   label: string,
+ *   mandrelBand: object|null,
+ *   controlBand: object|null,
+ *   delta: number|null,
+ *   noiseFloor: number|null,
+ *   verdict: string,
+ *   pairedDelta: number|null,
+ *   pairedVerdict: string
+ * }>}
+ */
+export function appendixDimensionRows(cell, diff, method) {
+  const rows = [];
+  for (const { name, accessor } of SCALAR_DIMENSIONS) {
+    if (!DEMOTED_GUARDRAIL_DIMENSIONS.includes(name)) continue;
+    const cmp = diff?.dimensions?.[name];
+    const paired = diff?.paired?.dimensions?.[name];
+    rows.push({
+      metric: name,
+      label: DIMENSION_LABELS[name] ?? name,
+      mandrelBand: armBand(cell.mandrelRuns, accessor, method),
+      controlBand: armBand(cell.controlRuns, accessor, method),
+      delta: cmp?.delta ?? null,
+      noiseFloor: cmp?.noiseFloor ?? null,
+      verdict: cmp?.verdict ?? 'incomparable',
+      pairedDelta: paired?.delta ?? null,
+      pairedVerdict: paired?.verdict ?? 'incomparable',
+    });
+  }
+  return rows;
+}
+
+/**
+ * Build the SATURATED-dimension guardrail rows (Story #157): per scenario × per
+ * demoted dimension, how many mandrel-arm and control-arm runs met / dropped
+ * below / left unmeasured the guardrail threshold the score is gated on. Mirrors
+ * `autonomyGuardrailRows`, but reports BOTH arms because these dimensions are
+ * scored on both. A (scenario, dimension) with no measured guardrail on either
+ * arm — the legacy corpora that predate the guardrail — is skipped rather than
+ * rendered as an all-unmeasured row.
+ *
+ * @param {Array<object>} cells  `groupCells` entries.
+ * @returns {Array<{
+ *   scenario: string,
+ *   dimension: string,
+ *   threshold: number|null,
+ *   mandrel: { met: number, dropped: number, unmeasured: number },
+ *   control: { met: number, dropped: number, unmeasured: number }
+ * }>}
+ */
+export function saturatedGuardrailRows(cells) {
+  const rows = [];
+  const stat = (runs, dim) => {
+    let met = 0;
+    let dropped = 0;
+    let unmeasured = 0;
+    let threshold = null;
+    for (const sc of runs ?? []) {
+      const g = sc?.dimensions?.[dim]?.guardrail;
+      if (!g || g.met === null || g.met === undefined) {
+        unmeasured += 1;
+        continue;
+      }
+      threshold = typeof g.threshold === 'number' ? g.threshold : threshold;
+      if (g.met === true) met += 1;
+      else dropped += 1;
+    }
+    return { met, dropped, unmeasured, threshold };
+  };
+  for (const cell of cells) {
+    for (const dim of DEMOTED_GUARDRAIL_DIMENSIONS) {
+      const mandrel = stat(cell.mandrelRuns, dim);
+      const control = stat(cell.controlRuns, dim);
+      // Skip when neither arm had a single MEASURED guardrail verdict (legacy
+      // corpora without a guardrail block, or a wholly-unmeasured cell).
+      if (
+        mandrel.met + mandrel.dropped === 0 &&
+        control.met + control.dropped === 0
+      ) {
+        continue;
+      }
+      rows.push({
+        scenario: cell.scenario,
+        dimension: dim,
+        threshold: mandrel.threshold ?? control.threshold ?? null,
+        mandrel: {
+          met: mandrel.met,
+          dropped: mandrel.dropped,
+          unmeasured: mandrel.unmeasured,
+        },
+        control: {
+          met: control.met,
+          dropped: control.dropped,
+          unmeasured: control.unmeasured,
+        },
+      });
+    }
   }
   return rows;
 }
@@ -1130,6 +1301,129 @@ export function renderAttributionSection(cells) {
   return lines.join('\n');
 }
 
+/**
+ * Render the saturated-dimension guardrail section (Story #157): quality,
+ * maintainability, and security are pass/fail GATES against a cohort threshold,
+ * not mandrel-vs-control deltas — both arms sit at ceiling, so a delta is noise.
+ * A drop below threshold on either arm is itself a finding.
+ *
+ * @param {Array<object>} cells
+ * @returns {string}
+ */
+export function renderSaturatedGuardrailSection(cells) {
+  const rows = saturatedGuardrailRows(cells);
+  const lines = [
+    '## Saturated-dimension guardrails (quality · maintainability · security)',
+    '',
+    'These value dimensions are SATURATED — both arms score at ceiling on the',
+    'current corpus — so they are reported as pass/fail GUARDRAILS against a',
+    'fixed cohort threshold rather than as mandrel-vs-control deltas (Story',
+    '#157). A delta here would be noise dressed as measurement. Their numeric',
+    'deltas are preserved in the appendix. A drop below threshold is itself a',
+    'finding. They stay demoted until a weak-model calibration probe',
+    'demonstrates dynamic range.',
+    '',
+  ];
+  if (rows.length === 0) {
+    lines.push('No guardrail-scored runs to evaluate.');
+    return lines.join('\n');
+  }
+  lines.push(
+    '| Scenario | Dimension | Threshold | Mandrel (met/dropped/unmeasured) | Control (met/dropped/unmeasured) |',
+    '| --- | --- | --- | --- | --- |',
+  );
+  for (const r of rows) {
+    lines.push(
+      `| \`${r.scenario}\` | ${DIMENSION_LABELS[r.dimension] ?? r.dimension} | ${fmt(r.threshold, 2)} | ${r.mandrel.met}/${r.mandrel.dropped}/${r.mandrel.unmeasured} | ${r.control.met}/${r.control.dropped}/${r.control.unmeasured} |`,
+    );
+  }
+  const anyDropped = rows.some(
+    (r) => r.mandrel.dropped > 0 || r.control.dropped > 0,
+  );
+  lines.push(
+    '',
+    anyDropped
+      ? '⚠️ One or more runs dropped below a saturated-dimension guardrail — see Recommended improvements.'
+      : '✅ Every measured run met its saturated-dimension guardrail threshold.',
+  );
+  return lines.join('\n');
+}
+
+/**
+ * Findings from the saturated-dimension guardrails (Story #157): a
+ * (scenario, dimension) with any dropped run on either arm surfaces as a
+ * `medium` finding.
+ *
+ * @param {Array<object>} cells
+ * @returns {Array<{ id: string, severity: string, title: string, evidence: string, action: string }>}
+ */
+export function saturatedGuardrailFindings(cells) {
+  const findings = [];
+  for (const r of saturatedGuardrailRows(cells)) {
+    const dropped = r.mandrel.dropped + r.control.dropped;
+    if (dropped === 0) continue;
+    const label = DIMENSION_LABELS[r.dimension] ?? r.dimension;
+    findings.push({
+      id: `saturated-guardrail-drop-${r.scenario}-${r.dimension}`,
+      severity: 'medium',
+      title: `Investigate the ${label} guardrail drop on \`${r.scenario}\``,
+      evidence: `${r.mandrel.dropped} mandrel + ${r.control.dropped} control run(s) fell below the ${fmt(r.threshold, 2)} ${label} guardrail threshold.`,
+      action:
+        `${label} is a saturated dimension expected to hold at ceiling. A drop ` +
+        'is a genuine regression — trace the dropped run(s) to the defect that ' +
+        'cost the dimension its ceiling score.',
+    });
+  }
+  return findings;
+}
+
+/**
+ * Render the appendix: the pooled AND paired numeric deltas for the DEMOTED
+ * saturated dimensions, per scenario (Story #157). These no longer appear in
+ * the headline scorecard; the appendix keeps them auditable.
+ *
+ * @param {Array<object>} cells
+ * @param {ReturnType<typeof scoreCorpus>} corpus
+ * @param {'iqr'|'ci'} method
+ * @returns {string}
+ */
+export function renderAppendixSection(cells, corpus, method) {
+  const lines = [
+    '## Appendix — saturated-dimension deltas (demoted from headline)',
+    '',
+    'The numeric mandrel-vs-control deltas for the saturated dimensions, kept',
+    'here for audit. They are NOT headline signal (Story #157): both arms are at',
+    'ceiling, so the delta is within noise by construction. Read the guardrail',
+    'section above for the reportable verdict.',
+    '',
+  ];
+  let anyRow = false;
+  for (let i = 0; i < cells.length; i += 1) {
+    const cell = cells[i];
+    const diff = corpus.perScenario[i];
+    const rows = appendixDimensionRows(cell, diff, method);
+    if (rows.length === 0) continue;
+    anyRow = true;
+    lines.push(
+      `### \`${cell.scenario}\``,
+      '',
+      '| Dimension | Mandrel | Control | Pooled Δ (M−C) | Paired Δ (M−C) | Pooled verdict |',
+      '| --- | --- | --- | --- | --- | --- |',
+    );
+    for (const r of rows) {
+      lines.push(
+        `| ${r.label} | ${fmtBand(r.mandrelBand)} | ${fmtBand(r.controlBand)} | ${fmt(r.delta)} | ${fmt(r.pairedDelta)} | ${VERDICT_BADGE[r.verdict]} |`,
+      );
+    }
+    lines.push('');
+  }
+  if (!anyRow) {
+    lines.push('No saturated-dimension data in this corpus.');
+  }
+  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+  return lines.join('\n');
+}
+
 function renderScenarioSection(cell, diff, method) {
   const rows = dimensionRows(cell, diff, method);
   const routingNote = renderRoutingNote(cell.mandrelRuns);
@@ -1145,28 +1439,57 @@ function renderScenarioSection(cell, diff, method) {
   const nControl = cell.nonInferential
     ? held.filter((r) => r?.arm === 'control').length
     : cell.controlRuns.length;
+  const paired = diff?.paired;
+  const unpaired = paired?.unpaired ?? { mandrel: 0, control: 0 };
+  const unpairedNote =
+    unpaired.mandrel > 0 || unpaired.control > 0
+      ? `> ⚠️ **Unpaired runs excluded from the paired block:** ${unpaired.mandrel} mandrel / ${unpaired.control} control run(s) had no seed-SHA counterpart and were dropped from the paired differences (they remain in the pooled bands).`
+      : '';
   const header = [
     `### Scenario: \`${cell.scenario}\` (difficulty ${Number.isFinite(cell.difficulty) ? cell.difficulty : '?'})`,
     '',
-    `n = ${nMandrel} mandrel / ${nControl} control · band = ${method} (\`center [low, high]\`)`,
+    `n = ${nMandrel} mandrel / ${nControl} control · ${paired?.pairs ?? 0} seed-matched pair(s) · band = ${method} (\`center [low, high]\`)`,
     ...(nonInferentialNote ? ['', nonInferentialNote] : []),
     ...(floorNote ? ['', floorNote] : []),
     ...(routingNote ? ['', routingNote] : []),
     ...(mismatchNote ? ['', mismatchNote] : []),
+    ...(unpairedNote ? ['', unpairedNote] : []),
+  ];
+
+  // Paired differential LEADS (Story #157): the seed-matched per-pair
+  // difference recovers the blocking power the pooled bands discard.
+  const pRows = pairedRows(diff);
+  const pairedBlock = [
+    '',
+    '#### Paired differential (seed-matched, M−C per pair)',
+    '',
+    '| Dimension | Paired Δ (M−C) [low, high] | n pairs | Verdict |',
+    '| --- | --- | --- | --- |',
+    ...pRows.map((r) => {
+      const digits = r.metric === 'efficiency.wallClockMs' ? 0 : 3;
+      return `| ${r.label} | ${fmtBand(r.diffBand, digits)} | ${r.n} | ${VERDICT_BADGE[r.verdict]} |`;
+    }),
+  ];
+
+  const pooledBlock = [
+    '',
+    '#### Pooled per-arm bands',
     '',
     '| Dimension | Mandrel | Control | Δ (M−C) | Noise floor | Verdict |',
     '| --- | --- | --- | --- | --- | --- |',
+    ...rows.map((r) => {
+      const digits = r.metric === 'efficiency.wallClockMs' ? 0 : 3;
+      return `| ${r.label} | ${fmtBand(r.mandrelBand, digits)} | ${fmtBand(r.controlBand, digits)} | ${fmt(r.delta, digits)} | ${fmt(r.noiseFloor, digits)} | ${VERDICT_BADGE[r.verdict]} |`;
+    }),
   ];
-  const body = rows.map((r) => {
-    const digits = r.metric === 'efficiency.wallClockMs' ? 0 : 3;
-    return `| ${r.label} | ${fmtBand(r.mandrelBand, digits)} | ${fmtBand(r.controlBand, digits)} | ${fmt(r.delta, digits)} | ${fmt(r.noiseFloor, digits)} | ${VERDICT_BADGE[r.verdict]} |`;
-  });
+
   const trapSection = renderTrapAxisSection(cell, method);
   const continuitySection = renderContinuitySection(cell, method);
   const chainSection = renderChainSection(cell, method);
   return [
     ...header,
-    ...body,
+    ...pairedBlock,
+    ...pooledBlock,
     ...(trapSection ? ['', trapSection] : []),
     ...(continuitySection ? ['', continuitySection] : []),
     ...(chainSection ? ['', chainSection] : []),
@@ -1410,6 +1733,7 @@ export function renderReport({ scorecards, method = 'iqr' } = {}) {
   }
 
   sections.push(renderAutonomyGuardrailSection(cells), '');
+  sections.push(renderSaturatedGuardrailSection(cells), '');
 
   const phaseCostSection = renderPhaseCostSection(cells);
   if (phaseCostSection) sections.push(phaseCostSection, '');
@@ -1422,8 +1746,13 @@ export function renderReport({ scorecards, method = 'iqr' } = {}) {
   const findings = [
     ...recommendImprovements(corpus),
     ...autonomyGuardrailFindings(cells),
+    ...saturatedGuardrailFindings(cells),
   ];
   sections.push(renderRecommendations(findings));
+
+  if (cells.length > 0) {
+    sections.push('', renderAppendixSection(cells, corpus, method));
+  }
 
   return `${sections
     .join('\n')
@@ -1470,6 +1799,12 @@ export function buildReportModel({ scorecards, method = 'iqr' } = {}) {
       scenario: cell.scenario,
       difficulty: cell.difficulty,
       rows: dimensionRows(cell, corpus.perScenario[i], method),
+      paired: pairedRows(corpus.perScenario[i]),
+      appendix: appendixDimensionRows(cell, corpus.perScenario[i], method),
+      unpaired: corpus.perScenario[i]?.paired?.unpaired ?? {
+        mandrel: 0,
+        control: 0,
+      },
       trap: trapAxisRows(cell, method),
       continuity: continuityRows(cell, method),
       // Chain block (issue #124, PR-D) — strictly additive: null for every

@@ -656,6 +656,24 @@
           "minimum": 0,
           "maximum": 1,
           "description": "LLM-judge cross-check score in [0,1], or null when the judge did not run (e.g. control arm with no acceptance criteria)."
+        },
+        "guardrail": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["threshold", "met"],
+          "description": "Story #157: quality is a SATURATED dimension demoted from a reported mandrel-vs-control delta to a pass/fail guardrail against a fixed cohort threshold — a drop below threshold is itself a finding, and its numeric delta moves to the report appendix.",
+          "properties": {
+            "threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Cohort guardrail threshold the score is compared against."
+            },
+            "met": {
+              "type": ["boolean", "null"],
+              "description": "True when score ≥ threshold, false when below, null when the score itself is unmeasured (an undetermined guardrail is never reported as pass or fail)."
+            }
+          }
         }
       }
     },
@@ -789,6 +807,24 @@
             "type": "string"
           },
           "description": "Epic #66, Story #77 loud nulls: operator-visible markers for a missing spine ('maintainability-signal-absent') or a missing judge cross-check ('maintainability-judge-absent'), instead of a silent default/null."
+        },
+        "guardrail": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["threshold", "met"],
+          "description": "Story #157: maintainability is a SATURATED dimension demoted from a reported mandrel-vs-control delta to a pass/fail guardrail against a fixed cohort threshold — a drop below threshold is itself a finding, and its numeric delta moves to the report appendix.",
+          "properties": {
+            "threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Cohort guardrail threshold the score is compared against."
+            },
+            "met": {
+              "type": ["boolean", "null"],
+              "description": "True when score ≥ threshold, false when below, null when the score itself is unmeasured (an undetermined guardrail is never reported as pass or fail)."
+            }
+          }
         }
       }
     },
@@ -830,6 +866,24 @@
             "type": "string"
           },
           "description": "Epic #66, Story #77 loud nulls: operator-visible markers for missing scan data ('security-signal-absent') or a missing judge cross-check ('security-judge-absent'), instead of a silent default/null."
+        },
+        "guardrail": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["threshold", "met"],
+          "description": "Story #157: security is a SATURATED dimension demoted from a reported mandrel-vs-control delta to a pass/fail guardrail against a fixed cohort threshold — a drop below threshold is itself a finding, and its numeric delta moves to the report appendix.",
+          "properties": {
+            "threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Cohort guardrail threshold the score is compared against."
+            },
+            "met": {
+              "type": ["boolean", "null"],
+              "description": "True when score ≥ threshold, false when below, null when the score itself is unmeasured (an undetermined guardrail is never reported as pass or fail)."
+            }
+          }
         }
       }
     },

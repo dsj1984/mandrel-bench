@@ -430,6 +430,12 @@ describe('machine-readable story-count contract (Epic #86, Story #95)', () => {
     assert.equal(c.minStories, 1);
     assert.equal(c.maxStories, 1);
   });
+
+  it('hello-world is configured for a single run (targetN 1, Story #157)', () => {
+    // The overhead floor + end-to-end instrumentation check is never a value
+    // rung, so replicates buy nothing — it runs as an N=1 smoke.
+    assert.equal(loadScenario('hello-world').targetN, 1);
+  });
 });
 
 describe('frozen oracles are pure w.r.t. the delivered app (AC2: frozen)', () => {
