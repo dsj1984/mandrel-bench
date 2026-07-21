@@ -3,10 +3,10 @@
   "title": "Multi-user project & task management API",
   "difficulty": 5,
   "rung": "epic-scope",
-  "routing": "epic",
+  "routing": "multi-story",
   "targetN": 8,
   "storyCountContract": {
-    "mode": "epic",
+    "mode": "multi-story",
     "minStories": 4,
     "maxStories": 6
   },

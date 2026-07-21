@@ -132,6 +132,65 @@ export function discoverStandaloneStory({ owner, repo, sinceIso }, ports = {}) {
 }
 
 /**
+ * Multi-Story counterpart to `discoverStandaloneStory`: return EVERY
+ * `type::story` issue created at/after the run start, ascending by issue
+ * number (creation order).
+ *
+ * WHY THIS EXISTS (v2 Epic collapse). Mandrel v2.0.0 deleted the Epic tier:
+ * `/plan` now emits N Stories directly and `/deliver` takes the id list. A
+ * decomposition-scoped scenario therefore opens 4-6 sibling `type::story`
+ * issues where v1 opened one Epic. `discoverStandaloneStory` returns only the
+ * NEWEST such issue, which — paired with the single-Story adapter's hardcoded
+ * `plannedStoryCount: 1` — would score a 4-6 decomposition contract at a
+ * permanent 0.5 while looking exactly like a real measurement. This function
+ * is what makes the decomposition observable at all.
+ *
+ * @param {object} args
+ * @param {string} args.owner
+ * @param {string} args.repo
+ * @param {string} args.sinceIso  Run-start timestamp (ISO-8601).
+ * @param {{ ghJson?: typeof defaultGhJson }} [ports]
+ * @returns {number[]} Story issue numbers ascending; `[]` when none is found
+ *                     or the read fails (never a throw).
+ */
+export function discoverStories({ owner, repo, sinceIso }, ports = {}) {
+  const ghJson = ports.ghJson ?? defaultGhJson;
+  const since = Date.parse(sinceIso);
+  let issues;
+  try {
+    issues = ghJson(
+      [
+        'issue',
+        'list',
+        '--repo',
+        `${owner}/${repo}`,
+        '--label',
+        'type::story',
+        '--state',
+        'all',
+        '--json',
+        'number,createdAt',
+        '--limit',
+        '50',
+      ],
+      ports,
+    );
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(issues)) return [];
+  return issues
+    .filter(
+      (i) =>
+        Number.isInteger(i?.number) &&
+        Number.isFinite(Date.parse(i?.createdAt)) &&
+        (!Number.isFinite(since) || Date.parse(i.createdAt) >= since),
+    )
+    .map((i) => i.number)
+    .sort((a, b) => a - b);
+}
+
+/**
  * Read a delivered standalone Story's GitHub telemetry and return the planning +
  * autonomy sub-signals in the shape `buildScorecard` feeds to the scorer, plus
  * the `routingVerdict`. Returns `null` when the Story cannot be read (so the
@@ -260,5 +319,120 @@ export function collectStandaloneTelemetry(
     autonomy: { hitlStops, blockedEvents, manualRescues, gateRetries: 0 },
     routingVerdict: 'story',
     phases: { createdAt, closedAt, prMergedAt, codegenMs },
+  };
+}
+
+/**
+ * Aggregate the telemetry of the N sibling Stories a v2 decomposition-scoped
+ * plan produced, in the same shape `buildScorecard` consumes.
+ *
+ * Each Story is read with `collectStandaloneTelemetry` — one code path for one
+ * Story's GitHub facts, so the multi-Story numbers cannot drift from the
+ * single-Story ones — and the per-Story results are combined:
+ *
+ * - **plannedStoryCount** — `storyNumbers.length`, i.e. what the PLAN opened.
+ *   Deliberately NOT the count of Stories that could be read: a Story that
+ *   vanished is a planning fact, and shrinking the denominator would silently
+ *   forgive it. Unreadable Stories are surfaced as `unreadableStoryCount`.
+ * - **deliveredStoryCount** — Stories that both merged a PR and closed at
+ *   `agent::done`, so a partial delivery scores as the partial it is.
+ * - **rePlanCount / autonomy counters** — summed; an intervention on any
+ *   Story is an intervention in the run.
+ * - **actualPaths** — the de-duplicated union across every Story's PR, since
+ *   sibling Stories routinely touch a shared file.
+ * - **phases** — `createdAt` is the earliest Story's, `closedAt` and
+ *   `prMergedAt` the latest, so the block spans the whole delivery.
+ *   `codegenMs` SUMS the per-Story implementation windows rather than taking
+ *   the outer span, because the outer span would bank the idle gaps between
+ *   Stories as codegen time. v2 `/deliver` walks the dependency graph and
+ *   delivers Stories through one engine, so the windows are effectively
+ *   sequential; were they ever run concurrently this sum would overcount, and
+ *   that assumption is the one to revisit first if the split looks wrong.
+ *
+ * @param {object} args
+ * @param {string} args.owner
+ * @param {string} args.repo
+ * @param {number[]} args.storyNumbers  Story issue numbers (from `discoverStories`).
+ * @param {{ ghJson?: typeof defaultGhJson }} [ports]
+ * @returns {{
+ *   planning: { plannedStoryCount: number, deliveredStoryCount: number, rePlanCount: number, actualPaths?: string[] },
+ *   autonomy: { hitlStops: number, blockedEvents: number, manualRescues: number, gateRetries: number },
+ *   routingVerdict: 'multi-story',
+ *   storyNumbers: number[],
+ *   unreadableStoryCount: number,
+ *   phases: { createdAt: string|null, closedAt: string|null, prMergedAt: string|null, codegenMs: number|null }
+ * } | null} `null` when no Story number was supplied, or when NOT ONE could be
+ *   read — the value dims then stay unmeasured rather than reporting a fake 0.
+ */
+export function collectMultiStoryTelemetry(
+  { owner, repo, storyNumbers },
+  ports = {},
+) {
+  const numbers = Array.isArray(storyNumbers)
+    ? storyNumbers.filter((n) => Number.isInteger(n))
+    : [];
+  if (numbers.length === 0) return null;
+
+  const perStory = [];
+  for (const storyNumber of numbers) {
+    const t = collectStandaloneTelemetry({ owner, repo, storyNumber }, ports);
+    if (t) perStory.push(t);
+  }
+  if (perStory.length === 0) return null;
+
+  let deliveredStoryCount = 0;
+  let rePlanCount = 0;
+  let hitlStops = 0;
+  let blockedEvents = 0;
+  let manualRescues = 0;
+  let gateRetries = 0;
+  const paths = new Set();
+  const createdMsList = [];
+  const closedMsList = [];
+  const mergedMsList = [];
+  let codegenMs = null;
+
+  for (const t of perStory) {
+    deliveredStoryCount += t.planning.deliveredStoryCount;
+    rePlanCount += t.planning.rePlanCount;
+    hitlStops += t.autonomy.hitlStops;
+    blockedEvents += t.autonomy.blockedEvents;
+    manualRescues += t.autonomy.manualRescues;
+    gateRetries += t.autonomy.gateRetries;
+    for (const p of t.planning.actualPaths ?? []) paths.add(p);
+    if (t.phases.createdAt) createdMsList.push(Date.parse(t.phases.createdAt));
+    if (t.phases.closedAt) closedMsList.push(Date.parse(t.phases.closedAt));
+    if (t.phases.prMergedAt) mergedMsList.push(Date.parse(t.phases.prMergedAt));
+    if (t.phases.codegenMs != null)
+      codegenMs = (codegenMs ?? 0) + t.phases.codegenMs;
+  }
+
+  /** Earliest/latest of a millisecond list, back as an ISO string. */
+  const edge = (list, pick) => {
+    const finite = list.filter((ms) => Number.isFinite(ms));
+    if (finite.length === 0) return null;
+    return new Date(pick(...finite)).toISOString().replace('.000Z', 'Z');
+  };
+
+  const actualPaths = [...paths].sort();
+
+  return {
+    planning: {
+      // What the plan opened — NOT perStory.length. See the doc block.
+      plannedStoryCount: numbers.length,
+      deliveredStoryCount,
+      rePlanCount,
+      ...(actualPaths.length > 0 ? { actualPaths } : {}),
+    },
+    autonomy: { hitlStops, blockedEvents, manualRescues, gateRetries },
+    routingVerdict: 'multi-story',
+    storyNumbers: numbers,
+    unreadableStoryCount: numbers.length - perStory.length,
+    phases: {
+      createdAt: edge(createdMsList, Math.min),
+      closedAt: edge(closedMsList, Math.max),
+      prMergedAt: edge(mergedMsList, Math.max),
+      codegenMs,
+    },
   };
 }

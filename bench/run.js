@@ -107,9 +107,11 @@ import {
 import { collectMaintainabilitySignals as defaultCollectMaintainabilitySignals } from './scenarios/maintainability-adapter.js';
 import { collectSecuritySignals as defaultCollectSecuritySignals } from './scenarios/security-adapter.js';
 import {
+  collectMultiStoryTelemetry,
   collectStandaloneTelemetry,
   defaultGhJson,
   discoverStandaloneStory,
+  discoverStories,
 } from './scenarios/standalone-telemetry-adapter.js';
 import {
   runTrapOracles as defaultRunTrapOracles,
@@ -493,12 +495,30 @@ export function discoverLedger({ workspacePath }, deps = {}) {
  * it; that branch's tip is the scoreable PR-head tree even when the PR never
  * merges. Returns null when the target is unknown (nothing to fetch).
  *
- * @param {{ routing?: string|null, epicId?: number|null, storyNumber?: number|null }|null} target
+ * MULTI-STORY (v2 Epic collapse). A decomposition-scoped v2 run has N sibling
+ * `story-<id>` branches, each with its own PR to `main` — there is no single
+ * integration branch to fall back to. The happy path is unaffected: when the
+ * PRs merge, `main` carries every Story and `materializeMandrelDelivery`
+ * scores the merged tree without consulting this function. The fallback is
+ * necessarily lossy, and resolves to the LAST Story's branch: Stories are
+ * delivered in dependency order, so the highest-numbered branch is the one
+ * built on the most previously-merged work and is the best single scoreable
+ * approximation. A partial multi-Story delivery scored this way is therefore
+ * an UNDER-estimate, never a fabrication — the `landed: false` flag the
+ * caller records is what marks it as such.
+ *
+ * @param {{ routing?: string|null, epicId?: number|null, storyNumber?: number|null, storyNumbers?: number[]|null }|null} target
  * @returns {string|null}
  */
 export function resolveDeliveryBranch(target) {
   if (!target || typeof target !== 'object') return null;
-  const { routing, epicId, storyNumber } = target;
+  const { routing, epicId, storyNumber, storyNumbers } = target;
+  if (routing === 'multi-story') {
+    const ns = Array.isArray(storyNumbers)
+      ? storyNumbers.filter((n) => Number.isInteger(n))
+      : [];
+    return ns.length > 0 ? `story-${Math.max(...ns)}` : null;
+  }
   if (routing === 'story' && storyNumber != null) return `story-${storyNumber}`;
   if (epicId != null) return `epic/${epicId}`;
   if (storyNumber != null) return `story-${storyNumber}`;
@@ -1895,8 +1915,23 @@ export async function runOneRun(opts, deps = {}) {
             const routing = effectiveRouting;
             let epicId = seedEpicId;
             let storyNumber = null;
+            let storyNumbers = null;
             let deliverTarget = null;
-            if (routing === 'story' && epicId == null) {
+            if (routing === 'multi-story') {
+              // v2 `/plan` opens N sibling Stories and `/deliver` takes the id
+              // list; the space-separated ids interpolate straight into the
+              // `/deliver <ids> --yes` prompt.
+              storyNumbers = discoverStories(
+                {
+                  owner: sandbox.owner,
+                  repo: sandbox.repo,
+                  sinceIso: runStartedAt,
+                },
+                { ghJson: planGhJson },
+              );
+              deliverTarget =
+                storyNumbers.length > 0 ? storyNumbers.join(' ') : null;
+            } else if (routing === 'story' && epicId == null) {
               storyNumber = discoverStandaloneStory(
                 {
                   owner: sandbox.owner,
@@ -1937,7 +1972,7 @@ export async function runOneRun(opts, deps = {}) {
                 logger,
               },
             );
-            deliveredTarget = { routing, epicId, storyNumber };
+            deliveredTarget = { routing, epicId, storyNumber, storyNumbers };
             return { deliverTarget };
           } catch (err) {
             logger?.warn?.(
@@ -1947,6 +1982,7 @@ export async function runOneRun(opts, deps = {}) {
               routing: effectiveRouting,
               epicId: seedEpicId,
               storyNumber: null,
+              storyNumbers: null,
             };
             return { deliverTarget: seedEpicId };
           }
@@ -2044,33 +2080,72 @@ export async function runOneRun(opts, deps = {}) {
         // single-Story path. Recover planning + autonomy from the Story's
         // GitHub telemetry (Story #48) so the value dims are MEASURED, not null.
         const ghJson = deps.ghJson ?? defaultGhJson;
-        let storyNumber = null;
-        try {
-          storyNumber = discoverStandaloneStory(
-            {
-              owner: sandbox.owner,
-              repo: sandbox.repo,
-              sinceIso: runStartedAt,
-            },
-            { ghJson },
-          );
-        } catch (err) {
-          logger?.warn?.(
-            `[run] standalone Story discovery failed: ${err?.message ?? err}`,
-          );
-        }
-        if (storyNumber != null) {
-          standalone = collectStandaloneTelemetry(
-            { owner: sandbox.owner, repo: sandbox.repo, storyNumber },
-            { ghJson },
-          );
-          logger?.info?.(
-            `[run] no Epic ledger — recovered standalone telemetry from Story #${storyNumber} (routing=story)`,
-          );
+        if (effectiveRouting === 'multi-story') {
+          // Decomposition-scoped v2 cell: aggregate across every sibling Story
+          // the plan opened. Reusing the `standalone` slot is deliberate — the
+          // normalize layer already reads `standalone.routingVerdict`, so the
+          // aggregate flows through the existing measured-value path and
+          // reports `multi-story` against the scenario's routing contract.
+          let storyNumbers = [];
+          try {
+            storyNumbers = discoverStories(
+              {
+                owner: sandbox.owner,
+                repo: sandbox.repo,
+                sinceIso: runStartedAt,
+              },
+              { ghJson },
+            );
+          } catch (err) {
+            logger?.warn?.(
+              `[run] multi-Story discovery failed: ${err?.message ?? err}`,
+            );
+          }
+          if (storyNumbers.length > 0) {
+            standalone = collectMultiStoryTelemetry(
+              { owner: sandbox.owner, repo: sandbox.repo, storyNumbers },
+              { ghJson },
+            );
+            const unreadable = standalone?.unreadableStoryCount ?? 0;
+            logger?.info?.(
+              `[run] recovered multi-Story telemetry from ${storyNumbers.length} Stories ` +
+                `(#${storyNumbers.join(', #')}) (routing=multi-story)` +
+                (unreadable > 0 ? ` — ${unreadable} unreadable` : ''),
+            );
+          } else {
+            logger?.warn?.(
+              '[run] no Stories found for the multi-story-routed mandrel arm',
+            );
+          }
         } else {
-          logger?.warn?.(
-            '[run] no Epic ledger and no standalone Story found for the mandrel arm',
-          );
+          let storyNumber = null;
+          try {
+            storyNumber = discoverStandaloneStory(
+              {
+                owner: sandbox.owner,
+                repo: sandbox.repo,
+                sinceIso: runStartedAt,
+              },
+              { ghJson },
+            );
+          } catch (err) {
+            logger?.warn?.(
+              `[run] standalone Story discovery failed: ${err?.message ?? err}`,
+            );
+          }
+          if (storyNumber != null) {
+            standalone = collectStandaloneTelemetry(
+              { owner: sandbox.owner, repo: sandbox.repo, storyNumber },
+              { ghJson },
+            );
+            logger?.info?.(
+              `[run] no Epic ledger — recovered standalone telemetry from Story #${storyNumber} (routing=story)`,
+            );
+          } else {
+            logger?.warn?.(
+              '[run] no Epic ledger and no standalone Story found for the mandrel arm',
+            );
+          }
         }
       }
     }
