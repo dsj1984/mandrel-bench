@@ -717,8 +717,24 @@ test('buildWorktreeOverlayHook: refuses an overlay path it cannot shell-quote', 
 test('installWorktreeOverlayHook: a git worktree cut from an overlaid clone resolves .agents scripts (Story #153)', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'bench-wt-overlay-'));
   const clone = path.join(root, 'clone');
+  // Scrub any inherited git env (GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE) so the
+  // temp repo is hermetic: git exports these when running hooks (e.g. the
+  // pre-push suite fired from a worktree checkout), and an inherited GIT_DIR
+  // overrides `cwd` — pointing every git call at the outer repo and failing
+  // with "must be run in a work tree". Undefined values delete the key.
+  const {
+    GIT_DIR: _gd,
+    GIT_WORK_TREE: _gwt,
+    GIT_INDEX_FILE: _gif,
+    ...cleanGitEnv
+  } = process.env;
   const git = (args, cwd = clone) =>
-    execSync(`git ${args}`, { cwd, encoding: 'utf8', stdio: 'pipe' });
+    execSync(`git ${args}`, {
+      cwd,
+      env: cleanGitEnv,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
 
   try {
     mkdirSync(clone, { recursive: true });
@@ -761,6 +777,7 @@ test('installWorktreeOverlayHook: a git worktree cut from an overlaid clone reso
     // workaround authored by the agent, no unresolvable check-baselines gate.
     const out = execSync('node .agents/scripts/check-baselines.js', {
       cwd: worktree,
+      env: cleanGitEnv,
       encoding: 'utf8',
     });
     assert.match(out, /baselines ok/);
@@ -770,6 +787,7 @@ test('installWorktreeOverlayHook: a git worktree cut from an overlaid clone reso
     assert.ok(readFileSync(path.join(worktree, 'index.js'), 'utf8').length > 0);
     const status = execSync('git status --porcelain', {
       cwd: worktree,
+      env: cleanGitEnv,
       encoding: 'utf8',
     });
     assert.equal(status.trim(), '', `worktree should be clean, got: ${status}`);

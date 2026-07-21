@@ -816,6 +816,9 @@ function benchDeps(record) {
     },
     overlayFn: (o) => {
       record.overlays.push(o.arm);
+      // Story #153/#161: the scenario must reach `overlayExcludePaths()` so
+      // the package.json contract carve-out is reachable in production.
+      record.overlayScenarioIds.push(o.scenario?.id ?? null);
       return { overlaid: true, arm: o.arm, copied: [] };
     },
     // control-arm gate package.json seam (Story #74) — the counterpart to
@@ -949,6 +952,7 @@ function freshRecord(overrides = {}) {
     teardowns: [],
     resets: [],
     overlays: [],
+    overlayScenarioIds: [],
     gatePackageJsonWrites: [],
     claudeMdSeeds: [],
     sessions: [],
@@ -1028,6 +1032,9 @@ test('runFirstBenchmark: emits a schema-valid scorecard per arm and renders a re
   // BOTH arms get the bypassPermissions args (permission mode is orthogonal to
   // scaffolding — each must act headlessly). Both arms are torn down.
   assert.deepEqual(record.overlays, ['mandrel']);
+  // The scenario is threaded into the overlay so `overlayExcludePaths()` can
+  // consult its package.json contract (Story #153).
+  assert.deepEqual(record.overlayScenarioIds, ['hello-world']);
   assert.equal(record.sessions.find((s) => s.arm === 'mandrel').epicId, 99);
   for (const arm of ['mandrel', 'control']) {
     assert.ok(
@@ -3549,6 +3556,7 @@ test('runOneRun (arm 4): mandrel-story-routed drives story discovery and is EXEM
   assert.equal(scorecard.arm, 'mandrel-story-routed');
   // The mandrel pipeline ran (overlay, not the control path) …
   assert.deepEqual(record.overlays, ['mandrel-story-routed']);
+  assert.deepEqual(record.overlayScenarioIds, ['hello-world']);
   // … but the seed Epic id was NOT threaded into the session (the routing
   // override authors its own Story via the --idea drive).
   assert.equal(record.sessions[0].epicId, undefined);
