@@ -22,7 +22,7 @@ n = 2 mandrel / 2 control · 0 seed-matched pair(s) · band = iqr (`center [low,
 
 > 🧭 **Floor/calibration rung** — instrumentation, not a value rung. Distributions below are the overhead-floor + monotonicity-curve calibration signal, not a value-delta claim.
 
-> **Mandrel routing: Epic** — all value dimensions derived from the lifecycle ledger.
+> **Mandrel routing: multi-Story decomposition** — the plan opened N sibling Stories; value dimensions derived from the lifecycle ledger.
 
 > ⚠️ **Unpaired runs excluded from the paired block:** 2 mandrel / 2 control run(s) had no seed-SHA counterpart and were dropped from the paired differences (they remain in the pooled bands).
 
@@ -52,7 +52,7 @@ n = 2 mandrel / 2 control · 0 seed-matched pair(s) · band = iqr (`center [low,
 
 n = 2 mandrel / 2 control · 0 seed-matched pair(s) · band = iqr (`center [low, high]`)
 
-> **Mandrel routing: standalone Story** — planning-fidelity & autonomy recovered from the Story’s GitHub telemetry (no Epic ledger); overhead-ratio is **n/a** (unmeasurable on the standalone path).
+> **Mandrel routing: standalone Story** — planning-fidelity & autonomy recovered from the Story’s GitHub telemetry (no lifecycle ledger); overhead-ratio is **n/a** (unmeasurable on the standalone path).
 
 > ⚠️ **Unpaired runs excluded from the paired block:** 2 mandrel / 2 control run(s) had no seed-SHA counterpart and were dropped from the paired differences (they remain in the pooled bands).
 

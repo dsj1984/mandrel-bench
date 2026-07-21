@@ -84,7 +84,6 @@ import {
   defaultPlanGhJson,
   derivedSecurityInputs,
   discoverLedger,
-  discoverPlannedEpicId,
   materializeMandrelDelivery,
   repoRoot,
   resolveDeliveryBranch,
@@ -99,7 +98,10 @@ import {
 } from './scenarios/dimension-judge-adapter.js';
 import { collectMaintainabilitySignals as defaultCollectMaintainabilitySignals } from './scenarios/maintainability-adapter.js';
 import { collectSecuritySignals as defaultCollectSecuritySignals } from './scenarios/security-adapter.js';
-import { discoverStandaloneStory } from './scenarios/standalone-telemetry-adapter.js';
+import {
+  discoverStandaloneStory,
+  discoverStories,
+} from './scenarios/standalone-telemetry-adapter.js';
 
 /**
  * The default base-suite pass-rate gate a touch must clear (alongside
@@ -632,6 +634,9 @@ export async function runTouchChain(opts, deps = {}) {
               arm,
               sandbox: { owner: sandbox.owner, repo: sandbox.repo },
               sourceRoot,
+              // Story #153: the scenario's package.json contract decides
+              // whether package.json stays git-visible in the sandbox clone.
+              scenario,
             },
             deps.overlayDeps,
           );
@@ -729,11 +734,11 @@ export async function runTouchChain(opts, deps = {}) {
             (typeof scenario?.routing === 'string'
               ? scenario.routing
               : 'story');
-          let epicId = null;
           let storyNumber = null;
+          let storyNumbers = null;
           try {
-            if (routing === 'story') {
-              storyNumber = discoverStandaloneStory(
+            if (routing === 'multi-story') {
+              storyNumbers = discoverStories(
                 {
                   owner: sandbox.owner,
                   repo: sandbox.repo,
@@ -742,7 +747,9 @@ export async function runTouchChain(opts, deps = {}) {
                 { ghJson },
               );
             } else {
-              epicId = discoverPlannedEpicId(
+              // Mandrel 2.x has no Epic tier (Story #158): a non-multi-story
+              // route delivers a single standalone Story.
+              storyNumber = discoverStandaloneStory(
                 {
                   owner: sandbox.owner,
                   repo: sandbox.repo,
@@ -758,8 +765,8 @@ export async function runTouchChain(opts, deps = {}) {
           }
           const deliveryBranch = resolveDeliveryBranch({
             routing,
-            epicId,
             storyNumber,
+            storyNumbers,
           });
           const m = materializeMandrelDelivery(
             {

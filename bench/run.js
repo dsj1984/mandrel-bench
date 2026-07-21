@@ -512,30 +512,30 @@ export function discoverLedger({ workspacePath }, deps = {}) {
 
 /**
  * Resolve the PR-head delivery branch name for a mandrel run from the discovered
- * routing target (Ticket #121, item 1). The `/deliver` pipeline pushes an Epic
- * integration branch `epic/<epicId>` (epic routing) or a Story execution branch
- * `story-<storyId>` (standalone routing) and opens the change-request PR from
- * it; that branch's tip is the scoreable PR-head tree even when the PR never
- * merges. Returns null when the target is unknown (nothing to fetch).
+ * routing target (Ticket #121, item 1). The `/deliver` pipeline pushes a Story
+ * execution branch `story-<storyId>` and opens the PR from it; that branch's
+ * tip is the scoreable PR-head tree even when the PR never merges. Returns null
+ * when the target is unknown (nothing to fetch). Mandrel 2.x has no Epic tier,
+ * so there is no `epic/<epicId>` integration branch to resolve (Story #158).
  *
- * MULTI-STORY (v2 Epic collapse). A decomposition-scoped v2 run has N sibling
- * `story-<id>` branches, each with its own PR to `main` — there is no single
- * integration branch to fall back to. The happy path is unaffected: when the
- * PRs merge, `main` carries every Story and `materializeMandrelDelivery`
- * scores the merged tree without consulting this function. The fallback is
- * necessarily lossy, and resolves to the LAST Story's branch: Stories are
- * delivered in dependency order, so the highest-numbered branch is the one
- * built on the most previously-merged work and is the best single scoreable
- * approximation. A partial multi-Story delivery scored this way is therefore
- * an UNDER-estimate, never a fabrication — the `landed: false` flag the
- * caller records is what marks it as such.
+ * MULTI-STORY. A decomposition-scoped run has N sibling `story-<id>` branches,
+ * each with its own PR to `main` — there is no single integration branch to
+ * fall back to. The happy path is unaffected: when the PRs merge, `main`
+ * carries every Story and `materializeMandrelDelivery` scores the merged tree
+ * without consulting this function. The fallback is necessarily lossy, and
+ * resolves to the LAST Story's branch: Stories are delivered in dependency
+ * order, so the highest-numbered branch is the one built on the most
+ * previously-merged work and is the best single scoreable approximation. A
+ * partial multi-Story delivery scored this way is therefore an UNDER-estimate,
+ * never a fabrication — the `landed: false` flag the caller records is what
+ * marks it as such.
  *
- * @param {{ routing?: string|null, epicId?: number|null, storyNumber?: number|null, storyNumbers?: number[]|null }|null} target
+ * @param {{ routing?: string|null, storyNumber?: number|null, storyNumbers?: number[]|null }|null} target
  * @returns {string|null}
  */
 export function resolveDeliveryBranch(target) {
   if (!target || typeof target !== 'object') return null;
-  const { routing, epicId, storyNumber, storyNumbers } = target;
+  const { routing, storyNumber, storyNumbers } = target;
   if (routing === 'multi-story') {
     const ns = Array.isArray(storyNumbers)
       ? storyNumbers.filter((n) => Number.isInteger(n))
@@ -543,7 +543,6 @@ export function resolveDeliveryBranch(target) {
     return ns.length > 0 ? `story-${Math.max(...ns)}` : null;
   }
   if (routing === 'story' && storyNumber != null) return `story-${storyNumber}`;
-  if (epicId != null) return `epic/${epicId}`;
   if (storyNumber != null) return `story-${storyNumber}`;
   return null;
 }
@@ -672,80 +671,27 @@ export function defaultPlanGhJson(args, ports = {}) {
 }
 
 /**
- * Discover the Epic id the mandrel arm's PLAN session created on the ephemeral
- * repo (the id-discovery seam, F1 from Epic #86's pre-mortem). In the default
- * `--idea` drive the Epic is opened INSIDE the plan session, so the harness
- * never learns its id from stdout; after the plan session exits we recover it
- * the same deterministic way `discoverStandaloneStory` recovers a Story: the
- * newest `type::epic` issue created at/after the run's start (runs are
- * sequential and the sandbox is reset to baseline before each). Returns null
- * when none is found.
- *
- * @param {object} args
- * @param {string} args.owner
- * @param {string} args.repo
- * @param {string} args.sinceIso  Run-start timestamp (ISO-8601); only Epics
- *   created at/after this are considered.
- * @param {{ ghJson?: typeof defaultPlanGhJson }} [ports]
- * @returns {number|null} The Epic issue number, or null when none is found.
- */
-export function discoverPlannedEpicId({ owner, repo, sinceIso }, ports = {}) {
-  const ghJson = ports.ghJson ?? defaultPlanGhJson;
-  const since = Date.parse(sinceIso);
-  let issues;
-  try {
-    issues = ghJson(
-      [
-        'issue',
-        'list',
-        '--repo',
-        `${owner}/${repo}`,
-        '--label',
-        'type::epic',
-        '--state',
-        'all',
-        '--json',
-        'number,createdAt',
-        '--limit',
-        '50',
-      ],
-      ports,
-    );
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(issues)) return null;
-  const fresh = issues
-    .filter(
-      (i) =>
-        Number.isInteger(i?.number) &&
-        Number.isFinite(Date.parse(i?.createdAt)) &&
-        (!Number.isFinite(since) || Date.parse(i.createdAt) >= since),
-    )
-    .sort((a, b) => b.number - a.number);
-  return fresh.length > 0 ? fresh[0].number : null;
-}
-
-/**
  * Snapshot the plan artifacts the mandrel arm's PLAN session produced into
  * `.raw/<run-stamp>/plan/` BEFORE the deliver session starts (D-019). This
  * freezes what the plan is scored on so delivery can never retroactively alter
- * it. For epic-routed runs the Epic body (which carries the folded tech-spec
- * sections) plus every child Story body (with its inline `acceptance[]` /
- * `verify[]`) are captured; for story-routed runs the standalone Story body is.
- * A `manifest.json` records the routing + the captured ids. All GitHub reads run
- * through the injected `ghJson` port (sanitized env by default) so unit tests
- * stub every read with no network. Best-effort per-artifact: an unreadable
- * ticket is skipped, not fatal.
+ * it. Mandrel 2.x has no Epic tier (Story #158): a plan is EITHER a single
+ * standalone Story or a decomposition of N sibling Stories, and each Story body
+ * (with its inline `acceptance[]` / `verify[]`) is the plan artifact captured.
+ * For multi-story routing every discovered sibling Story body is snapshotted;
+ * for story routing the single standalone Story body is. A `manifest.json`
+ * records the routing + the captured ids. All GitHub reads run through the
+ * injected `ghJson` port (sanitized env by default) so unit tests stub every
+ * read with no network. Best-effort per-artifact: an unreadable ticket is
+ * skipped, not fatal.
  *
  * @param {object} args
  * @param {string} args.owner
  * @param {string} args.repo
- * @param {'epic'|'story'|null} args.routing
- * @param {number|null} [args.epicId]      Discovered/seed Epic id (epic routing).
- * @param {number|null} [args.storyNumber] Discovered Story id (story routing).
+ * @param {'multi-story'|'story'|null} args.routing
+ * @param {number|null} [args.storyNumber]   Discovered Story id (story routing).
+ * @param {number[]|null} [args.storyNumbers] Discovered sibling Story ids
+ *   (multi-story routing).
  * @param {string} args.planDir            Absolute `.raw/<stamp>/plan/` path.
- * @param {string} args.sinceIso           Run-start; bounds child-Story discovery.
  * @param {string|null} [args.capturedAt]  Stamp recorded in the manifest.
  * @param {object} [deps]
  * @param {typeof defaultPlanGhJson} [deps.ghJson]
@@ -759,10 +705,9 @@ export function snapshotPlanArtifacts(
     owner,
     repo,
     routing,
-    epicId = null,
     storyNumber = null,
+    storyNumbers = null,
     planDir,
-    sinceIso,
     capturedAt = null,
   },
   deps = {},
@@ -784,84 +729,19 @@ export function snapshotPlanArtifacts(
 
   const manifest = {
     routing: routing ?? null,
-    epicId: epicId ?? null,
     storyNumber: storyNumber ?? null,
     storyNumbers: [],
     capturedAt: capturedAt ?? null,
   };
 
-  if (epicId != null) {
-    // Epic-routed: capture the Epic body (tech-spec sections travel with it)
-    // and every child Story body (its inline acceptance[]/verify[]).
-    try {
-      const epic = ghJson(
-        [
-          'issue',
-          'view',
-          String(epicId),
-          '--repo',
-          repoFlag,
-          '--json',
-          'number,title,body,labels',
-        ],
-        deps,
-      );
-      if (epic && typeof epic === 'object')
-        writeJson(`epic-${epicId}.json`, epic);
-    } catch (err) {
-      logger?.warn?.(
-        `[run] plan snapshot: could not read Epic #${epicId}: ${err?.message ?? err}`,
-      );
-    }
-    let stories = [];
-    try {
-      stories = ghJson(
-        [
-          'issue',
-          'list',
-          '--repo',
-          repoFlag,
-          '--label',
-          'type::story',
-          '--state',
-          'all',
-          '--json',
-          'number,title,body,createdAt',
-          '--limit',
-          '100',
-        ],
-        deps,
-      );
-    } catch (err) {
-      logger?.warn?.(
-        `[run] plan snapshot: could not list child Stories: ${err?.message ?? err}`,
-      );
-    }
-    const since = Date.parse(sinceIso);
-    const fresh = (Array.isArray(stories) ? stories : []).filter(
-      (s) =>
-        Number.isInteger(s?.number) &&
-        (!Number.isFinite(since) ||
-          !s?.createdAt ||
-          !Number.isFinite(Date.parse(s.createdAt)) ||
-          Date.parse(s.createdAt) >= since),
-    );
-    for (const s of fresh) {
-      writeJson(`story-${s.number}.json`, {
-        number: s.number,
-        title: s.title,
-        body: s.body,
-      });
-    }
-    manifest.storyNumbers = fresh.map((s) => s.number);
-  } else if (storyNumber != null) {
-    // Story-routed: the standalone Story body IS the plan.
+  // Capture one Story body by number — the plan artifact for both routes.
+  const captureStory = (number) => {
     try {
       const story = ghJson(
         [
           'issue',
           'view',
-          String(storyNumber),
+          String(number),
           '--repo',
           repoFlag,
           '--json',
@@ -870,13 +750,30 @@ export function snapshotPlanArtifacts(
         deps,
       );
       if (story && typeof story === 'object') {
-        writeJson(`story-${storyNumber}.json`, story);
+        writeJson(`story-${number}.json`, story);
+        return true;
       }
     } catch (err) {
       logger?.warn?.(
-        `[run] plan snapshot: could not read Story #${storyNumber}: ${err?.message ?? err}`,
+        `[run] plan snapshot: could not read Story #${number}: ${err?.message ?? err}`,
       );
     }
+    return false;
+  };
+
+  const siblings = Array.isArray(storyNumbers)
+    ? storyNumbers.filter((n) => Number.isInteger(n))
+    : [];
+  if (siblings.length > 0) {
+    // Multi-story: capture every discovered sibling Story body.
+    const captured = [];
+    for (const n of siblings) {
+      if (captureStory(n)) captured.push(n);
+    }
+    manifest.storyNumbers = captured;
+  } else if (storyNumber != null) {
+    // Story-routed: the standalone Story body IS the plan.
+    captureStory(storyNumber);
   }
 
   writeJson('manifest.json', manifest);
@@ -951,9 +848,10 @@ export function buildPlanQualityBlock(
   let plannedStoryCount = 0;
   for (const fp of snapshot.files) {
     const base = path.basename(String(fp));
+    // Mandrel 2.x plan snapshots carry only Story bodies (no Epic tier,
+    // Story #158): every `story-<n>.json` is one planned Story.
     const isStory = /^story-.*\.json$/.test(base);
-    const isEpic = /^epic-.*\.json$/.test(base);
-    if (!isStory && !isEpic) continue;
+    if (!isStory) continue;
     let parsed;
     try {
       parsed = JSON.parse(readFile(fp, 'utf8'));
@@ -961,10 +859,8 @@ export function buildPlanQualityBlock(
       continue;
     }
     const body = typeof parsed?.body === 'string' ? parsed.body : '';
-    if (isStory) {
-      plannedStoryCount += 1;
-      for (const ac of extractStoryAcceptance(body)) storyAcceptance.push(ac);
-    }
+    plannedStoryCount += 1;
+    for (const ac of extractStoryAcceptance(body)) storyAcceptance.push(ac);
     if (body) planTextParts.push(body);
   }
 
@@ -1854,6 +1750,9 @@ export async function runOneRun(opts, deps = {}) {
           arm,
           sandbox: { owner: sandbox.owner, repo: sandbox.repo },
           sourceRoot,
+          // Story #153: the scenario's package.json contract decides whether
+          // package.json stays git-visible in the sandbox clone.
+          scenario,
         },
         deps.overlayDeps,
       );
@@ -1944,19 +1843,13 @@ export async function runOneRun(opts, deps = {}) {
     // The routing this cell EXPECTS (arm-aware, Ticket #123): the arm's
     // forced routing override when it declares one (`mandrel-story-routed`
     // forces `story` — the override IS the treatment), else the scenario
-    // contract's declared routing. The override also nulls the seed Epic id:
-    // the story-routed plan session authors its own standalone Story, so the
-    // discovery below must take the story path, never enter at a seed Epic.
+    // contract's declared routing. Mandrel 2.x has no Epic tier (Story #158),
+    // so there is no `'epic'` fallback: routing is `multi-story`, `story`, or
+    // null.
     const forcedRouting = routingOverrideForArm(arm);
     const effectiveRouting =
       forcedRouting ??
-      (typeof scenario?.routing === 'string'
-        ? scenario.routing
-        : scenario.epicId != null
-          ? 'epic'
-          : null);
-    const seedEpicId =
-      forcedRouting === 'story' ? null : (scenario.epicId ?? null);
+      (typeof scenario?.routing === 'string' ? scenario.routing : null);
     const betweenPhases = isMandrelArm(arm)
       ? ({ planEnvelope }) => {
           try {
@@ -1971,12 +1864,11 @@ export async function runOneRun(opts, deps = {}) {
               'plan',
             );
             const routing = effectiveRouting;
-            let epicId = seedEpicId;
             let storyNumber = null;
             let storyNumbers = null;
             let deliverTarget = null;
             if (routing === 'multi-story') {
-              // v2 `/plan` opens N sibling Stories and `/deliver` takes the id
+              // `/plan` opens N sibling Stories and `/deliver` takes the id
               // list; the space-separated ids interpolate straight into the
               // `/deliver <ids> --yes` prompt.
               storyNumbers = discoverStories(
@@ -1989,7 +1881,7 @@ export async function runOneRun(opts, deps = {}) {
               );
               deliverTarget =
                 storyNumbers.length > 0 ? storyNumbers.join(' ') : null;
-            } else if (routing === 'story' && epicId == null) {
+            } else if (routing === 'story') {
               storyNumber = discoverStandaloneStory(
                 {
                   owner: sandbox.owner,
@@ -1999,28 +1891,15 @@ export async function runOneRun(opts, deps = {}) {
                 { ghJson: planGhJson },
               );
               deliverTarget = storyNumber;
-            } else {
-              if (epicId == null) {
-                epicId = discoverPlannedEpicId(
-                  {
-                    owner: sandbox.owner,
-                    repo: sandbox.repo,
-                    sinceIso: runStartedAt,
-                  },
-                  { ghJson: planGhJson },
-                );
-              }
-              deliverTarget = epicId;
             }
             planSnapshot = snapshotPlanArtifacts(
               {
                 owner: sandbox.owner,
                 repo: sandbox.repo,
                 routing,
-                epicId,
                 storyNumber,
+                storyNumbers,
                 planDir,
-                sinceIso: runStartedAt,
                 capturedAt: runStartedAt,
               },
               {
@@ -2030,7 +1909,7 @@ export async function runOneRun(opts, deps = {}) {
                 logger,
               },
             );
-            deliveredTarget = { routing, epicId, storyNumber, storyNumbers };
+            deliveredTarget = { routing, storyNumber, storyNumbers };
             return { deliverTarget };
           } catch (err) {
             logger?.warn?.(
@@ -2038,11 +1917,10 @@ export async function runOneRun(opts, deps = {}) {
             );
             deliveredTarget = {
               routing: effectiveRouting,
-              epicId: seedEpicId,
               storyNumber: null,
               storyNumbers: null,
             };
-            return { deliverTarget: seedEpicId };
+            return { deliverTarget: null };
           }
         }
       : undefined;

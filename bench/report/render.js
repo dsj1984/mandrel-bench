@@ -451,8 +451,10 @@ const VERDICT_BADGE = Object.freeze({
  */
 /**
  * Summarize how Mandrel routed this scenario's cells (Story #48), so a reader
- * understands WHY ledger-derived dimensions are present or n/a. Returns '' when
- * no run carries a routingVerdict (older scorecards / control-only).
+ * understands WHY ledger-derived dimensions are present or n/a. The verdict is
+ * the observed plan shape (Story #158): 'story' (a single standalone Story) or
+ * 'multi-story' (a decomposition into N sibling Stories). Returns '' when no
+ * run carries a routingVerdict (older scorecards / control-only).
  *
  * @param {Array<object>} mandrelRuns
  * @returns {string}
@@ -465,10 +467,10 @@ function renderRoutingNote(mandrelRuns) {
   ];
   if (verdicts.length === 0) return '';
   if (verdicts.length === 1 && verdicts[0] === 'story') {
-    return '> **Mandrel routing: standalone Story** — planning-fidelity & autonomy recovered from the Story’s GitHub telemetry (no Epic ledger); overhead-ratio is **n/a** (unmeasurable on the standalone path).';
+    return '> **Mandrel routing: standalone Story** — planning-fidelity & autonomy recovered from the Story’s GitHub telemetry (no lifecycle ledger); overhead-ratio is **n/a** (unmeasurable on the standalone path).';
   }
-  if (verdicts.length === 1 && verdicts[0] === 'epic') {
-    return '> **Mandrel routing: Epic** — all value dimensions derived from the lifecycle ledger.';
+  if (verdicts.length === 1 && verdicts[0] === 'multi-story') {
+    return '> **Mandrel routing: multi-Story decomposition** — the plan opened N sibling Stories; value dimensions derived from the lifecycle ledger.';
   }
   return `> **Mandrel routing: mixed** across runs (${verdicts.join(', ')}).`;
 }
