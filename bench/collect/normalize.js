@@ -7,7 +7,7 @@
 // This module is the join point of the harness: it reads the raw artifacts a
 // single (scenario × arm × run) produced —
 //
-//   1. the run's lifecycle NDJSON ledger (temp/epic-<id>/lifecycle.ndjson),
+//   1. the run's lifecycle NDJSON ledger (temp/run-<id>/lifecycle.ndjson),
 //   2. the per-Story signals NDJSON files,
 //   3. the `claude -p --output-format json` usage/cost envelope (parsed by
 //      bench/driver/run-session.js#parseSessionEnvelope),
@@ -557,32 +557,64 @@ function nonNeg(v) {
 }
 
 /**
+ * Derive the routing verdict from the OBSERVED PLAN SHAPE (Story #158): the
+ * Story count the run's telemetry recorded and its relationship. N>1 sibling
+ * Stories ⇒ 'multi-story'; exactly one ⇒ 'story'; an unmeasured/empty count ⇒
+ * null. The count is read from the planning inputs the telemetry source
+ * produced — `plannedStoryCount` (what the plan opened), falling back to
+ * `deliveredStoryCount`. This replaces the retired ledger-presence derivation,
+ * which is meaningless on mandrel 2.x (every cell writes a lifecycle ledger).
+ *
+ * @param {{ plannedStoryCount?: number, deliveredStoryCount?: number }} [planningInput]
+ * @returns {'multi-story'|'story'|null}
+ */
+function verdictFromStoryCount(planningInput) {
+  const planned =
+    planningInput && typeof planningInput.plannedStoryCount === 'number'
+      ? planningInput.plannedStoryCount
+      : null;
+  const delivered =
+    planningInput && typeof planningInput.deliveredStoryCount === 'number'
+      ? planningInput.deliveredStoryCount
+      : null;
+  const count =
+    Number.isFinite(planned) && planned > 0
+      ? planned
+      : Number.isFinite(delivered) && delivered > 0
+        ? delivered
+        : 0;
+  if (count <= 0) return null;
+  return count > 1 ? 'multi-story' : 'story';
+}
+
+/**
  * Resolve WHICH telemetry source a run's value dimensions (planning fidelity,
  * autonomy) are measured from, and the routing-contract verdict that follows
  * from it (Epic #66 audit remediation, H3 — extracted out of `buildScorecard`
  * so the ledger/standalone routing decision has one home).
  *
- * A mandrel-arm run's Epic lifecycle ledger is the canonical source when
- * present; when it is absent (e.g. a trivial scope Mandrel routed through the
- * standalone single-Story path, which emits no Epic-scoped ledger), the
- * recovered standalone GitHub telemetry stands in instead. The control arm
- * has neither source. See `buildScorecard`'s own doc comment for the full
- * standalone-fallback rationale (Story #48) and the routing-contract
- * rationale (Story #76).
+ * A mandrel-arm run's workspace lifecycle ledger is the canonical source when
+ * present; when it is absent (e.g. a scope Mandrel routed through the recovered
+ * standalone path, which leaves no workspace ledger), the recovered standalone
+ * GitHub telemetry stands in instead. The control arm has neither source. See
+ * `buildScorecard`'s own doc comment for the full standalone-fallback rationale
+ * (Story #48) and the routing-contract rationale (Story #76). The routing
+ * verdict is derived from the observed plan shape, not ledger presence
+ * (Story #158) — see `verdictFromStoryCount`.
  *
  * @param {object} args
  * @param {{ arm: 'mandrel'|'control' }} args.run
  * @param {Array<object>} args.emitted        Emitted lifecycle records.
  * @param {object|null} args.standalone       Standalone-path telemetry, or null.
  * @param {string|null} args.scenarioRouting  The scenario contract's declared
- *   routing (`'story'|'epic'`), or null when undeclared.
+ *   routing (`'story'|'multi-story'`), or null when undeclared.
  * @param {object} args.planning              The raw plan-vs-actual inputs
  *   (used verbatim when the ledger, not standalone telemetry, is the source).
  * @returns {{
  *   ledgerObserved: boolean,
  *   standaloneObserved: boolean,
  *   valueObserved: boolean,
- *   routingVerdict: 'epic'|'story'|null,
+ *   routingVerdict: 'multi-story'|'story'|null,
  *   routingMismatch: boolean,
  *   planningInput: object
  * }}
@@ -600,32 +632,45 @@ function resolveTelemetrySource({
   // UNMEASURED and must score `null` rather than a misleading default. The
   // control arm never has a ledger.
   const ledgerObserved = emitted.length > 0;
-  // Standalone fallback (Story #48): when a mandrel-base arm produced no Epic
-  // ledger but the run recovered the standalone Story's GitHub telemetry,
-  // those signals stand in for the ledger so planning-fidelity + autonomy are
-  // MEASURED rather than null. The control-base arms have neither source.
+  // Standalone fallback (Story #48): when a mandrel-base arm produced no
+  // workspace ledger but the run recovered the standalone Story's GitHub
+  // telemetry, those signals stand in for the ledger so planning-fidelity +
+  // autonomy are MEASURED rather than null. The control-base arms have neither
+  // source.
   const standaloneObserved =
     !ledgerObserved && standalone != null && isMandrelArm(run.arm);
   const valueObserved = ledgerObserved || standaloneObserved;
-  // The routing Mandrel actually took for this cell — `epic` (ledger found),
-  // `story` (standalone telemetry), or null (control / undetermined).
-  const routingVerdict = ledgerObserved
-    ? 'epic'
-    : standaloneObserved
-      ? (standalone.routingVerdict ?? 'story')
-      : null;
+  // Whichever telemetry source stood in is what the value dimensions AND the
+  // routing verdict are measured from.
+  const planningInput = standaloneObserved ? standalone.planning : planning;
+  // The route Mandrel actually took for this cell, derived from the OBSERVED
+  // PLAN SHAPE — the Story count the run produced and its relationship — NOT
+  // from the mere presence of a lifecycle ledger (Story #158). On mandrel 2.x
+  // every cell writes a `temp/run-<id>` lifecycle ledger, so ledger presence
+  // no longer distinguishes a route; the retired `ledgerObserved ? 'epic'`
+  // derivation labelled every 2.x cell 'epic' the moment ledger discovery was
+  // repaired (Story #155). The honest signal is how many sibling Stories the
+  // plan produced: N>1 ⇒ 'multi-story', a single Story ⇒ 'story', an
+  // unmeasured/empty plan ⇒ null. The standalone adapter already reports this
+  // determination directly (it knows the recovered Story set), so its verdict
+  // is trusted verbatim when it stood in for the ledger.
+  const routingVerdict = !valueObserved
+    ? null
+    : standaloneObserved && typeof standalone?.routingVerdict === 'string'
+      ? standalone.routingVerdict
+      : verdictFromStoryCount(planningInput);
   // Routing contract enforcement (Epic #66, Story #76), ARM-AWARE per Ticket
   // #123: a mandrel-base record whose OBSERVED routing diverges from its
   // EXPECTED routing measured a different pipeline than the one promised, so
   // it is excluded from the cell's noise-band pool downstream. The expected
   // routing is the ARM's forced routing override when it declares one — for
   // `mandrel-story-routed` the forced `story` routing IS the treatment, so a
-  // story verdict on an `epic`-contract scenario is exactly what the arm
+  // story verdict on a multi-story-contract scenario is exactly what the arm
   // promises (no mismatch), while an arm-4 run that disobeys the override and
-  // routes as an Epic is still a mismatch (the treatment failed to apply).
-  // Arms with no override keep comparing against the scenario contract
-  // unchanged. Both the expected routing and the observed verdict must be
-  // known for a comparison to be meaningful — an undetermined verdict (no
+  // decomposes into multiple Stories is still a mismatch (the treatment failed
+  // to apply). Arms with no override keep comparing against the scenario
+  // contract unchanged. Both the expected routing and the observed verdict must
+  // be known for a comparison to be meaningful — an undetermined verdict (no
   // ledger, no standalone recovery) is never itself treated as a divergence.
   const expectedRouting = routingOverrideForArm(run.arm) ?? scenarioRouting;
   const routingMismatch =
@@ -633,7 +678,6 @@ function resolveTelemetrySource({
     typeof expectedRouting === 'string' &&
     routingVerdict != null &&
     routingVerdict !== expectedRouting;
-  const planningInput = standaloneObserved ? standalone.planning : planning;
 
   return {
     ledgerObserved,
@@ -806,8 +850,8 @@ function resolveTokenSplit({
  *   entry in the record's `warnings[]` when the mandrel arm has no ledger and
  *   no recovered standalone telemetry at all).
  * @param {string|null} [args.scenarioRouting]  The scenario contract's
- *   declared routing (`scenario.json`'s `routing: 'story' | 'epic'`, Epic #66
- *   Story #76). Compared against the OBSERVED `routingVerdict`: a mandrel-arm
+ *   declared routing (`scenario.json`'s `routing: 'story' | 'multi-story'`,
+ *   Epic #66 Story #76). Compared against the OBSERVED `routingVerdict`: a mandrel-arm
  *   record whose observed routing diverges from the contract is marked
  *   `routingMismatch: true` (it measured a different pipeline than the
  *   scenario declares — excluded from noise-band pooling downstream by

@@ -394,14 +394,14 @@ describe('scenario seeds (AC1: task seed shared by both arms)', () => {
   });
 
   describe('epic-scope scenario contract (Epic #66, Story #78)', () => {
-    // Ported to v2 semantics: mandrel v2.0.0 deleted the Epic tier, so the
-    // decomposition rung now routes `multi-story` — `/plan` opens N sibling
-    // Stories and `/deliver` takes the id list. The rung's INTENT (a task big
-    // enough to force a real 4-6 way decomposition) is unchanged; only the
-    // ticket shape it lands in moved.
-    it('declares routing "multi-story" and targetN 8', () => {
+    // Ported to mandrel 2.x single-delivery semantics (Story #158): mandrel
+    // deleted the Epic tier, and under its default-single split policy this
+    // large-capability rung is delivered as ONE guarded standalone Story, so
+    // the rung routes `story`. 'epic' stays as benchmark terminology for the
+    // SIZE of the delivered capability, not a ticket tier.
+    it('declares routing "story" and targetN 8', () => {
       const s = loadScenario('epic-scope');
-      assert.equal(s.routing, 'multi-story');
+      assert.equal(s.routing, 'story');
       assert.equal(s.targetN, 8);
     });
 
@@ -433,7 +433,7 @@ describe('scenario seeds (AC1: task seed shared by both arms)', () => {
       ]);
     });
 
-    it('carries a 20-25 item frozen acceptance contract sized for a 4-6-Story decomposition', () => {
+    it('carries a 20-25 item frozen acceptance contract sized for a large single-delivery capability', () => {
       const s = loadScenario('epic-scope');
       assert.ok(
         s.seed.acceptance.length >= 20 && s.seed.acceptance.length <= 25,
@@ -466,11 +466,11 @@ describe('machine-readable story-count contract (Epic #86, Story #95)', () => {
     });
   }
 
-  it('epic-scope decomposes into 4-6 Stories (mode "multi-story")', () => {
+  it('epic-scope lands as a single guarded Story under 2.x single-delivery (mode "standalone", Story #158)', () => {
     const c = loadScenario('epic-scope').storyCountContract;
-    assert.equal(c.mode, 'multi-story');
-    assert.equal(c.minStories, 4);
-    assert.equal(c.maxStories, 6);
+    assert.equal(c.mode, 'standalone');
+    assert.equal(c.minStories, 1);
+    assert.equal(c.maxStories, 1);
   });
 
   it('story-scope is a single standalone Story (mode "standalone")', () => {

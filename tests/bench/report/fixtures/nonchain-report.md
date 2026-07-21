@@ -22,7 +22,7 @@ n = 2 mandrel / 2 control · band = iqr (`center [low, high]`)
 
 > 🧭 **Floor/calibration rung** — instrumentation, not a value rung. Distributions below are the overhead-floor + monotonicity-curve calibration signal, not a value-delta claim.
 
-> **Mandrel routing: Epic** — all value dimensions derived from the lifecycle ledger.
+> **Mandrel routing: multi-Story decomposition** — the plan opened N sibling Stories; value dimensions derived from the lifecycle ledger.
 
 | Dimension | Mandrel | Control | Δ (M−C) | Noise floor | Verdict |
 | --- | --- | --- | --- | --- | --- |
@@ -40,7 +40,7 @@ n = 2 mandrel / 2 control · band = iqr (`center [low, high]`)
 
 n = 2 mandrel / 2 control · band = iqr (`center [low, high]`)
 
-> **Mandrel routing: standalone Story** — planning-fidelity & autonomy recovered from the Story’s GitHub telemetry (no Epic ledger); overhead-ratio is **n/a** (unmeasurable on the standalone path).
+> **Mandrel routing: standalone Story** — planning-fidelity & autonomy recovered from the Story’s GitHub telemetry (no lifecycle ledger); overhead-ratio is **n/a** (unmeasurable on the standalone path).
 
 | Dimension | Mandrel | Control | Δ (M−C) | Noise floor | Verdict |
 | --- | --- | --- | --- | --- | --- |

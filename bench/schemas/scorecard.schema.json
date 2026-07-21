@@ -91,7 +91,7 @@
         "epic-scope",
         "brownfield-longitudinal"
       ],
-      "description": "Scenario this run exercised — the Epic #66 3-rung corpus, by rising difficulty: 'hello-world' (the overhead floor + end-to-end smoke, instrumentation only — never a value-delta rung), 'story-scope' (routing: story — persisted-auth API with per-user notes; carries a `trap` block for plaintext-password + token-generation), and 'epic-scope' (routing: epic — multi-user project/task management API; carries a `trap` block for plaintext-password, idor, hardcoded-secret, pagination-bounds, cascade-delete, and session-invalidation). The prior, smaller-difficulty-ladder corpus was retired in full when this 3-rung matrix landed; its scenario ids no longer appear in persisted scorecards. 'brownfield-longitudinal' (issue #124, B4) is the touch-CHAIN rung over the frozen Ledgerline seed: its record carries a `chain` block instead of `touch2`, and its record-level `dimensions` is a per-touch mean (warning: chain-aggregate-dimensions)."
+      "description": "Scenario this run exercised — the Epic #66 3-rung corpus, by rising difficulty: 'hello-world' (the overhead floor + end-to-end smoke, instrumentation only — never a value-delta rung), 'story-scope' (routing: story — persisted-auth API with per-user notes; carries a `trap` block for plaintext-password + token-generation), and 'epic-scope' (routing: story under mandrel 2.x single-delivery — 'epic' names the size of the delivered capability, not an Epic ticket tier; multi-user project/task management API; carries a `trap` block for plaintext-password, idor, hardcoded-secret, pagination-bounds, cascade-delete, and session-invalidation). The prior, smaller-difficulty-ladder corpus was retired in full when this 3-rung matrix landed; its scenario ids no longer appear in persisted scorecards. 'brownfield-longitudinal' (issue #124, B4) is the touch-CHAIN rung over the frozen Ledgerline seed: its record carries a `chain` block instead of `touch2`, and its record-level `dimensions` is a per-touch mean (warning: chain-aggregate-dimensions)."
     },
     "arm": {
       "type": "string",
@@ -105,8 +105,8 @@
     },
     "routingVerdict": {
       "type": ["string", "null"],
-      "enum": ["epic", "story", null],
-      "description": "Which delivery route Mandrel actually took for this mandrel-arm cell: 'epic' (an Epic lifecycle ledger was found), 'story' (the standalone single-Story path — telemetry recovered from GitHub per the standalone adapter), or null (control arm, or routing could not be determined). Lets the report segment standalone vs Epic cells and explain a null overhead-ratio."
+      "enum": ["multi-story", "story", null],
+      "description": "Which delivery route Mandrel actually took for this mandrel-arm cell, derived from the OBSERVED PLAN SHAPE — the Story count and its relationship (Story #158), NOT from the mere presence of a lifecycle ledger: 'multi-story' (the plan produced N>1 sibling Stories), 'story' (a single standalone Story), or null (control arm, or routing could not be determined). Lets the report segment single-Story vs decomposed cells and explain a null overhead-ratio. Mandrel 2.x has no Epic tier, so there is no 'epic' verdict."
     },
     "warnings": {
       "type": "array",
@@ -270,7 +270,7 @@
           "type": ["number", "null"],
           "minimum": 0,
           "maximum": 1,
-          "description": "Story count/sizing vs the scenario's machine-readable `storyCountContract` (epic-scope 4-6 Stories; the story-routed rungs a single standalone Story). Null when no contract was supplied (the sub-score folds out of the spine mean)."
+          "description": "Story count/sizing vs the scenario's machine-readable `storyCountContract` (every current rung a single standalone Story under mandrel 2.x single-delivery routing, including epic-scope). Null when no contract was supplied (the sub-score folds out of the spine mean)."
         },
         "constraintSurfacing": {
           "type": ["number", "null"],

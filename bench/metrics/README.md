@@ -52,7 +52,7 @@ The noise-band is implemented in [`variance.js`](./variance.js).
 
 | Input                  | Source                                                                 |
 | ---------------------- | ---------------------------------------------------------------------- |
-| Timings, dispatches    | `temp/epic-<id>/lifecycle.ndjson` (append-only NDJSON)                 |
+| Timings, dispatches    | `temp/run-<id>/lifecycle.ndjson` (append-only NDJSON)                  |
 | Autonomy events        | `lifecycle.ndjson` (`agent::blocked`, HITL stops) + per-Story `signals.ndjson` |
 | Cost (tokens, USD)     | `claude -p --output-format json` usage/cost envelope                   |
 | Quality (objective)    | Scenario's **frozen acceptance suite** (deterministic HTTP/Playwright) |
@@ -420,14 +420,14 @@ overheadFloorUsd    = center(efficiency.costUsd,     hello-world, mandrel)
 
 The harness runs dimensions across a difficulty-ordered scenario ladder. Each
 rung is a scenario tagged with a `difficulty` integer, a `rung` label, a
-`routing` contract (`"story"` or `"epic"` — the delivery route the scenario
-is expected to take), and a `targetN`:
+`routing` contract (`"story"` or `"multi-story"` — the delivery route the
+scenario is expected to take), and a `targetN`:
 
 | Rung label   | Difficulty | Scenario       | Routing | targetN | Purpose                                                         |
 | ------------ | ---------- | -------------- | ------- | ------- | ---------------------------------------------------------------- |
 | `floor`      | 1          | `hello-world`  | story   | 4       | Instrumentation only — overhead floor + pipeline smoke test. **Never a value-delta rung**; reported under the floor/calibration framing (Epic #66, Story #76). |
 | `story-scope`| 3          | `story-scope`  | story   | 8       | Persisted-auth API with per-user notes — the story-routed value rung; traps `plaintext-password` + `token-generation`. |
-| `epic-scope` | 5          | `epic-scope`   | epic    | 8       | Multi-user project/task management API sized to decompose into 4–6 Stories — the epic-routed value rung; traps `plaintext-password`, `hardcoded-secret`, `idor`, `pagination-bounds`, `cascade-delete`, `session-invalidation`. |
+| `epic-scope` | 5          | `epic-scope`   | story   | 8       | Multi-user project/task management API — the large-capability value rung. 'epic' names the size of the delivered capability, not an Epic ticket tier: under mandrel 2.x single-delivery routing it lands in ONE guarded standalone Story (Story #158). Traps `plaintext-password`, `hardcoded-secret`, `idor`, `pagination-bounds`, `cascade-delete`, `session-invalidation`. |
 
 The prior two-scenario ladder (plus the single-defect spike scenario it grew
 alongside) was retired in full when this matrix landed (Epic #66, Story #79):
@@ -440,8 +440,10 @@ start, 2026-07-09).
 
 **Routing contract enforcement (Story #76).** Each scenario's `routing`
 declares the delivery route the harness EXPECTS the mandrel arm to take. The
-OBSERVED `routingVerdict` (from the lifecycle ledger or the standalone-Story
-telemetry adapter) is compared against it at collect time; a divergent record
+OBSERVED `routingVerdict` — derived from the observed plan shape (the Story
+count and its relationship: N>1 ⇒ `multi-story`, a single Story ⇒ `story`;
+Story #158), from the lifecycle ledger or the standalone-Story telemetry
+adapter — is compared against it at collect time; a divergent record
 is marked `routingMismatch: true` and excluded from the cell's noise-band pool
 (`bench/report/render.js` `groupCells`), with the per-cell mismatch rate
 surfaced explicitly — a rate above 25% is itself a scope-triage calibration

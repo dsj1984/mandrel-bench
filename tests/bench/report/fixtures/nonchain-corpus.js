@@ -88,7 +88,7 @@ export function nonChainCorpus() {
         arm: 'mandrel',
         runId: `hello-world-mandrel-r${i + 1}`,
         timestamp: `2026-07-0${i + 1}T10:00:00.000Z`,
-        routingVerdict: 'epic',
+        routingVerdict: 'multi-story',
         quality: 1,
         planningFidelity: 0.9 + i * 0.02,
         maintainability: 0.9,
