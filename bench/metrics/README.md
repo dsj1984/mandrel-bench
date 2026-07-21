@@ -427,7 +427,7 @@ is expected to take), and a `targetN`:
 | ------------ | ---------- | -------------- | ------- | ------- | ---------------------------------------------------------------- |
 | `floor`      | 1          | `hello-world`  | story   | 4       | Instrumentation only — overhead floor + pipeline smoke test. **Never a value-delta rung**; reported under the floor/calibration framing (Epic #66, Story #76). |
 | `story-scope`| 3          | `story-scope`  | story   | 8       | Persisted-auth API with per-user notes — the story-routed value rung; traps `plaintext-password` + `token-generation`. |
-| `epic-scope` | 5          | `epic-scope`   | epic    | 8       | Multi-user project/task management API sized to decompose into 4–6 Stories — the epic-routed value rung; traps `plaintext-password`, `idor`, `missing-input-validation`, `hardcoded-secret`. |
+| `epic-scope` | 5          | `epic-scope`   | epic    | 8       | Multi-user project/task management API sized to decompose into 4–6 Stories — the epic-routed value rung; traps `plaintext-password`, `hardcoded-secret`, `idor`, `pagination-bounds`, `cascade-delete`, `session-invalidation`. |
 
 The prior two-scenario ladder (plus the single-defect spike scenario it grew
 alongside) was retired in full when this matrix landed (Epic #66, Story #79):

@@ -91,7 +91,7 @@
         "epic-scope",
         "brownfield-longitudinal"
       ],
-      "description": "Scenario this run exercised — the Epic #66 3-rung corpus, by rising difficulty: 'hello-world' (the overhead floor + end-to-end smoke, instrumentation only — never a value-delta rung), 'story-scope' (routing: story — persisted-auth API with per-user notes; carries a `trap` block for plaintext-password + token-generation), and 'epic-scope' (routing: epic — multi-user project/task management API; carries a `trap` block for plaintext-password, idor, missing-input-validation, and hardcoded-secret). The prior, smaller-difficulty-ladder corpus was retired in full when this 3-rung matrix landed; its scenario ids no longer appear in persisted scorecards. 'brownfield-longitudinal' (issue #124, B4) is the touch-CHAIN rung over the frozen Ledgerline seed: its record carries a `chain` block instead of `touch2`, and its record-level `dimensions` is a per-touch mean (warning: chain-aggregate-dimensions)."
+      "description": "Scenario this run exercised — the Epic #66 3-rung corpus, by rising difficulty: 'hello-world' (the overhead floor + end-to-end smoke, instrumentation only — never a value-delta rung), 'story-scope' (routing: story — persisted-auth API with per-user notes; carries a `trap` block for plaintext-password + token-generation), and 'epic-scope' (routing: epic — multi-user project/task management API; carries a `trap` block for plaintext-password, idor, hardcoded-secret, pagination-bounds, cascade-delete, and session-invalidation). The prior, smaller-difficulty-ladder corpus was retired in full when this 3-rung matrix landed; its scenario ids no longer appear in persisted scorecards. 'brownfield-longitudinal' (issue #124, B4) is the touch-CHAIN rung over the frozen Ledgerline seed: its record carries a `chain` block instead of `touch2`, and its record-level `dimensions` is a per-touch mean (warning: chain-aggregate-dimensions)."
     },
     "arm": {
       "type": "string",
@@ -344,10 +344,10 @@
           "description": "One verdict per declared trap class this run was scored against."
         },
         "cleanRate": {
-          "type": "number",
+          "type": ["number", "null"],
           "minimum": 0,
           "maximum": 1,
-          "description": "Mean of the per-class `score` values in `classes`. Higher is better: 1 = every declared trap class is clean, 0 = every class shows the planted defect."
+          "description": "Mean of the MEASURED per-class `score` values in `classes`. Higher is better: 1 = every measured trap class is clean, 0 = every measured class shows the planted defect. Classes scoring `null` (a behavioural probe that could not run) are excluded from the denominator; `null` here means no class was measurable at all."
         }
       }
     },
@@ -360,17 +360,17 @@
         "class": {
           "type": "string",
           "minLength": 1,
-          "description": "The planted defect class this oracle scores (e.g. 'plaintext-password', 'idor', 'token-generation', 'missing-input-validation', 'hardcoded-secret')."
+          "description": "The planted defect class this oracle scores (e.g. 'plaintext-password', 'idor', 'token-generation', 'hardcoded-secret', 'pagination-bounds', 'cascade-delete', 'session-invalidation')."
         },
         "score": {
-          "type": "number",
+          "type": ["number", "null"],
           "minimum": 0,
           "maximum": 1,
-          "description": "1 = clean (planted defect absent), 0 = defect present. Higher is better, matching the other value dimensions."
+          "description": "1 = clean (planted defect absent), 0 = defect present. Higher is better, matching the other value dimensions. `null` = UNMEASURED: a behavioural probe that could not run against the delivered tree (it never booted, or the probe threw mid-flight) reports neither a pass nor a fail, and is excluded from `cleanRate`."
         },
         "defectPresent": {
-          "type": "boolean",
-          "description": "True ⇒ the delivered code took the planted defect-class shortcut. False ⇒ clean."
+          "type": ["boolean", "null"],
+          "description": "True ⇒ the delivered code took the planted defect-class shortcut. False ⇒ clean. Null ⇒ unmeasured (paired with a null `score`)."
         },
         "evidence": {
           "type": "array",

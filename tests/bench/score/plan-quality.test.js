@@ -46,7 +46,9 @@ const CONFORMING_EPIC_SNAPSHOT = {
     'Tech spec: passwords are stored using a bcrypt hash with a per-user salt. ' +
     'Tokens are generated from crypto.randomBytes for unpredictable session ids. ' +
     'Every id-addressed resource enforces a per-user ownership check. ' +
-    'Every write endpoint runs input validation and rejects invalid payloads. ' +
+    'Task listing clamps pagination to a maximum page size and rejects invalid ?page values. ' +
+    'Deleting a project cascades to its tasks so no orphan rows survive. ' +
+    'Bearer credentials are verified server-side; a tampered credential is rejected, never decoded. ' +
     'The token signing key is read from an environment variable, never inlined.',
   storyAcceptance: [
     'POST /auth/register with valid credentials returns 201 and persists the user',
@@ -68,8 +70,10 @@ const EPIC_CONTRACT = { mode: 'epic', minStories: 4, maxStories: 6 };
 const EPIC_TRAP_CLASSES = [
   'plaintext-password',
   'idor',
-  'missing-input-validation',
   'hardcoded-secret',
+  'pagination-bounds',
+  'cascade-delete',
+  'session-invalidation',
 ];
 
 /** Concatenate a snapshot's plan text the way the real extractor would. */
@@ -177,7 +181,7 @@ describe('obligationsForTrapClasses / computeConstraintSurfacing', () => {
       ...EPIC_TRAP_CLASSES,
       'no-such-class',
     ]);
-    assert.equal(obs.length, 4);
+    assert.equal(obs.length, 6);
     assert.deepEqual(
       obs.map((o) => o.class),
       EPIC_TRAP_CLASSES,
@@ -192,8 +196,8 @@ describe('obligationsForTrapClasses / computeConstraintSurfacing', () => {
       obligations: obligationsForTrapClasses(EPIC_TRAP_CLASSES),
       planText: planTextOf(CONFORMING_EPIC_SNAPSHOT),
     });
-    assert.equal(cs.total, 4);
-    assert.equal(cs.surfaced, 4);
+    assert.equal(cs.total, 6);
+    assert.equal(cs.surfaced, 6);
     assert.equal(cs.score, 1);
     assert.deepEqual(cs.missing, []);
   });
@@ -203,11 +207,12 @@ describe('obligationsForTrapClasses / computeConstraintSurfacing', () => {
       obligations: obligationsForTrapClasses(EPIC_TRAP_CLASSES),
       // A plan text that omits any hardcoded-secret / env-var language.
       planText:
-        'passwords are bcrypt-hashed; tokens use crypto.randomBytes; ' +
-        'every resource enforces an ownership check and input validation.',
+        'passwords are bcrypt-hashed; every resource enforces an ownership check; ' +
+        'pagination is clamped; deleting a project cascades to its tasks; ' +
+        'a tampered credential is rejected because the signature is verified.',
     });
-    assert.equal(cs.surfaced, 3);
-    approx(cs.score, 3 / 4);
+    assert.equal(cs.surfaced, 5);
+    approx(cs.score, 5 / 6);
     assert.deepEqual(cs.missing, ['hardcoded-secret']);
   });
 
