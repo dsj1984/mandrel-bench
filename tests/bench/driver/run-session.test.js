@@ -795,6 +795,11 @@ test('isTransientClaudeError — flags rate/session limit, overload, network', (
     'connect ETIMEDOUT 1.2.3.4:443',
     'read ECONNRESET',
     'getaddrinfo EAI_AGAIN api.anthropic.com',
+    // A claude-session API failure with NO http status: the CLI's own
+    // structured `terminal_reason":"api_error"` is the transient signal, not a
+    // 429/529 code (observed live: a mid-response server error).
+    'claude -p exited with status 1: {"is_error":true,"api_error_status":null,"result":"API Error: Server error mid-response. The response above may be incomplete.","terminal_reason":"api_error"}',
+    'API Error: Server error mid-response. The response above may be incomplete.',
   ];
   for (const m of transient) {
     assert.equal(

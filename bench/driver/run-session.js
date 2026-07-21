@@ -307,16 +307,22 @@ export function buildClaudeArgs(input) {
  * message, so the 429 / "session limit" / "overloaded" text is matched there.
  *
  * Deliberately narrow: it matches `429`/`529`, explicit rate/session-limit and
- * overload phrasing, and network errnos — NOT ambiguous 5xx codes, which a
- * *delivered app* could legitimately return through the acceptance oracle (that
- * is a genuine failure, not an infra blip).
+ * overload phrasing, network errnos, and the claude CLI's OWN structured
+ * `terminal_reason":"api_error"` marker (a session that died from an upstream
+ * API/server error, e.g. a mid-response server error with a null http status)
+ * — but NOT ambiguous 5xx codes, which a *delivered app* could legitimately
+ * return through the acceptance oracle (that is a genuine failure, not an infra
+ * blip). The `api_error` marker is safe against that exclusion because it is the
+ * `claude -p` envelope's own terminal reason for ITS api call, never an app
+ * HTTP response — the oracle scores the app in-process and produces no such
+ * envelope.
  *
  * @param {unknown} err
  * @returns {boolean}
  */
 export function isTransientClaudeError(err) {
   const msg = String(err?.message ?? err ?? '');
-  return /\b(429|529)\b|rate.?limit(ed)?|session limit|overloaded|too many requests|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up|network error|timed out/i.test(
+  return /\b(429|529)\b|rate.?limit(ed)?|session limit|overloaded|too many requests|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up|network error|timed out|terminal_reason"\s*:\s*"api_error"|server error mid-response/i.test(
     msg,
   );
 }
