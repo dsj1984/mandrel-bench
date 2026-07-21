@@ -5,7 +5,7 @@
  * PostToolUse hook entries. Resolves the active Epic + Story from
  * environment variables (`CC_EPIC_ID` / `CC_STORY_ID`), pairs Pre/Post
  * tool-call events, and appends one `kind:"trace"` NDJSON line per tool
- * call to `temp/epic-<eid>/stories/story-<sid>/traces.ndjson` via the
+ * call to `temp/run-<id>/stories/story-<sid>/traces.ndjson` via the
  * `signals-writer.appendTrace` helper.
  *
  * Robustness contract (Tech Spec #1032 §observability + §security):
@@ -381,15 +381,16 @@ export async function handlePost(event, active) {
  */
 export async function main(event) {
   try {
-    const active = resolveActiveStory();
-    if (!active) return; // No active Story => zero filesystem calls.
     if (!event || typeof event !== 'object') return;
+    const active = resolveActiveStory();
 
     const phase = event.hook_event_name;
     if (phase === 'PreToolUse') {
-      handlePre(event);
+      // Pre-pairing only matters for the trace-line duration, which only
+      // the Story-scoped trace path records.
+      if (active) handlePre(event);
     } else if (phase === 'PostToolUse') {
-      await handlePost(event, active);
+      if (active) await handlePost(event, active);
     }
     // Any other phase is silently ignored — the hook is registered for
     // Pre/Post only; receiving anything else is a configuration error

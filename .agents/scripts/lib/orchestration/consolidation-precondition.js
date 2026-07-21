@@ -12,7 +12,7 @@
  * reconcile — dispatching it is pure token spend for a no-op. This module
  * computes that decision **deterministically**, off the same two inputs the
  * critic itself reads (the draft array and the Epic body's Delivery Slicing
- * table), so `helpers/plan-epic.md` Phase 8.3 can skip the sub-agent
+ * table), so the planning workflow can skip the sub-agent
  * dispatch when it is provably safe to.
  *
  * **Fail-open by design.** Every ambiguous case — a missing or unparseable
@@ -30,7 +30,7 @@
  * Epic body off disk / the GitHub API.
  */
 
-import { DELIVERY_SLICING_RE as DELIVERY_SLICING_HEADING_RE } from '../epic-body-sections.js';
+import { DELIVERY_SLICING_RE as DELIVERY_SLICING_HEADING_RE } from '../ticket-body-sections.js';
 
 /** A row is a markdown table line: starts with `|` once trimmed. */
 const TABLE_ROW_RE = /^\|/;
@@ -123,7 +123,7 @@ export function parseDeliverySlicingTable(epicBody) {
 
 /**
  * True when `story` is the recognized wave-0 BDD scaffold Story — identified
- * by the literal `bdd-scaffold` goal token the `epic-plan-decompose-author`
+ * by the literal `bdd-scaffold` goal token the decomposer prompt
  * skill's WAVE-0 BDD SCAFFOLD STORY section requires. Scaffold Stories are
  * not a Delivery Slicing slice, so they are excluded from the count
  * comparison — BDD-adopting consumer repos still benefit from the
@@ -145,7 +145,7 @@ function isBddScaffoldStory(story) {
  *
  * @param {object} input
  * @param {object[]} input.draftStories - The draft `tickets.json` array
- *   (`epic-plan-decompose-author`'s output) — raw Story ticket objects with
+ *   (the decomposer's output) — raw Story ticket objects with
  *   top-level `slug` / `depends_on` / `body` (serialized string).
  * @param {string} input.epicBody - The Epic body carrying the folded Tech
  *   Spec sections (`## Delivery Slicing` onward).

@@ -2,30 +2,30 @@
 /* node:coverage ignore file */
 
 /**
- * plan-context.js — step 1 of the collapsed `/plan` pipeline (Epic #4474,
- * M3 PR2): the single emit-context CLI.
+ * plan-context.js — step 1 of the collapsed `/plan` pipeline.
  *
- * Folds the retired 12-phase pipeline's two emit-context halves plus
- * the three previously-no-CLI library calls
- * (`findSimilarOpenEpics`, clarity scoring, re-plan detection) into ONE
- * stdout-pure JSON envelope. The PR7 cutover retired the delegate CLIs —
- * this is the only emit-context surface.
+ * Emits one stdout-pure JSON envelope for the `/plan` authoring middle.
  *
- * Two entry forms (exactly one is required):
+ * Two operator modes (exactly one is required):
  *
- *   --epic <id>          Existing-Epic mode. Envelope carries `epic`,
- *                        `clarity` (Epic Clarity Gate rubric), `replan`
- *                        (already-planned signals) and `planState`.
+ *   --seed "<text>"           Chat/text ideation. Dup search runs off the
+ *                             raw seed; envelope carries `seed`.
  *
- *   --one-pager <path>   Ideation mode — the Epic does not exist yet
- *                        (creation moves to the persist half). Envelope
- *                        carries `onePager` and `duplicates[]` (cross-Epic
- *                        dup search). No clarity score: the ideation path
- *                        is definitionally clear.
+ *   --seed-file <path>        Same as --seed, but the corpus is read from
+ *                             disk (audit-to-stories handoff, notes).
+ *
+ *   --tickets 123[,456…]      Analyze existing issue(s) into proper
+ *                             Stories. Envelope carries `sourceTickets[]`.
  *
  * Flags:
+ *   --out <path>     Also write the envelope to <path> (parent dirs created).
+ *                    `/plan` points this at `<plan-dir>/plan-context.json`,
+ *                    which is where `plan-persist.js` auto-discovers the
+ *                    `--tickets` source ids from (Story #4554). Without a
+ *                    captured envelope persist cannot know a `--tickets` run
+ *                    happened, and superseding degrades to the
+ *                    `--source-tickets` flag.
  *   --pretty         Pretty-print the JSON envelope.
- *   --full-context   Bypass the planning-context budget (unbounded body).
  *
  * stdout is reserved for the JSON envelope (Story #2278 discipline):
  * `routeAllOutputToStderr()` runs before any pipeline code so a captured
@@ -40,98 +40,141 @@
 // first import so the check runs before any third-party-importing sibling
 // module is evaluated (Story #3432).
 import './lib/runtime-deps/ensure-installed.js';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { runAsCli } from './lib/cli-utils.js';
 import {
   resolveConfig,
   validateOrchestrationConfig,
 } from './lib/config-resolver.js';
-import { routeAllOutputToStderr } from './lib/Logger.js';
+import { Logger, routeAllOutputToStderr } from './lib/Logger.js';
 import { buildPlanContext } from './lib/orchestration/plan-context.js';
 import { recordPlanInvocation } from './lib/orchestration/plan-metrics.js';
 import { createProvider } from './lib/provider-factory.js';
 
 /**
- * Build the envelope and write it to `stdout` as a single JSON line
- * (or pretty-printed with --pretty). Exported for tests: the stdout-purity
- * test injects a fake provider and a capture stream and asserts the
- * captured output is exactly one `JSON.parse`-able payload.
+ * Parse a comma-/space-separated ticket id list into positive integers.
  *
- * @param {{
- *   mode: 'epic'|'one-pager',
- *   epicId?: number,
- *   onePagerPath?: string,
- *   onePagerContent?: string,
- *   provider: object,
- *   config: object,
- *   settings: object,
- *   fullContext?: boolean,
- *   pretty?: boolean,
- *   cwd?: string,
- *   stdout?: { write: (chunk: string) => void },
- * }} args
+ * @param {string} raw
+ * @returns {number[]}
+ */
+export function parseTicketIds(raw) {
+  if (typeof raw !== 'string' || raw.trim().length === 0) {
+    throw new Error('--tickets requires one or more positive issue ids.');
+  }
+  const ids = raw
+    .split(/[,\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => Number(s));
+  if (ids.some((n) => !Number.isInteger(n) || n <= 0)) {
+    throw new Error(
+      `--tickets expects positive integer ids; got ${JSON.stringify(raw)}`,
+    );
+  }
+  return [...new Set(ids)];
+}
+
+/**
+ * Build the envelope and write it to `stdout` as a single JSON line
+ * (or pretty-printed with --pretty). Exported for tests.
+ *
+ * @param {object} args
  * @returns {Promise<object>} the emitted envelope.
  */
 export async function emitPlanContext({
   mode,
-  epicId,
-  onePagerPath,
-  onePagerContent,
+  seedFilePath,
+  seedFileContent,
+  seedText,
+  ticketIds,
   provider,
   config,
   settings,
-  fullContext = false,
   pretty = false,
+  outPath = null,
   cwd,
   stdout = process.stdout,
 }) {
   const envelope = await buildPlanContext({
     mode,
-    epicId,
-    onePagerPath,
-    onePagerContent,
+    seedFilePath,
+    seedFileContent,
+    seedText,
+    ticketIds,
     provider,
     config,
     settings,
-    fullContext,
     cwd,
   });
   const json = pretty
     ? JSON.stringify(envelope, null, 2)
     : JSON.stringify(envelope);
   stdout.write(`${json}\n`);
+  if (outPath) await writeEnvelopeFile(outPath, json);
   return envelope;
+}
+
+/**
+ * Persist the envelope to `--out` so `plan-persist.js` can derive the
+ * `--tickets` source ids from it without an operator re-typing them.
+ *
+ * Writing is part of emitting, not a best-effort extra: a failed write means
+ * persist will silently see no source tickets, so it throws rather than
+ * warning past the problem.
+ *
+ * @param {string} outPath
+ * @param {string} json
+ */
+async function writeEnvelopeFile(outPath, json) {
+  const resolved = path.resolve(outPath);
+  try {
+    await mkdir(path.dirname(resolved), { recursive: true });
+    await writeFile(resolved, `${json}\n`, 'utf8');
+  } catch (err) {
+    throw new Error(
+      `[plan-context] cannot write envelope to ${resolved}: ${err.message}`,
+    );
+  }
+  Logger.info(`[plan-context] wrote envelope to ${resolved}`);
 }
 
 async function main() {
   const { values } = parseArgs({
     options: {
-      epic: { type: 'string' },
-      'one-pager': { type: 'string' },
+      seed: { type: 'string' },
+      'seed-file': { type: 'string' },
+      tickets: { type: 'string' },
+      out: { type: 'string' },
       pretty: { type: 'boolean', default: false },
-      'full-context': { type: 'boolean', default: false },
     },
     strict: true,
   });
 
-  const hasEpic = typeof values.epic === 'string' && values.epic.length > 0;
-  const hasOnePager =
-    typeof values['one-pager'] === 'string' && values['one-pager'].length > 0;
-  if (hasEpic === hasOnePager) {
+  const seedText = values.seed || null;
+  const seedFilePath = values['seed-file'] || null;
+  const hasSeed = typeof seedText === 'string' && seedText.length > 0;
+  const hasSeedFile =
+    typeof seedFilePath === 'string' && seedFilePath.length > 0;
+  const hasTickets =
+    typeof values.tickets === 'string' && values.tickets.trim().length > 0;
+  const entryForms = [hasSeed, hasSeedFile, hasTickets].filter(Boolean).length;
+  if (entryForms !== 1) {
     throw new Error(
-      'Pass exactly one of --epic <id> or --one-pager <path>. ' +
-        '(--epic: existing-Epic mode; --one-pager: ideation mode.)',
+      'Pass exactly one of --seed "<text>", --seed-file <path>, or --tickets <ids>.',
     );
   }
 
-  let epicId;
-  if (hasEpic) {
-    epicId = Number.parseInt(values.epic, 10);
-    if (!Number.isInteger(epicId)) {
-      throw new Error(
-        `--epic must be a numeric issue id (got "${values.epic}").`,
-      );
-    }
+  let mode;
+  let ticketIds;
+  if (hasTickets) {
+    mode = 'tickets';
+    ticketIds = parseTicketIds(values.tickets);
+  } else if (hasSeedFile) {
+    mode = 'seed-file';
+  } else {
+    mode = 'seed';
   }
 
   // stdout is reserved for the JSON envelope: flip every Logger sink that
@@ -158,27 +201,23 @@ async function main() {
   }
   const provider = createProvider(config);
 
-  // Plan-metrics ledger (#4474 PR1): stamp entry/exit + mode so the folded
-  // emit surface is measured against the 12-phase baseline. One-pager mode
-  // has no Epic yet, so the record routes to the standalone stream
-  // (epicId null) exactly like `story-plan.js`.
   await recordPlanInvocation(
     {
       cli: 'plan-context',
-      mode: hasEpic ? 'epic' : 'one-pager',
-      epicId: hasEpic ? epicId : null,
+      mode,
       config,
     },
     () =>
       emitPlanContext({
-        mode: hasEpic ? 'epic' : 'one-pager',
-        epicId,
-        onePagerPath: hasOnePager ? values['one-pager'] : undefined,
+        mode,
+        seedFilePath: hasSeedFile ? seedFilePath : undefined,
+        seedText: hasSeed ? seedText : undefined,
+        ticketIds,
         provider,
         config,
         settings,
-        fullContext: values['full-context'],
         pretty: values.pretty,
+        outPath: values.out || null,
       }),
   );
 }

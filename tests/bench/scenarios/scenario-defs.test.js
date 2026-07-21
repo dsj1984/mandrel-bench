@@ -355,9 +355,14 @@ describe('scenario seeds (AC1: task seed shared by both arms)', () => {
   });
 
   describe('epic-scope scenario contract (Epic #66, Story #78)', () => {
-    it('declares routing "epic" and targetN 8', () => {
+    // Ported to v2 semantics: mandrel v2.0.0 deleted the Epic tier, so the
+    // decomposition rung now routes `multi-story` — `/plan` opens N sibling
+    // Stories and `/deliver` takes the id list. The rung's INTENT (a task big
+    // enough to force a real 4-6 way decomposition) is unchanged; only the
+    // ticket shape it lands in moved.
+    it('declares routing "multi-story" and targetN 8', () => {
       const s = loadScenario('epic-scope');
-      assert.equal(s.routing, 'epic');
+      assert.equal(s.routing, 'multi-story');
       assert.equal(s.targetN, 8);
     });
 
@@ -405,9 +410,9 @@ describe('machine-readable story-count contract (Epic #86, Story #95)', () => {
     });
   }
 
-  it('epic-scope decomposes into 4-6 Stories (mode "epic")', () => {
+  it('epic-scope decomposes into 4-6 Stories (mode "multi-story")', () => {
     const c = loadScenario('epic-scope').storyCountContract;
-    assert.equal(c.mode, 'epic');
+    assert.equal(c.mode, 'multi-story');
     assert.equal(c.minStories, 4);
     assert.equal(c.maxStories, 6);
   });

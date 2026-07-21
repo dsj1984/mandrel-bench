@@ -24,7 +24,7 @@ confirmation:
    already gone (or never existed) but whose `origin/<branch>` still
    points at a merged PR — even without `--remote`; `--remote` is still
    required to *delete* them. A third branch, whose content already
-   landed in `<base>` by another route (a squash-merged Epic PR, a
+   landed in `<base>` by another route (a squash-merged PR, a
    cherry-pick, a manual `merge --squash`), is caught by a
    **content-equivalence probe** (`git merge-tree --write-tree`,
    git ≥ 2.38) even when it has no merged PR of its own and is not a
@@ -40,7 +40,7 @@ passed, **all four phases run** sequentially. Pass any of
 narrow the run.
 
 > **When to run**: After a session that landed several PRs, or before
-> starting a new Epic / Story, to put the local checkout into a known
+> starting a new Story, to put the local checkout into a known
 > tidy state.
 >
 > **Persona**: `devops-engineer` · **Skills**:
@@ -226,10 +226,9 @@ The merged-branch sweep recognizes three detection signals, in order:
    `git merge-tree --write-tree <base> <branch>` (git ≥ 2.38) produces a
    tree identical to `<base>`'s own tree — i.e. applying the branch's
    changes on top of `<base>` is a content no-op. This catches
-   `story-<id>` branches merged into `epic/<id>` whose Epic PR
-   **squash-merged** to `main` (the story commits are not ancestors of
-   `main` and the story branch usually has no PR of its own), and any
-   other branch whose content landed via a different route (a renamed
+   `story-<id>` branches whose PR **squash-merged** to `main` (the story
+   commits are not ancestors of `main`), and any other branch whose content
+   landed via a different route (a renamed
    head, a cherry-pick, a manual `merge --squash`). When git rejects
    `--write-tree` (git < 2.38) or the simulated merge conflicts, the
    probe is inconclusive and the branch keeps its existing `not-merged`

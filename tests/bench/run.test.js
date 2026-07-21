@@ -387,6 +387,27 @@ test('resolveDeliveryBranch: epic routing → epic/<id>, story routing → story
   assert.equal(resolveDeliveryBranch(null), null);
 });
 
+test('resolveDeliveryBranch: multi-story routing → the LAST Story branch (v2 fallback)', () => {
+  // v2 has no integration branch: N sibling story-<id> branches each PR to
+  // main. The unlanded fallback picks the highest-numbered branch — delivered
+  // last in dependency order, so built on the most previously-merged work.
+  assert.equal(
+    resolveDeliveryBranch({
+      routing: 'multi-story',
+      storyNumbers: [72, 74, 73],
+    }),
+    'story-74',
+  );
+  assert.equal(
+    resolveDeliveryBranch({ routing: 'multi-story', storyNumbers: [] }),
+    null,
+  );
+  assert.equal(
+    resolveDeliveryBranch({ routing: 'multi-story', storyNumbers: null }),
+    null,
+  );
+});
+
 /**
  * Build a fake gitFn that resolves rev-parse against a scripted branch→SHA map
  * and records the fetch/checkout calls. `origin/main` resolves to `mainSha`;

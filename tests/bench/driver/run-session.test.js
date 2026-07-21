@@ -416,6 +416,126 @@ test('runSession: non-zero exit throws with stderr context', () => {
   );
 });
 
+/**
+ * A `claude -p` result that carries an Anthropic 529 Overload: a non-zero exit
+ * whose stdout is the real error-envelope shape the CLI emits (verbatim from the
+ * live batch failures — is_error + api_error_status 529 + an "Overloaded"
+ * result string).
+ */
+function overloadedResult() {
+  return {
+    status: 1,
+    stdout: JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: true,
+      api_error_status: 529,
+      result:
+        'API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment.',
+      session_id: 'x',
+      total_cost_usd: 0.0008,
+      usage: {},
+      modelUsage: {},
+      terminal_reason: 'api_error',
+    }),
+    stderr: '',
+  };
+}
+
+/** A queued invoke that also records how many times it was called. */
+function scriptedInvoke(results) {
+  const calls = [];
+  const fn = (input) => {
+    const r = results[Math.min(calls.length, results.length - 1)] ?? {};
+    calls.push(input);
+    return {
+      status: r.status ?? 0,
+      stdout: r.stdout ?? JSON.stringify(realEnvelope()),
+      stderr: r.stderr ?? '',
+    };
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+test('runSession: retries a transient 529 with backoff, then succeeds', () => {
+  // Two overloads, then a clean session. The control arm is one session, so
+  // this isolates the retry of a single invoke.
+  const invoke = scriptedInvoke([
+    overloadedResult(),
+    overloadedResult(),
+    {}, // clean
+  ]);
+  const sleeps = [];
+  const out = runSession(
+    { arm: 'control', scenario: SCENARIO, cwd: '/tmp/s' },
+    { invokeFn: invoke, sleepFn: (ms) => sleeps.push(ms) },
+  );
+  // 1 initial + 2 retries = 3 invokes; 2 backoff sleeps between them.
+  assert.equal(invoke.calls.length, 3);
+  assert.equal(sleeps.length, 2);
+  // Exponential: the second wait is strictly larger than the first.
+  assert.ok(sleeps[1] > sleeps[0], `backoff not increasing: ${sleeps}`);
+  assert.equal(out.status, 0);
+  assert.equal(out.envelope.cost.totalUsd, 0.346588);
+});
+
+test('runSession: gives up after the retry budget and throws the transient error', () => {
+  const invoke = scriptedInvoke([overloadedResult()]); // always overloaded
+  const sleeps = [];
+  assert.throws(
+    () =>
+      runSession(
+        {
+          arm: 'control',
+          scenario: SCENARIO,
+          cwd: '/tmp/s',
+          sessionMaxRetries: 2,
+        },
+        { invokeFn: invoke, sleepFn: (ms) => sleeps.push(ms) },
+      ),
+    /529|Overloaded/,
+  );
+  // 1 initial + 2 retries = 3 attempts, then it re-throws so the batch's
+  // existing abort-and-resume path still catches a PERSISTENT overload.
+  assert.equal(invoke.calls.length, 3);
+  assert.equal(sleeps.length, 2);
+});
+
+test('runSession: a NON-transient error is not retried', () => {
+  // status 137 (killed) with no transient marker → fail fast, no retries.
+  const invoke = scriptedInvoke([{ status: 137, stderr: 'killed: oom' }]);
+  const sleeps = [];
+  assert.throws(
+    () =>
+      runSession(
+        { arm: 'control', scenario: SCENARIO, cwd: '/tmp/s' },
+        { invokeFn: invoke, sleepFn: (ms) => sleeps.push(ms) },
+      ),
+    /exited with status 137/,
+  );
+  assert.equal(invoke.calls.length, 1);
+  assert.equal(sleeps.length, 0);
+});
+
+test('runSession: sessionMaxRetries 0 disables retry (one attempt, then throw)', () => {
+  const invoke = scriptedInvoke([overloadedResult()]);
+  assert.throws(
+    () =>
+      runSession(
+        {
+          arm: 'control',
+          scenario: SCENARIO,
+          cwd: '/tmp/s',
+          sessionMaxRetries: 0,
+        },
+        { invokeFn: invoke, sleepFn: () => {} },
+      ),
+    /529|Overloaded/,
+  );
+  assert.equal(invoke.calls.length, 1);
+});
+
 test('runSession: clean exit + is_error envelope warns but still returns the record', () => {
   const warnings = [];
   const invoke = fakeInvoke({
@@ -675,6 +795,11 @@ test('isTransientClaudeError — flags rate/session limit, overload, network', (
     'connect ETIMEDOUT 1.2.3.4:443',
     'read ECONNRESET',
     'getaddrinfo EAI_AGAIN api.anthropic.com',
+    // A claude-session API failure with NO http status: the CLI's own
+    // structured `terminal_reason":"api_error"` is the transient signal, not a
+    // 429/529 code (observed live: a mid-response server error).
+    'claude -p exited with status 1: {"is_error":true,"api_error_status":null,"result":"API Error: Server error mid-response. The response above may be incomplete.","terminal_reason":"api_error"}',
+    'API Error: Server error mid-response. The response above may be incomplete.',
   ];
   for (const m of transient) {
     assert.equal(

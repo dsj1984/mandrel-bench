@@ -1,0 +1,19 @@
+{
+  "body": "## Goal\nProvide a minimal, dependency-free HTTP server in Node.js (ESM) that serves the exact text `Hello, World!` as HTML on `GET /`, listening on the port from the `PORT` environment variable (default `3000`). The implementation is intentionally tiny: a single source file plus `package.json`, using only Node's built-in `node:http` module — no Express, Fastify, or other web framework.\n\n## Spec\nUse the built-in `node:http` `createServer` API. The request handler routes on `req.method` and `req.url`:\n\n- `GET /` → respond `200` with header `Content-Type: text/html; charset=utf-8` and a body containing the exact substring `Hello, World!` (a small valid HTML document is fine, e.g. `<!doctype html><html><body><h1>Hello, World!</h1></body></html>`).\n- Any other method/path → respond `404` with a short plain-text body.\n\nResolve the listen port as `Number(process.env.PORT) || 3000` so an unset or empty `PORT` falls back to `3000`. Bind the server and log a single startup line (`Server listening on port <port>`) inside the `listen` callback.\n\n`package.json` declares `\"type\": \"module\"` (ESM), a `\"start\"` script that runs `node server.js` (matching the single source file's name), and no runtime dependencies. Keep the file count to exactly the two required artifacts — one source file and `package.json`.\n\n## Changes\n- `server.js` — creates\n- `package.json` — creates\n\n## Acceptance\n- [ ] AC-1: A single ESM source file (server.js) and package.json are the only added artifacts; no external web framework is added as a dependency.\n- [ ] AC-2: The server listens on the port from process.env.PORT, defaulting to 3000 when PORT is unset or empty.\n- [ ] AC-3: GET / returns HTTP status 200 with a Content-Type header of text/html and a response body containing the exact text \"Hello, World!\".\n- [ ] AC-4: package.json defines a \"start\" script that launches the server via node.\n- [ ] AC-5: package.json declares \"type\": \"module\" so the source file runs as ESM.\n\n## Verify\n- PORT=3100 node server.js & sleep 1; curl -si http://localhost:3100/ | grep -i '^HTTP/1.1 200' && curl -si http://localhost:3100/ | grep -i '^content-type: text/html' && curl -s http://localhost:3100/ | grep -q 'Hello, World!'; kill %1 (e2e)\n- npm run start & sleep 1; curl -s http://localhost:3000/ | grep -q 'Hello, World!'; kill %1 (e2e)\n- node --check server.js (validate)\n\n<!-- plan-story: cc8ff27d3ebb9739 -->",
+  "labels": [
+    {
+      "id": "LA_kwDOTfPxJs8AAAACsrnS6Q",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTfPxJs8AAAACsrnUMQ",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 1,
+  "title": "Minimal Node.js HTTP server serving \"Hello, World!\" on GET /"
+}

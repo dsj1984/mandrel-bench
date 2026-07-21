@@ -1,0 +1,72 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "api_error_status": null,
+  "duration_ms": 238659,
+  "duration_api_ms": 236286,
+  "ttft_ms": 3071,
+  "ttft_stream_ms": 2545,
+  "time_to_request_ms": 694,
+  "num_turns": 27,
+  "result": "Done. The task is complete and committed.\n\n## What I built\n\n**`POST /projects/:id/shares`** taking `{ \"userId\": ..., \"role\": \"viewer\"|\"editor\" }`, backed by a new `project_shares` table (composite PK on `(project_id, user_id)`, `CHECK` on role, FK cascade so shares vanish when the project or user is deleted).\n\n**Access model** — centralized into two helpers in `server.js`:\n- `accessibleProjectOr404` resolves the caller's role (`owner`/`editor`/`viewer`) and returns **404** for anyone with no relationship — so sharing never lets a stranger discover a project even exists.\n- `writableProjectOr40x` additionally rejects viewers with **403**.\n\nApplied as:\n| Action | owner | editor | viewer | unrelated |\n|---|---|---|---|---|\n| GET project / list tasks | ✅ | ✅ | ✅ | 404 |\n| create/update/delete task | ✅ | ✅ | 403 | 404 |\n| delete project / share project | ✅ | 403 | 403 | 404 |\n\n`GET /projects` now also lists projects shared with the caller.\n\n**Robustness** — bad share requests are `400`: unknown `userId`, unrecognised `role`, non-positive/missing `userId`, and sharing with the project's own owner. Re-sharing an existing user updates their role in place (`200` vs `201` on first grant).\n\n**Verification** — updated the README, added a thorough integration test covering the full viewer/editor/owner/stranger matrix, role promotion, bad-request handling, and cascade-on-delete. `npm run typecheck` and all 7 tests pass. The existing privacy tests still pass unchanged.\n\nOne design decision worth flagging: I return **403** (not 404) when a viewer/editor attempts an owner-only or write action, since they legitimately can see the project — a 404 there would be misleading. Unrelated users still get 404 everywhere, preserving the privacy guarantee.",
+  "stop_reason": "end_turn",
+  "session_id": "74861191-0eac-468a-b2f0-8d7beb86259c",
+  "total_cost_usd": 1.4813015000000003,
+  "usage": {
+    "input_tokens": 43,
+    "cache_creation_input_tokens": 44831,
+    "cache_read_input_tokens": 1173725,
+    "output_tokens": 17805,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 44831,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 667,
+        "cache_read_input_tokens": 63582,
+        "cache_creation_input_tokens": 440,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 440
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 704,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000789,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 43,
+      "outputTokens": 17805,
+      "cacheReadInputTokens": 1173725,
+      "cacheCreationInputTokens": 44831,
+      "webSearchRequests": 0,
+      "costUSD": 1.4805125000000001,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "uuid": "7c974e07-1b30-443d-8d0b-5fe67207dc51"
+}
