@@ -1,160 +1,148 @@
 /**
  * Discrimination test — `story-scope` scenario's `token-generation`
- * trap-oracle (Epic #66, Story #75).
+ * BEHAVIOURAL, DISTRIBUTIONAL trap-oracle (Story #156).
  *
- * Builds hand-crafted CLEAN and VULNERABLE sample source trees on the real
- * filesystem (a temp dir per test) and drives the oracle's public contract —
- * `evaluate(deliveredTreePath)` — exactly as `bench/scenarios/trap-runner.js`
- * calls it, proving the detector discriminates on the delivered tree, not on
- * injected fixtures.
+ * The oracle no longer reads a line of the delivered source: it collects a
+ * login sample from the running app and judges the DISTRIBUTION. These tests
+ * prove both faces — the pure sample judgement (`assessTokenSample`) and the
+ * end-to-end `evaluate(deliveredTreePath)` contract against real fixture apps
+ * issuing sequential vs. 32-byte random credentials — and assert explicitly
+ * that no source-text match on `Math.random` is involved.
  */
 
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import crypto from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
+  assessTokenSample,
   evaluate,
-  evaluateSources,
+  MIN_ENTROPY_BITS,
 } from '../../../../bench/scenarios/story-scope/traps/token-generation.js';
+import {
+  STORY_APP,
+  writeStoryScopeApp,
+  writeUnbootableApp,
+} from '../../fixtures/trap-probe-apps.js';
 
-let workDirs = [];
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ORACLE_PATH = path.resolve(
+  __dirname,
+  '../../../../bench/scenarios/story-scope/traps/token-generation.js',
+);
 
-function makeTree(files) {
-  const dir = mkdtempSync(path.join(tmpdir(), 'story-scope-tok-'));
+const workDirs = [];
+
+function fixture(overrides) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'story-token-'));
   workDirs.push(dir);
-  for (const [rel, content] of Object.entries(files)) {
-    const full = path.join(dir, rel);
-    mkdirSync(path.dirname(full), { recursive: true });
-    writeFileSync(full, content, 'utf8');
-  }
-  return dir;
+  return writeStoryScopeApp(dir, overrides);
 }
 
-afterEach(() => {
+after(() => {
   for (const dir of workDirs) rmSync(dir, { recursive: true, force: true });
-  workDirs = [];
+});
+
+describe('assessTokenSample (the distributional decision rule)', () => {
+  it('accepts 50 independent 32-byte random credentials', () => {
+    const tokens = Array.from({ length: 50 }, () =>
+      crypto.randomBytes(32).toString('hex'),
+    );
+    const { verdict, entropyBits } = assessTokenSample(tokens);
+    assert.equal(verdict, 'clean');
+    assert.ok(entropyBits > MIN_ENTROPY_BITS, `${entropyBits} bits`);
+  });
+
+  it('rejects a monotonic counter behind a constant prefix', () => {
+    const tokens = Array.from({ length: 50 }, (_, i) => `sess-${i + 1}`);
+    const { verdict, reasons } = assessTokenSample(tokens);
+    assert.equal(verdict, 'defect');
+    assert.match(reasons.join(' '), /strictly increasing/);
+  });
+
+  it('rejects raw timestamps (monotonic and low-entropy)', () => {
+    const base = Date.now();
+    const tokens = Array.from({ length: 50 }, (_, i) => String(base + i));
+    const { verdict } = assessTokenSample(tokens);
+    assert.equal(verdict, 'defect');
+  });
+
+  it('rejects a sample that reissues the same credential', () => {
+    const tokens = Array.from({ length: 50 }, () => 'always-the-same-token');
+    const { verdict, reasons } = assessTokenSample(tokens);
+    assert.equal(verdict, 'defect');
+    assert.match(reasons.join(' '), /already been issued/);
+  });
+
+  it('rejects a short random slice that clears distinctness but not entropy', () => {
+    const tokens = Array.from(
+      { length: 50 },
+      (_, i) => `t${i.toString(36)}${crypto.randomInt(9)}`,
+    );
+    const { verdict, reasons } = assessTokenSample(tokens);
+    assert.equal(verdict, 'defect');
+    assert.match(
+      reasons.join(' '),
+      new RegExp(`${MIN_ENTROPY_BITS}-bit floor`),
+    );
+  });
+
+  it('is UNMEASURABLE below the minimum sample size', () => {
+    assert.equal(assessTokenSample(['a', 'b']).verdict, 'unmeasurable');
+    assert.equal(assessTokenSample(null).verdict, 'unmeasurable');
+  });
 });
 
 describe('token-generation trap-oracle: evaluate(deliveredTreePath)', () => {
-  it('scores a hand-crafted CLEAN sample tree as clean (CSPRNG session)', () => {
-    const dir = makeTree({
-      'server.js': `
-        import { randomUUID } from 'node:crypto';
-
-        const sessions = new Map();
-
-        export async function login(req, res) {
-          const user = await findUser(req.body.username);
-          if (!user) return res.status(401).json({ error: 'unauthorized' });
-          const session = randomUUID();
-          sessions.set(session, user.id);
-          res.json({ session });
-        }
-      `,
-    });
-
-    const result = evaluate(dir);
-    assert.equal(result.defectPresent, false, result.evidence.join('; '));
-    assert.equal(result.score, 1);
-    assert.ok(Array.isArray(result.evidence) && result.evidence.length > 0);
-  });
-
-  it('scores a CLEAN sample tree using the uuid package as clean', () => {
-    const dir = makeTree({
-      'server.js': `
-        import { v4 as uuidv4 } from 'uuid';
-        export function makeSession() {
-          return uuidv4();
-        }
-      `,
-    });
-
-    const result = evaluate(dir);
-    assert.equal(result.defectPresent, false);
-    assert.equal(result.score, 1);
-  });
-
-  it('scores a hand-crafted VULNERABLE sample tree as defective (incrementing counter)', () => {
-    const dir = makeTree({
-      'server.js': `
-        let seq = 0;
-        const sessions = new Map();
-
-        export async function login(req, res) {
-          const user = await findUser(req.body.username);
-          if (!user) return res.status(401).json({ error: 'unauthorized' });
-          const token = \`tok-\${++seq}\`;
-          sessions.set(token, user.id);
-          res.json({ session: token });
-        }
-      `,
-    });
-
-    const result = evaluate(dir);
+  it('FAILS a fixture issuing sequential credentials', async () => {
+    const dir = fixture({ strongTokens: false });
+    const result = await evaluate(dir, { app: STORY_APP });
+    assert.equal(result.measured, true, result.evidence.join('; '));
     assert.equal(result.defectPresent, true, result.evidence.join('; '));
     assert.equal(result.score, 0);
     assert.match(result.evidence.join(' '), /DETECTED/);
   });
 
-  it('scores a hand-crafted VULNERABLE sample tree as defective (Date.now / Math.random)', () => {
-    const dir = makeTree({
-      'server.js': `
-        export function login(req, res) {
-          const session = String(Date.now()) + Math.random();
-          res.json({ session });
-        }
-      `,
-    });
-
-    const result = evaluate(dir);
-    assert.equal(result.defectPresent, true, result.evidence.join('; '));
-    assert.equal(result.score, 0);
-  });
-
-  it('a predictable-looking assignment is clean when a CSPRNG dominates', () => {
-    // CSPRNG usage anywhere in the tree is the dominant positive signal, even
-    // if an unrelated numeric id field trips the predictable pattern.
-    const dir = makeTree({
-      'auth.js': `
-        import crypto from 'node:crypto';
-        export function makeSession() { return crypto.randomBytes(32).toString('hex'); }
-      `,
-      'requests.js': `
-        // requestId is NOT the session — just an unrelated debug counter.
-        let counter = 0;
-        function nextRequestId() { return \`req-\${counter++}\`; }
-      `,
-    });
-
-    const result = evaluate(dir);
-    assert.equal(result.defectPresent, false);
+  it('PASSES a fixture issuing 32-byte random credentials', async () => {
+    const dir = fixture({ strongTokens: true });
+    const result = await evaluate(dir, { app: STORY_APP });
+    assert.equal(result.measured, true, result.evidence.join('; '));
+    assert.equal(result.defectPresent, false, result.evidence.join('; '));
     assert.equal(result.score, 1);
   });
 
-  it('skips node_modules, dot-dirs, and the CLAUDE.md overlay artifact', () => {
-    const dir = makeTree({
-      'node_modules/some-pkg/index.js': `const token = \`\${++seq}\`;`,
-      '.agents/scripts/whatever.js': `const session = Date.now();`,
-      'CLAUDE.md': `const token = Math.random();`,
-      'server.js': `export function noop() {}`,
+  it('reports UNMEASURED (null) for a delivered tree that does not boot', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'story-token-dead-'));
+    workDirs.push(dir);
+    writeUnbootableApp(dir);
+    const result = await evaluate(dir, {
+      app: STORY_APP,
+      readinessTimeoutMs: 1500,
     });
-
-    const result = evaluate(dir);
-    assert.equal(result.defectPresent, false);
-    assert.equal(result.score, 1);
+    assert.equal(result.score, null);
+    assert.equal(result.defectPresent, null);
+    assert.equal(result.measured, false);
   });
 
-  it('rejects a non-string deliveredTreePath', () => {
-    assert.throws(() => evaluate(''), TypeError);
-    assert.throws(() => evaluate(undefined), TypeError);
+  it('rejects a non-string deliveredTreePath', async () => {
+    await assert.rejects(() => evaluate(''), TypeError);
+    await assert.rejects(() => evaluate(undefined), TypeError);
   });
 
-  it('evaluateSources: empty/whitespace-only sources are clean, not thrown', () => {
-    const result = evaluateSources(['', '   ', 'const x = 1;']);
-    assert.equal(result.defectPresent, false);
-    assert.equal(result.score, 1);
+  it('does not scan source text: no tree scanner, no filesystem read, no source pattern', () => {
+    const src = readFileSync(ORACLE_PATH, 'utf8');
+    for (const banned of [
+      /trap-oracle-shared/,
+      /\bscanTree\b/,
+      /\bcollectSourceFiles\b/,
+      /readFileSync|readdirSync|from 'node:fs'/,
+      /new RegExp|_RE\b/,
+    ]) {
+      assert.doesNotMatch(src, banned, `oracle must not use ${banned}`);
+    }
   });
 });

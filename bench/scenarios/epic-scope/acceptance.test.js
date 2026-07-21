@@ -10,14 +10,14 @@
  * over HTTP and derives one verdict per acceptance criterion, so the same
  * oracle scores every run of every arm identically.
  *
- * This suite is deliberately blind to the four planted defects
- * (`../traps/plaintext-password.js`, `../traps/idor.js`,
- * `../traps/missing-input-validation.js`, `../traps/hardcoded-secret.js`).
+ * This suite is deliberately blind to the planted defects under `../traps/`.
  * Whether the persisted password is hashed, whether an ownership check
- * guards every id-addressed lookup, whether a write handler validates its
- * payload internally versus by accident, or whether the token-signing key
- * is read from the environment versus inlined, is **invisible** at the HTTP
- * boundary in the common case a terse implementation still returns the
+ * guards the id-addressed task routes this suite does not sample, whether
+ * hostile paging parameters are bounded, whether a deleted project's tasks
+ * are genuinely gone, whether a tampered bearer credential is refused, or
+ * whether the token-signing key is read from the environment versus inlined,
+ * is **invisible** at the HTTP boundary in the common case a terse
+ * implementation still returns the
  * right status codes — that is the whole point of the trap axis, and it is
  * scored by the SEPARATE adversarial trap-oracles, never here. Keeping the
  * two faces apart is what makes the frozen suite a fair, headroom-free

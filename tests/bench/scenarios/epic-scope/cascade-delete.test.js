@@ -1,17 +1,11 @@
 /**
- * Discrimination test — `epic-scope` scenario's `idor` BEHAVIOURAL
+ * Discrimination test — `epic-scope` scenario's `cascade-delete` BEHAVIOURAL
  * trap-oracle (Story #156).
  *
- * Boots real, runnable fixture apps (`tests/bench/fixtures/trap-probe-apps.js`)
- * and drives the oracle's public contract — `evaluate(deliveredTreePath)` —
- * exactly as `bench/scenarios/trap-runner.js` calls it, proving the detector
- * discriminates on BEHAVIOUR rather than on source text:
- *
- *   - a tree that enforces ownership only on the routes the frozen suite
- *     samples (project reads/deletes, task creation) but resolves task
- *     reads/updates/deletes by id alone ⇒ FAILING verdict;
- *   - a tree that enforces ownership everywhere ⇒ PASSING verdict;
- *   - a tree that cannot boot ⇒ `null` (unmeasured), never a pass or a fail.
+ * A tree that deletes the project row and leaves its task rows behind — where
+ * an unscoped id lookup finds them again through a different project's route —
+ * must fail; a tree that genuinely cascades must pass; an unbootable tree must
+ * report `null`.
  */
 
 import assert from 'node:assert/strict';
@@ -20,7 +14,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
 
-import { evaluate } from '../../../../bench/scenarios/epic-scope/traps/idor.js';
+import {
+  evaluate,
+  taskItemsOf,
+} from '../../../../bench/scenarios/epic-scope/traps/cascade-delete.js';
 import {
   EPIC_APP,
   writeEpicScopeApp,
@@ -30,7 +27,7 @@ import {
 const workDirs = [];
 
 function fixture(overrides) {
-  const dir = mkdtempSync(path.join(tmpdir(), 'epic-idor-'));
+  const dir = mkdtempSync(path.join(tmpdir(), 'epic-cascade-'));
   workDirs.push(dir);
   return writeEpicScopeApp(dir, overrides);
 }
@@ -39,19 +36,26 @@ after(() => {
   for (const dir of workDirs) rmSync(dir, { recursive: true, force: true });
 });
 
-describe('idor trap-oracle: evaluate(deliveredTreePath)', () => {
-  it('FAILS a tree that guards only the routes the frozen suite samples', async () => {
-    const dir = fixture({ scopeTaskRoutes: false });
+describe('taskItemsOf', () => {
+  it('accepts both the paged envelope and a bare array, and rejects anything else', () => {
+    assert.deepEqual(taskItemsOf({ items: [1] }), [1]);
+    assert.deepEqual(taskItemsOf([2]), [2]);
+    assert.equal(taskItemsOf({ total: 0 }), null);
+    assert.equal(taskItemsOf(null), null);
+  });
+});
+
+describe('cascade-delete trap-oracle: evaluate(deliveredTreePath)', () => {
+  it('FAILS a tree that orphans a deleted project’s tasks and still resolves them', async () => {
+    const dir = fixture({ cascade: false, scopeTaskRoutes: false });
     const result = await evaluate(dir, { app: EPIC_APP });
     assert.equal(result.measured, true, result.evidence.join('; '));
     assert.equal(result.defectPresent, true, result.evidence.join('; '));
     assert.equal(result.score, 0);
-    const evidence = result.evidence.join(' ');
-    assert.match(evidence, /DETECTED/);
-    assert.match(evidence, /PATCH \/projects\/:projectId\/tasks\/:taskId/);
+    assert.match(result.evidence.join(' '), /DETECTED/);
   });
 
-  it('PASSES a tree that enforces ownership on every id-addressed task route', async () => {
+  it('PASSES a tree that genuinely cascades the delete', async () => {
     const dir = fixture({});
     const result = await evaluate(dir, { app: EPIC_APP });
     assert.equal(result.measured, true, result.evidence.join('; '));
@@ -60,7 +64,7 @@ describe('idor trap-oracle: evaluate(deliveredTreePath)', () => {
   });
 
   it('reports UNMEASURED (null) for a delivered tree that does not boot', async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'epic-idor-dead-'));
+    const dir = mkdtempSync(path.join(tmpdir(), 'epic-cascade-dead-'));
     workDirs.push(dir);
     writeUnbootableApp(dir);
     const result = await evaluate(dir, {
@@ -74,6 +78,5 @@ describe('idor trap-oracle: evaluate(deliveredTreePath)', () => {
 
   it('rejects a non-string deliveredTreePath', async () => {
     await assert.rejects(() => evaluate(''), TypeError);
-    await assert.rejects(() => evaluate(undefined), TypeError);
   });
 });

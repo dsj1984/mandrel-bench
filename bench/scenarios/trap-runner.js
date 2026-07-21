@@ -8,12 +8,16 @@
  * classes as sibling modules under `bench/scenarios/<id>/traps/<class>.js`.
  * Each module exports:
  *
- *   evaluate(deliveredTreePath) → { class?, score: 0|1, defectPresent, evidence? }
+ *   evaluate(deliveredTreePath) → { class?, score: 0|1|null, defectPresent, evidence? }
  *     - `score` — 1 when the delivered code is clean (no planted defect
- *       detected), 0 when the defect is present. Higher is better.
- *     - `defectPresent` — boolean; the inverse framing of `score` (kept
- *       explicit so a consumer never has to invert a number to get the
- *       human-readable verdict).
+ *       detected), 0 when the defect is present. Higher is better. `null`
+ *       means UNMEASURED: a BEHAVIOURAL oracle (Story #156) that boots the
+ *       delivered app cannot always run — an unbootable tree, or a probe that
+ *       threw mid-flight, has learned nothing about the trapped property, and
+ *       reports neither a pass nor a fail.
+ *     - `defectPresent` — boolean, or `null` alongside a `null` score; the
+ *       inverse framing of `score` (kept explicit so a consumer never has to
+ *       invert a number to get the human-readable verdict).
  *     - `class` — optional; when omitted the class name is derived from the
  *       module's filename (`traps/plaintext-password.js` → `'plaintext-password'`).
  *     - `evidence` — optional array of human-readable justification lines.
@@ -30,7 +34,9 @@
  * `runTrapOracles` discovers every `traps/<class>.js` module under a
  * scenario directory, executes each oracle against the delivered tree, and
  * aggregates the per-class verdicts into `{ classes[], cleanRate }` —
- * `cleanRate` is the mean of the per-class scores. A scenario with no
+ * `cleanRate` is the mean of the MEASURED per-class scores (classes scoring
+ * `null` are excluded from the denominator; when every class is unmeasured
+ * the rate is `null`). A scenario with no
  * `traps/` directory (or an empty one) yields `{ classes: [], cleanRate: null }`
  * — the caller (bench/run.js) treats an empty `classes[]` as "no trap block"
  * so the scorecard schema keeps `trap` optional and non-trap scenarios are
@@ -130,7 +136,7 @@ export function discoverTrapModules(scenarioDir, deps = {}) {
  *   Forwarded to {@link discoverTrapModules}.
  * @param {(specifier: string) => Promise<object>} [deps.importImpl]
  *   Injected dynamic `import()`. Defaults to the real one.
- * @returns {Promise<{ classes: Array<{ class: string, score: number, defectPresent: boolean, evidence?: string[] }>, cleanRate: number|null }>}
+ * @returns {Promise<{ classes: Array<{ class: string, score: number|null, defectPresent: boolean|null, evidence?: string[] }>, cleanRate: number|null }>}
  */
 export async function runTrapOracles(opts = {}, deps = {}) {
   const { scenarioDir, deliveredTreePath, trapsSubdir } = opts;
@@ -161,19 +167,30 @@ export async function runTrapOracles(opts = {}, deps = {}) {
       );
     }
     const verdict = await mod.evaluate(deliveredTreePath);
+    // Three-valued score (Story #156): a BEHAVIOURAL oracle that could not
+    // execute — an unbootable delivered tree, a probe that threw mid-flight —
+    // reports `null` rather than a pass or a fail. Propagate that verbatim so
+    // an unmeasurable class stays visibly unmeasured instead of being coerced
+    // into a free `defectPresent: false` pass.
+    const score = typeof verdict?.score === 'number' ? verdict.score : null;
     classes.push({
       class: verdict?.class ?? derivedClass,
-      score: verdict.score,
-      defectPresent: Boolean(verdict.defectPresent),
+      score,
+      defectPresent: score === null ? null : Boolean(verdict.defectPresent),
       ...(Array.isArray(verdict.evidence)
         ? { evidence: verdict.evidence }
         : {}),
     });
   }
 
+  // `cleanRate` is the mean over the MEASURED classes only. An unmeasured
+  // class must not drag the mean toward 0 (it is not a defect) nor inflate it
+  // toward 1 (it is not a clean pass) — it is simply absent from the
+  // denominator. When every class is unmeasured, the rate itself is null.
+  const scored = classes.filter((c) => typeof c.score === 'number');
   const cleanRate =
-    classes.length > 0
-      ? classes.reduce((sum, c) => sum + c.score, 0) / classes.length
+    scored.length > 0
+      ? scored.reduce((sum, c) => sum + c.score, 0) / scored.length
       : null;
 
   return { classes, cleanRate };

@@ -1,85 +1,58 @@
 /**
  * Discrimination test — `epic-scope` touch-2 `regression-isolation` oracle
- * (Epic #86, Story #96).
+ * (Epic #86, Story #96; behavioural since Story #156).
  *
  * The second-touch regression oracle asserts that the project-sharing change
  * request PRESERVED per-user isolation (did not regress to unscoped,
- * cross-user id-addressed resource access). It drives the oracle's public
- * contract — `evaluate(deliveredTreePath)` — over hand-crafted CLEAN and
- * VULNERABLE sample source trees on the real filesystem.
+ * cross-user id-addressed resource access). It re-exports the touch-1 `idor`
+ * detector, so this test drives the same public contract —
+ * `evaluate(deliveredTreePath)` — against real fixture apps and proves the
+ * re-export still discriminates.
  */
 
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 
-import {
-  evaluate,
-  evaluateSources,
-} from '../../../../bench/scenarios/epic-scope/traps-touch2/regression-isolation.js';
+import { evaluate as idorEvaluate } from '../../../../bench/scenarios/epic-scope/traps/idor.js';
+import { evaluate } from '../../../../bench/scenarios/epic-scope/traps-touch2/regression-isolation.js';
+import { EPIC_APP, writeEpicScopeApp } from '../../fixtures/trap-probe-apps.js';
 
-let workDirs = [];
+const workDirs = [];
 
-function makeTree(files) {
-  const dir = mkdtempSync(path.join(tmpdir(), 'epic-scope-reg-iso-'));
+function fixture(overrides) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'epic-reg-iso-'));
   workDirs.push(dir);
-  for (const [rel, content] of Object.entries(files)) {
-    const full = path.join(dir, rel);
-    mkdirSync(path.dirname(full), { recursive: true });
-    writeFileSync(full, content, 'utf8');
-  }
-  return dir;
+  return writeEpicScopeApp(dir, overrides);
 }
 
-afterEach(() => {
+after(() => {
   for (const dir of workDirs) rmSync(dir, { recursive: true, force: true });
-  workDirs = [];
 });
 
 describe('regression-isolation oracle: evaluate(deliveredTreePath)', () => {
-  it('scores a CLEAN sample (per-user isolation preserved) as clean', () => {
-    const dir = makeTree({
-      'projects.js': `
-        export function getProject(db, id, req) {
-          // ownership scoping preserved through the sharing change.
-          const row = db.get('SELECT * FROM projects WHERE id = ? AND owner_id = ?', id, req.user.id);
-          return row ?? null;
-        }
-      `,
-    });
-    const result = evaluate(dir);
-    assert.equal(result.defectPresent, false, result.evidence.join('; '));
-    assert.equal(result.score, 1);
-    assert.ok(Array.isArray(result.evidence) && result.evidence.length > 0);
+  it('is the same detector as the touch-1 idor oracle (they cannot drift)', () => {
+    assert.equal(evaluate, idorEvaluate);
   });
 
-  it('scores a VULNERABLE sample (isolation regressed to an unscoped lookup) as defective', () => {
-    const dir = makeTree({
-      'projects.js': `
-        export function getProject(db, id) {
-          // regression: any user can read any project by id.
-          return db.get('SELECT * FROM projects WHERE id = ?', id);
-        }
-      `,
+  it('scores a tree that preserved per-user isolation as clean', async () => {
+    const result = await evaluate(fixture({}), { app: EPIC_APP });
+    assert.equal(result.defectPresent, false, result.evidence.join('; '));
+    assert.equal(result.score, 1);
+  });
+
+  it('scores a tree whose isolation regressed to an unscoped lookup as defective', async () => {
+    const result = await evaluate(fixture({ scopeTaskRoutes: false }), {
+      app: EPIC_APP,
     });
-    const result = evaluate(dir);
     assert.equal(result.defectPresent, true, result.evidence.join('; '));
     assert.equal(result.score, 0);
     assert.match(result.evidence.join(' '), /DETECTED/);
   });
 
-  it('evaluateSources: an ownership check anywhere keeps the tree clean', () => {
-    const result = evaluateSources([
-      `if (project.owner_id !== req.user.id) return res.status(404).end();`,
-      `const t = tasks.findById(taskId);`,
-    ]);
-    assert.equal(result.defectPresent, false);
-    assert.equal(result.score, 1);
-  });
-
-  it('rejects a non-string deliveredTreePath', () => {
-    assert.throws(() => evaluate(''), TypeError);
+  it('rejects a non-string deliveredTreePath', async () => {
+    await assert.rejects(() => evaluate(''), TypeError);
   });
 });
