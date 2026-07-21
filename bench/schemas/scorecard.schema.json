@@ -188,7 +188,7 @@
       "properties": {
         "lifecycleNdjson": {
           "type": "string",
-          "description": "Path to the run's temp/epic-<id>/lifecycle.ndjson (timings/autonomy source)."
+          "description": "Path to the run's temp/run-<id>/lifecycle.ndjson (timings/autonomy source)."
         },
         "signalsNdjson": {
           "type": "array",
@@ -207,6 +207,10 @@
             "type": "string"
           },
           "description": "Paths to the gzipped per-phase `claude -p --output-format stream-json` event streams (`<phase>-transcript.ndjson.gz`), one per session the cell ran (control: `session`; mandrel: `plan` + `deliver`). They carry the per-TURN record that the terminal envelope aggregates away, which is what makes turn-level cost attribution possible after the sandbox is gone (Story #154). Capture is best-effort: the key is ABSENT when no transcript could be written."
+        },
+        "planMetricsJson": {
+          "type": "string",
+          "description": "Path to the captured plan-invocation ledger (temp/run-<id>/plan-metrics.json or temp/standalone/plan-metrics.json), which records each plan CLI invocation the cell made. Capture is best-effort: the key is ABSENT when the workspace produced no ledger or the copy failed (Story #155)."
         },
         "acceptanceEvalVerdict": {
           "type": "string",
