@@ -435,10 +435,21 @@ meaningful comparison.
 
 Provenance breadcrumbs (workspace-relative paths) to the on-disk artifacts a
 scorecard was derived from — `lifecycleNdjson`, `signalsNdjson[]`,
-`costEnvelope`, `acceptanceEvalVerdict` — for traceability and re-scoring,
-even though the ephemeral workspace is torn down after each run. The mandrel
-arm's plan snapshot (`.raw/<run-stamp>/plan/`, see the `phases[]` section
-above) lives alongside these under the same `.raw/<run-stamp>/` directory.
+`costEnvelope`, `transcripts[]`, `acceptanceEvalVerdict` — for traceability and
+re-scoring, even though the ephemeral workspace is torn down after each run. The
+mandrel arm's plan snapshot (`.raw/<run-stamp>/plan/`, see the `phases[]`
+section above) lives alongside these under the same `.raw/<run-stamp>/`
+directory.
+
+`transcripts[]` points at the gzipped per-phase session event streams
+(`.raw/<run-stamp>/<phase>-transcript.ndjson.gz`) captured from
+`claude -p --output-format stream-json` — `session` for the single-session
+control arm, `plan` + `deliver` for the mandrel arm. `costEnvelope` is the
+stream's terminal `result` event, i.e. the run AGGREGATE; the transcript is the
+per-TURN record that aggregate is computed from, and is what makes the
+turn-count and resident-context cost levers attributable after the fact
+(Story #154). Capture is best-effort — the key is absent when nothing could be
+written, and a capture failure never fails a run.
 
 ## Finding envelope (Epic #85, Story #91)
 
