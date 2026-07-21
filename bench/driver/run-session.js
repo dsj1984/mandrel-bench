@@ -3,20 +3,31 @@
  * Headless run driver for the Mandrel self-benchmark harness.
  *
  * A "run" is one headless Claude Code session driving one arm over one
- * scenario. The driver shells out to `claude -p --output-format json`, which
- * runs the agent non-interactively and emits a single JSON result envelope on
- * stdout carrying the real usage/cost actuals (`total_cost_usd`, `usage`,
- * `modelUsage`, timings). This is the ONLY cost source in the harness — Mandrel
- * itself records no token actuals — and it is measured identically for both
- * arms, so the value/cost comparison is apples-to-apples by construction
- * (Epic #4211, Tech Spec #4213).
+ * scenario. The driver shells out to `claude -p --output-format stream-json`,
+ * which runs the agent non-interactively and emits one NDJSON event per turn on
+ * stdout, terminated by a `type:"result"` event carrying the real usage/cost
+ * actuals (`total_cost_usd`, `usage`, `modelUsage`, timings). That terminal
+ * event is the ONLY cost source in the harness — Mandrel itself records no
+ * token actuals — and it is measured identically for both arms, so the
+ * value/cost comparison is apples-to-apples by construction (Epic #4211, Tech
+ * Spec #4213).
+ *
+ * **Transcript capture (Story #154).** The stream carries the per-turn record
+ * that the legacy single-envelope `--output-format json` mode threw away with
+ * the sandbox, so turn-level cost attribution (the dominant cache-read spend)
+ * was impossible after the fact. The driver now tees the FULL event stream to a
+ * gzipped per-phase NDJSON file under the cell's `.raw/<idStamp>/` directory
+ * (`<phase>-transcript.ndjson.gz`) and parses the terminal `result` event into
+ * the exact same envelope shape the legacy path produced — every existing
+ * envelope consumer is bit-compatible. Capture is strictly best-effort: an
+ * unwritable transcript warns and never fails the run.
  *
  * Precedent: `.agents/scripts/lib/orchestration/review-providers/security-review.js`
  * (`defaultInvokeSecurityReview`) already shells `claude --print` and parses
  * its stdout. This module follows the same shape — a default `spawnSync`-based
  * invoker that is **injectable** (`invokeFn`) so unit tests never spawn a real
- * process — but targets the `-p --output-format json` envelope rather than the
- * free-text `--print` mode.
+ * process — but targets the `-p --output-format stream-json` event stream
+ * rather than the free-text `--print` mode.
  *
  * The driver does NOT score, persist, or read lifecycle telemetry — those are
  * downstream slices. It launches the session, parses the envelope, and returns
@@ -27,6 +38,7 @@
 import { spawnSync } from 'node:child_process';
 import {
   existsSync,
+  mkdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -34,6 +46,7 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { gzipSync } from 'node:zlib';
 
 import { baseArm, KNOWN_ARMS, routingOverrideForArm } from './arms.js';
 
@@ -262,9 +275,14 @@ export function buildArmPrompt(input) {
 }
 
 /**
- * Build the argv passed to the `claude` binary for a headless JSON run.
+ * Build the argv passed to the `claude` binary for a headless streaming run.
  * Exported so tests assert the exact invocation shape (notably
- * `--output-format json`, which is what makes the usage/cost envelope appear).
+ * `--output-format stream-json`, which is what makes BOTH the per-turn event
+ * stream and the terminal usage/cost envelope appear).
+ *
+ * `--verbose` is mandatory alongside `--output-format stream-json` in `-p`
+ * mode — the CLI refuses the combination without it, and it is what emits the
+ * per-turn assistant/user/tool events the transcript capture exists to keep.
  *
  * `--permission-mode bypassPermissions` and `--dangerously-skip-permissions`
  * are intentionally NOT added here by default — the harness runs inside a
@@ -291,7 +309,8 @@ export function buildClaudeArgs(input) {
   return [
     '-p',
     '--output-format',
-    'json',
+    'stream-json',
+    '--verbose',
     '--model',
     model,
     ...extraArgs,
@@ -553,13 +572,52 @@ export function defaultInvokeClaudeSession(input) {
  * @throws {Error} when stdout contains no parseable JSON object.
  */
 export function parseSessionEnvelope(rawStdout) {
-  const obj = extractFirstJsonObject(rawStdout);
+  // Prefer the terminal `result` event: under `--output-format stream-json`
+  // stdout is NDJSON whose FIRST object is the `system:init` event, so the
+  // legacy first-balanced-object scan would read the wrong record. For legacy
+  // single-envelope stdout the sole object IS the `result` event, so this
+  // lookup returns exactly what the old fast path returned — bit-compatible.
+  const obj =
+    extractResultEvent(rawStdout) ?? extractFirstJsonObject(rawStdout);
   if (obj === null) {
     throw new Error(
       '[run-session] Failed to parse claude --output-format json stdout as a JSON object.',
     );
   }
+  return normalizeSessionEnvelope(obj);
+}
 
+/**
+ * Parse a `claude -p --output-format stream-json` NDJSON stream into the SAME
+ * envelope shape `parseSessionEnvelope` produces, by normalizing its terminal
+ * `type:"result"` event. Split out from `parseSessionEnvelope` so the
+ * stream path can fail loudly when no terminal result event is present (a
+ * truncated/aborted stream) rather than silently normalizing an init event.
+ *
+ * @param {string} rawStdout
+ * @returns {ReturnType<typeof parseSessionEnvelope>}
+ * @throws {Error} when the stream carries no terminal `result` event.
+ */
+export function parseStreamEnvelope(rawStdout) {
+  const obj = extractResultEvent(rawStdout);
+  if (obj === null) {
+    throw new Error(
+      '[run-session] Failed to parse claude --output-format stream-json stdout: no terminal result event.',
+    );
+  }
+  return normalizeSessionEnvelope(obj);
+}
+
+/**
+ * Project a raw `result` event object into the harness's normalized envelope.
+ * The single home of that mapping — both the legacy single-object path and the
+ * stream-json terminal-event path funnel through it, which is what makes the
+ * two bit-compatible by construction rather than by convention.
+ *
+ * @param {object} obj  A raw `type:"result"` envelope object.
+ * @returns {ReturnType<typeof parseSessionEnvelope>}
+ */
+function normalizeSessionEnvelope(obj) {
   const usage = obj.usage && typeof obj.usage === 'object' ? obj.usage : {};
   const inputTokens = toNonNegInt(usage.input_tokens);
   const outputTokens = toNonNegInt(usage.output_tokens);
@@ -608,8 +666,66 @@ export function parseSessionEnvelope(rawStdout) {
 }
 
 /**
- * Launch ONE headless `claude -p --output-format json` session, parse its
- * envelope, and surface a non-zero exit / is_error as the callers expect.
+ * Canonical filename for one phase's captured event stream. Kept as a helper so
+ * the writer and every consumer (bench/run.js `rawRefs`, later analysis) agree
+ * on the shape without restating the literal.
+ *
+ * @param {string} [phase]  'plan' | 'deliver' | undefined (control's lone session).
+ * @returns {string}
+ */
+export function transcriptFileName(phase) {
+  const label =
+    typeof phase === 'string' && phase.length > 0 ? phase : 'session';
+  return `${label}-transcript.ndjson.gz`;
+}
+
+/**
+ * Tee one session's FULL `--output-format stream-json` stdout to a gzipped
+ * per-phase NDJSON file (Story #154). Transcripts run to multiple MB per
+ * session, so they are compressed on write.
+ *
+ * **Best-effort by contract.** Capture exists to make turn-level cost
+ * attribution possible after the fact; it is never load-bearing for the run
+ * itself. An absent directory arg is a silent no-op, and ANY write failure
+ * (read-only volume, ENOSPC, a mocked-to-throw fs) logs a warning and returns
+ * `null` — the session record it accompanies is returned complete and
+ * unchanged.
+ *
+ * @param {object} input
+ * @param {string} [input.dir]     Absolute capture directory (`.raw/<idStamp>/`).
+ * @param {string} [input.phase]   Phase label; see `transcriptFileName`.
+ * @param {string} [input.stdout]  The raw event stream to persist.
+ * @param {object} [deps]          Injectable fs/gzip/logger for tests.
+ * @returns {string|null}  Absolute path written, or null when skipped/failed.
+ */
+export function writeSessionTranscript(input, deps = {}) {
+  const { dir, phase, stdout } = input ?? {};
+  if (typeof dir !== 'string' || dir.length === 0) return null;
+  const mkdirFn = deps.mkdirSync ?? mkdirSync;
+  const writeFn = deps.writeFileSync ?? writeFileSync;
+  const gzipFn = deps.gzipSync ?? gzipSync;
+  const filePath = path.join(dir, transcriptFileName(phase));
+  try {
+    mkdirFn(dir, { recursive: true });
+    writeFn(
+      filePath,
+      gzipFn(Buffer.from(typeof stdout === 'string' ? stdout : '', 'utf-8')),
+    );
+    return filePath;
+  } catch (err) {
+    deps.logger?.warn?.(
+      `[run-session] transcript capture failed for ${filePath} (continuing): ${
+        err?.message ?? err
+      }`,
+    );
+    return null;
+  }
+}
+
+/**
+ * Launch ONE headless `claude -p --output-format stream-json` session, parse
+ * its terminal envelope, tee the event stream to the capture directory, and
+ * surface a non-zero exit / is_error as the callers expect.
  * Shared by both arms; the mandrel arm calls it twice (plan, then deliver).
  *
  * @param {object} args
@@ -626,7 +742,9 @@ export function parseSessionEnvelope(rawStdout) {
  * @param {number} [args.maxRetries]  Transient-error re-attempts (default env-driven).
  * @param {number} [args.retryBaseMs]  First backoff wait (default env-driven).
  * @param {(ms: number) => void} [args.sleepFn]  Backoff sleeper (injected in tests).
- * @returns {{ status: number, envelope: ReturnType<typeof parseSessionEnvelope> }}
+ * @param {string} [args.transcriptDir]  Capture dir for the event stream.
+ * @param {object} [args.transcriptDeps]  Injectable fs/gzip for the capture.
+ * @returns {{ status: number, envelope: ReturnType<typeof parseSessionEnvelope>, transcriptPath: string|null }}
  */
 function invokeOneSession({
   prompt,
@@ -642,6 +760,8 @@ function invokeOneSession({
   maxRetries = DEFAULT_SESSION_MAX_RETRIES,
   retryBaseMs = DEFAULT_SESSION_RETRY_BASE_MS,
   sleepFn = blockingSleep,
+  transcriptDir,
+  transcriptDeps,
 }) {
   const phaseTag = phase ? ` phase=${phase}` : '';
   logger?.info?.(
@@ -686,6 +806,14 @@ function invokeOneSession({
     throw err;
   }
 
+  // Tee the FULL event stream before parsing: the transcript is the whole point
+  // of the stream-json cutover (Story #154), and it must survive even a session
+  // whose terminal envelope turns out to be unparseable.
+  const transcriptPath = writeSessionTranscript(
+    { dir: transcriptDir, phase, stdout },
+    { ...(transcriptDeps ?? {}), logger },
+  );
+
   const envelope = parseSessionEnvelope(stdout);
 
   // A clean exit code with an error envelope is still a failed run — surface it
@@ -705,7 +833,7 @@ function invokeOneSession({
       }`,
   );
 
-  return { status, envelope };
+  return { status, envelope, transcriptPath };
 }
 
 /**
@@ -862,7 +990,13 @@ function phaseRecord(phase, envelope) {
  * @param {string} [opts.model=DEFAULT_BENCH_MODEL]
  * @param {string[]} [opts.extraArgs]
  * @param {number} [opts.timeoutMs=DEFAULT_SESSION_TIMEOUT_MS]
+ * @param {string} [opts.transcriptDir]  Absolute capture directory for the
+ *   per-phase event streams (bench/run.js threads the cell's `.raw/<idStamp>/`).
+ *   Omit to disable capture entirely.
  * @param {object} [deps]
+ * @param {object} [deps.transcriptDeps]  Injectable fs/gzip for the transcript
+ *   writer, so a unit test can assert the capture and the write-failure path
+ *   without touching disk.
  * @param {(input: object) => { status: number, stdout: string, stderr: string }} [deps.invokeFn]
  *   Injected session invoker. Defaults to `defaultInvokeClaudeSession`. Tests
  *   override this so no real `claude` process is spawned.
@@ -879,7 +1013,8 @@ function phaseRecord(phase, envelope) {
  *   prompt: string,
  *   status: number,
  *   envelope: ReturnType<typeof parseSessionEnvelope>,
- *   phases: Array<{ phase: string, costUsd: number|null, tokens: number, wallClockMs: number }>|null
+ *   phases: Array<{ phase: string, costUsd: number|null, tokens: number, wallClockMs: number }>|null,
+ *   transcripts: Array<{ phase: string, path: string }>
  * }}
  */
 export function runSession(opts = {}, deps = {}) {
@@ -892,6 +1027,7 @@ export function runSession(opts = {}, deps = {}) {
     timeoutMs = DEFAULT_SESSION_TIMEOUT_MS,
     sessionMaxRetries = DEFAULT_SESSION_MAX_RETRIES,
     sessionRetryBaseMs = DEFAULT_SESSION_RETRY_BASE_MS,
+    transcriptDir,
   } = opts;
 
   if (!KNOWN_ARMS.includes(arm)) {
@@ -914,13 +1050,30 @@ export function runSession(opts = {}, deps = {}) {
     maxRetries: sessionMaxRetries,
     retryBaseMs: sessionRetryBaseMs,
     sleepFn,
+    transcriptDir,
+    transcriptDeps: deps.transcriptDeps,
+  };
+
+  /**
+   * Fold a phase's capture result into the run-level `transcripts` list,
+   * dropping the `null` a skipped or failed (best-effort) capture returns.
+   *
+   * @param {Array<{ phase: string, path: string }>} into
+   * @param {string} phase
+   * @param {string|null} transcriptPath
+   * @returns {void}
+   */
+  const recordTranscript = (into, phase, transcriptPath) => {
+    if (typeof transcriptPath === 'string' && transcriptPath.length > 0) {
+      into.push({ phase, path: transcriptPath });
+    }
   };
 
   // Control-base arms (`control`, `control-claudemd`): a single bare session.
   // Arm 3's only delta is the CLAUDE.md the driver seeded into `cwd`.
   if (base === 'control') {
     const prompt = buildControlPrompt({ scenario });
-    const { status, envelope } = invokeOneSession({
+    const { status, envelope, transcriptPath } = invokeOneSession({
       prompt,
       arm,
       scenarioId: scenario.id,
@@ -932,6 +1085,8 @@ export function runSession(opts = {}, deps = {}) {
       logger,
       ...retryOpts,
     });
+    const transcripts = [];
+    recordTranscript(transcripts, 'session', transcriptPath);
     return {
       arm,
       scenarioId: scenario.id,
@@ -940,6 +1095,7 @@ export function runSession(opts = {}, deps = {}) {
       status,
       envelope,
       phases: null,
+      transcripts,
     };
   }
 
@@ -1003,6 +1159,9 @@ export function runSession(opts = {}, deps = {}) {
     phaseRecord('plan', plan.envelope),
     phaseRecord('deliver', deliver.envelope),
   ];
+  const transcripts = [];
+  recordTranscript(transcripts, 'plan', plan.transcriptPath);
+  recordTranscript(transcripts, 'deliver', deliver.transcriptPath);
 
   return {
     arm,
@@ -1014,6 +1173,7 @@ export function runSession(opts = {}, deps = {}) {
     status: deliver.status,
     envelope,
     phases,
+    transcripts,
   };
 }
 
@@ -1034,6 +1194,43 @@ function toNonNegInt(v) {
     return Math.trunc(v);
   }
   return 0;
+}
+
+/**
+ * Scan an NDJSON event stream for its TERMINAL `type:"result"` event and return
+ * it parsed, or `null` when no line parses into one.
+ *
+ * Scans from the END so the terminal event is found in one hop on a multi-MB
+ * transcript, and so a stream that (pathologically) carried more than one
+ * result event yields the last — the run total, matching what the legacy
+ * single-envelope mode emitted.
+ *
+ * Lines that are not standalone JSON objects (a prose preface, a
+ * pretty-printed multi-line envelope) simply do not match; the caller falls
+ * back to the balanced-object scan.
+ *
+ * @param {string} raw
+ * @returns {object|null}
+ */
+function extractResultEvent(raw) {
+  if (typeof raw !== 'string' || raw.trim().length === 0) return null;
+  const lines = raw.split('\n');
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i].trim();
+    if (line.length === 0 || !line.startsWith('{') || !line.endsWith('}')) {
+      continue;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (parsed && typeof parsed === 'object' && parsed.type === 'result') {
+      return parsed;
+    }
+  }
+  return null;
 }
 
 /**

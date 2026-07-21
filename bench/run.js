@@ -1357,6 +1357,10 @@ export async function runTouch2(opts, deps = {}) {
         model,
         extraArgs,
         timeoutMs,
+        // Per-turn transcript capture (Story #154) lands beside the touch-2
+        // cost envelope, so a second-touch run is attributable turn-by-turn on
+        // the same terms as the first.
+        transcriptDir: touch2RawDir ?? undefined,
       },
       { invokeFn: deps.invokeFn, logger },
     );
@@ -1862,6 +1866,23 @@ export async function runOneRun(opts, deps = {}) {
     // cost envelope, the lifecycle ledger, and the plan snapshot all land here).
     const idStampForRaw = sanitizeRunId(`${scenario.id}-${arm}-r${runIndex}`);
 
+    // Per-turn transcript capture directory (Story #154). The session driver
+    // tees each phase's full stream-json event stream here as
+    // `<phase>-transcript.ndjson.gz`, so the turn-count / resident-context cost
+    // levers stay measurable after the sandbox is gone. It must be resolved
+    // BEFORE the session (the plan phase's transcript is written the moment
+    // that phase exits), so the cohort dir is keyed off the CONFIGURED model id
+    // rather than the one `resolveModelId` reads back out of the envelope —
+    // exactly the seam the plan-snapshot dir already uses.
+    const transcriptDir = path.join(
+      cohortDir({
+        resultsDir,
+        scorecard: { model: { id: model }, frameworkVersion },
+      }),
+      '.raw',
+      idStampForRaw,
+    );
+
     // Between-session seam (D-019, Epic #86 Story #94), mandrel arm only. After
     // the PLAN session exits, discover the id(s) it created on the ephemeral
     // repo and snapshot the plan artifacts BEFORE the DELIVER session starts,
@@ -1997,6 +2018,7 @@ export async function runOneRun(opts, deps = {}) {
         model,
         extraArgs,
         timeoutMs,
+        transcriptDir,
       },
       { invokeFn: deps.invokeFn, logger, betweenPhases },
     );
@@ -2159,6 +2181,19 @@ export async function runOneRun(opts, deps = {}) {
       `${JSON.stringify(session.envelope.raw ?? session.envelope, null, 2)}\n`,
     );
     rawRefs = { ...(rawRefs ?? {}), costEnvelope: envelopePath };
+
+    // Surface the per-phase transcripts the session driver captured (Story
+    // #154) alongside the other `.raw/` provenance. Capture is best-effort, so
+    // the list is only added when at least one phase actually landed on disk —
+    // an unwritable transcript leaves `rawRefs` exactly as it was before.
+    const transcriptPaths = Array.isArray(session.transcripts)
+      ? session.transcripts
+          .map((t) => t?.path)
+          .filter((p) => typeof p === 'string' && p.length > 0)
+      : [];
+    if (transcriptPaths.length > 0) {
+      rawRefs = { ...rawRefs, transcripts: transcriptPaths };
+    }
 
     // Score Quality by bringing up the delivered app and probing it — UNLESS the
     // mandrel delivery didn't materialize, in which case there is no app in the

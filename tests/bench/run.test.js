@@ -1606,6 +1606,79 @@ test('runFirstBenchmark: threads per-scenario epicIds into the mandrel arm sessi
   assert.equal(record.sessions.find((s) => s.arm === 'mandrel').epicId, 4222);
 });
 
+test('runOneRun: threads the cell .raw/<idStamp>/ capture dir into the session and lists the returned transcripts on rawRefs (Story #154)', async () => {
+  const record = freshRecord();
+  const seen = [];
+  const deps = benchDeps(record);
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel'],
+      n: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    {
+      ...deps,
+      runSessionFn: (o) => {
+        seen.push(o.transcriptDir);
+        return {
+          arm: o.arm,
+          scenarioId: o.scenario.id,
+          model: o.model,
+          prompt: 'p',
+          status: 0,
+          envelope: fakeEnvelope(),
+          transcripts: [
+            {
+              phase: 'plan',
+              path: `${o.transcriptDir}/plan-transcript.ndjson.gz`,
+            },
+            {
+              phase: 'deliver',
+              path: `${o.transcriptDir}/deliver-transcript.ndjson.gz`,
+            },
+          ],
+        };
+      },
+    },
+  );
+
+  // The capture dir is the cell's own `.raw/<idStamp>/` — the same directory
+  // the cost envelope and the plan snapshot land in, so a cell's per-turn
+  // record sits beside the aggregate it was summed into.
+  assert.equal(seen.length, 1);
+  assert.equal(path.basename(seen[0]), 'hello-world-mandrel-r1');
+  assert.equal(path.basename(path.dirname(seen[0])), '.raw');
+  assert.ok(seen[0].startsWith('/results/'));
+
+  const { rawRefs } = result.scorecards[0];
+  assert.deepEqual(rawRefs.transcripts, [
+    `${seen[0]}/plan-transcript.ndjson.gz`,
+    `${seen[0]}/deliver-transcript.ndjson.gz`,
+  ]);
+  // Capture is additive — the pre-existing provenance breadcrumb is untouched.
+  assert.equal(rawRefs.costEnvelope, `${seen[0]}/cost-envelope.json`);
+});
+
+test('runOneRun: a session that captured no transcript leaves rawRefs without the key (best-effort capture)', async () => {
+  const record = freshRecord();
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel'],
+      n: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    // benchDeps' session seam returns no `transcripts` at all — the same shape
+    // an unwritable capture directory produces.
+    benchDeps(record),
+  );
+  assert.equal('transcripts' in result.scorecards[0].rawRefs, false);
+  assert.ok(result.scorecards[0].rawRefs.costEnvelope);
+});
+
 test('runFirstBenchmark: resume skips already-checkpointed cells (idempotent)', async () => {
   // Seed the checkpoint with the mandrel cell of run 1 already complete.
   const record = freshRecord({
