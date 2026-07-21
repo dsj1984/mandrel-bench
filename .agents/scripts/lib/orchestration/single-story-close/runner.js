@@ -7,6 +7,7 @@ import { resolveConfig } from '../../config-resolver.js';
 import { getStoryBranch, gitSync } from '../../git-utils.js';
 import { Logger } from '../../Logger.js';
 import { emitTerminalFriction } from '../../observability/runtime-friction.js';
+import { emitTerseResult } from '../../observability/terse-result.js';
 import { createProvider } from '../../provider-factory.js';
 import { flipLabelAndNotify } from '../../single-story/story-merged-notify.js';
 import { WorktreeManager } from '../../worktree-manager.js';
@@ -53,12 +54,22 @@ const progress = Logger.createProgress('single-story-close', { stderr: true });
  * The emit is best-effort internally and cannot throw.
  */
 async function emitTerminal({ terminal, result, config }) {
-  // The human-facing result dump stays level-gated; the terminal envelope is
-  // the machine contract and must survive AGENT_LOG_LEVEL=silent.
+  // Story #4685 — the human-facing result dump goes to a temp log; the agent
+  // acts on the (separate, unsuppressible) terminal envelope emitted below.
+  // The single summary line keeps the fields worth an at-a-glance read.
   if (result) {
-    Logger.info(
-      `\n--- STORY CLOSE RESULT ---\n${JSON.stringify(result, null, 2)}\n--- END RESULT ---\n`,
-    );
+    emitTerseResult({
+      label: 'STORY CLOSE RESULT',
+      result,
+      scope: result.storyId,
+      summary: {
+        storyId: result.storyId,
+        action: result.action,
+        reason: result.reason,
+        prNumber: result.prNumber,
+        status: terminal?.status,
+      },
+    });
   }
   emitTerminalEnvelope(terminal);
   await emitTerminalFriction({ envelope: terminal, config });
@@ -311,6 +322,8 @@ function closeResult({
   autoMergeReason,
   worktreeReaped,
   leaseReleased,
+  localCleanupDeferred = false,
+  directMerged = false,
   waitedForMerge = false,
   merged = false,
 }) {
@@ -326,6 +339,15 @@ function closeResult({
     autoMergeReason,
     worktreeReaped,
     leaseReleased,
+    // Story #4681 — `gh`'s local head-branch delete failed while the remote
+    // merge/arm stood. Surfaced so the land is auditable as
+    // merged-with-deferred-cleanup rather than silently degraded.
+    localCleanupDeferred,
+    // Story #4682 — native auto-merge was unavailable (no branch protection /
+    // an already-clean PR), so the PR was landed by a direct squash-merge.
+    // Surfaced so a checks-less land is auditable rather than looking like a
+    // queued auto-merge that never fired.
+    directMerged,
     waitedForMerge,
     merged,
     note: waitedForMerge
@@ -486,8 +508,31 @@ async function runClosePipeline({
       }),
     leaseArgs,
   );
+  // Reap the per-Story worktree BEFORE the arm (Story #4681). Arming runs
+  // `gh pr merge --auto --squash --delete-branch`, which — against an
+  // already-mergeable PR — merges immediately and then shells out to local
+  // `git` to drop `story-<id>`. A live worktree still holding that ref makes
+  // the local delete fail, `gh` exit non-zero, and the arm read as failed,
+  // which used to strand a genuinely merged PR at `agent::blocked`.
+  // Pre-empting the hold is the ordering half of the fix (the tolerate half
+  // lives in `phases/auto-merge.js`); it is safe here because push and PR
+  // creation already made the work durable off-machine, and `isSafeToRemove`
+  // still refuses a dirty tree.
+  const worktreeReaped = await reapWorktreePhase({
+    cwd: options.cwd,
+    storyId: options.storyId,
+    worktreePath,
+    wtIsolation: config.delivery?.worktreeIsolation,
+    progress,
+    WorktreeManager,
+  });
   setPhase('auto-merge');
-  const { autoMergeEnabled, autoMergeReason } = await runAutoMergePhase({
+  const {
+    autoMergeEnabled,
+    autoMergeReason,
+    localCleanupDeferred,
+    directMerged,
+  } = await runAutoMergePhase({
     cwd: options.cwd,
     prNumber,
     prUrl,
@@ -506,14 +551,6 @@ async function runClosePipeline({
     autoMergeReason,
     config,
     progress,
-  });
-  const worktreeReaped = await reapWorktreePhase({
-    cwd: options.cwd,
-    storyId: options.storyId,
-    worktreePath,
-    wtIsolation: config.delivery?.worktreeIsolation,
-    progress,
-    WorktreeManager,
   });
   const leaseReleased = await releaseLease(leaseArgs);
 
@@ -589,6 +626,8 @@ async function runClosePipeline({
       autoMergeReason,
       worktreeReaped,
       leaseReleased,
+      localCleanupDeferred,
+      directMerged,
       waitedForMerge: true,
       merged: waitOutcome.confirmed === true,
     });
@@ -625,6 +664,8 @@ async function runClosePipeline({
     autoMergeReason,
     worktreeReaped,
     leaseReleased,
+    localCleanupDeferred,
+    directMerged,
   });
   // `--no-wait-merge` / operator-merge: the PR is open and the human owns
   // the land. That is a `pending` terminal by definition — the work is not
