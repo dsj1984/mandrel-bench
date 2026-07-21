@@ -18,18 +18,30 @@
 
 ### Scenario: `hello-world` (difficulty 1)
 
-n = 2 mandrel / 2 control · band = iqr (`center [low, high]`)
+n = 2 mandrel / 2 control · 0 seed-matched pair(s) · band = iqr (`center [low, high]`)
 
 > 🧭 **Floor/calibration rung** — instrumentation, not a value rung. Distributions below are the overhead-floor + monotonicity-curve calibration signal, not a value-delta claim.
 
 > **Mandrel routing: multi-Story decomposition** — the plan opened N sibling Stories; value dimensions derived from the lifecycle ledger.
 
+> ⚠️ **Unpaired runs excluded from the paired block:** 2 mandrel / 2 control run(s) had no seed-SHA counterpart and were dropped from the paired differences (they remain in the pooled bands).
+
+#### Paired differential (seed-matched, M−C per pair)
+
+| Dimension | Paired Δ (M−C) [low, high] | n pairs | Verdict |
+| --- | --- | --- | --- |
+| Planning fidelity | — | 0 | — n/a |
+| Overhead ratio (tokens) | — | 0 | — n/a |
+| Efficiency · wall-clock (ms) | — | 0 | — n/a |
+| Efficiency · total tokens | — | 0 | — n/a |
+| Efficiency · dispatches | — | 0 | — n/a |
+| Efficiency · cost (USD) | — | 0 | — n/a |
+
+#### Pooled per-arm bands
+
 | Dimension | Mandrel | Control | Δ (M−C) | Noise floor | Verdict |
 | --- | --- | --- | --- | --- | --- |
-| Quality | 1 [1, 1] | 1 [1, 1] | 0 | 0 | ≈ within noise |
 | Planning fidelity | 0.91 [0.9, 0.92] | — | — | — | — n/a |
-| Maintainability | 0.9 [0.9, 0.9] | 0.85 [0.85, 0.85] | 0.05 | 0 | ✅ real |
-| Security | 1 [1, 1] | 1 [1, 1] | 0 | 0 | ≈ within noise |
 | Overhead ratio (tokens) | 6.5 [6, 7] | 0.2 [0.2, 0.2] | 6.3 | 1 | ✅ real |
 | Efficiency · wall-clock (ms) | 405000 [400000, 410000] | 122500 [120000, 125000] | 282500 | 10000 | ✅ real |
 | Efficiency · total tokens | 91000 [90000, 92000] | 20500 [20000, 21000] | 70500 | 2000 | ✅ real |
@@ -38,16 +50,28 @@ n = 2 mandrel / 2 control · band = iqr (`center [low, high]`)
 
 ### Scenario: `story-scope` (difficulty 3)
 
-n = 2 mandrel / 2 control · band = iqr (`center [low, high]`)
+n = 2 mandrel / 2 control · 0 seed-matched pair(s) · band = iqr (`center [low, high]`)
 
 > **Mandrel routing: standalone Story** — planning-fidelity & autonomy recovered from the Story’s GitHub telemetry (no lifecycle ledger); overhead-ratio is **n/a** (unmeasurable on the standalone path).
 
+> ⚠️ **Unpaired runs excluded from the paired block:** 2 mandrel / 2 control run(s) had no seed-SHA counterpart and were dropped from the paired differences (they remain in the pooled bands).
+
+#### Paired differential (seed-matched, M−C per pair)
+
+| Dimension | Paired Δ (M−C) [low, high] | n pairs | Verdict |
+| --- | --- | --- | --- |
+| Planning fidelity | — | 0 | — n/a |
+| Overhead ratio (tokens) | — | 0 | — n/a |
+| Efficiency · wall-clock (ms) | — | 0 | — n/a |
+| Efficiency · total tokens | — | 0 | — n/a |
+| Efficiency · dispatches | — | 0 | — n/a |
+| Efficiency · cost (USD) | — | 0 | — n/a |
+
+#### Pooled per-arm bands
+
 | Dimension | Mandrel | Control | Δ (M−C) | Noise floor | Verdict |
 | --- | --- | --- | --- | --- | --- |
-| Quality | 0.96 [0.95, 0.97] | 0.825 [0.8, 0.85] | 0.135 | 0.05 | ✅ real |
 | Planning fidelity | 0.85 [0.85, 0.85] | — | — | — | — n/a |
-| Maintainability | 0.9 [0.9, 0.9] | 0.8 [0.8, 0.8] | 0.1 | 0 | ✅ real |
-| Security | 1 [1, 1] | 0.9 [0.9, 0.9] | 0.1 | 0 | ✅ real |
 | Overhead ratio (tokens) | 2.9 [2.8, 3] | 0.3 [0.3, 0.3] | 2.6 | 0.2 | ✅ real |
 | Efficiency · wall-clock (ms) | 910000 [900000, 920000] | 305000 [300000, 310000] | 605000 | 20000 | ✅ real |
 | Efficiency · total tokens | 252500 [250000, 255000] | 61000 [60000, 62000] | 191500 | 5000 | ✅ real |
@@ -91,6 +115,18 @@ finding.
 
 ✅ Every measured mandrel-arm run met the guardrail threshold.
 
+## Saturated-dimension guardrails (quality · maintainability · security)
+
+These value dimensions are SATURATED — both arms score at ceiling on the
+current corpus — so they are reported as pass/fail GUARDRAILS against a
+fixed cohort threshold rather than as mandrel-vs-control deltas (Story
+#157). A delta here would be noise dressed as measurement. Their numeric
+deltas are preserved in the appendix. A drop below threshold is itself a
+finding. They stay demoted until a weak-model calibration probe
+demonstrates dynamic range.
+
+No guardrail-scored runs to evaluate.
+
 ## Per-phase cost (mandrel arm)
 
 The mandrel arm runs `/plan` and `/deliver` as two separate headless
@@ -124,3 +160,26 @@ violation is a calibration warning, not a silent pass.
 
 - **Evidence:** hello-world overhead floor ≈ 70500 tokens / $0.62 above control (quality gain 0) — a positive floor with no matching quality gain.
 - **Action:** Gate the full /plan→/deliver ceremony behind a complexity threshold so trivial scopes skip the planning/decomposition tax that buys no quality here.
+
+## Appendix — saturated-dimension deltas (demoted from headline)
+
+The numeric mandrel-vs-control deltas for the saturated dimensions, kept
+here for audit. They are NOT headline signal (Story #157): both arms are at
+ceiling, so the delta is within noise by construction. Read the guardrail
+section above for the reportable verdict.
+
+### `hello-world`
+
+| Dimension | Mandrel | Control | Pooled Δ (M−C) | Paired Δ (M−C) | Pooled verdict |
+| --- | --- | --- | --- | --- | --- |
+| Quality | 1 [1, 1] | 1 [1, 1] | 0 | — | ≈ within noise |
+| Maintainability | 0.9 [0.9, 0.9] | 0.85 [0.85, 0.85] | 0.05 | — | ✅ real |
+| Security | 1 [1, 1] | 1 [1, 1] | 0 | — | ≈ within noise |
+
+### `story-scope`
+
+| Dimension | Mandrel | Control | Pooled Δ (M−C) | Paired Δ (M−C) | Pooled verdict |
+| --- | --- | --- | --- | --- | --- |
+| Quality | 0.96 [0.95, 0.97] | 0.825 [0.8, 0.85] | 0.135 | — | ✅ real |
+| Maintainability | 0.9 [0.9, 0.9] | 0.8 [0.8, 0.8] | 0.1 | — | ✅ real |
+| Security | 1 [1, 1] | 0.9 [0.9, 0.9] | 0.1 | — | ✅ real |

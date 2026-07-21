@@ -16,6 +16,7 @@ import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
 import {
+  appendixDimensionRows,
   attributionRows,
   autonomyGuardrailFindings,
   autonomyGuardrailRows,
@@ -27,6 +28,7 @@ import {
   deriveCohort,
   dimensionRows,
   groupCells,
+  pairedRows,
   phaseCostRows,
   recommendImprovements,
   renderAttributionSection,
@@ -36,7 +38,9 @@ import {
   renderMismatchNote,
   renderPhaseCostSection,
   renderReport,
+  renderSaturatedGuardrailSection,
   renderScalingView,
+  saturatedGuardrailRows,
   trapAxisRows,
 } from '../../../bench/report/render.js';
 import { scoreCorpus } from '../../../bench/score/differential.js';
@@ -65,6 +69,7 @@ function card({
   autonomyGuardrailThreshold = 0.99,
   maintainability = 0.9,
   security = 1,
+  saturatedGuardrailThreshold = 0.9,
   tokenRatio = 4,
   wallClockMs = 600000,
   totalTokens = 180000,
@@ -77,7 +82,17 @@ function card({
   trap = null,
   phases = null,
   touch2 = null,
+  seedSha,
 } = {}) {
+  // Saturated-dimension guardrail verdict (Story #157): met iff the score
+  // clears the threshold; null when the score is null (unmeasured).
+  const gate = (score) => ({
+    threshold: saturatedGuardrailThreshold,
+    met:
+      typeof score === 'number' && Number.isFinite(score)
+        ? score >= saturatedGuardrailThreshold
+        : null,
+  });
   const sc = {
     schemaVersion: 1,
     runId,
@@ -91,7 +106,11 @@ function card({
     routingVerdict,
     routingMismatch,
     dimensions: {
-      quality: { score: quality, frozenSuitePassRate: quality },
+      quality: {
+        score: quality,
+        frozenSuitePassRate: quality,
+        guardrail: gate(quality),
+      },
       planningFidelity: { score: arm === 'control' ? null : planningFidelity },
       autonomy: {
         score: autonomy,
@@ -103,12 +122,16 @@ function card({
           met: autonomyGuardrailMet,
         },
       },
-      maintainability: { score: maintainability },
-      security: { score: security },
+      maintainability: {
+        score: maintainability,
+        guardrail: gate(maintainability),
+      },
+      security: { score: security, guardrail: gate(security) },
       overheadRatio: { tokenRatio },
       efficiency: { wallClockMs, totalTokens, dispatches, costUsd },
     },
   };
+  if (seedSha !== undefined) sc.seedSha = seedSha;
   if (trap) sc.trap = trap;
   if (phases) sc.phases = phases;
   if (touch2) sc.touch2 = touch2;
@@ -133,6 +156,7 @@ function healthyCorpus() {
         tokenRatio: 4.2,
         totalTokens: 180000 + i * 1000,
         costUsd: 1.4,
+        seedSha: `hw-${i}`,
       }),
     );
     cards.push(
@@ -144,6 +168,7 @@ function healthyCorpus() {
         tokenRatio: 0.1,
         totalTokens: 40000 + i * 500,
         costUsd: 0.3,
+        seedSha: `hw-${i}`,
       }),
     );
   }
@@ -158,6 +183,7 @@ function healthyCorpus() {
         tokenRatio: 1.5,
         totalTokens: 900000 + i * 5000,
         costUsd: 7.0,
+        seedSha: `story-${i}`,
       }),
     );
     cards.push(
@@ -169,6 +195,7 @@ function healthyCorpus() {
         tokenRatio: 0.1,
         totalTokens: 300000 + i * 2000,
         costUsd: 2.5,
+        seedSha: `story-${i}`,
       }),
     );
   }
@@ -427,21 +454,28 @@ describe('dimensionRows — distributions per arm + delta verdict', () => {
       })),
     });
     const rows = dimensionRows(cells[0], corpus.perScenario[0], 'iqr');
-    // 5 scalar dimensions (autonomy is a guardrail, not a delta — Epic #66,
-    // Story #77/#79) + 4 efficiency components = 9 rows.
-    assert.equal(rows.length, 9);
-    const quality = rows.find((r) => r.metric === 'quality');
+    // 2 headline scalar dimensions (autonomy is a guardrail — Epic #66; and
+    // quality/maintainability/security are demoted to guardrails, Story #157) +
+    // 4 efficiency components = 6 rows. The demoted dimensions never appear.
+    assert.equal(rows.length, 6);
+    for (const demoted of ['quality', 'maintainability', 'security']) {
+      assert.ok(
+        !rows.some((r) => r.metric === demoted),
+        `${demoted} must not appear as a headline delta row (Story #157)`,
+      );
+    }
+    const overhead = rows.find((r) => r.metric === 'overheadRatio');
     // Both arms have a band (a distribution), not a single number.
     assert.ok(
-      quality.mandrelBand && typeof quality.mandrelBand.center === 'number',
+      overhead.mandrelBand && typeof overhead.mandrelBand.center === 'number',
     );
     assert.ok(
-      quality.controlBand && typeof quality.controlBand.center === 'number',
+      overhead.controlBand && typeof overhead.controlBand.center === 'number',
     );
-    assert.ok('low' in quality.mandrelBand && 'high' in quality.mandrelBand);
+    assert.ok('low' in overhead.mandrelBand && 'high' in overhead.mandrelBand);
   });
 
-  it('flags the Mandrel-vs-control quality gap as a real delta', () => {
+  it('preserves the Mandrel-vs-control quality delta in the appendix, not the headline (Story #157)', () => {
     const cells = groupCells(healthyCorpus());
     const corpus = scoreCorpus({
       cells: cells.map((c) => ({
@@ -451,10 +485,16 @@ describe('dimensionRows — distributions per arm + delta verdict', () => {
         controlRuns: c.controlRuns,
       })),
     });
-    const rows = dimensionRows(cells[0], corpus.perScenario[0], 'iqr');
-    const quality = rows.find((r) => r.metric === 'quality');
+    const appendix = appendixDimensionRows(
+      cells[0],
+      corpus.perScenario[0],
+      'iqr',
+    );
+    const quality = appendix.find((r) => r.metric === 'quality');
     assert.equal(quality.verdict, 'real');
     assert.ok(quality.delta > 0); // mandrel − control, mandrel higher
+    // And its paired delta is carried too.
+    assert.ok(quality.pairedDelta > 0);
   });
 
   it('marks planningFidelity incomparable when the control arm is null', () => {
@@ -892,6 +932,108 @@ describe('autonomy guardrail — mandrel-arm pass/fail, never a delta (Epic #66,
   });
 });
 
+describe('seed-paired report + saturated guardrails (Story #157)', () => {
+  it('leads each scenario with the paired differential block and shows the seed-matched pair count', () => {
+    const md = renderReport({ scorecards: healthyCorpus(), method: 'iqr' });
+    assert.match(md, /#### Paired differential \(seed-matched/);
+    assert.match(md, /seed-matched pair\(s\)/);
+    // The paired block precedes the pooled per-arm bands within a scenario.
+    const pairedIdx = md.indexOf('#### Paired differential');
+    const pooledIdx = md.indexOf('#### Pooled per-arm bands');
+    assert.ok(pairedIdx !== -1 && pooledIdx !== -1 && pairedIdx < pooledIdx);
+  });
+
+  it('AC-5: the headline scorecard carries NO numeric delta row for quality / maintainability / security', () => {
+    const md = renderReport({ scorecards: healthyCorpus(), method: 'iqr' });
+    const headline = md.slice(0, md.indexOf('## Appendix'));
+    // The demoted dimensions never head a delta table row in the headline.
+    assert.doesNotMatch(headline, /\n\| Quality \|/);
+    assert.doesNotMatch(headline, /\n\| Maintainability \|/);
+    assert.doesNotMatch(headline, /\n\| Security \|/);
+    // They surface as a guardrail section instead.
+    assert.match(md, /## Saturated-dimension guardrails/);
+  });
+
+  it('pairedRows excludes the demoted dimensions and carries a per-pair band', () => {
+    const cells = groupCells(healthyCorpus());
+    const corpus = scoreCorpus({
+      cells: cells.map((c) => ({
+        scenario: c.scenario,
+        difficulty: c.difficulty,
+        mandrelRuns: c.mandrelRuns,
+        controlRuns: c.controlRuns,
+      })),
+    });
+    const rows = pairedRows(corpus.perScenario[0]);
+    const metrics = rows.map((r) => r.metric);
+    for (const demoted of ['quality', 'maintainability', 'security']) {
+      assert.ok(!metrics.includes(demoted));
+    }
+    // Overhead ratio + efficiency components carry a paired band from real pairs.
+    const overhead = rows.find((r) => r.metric === 'overheadRatio');
+    assert.ok(overhead.diffBand !== null);
+    assert.equal(overhead.verdict, 'real');
+  });
+
+  it('AC-5: each saturated dimension exposes a pass/fail guardrail verdict', () => {
+    const cells = groupCells(healthyCorpus());
+    const rows = saturatedGuardrailRows(cells);
+    for (const dim of ['quality', 'maintainability', 'security']) {
+      assert.ok(
+        rows.some((r) => r.dimension === dim),
+        `expected a guardrail row for ${dim}`,
+      );
+    }
+    // hello-world control quality is ~0.5 → below the 0.9 gate → a dropped run.
+    const hwQuality = rows.find(
+      (r) => r.scenario === 'hello-world' && r.dimension === 'quality',
+    );
+    assert.ok(hwQuality.control.dropped > 0);
+    assert.ok(hwQuality.mandrel.met > 0);
+    const section = renderSaturatedGuardrailSection(cells);
+    assert.match(section, /Saturated-dimension guardrails/);
+  });
+
+  it('moves the saturated-dimension numeric deltas to the appendix', () => {
+    const md = renderReport({ scorecards: healthyCorpus(), method: 'iqr' });
+    const appendix = md.slice(md.indexOf('## Appendix'));
+    assert.match(appendix, /saturated-dimension deltas/);
+    // The quality delta lives in the appendix, keyed under a scenario.
+    assert.match(appendix, /\| Quality \|/);
+    assert.match(appendix, /Paired Δ \(M−C\)/);
+  });
+
+  it('a saturated guardrail drop surfaces as a recommended-improvement finding', () => {
+    const cells = groupCells([
+      card({
+        scenario: 'hello-world',
+        arm: 'mandrel',
+        runId: 'm1',
+        security: 0.4,
+      }),
+    ]);
+    const findings = saturatedGuardrailRows(cells);
+    assert.ok(findings.some((r) => r.dimension === 'security'));
+    const md = renderReport({
+      scorecards: [
+        card({
+          scenario: 'hello-world',
+          arm: 'mandrel',
+          runId: 'm1',
+          security: 0.4,
+        }),
+        card({
+          scenario: 'hello-world',
+          arm: 'control',
+          runId: 'c1',
+          security: 1,
+        }),
+      ],
+    });
+    assert.match(md, /guardrail drop on `hello-world`/);
+  });
+});
+
 describe('renderMismatchNote — direct coverage (Epic #66 audit remediation, M4-M10)', () => {
   it('returns "" when the cell has no mismatched records', () => {
     assert.equal(renderMismatchNote({ mismatchedRuns: [] }), '');
@@ -1321,7 +1463,7 @@ describe('chain report sections — issue #124 PR-D', () => {
     }
   });
 
-  it('renderReport is BYTE-IDENTICAL to the pre-chain renderer for a non-chain corpus (snapshot guard)', () => {
+  it('renderReport is byte-identical to the committed snapshot for a non-chain corpus (snapshot guard); a legacy corpus with no seed SHAs still renders (Story #157 AC-4)', () => {
     const expected = readFileSync(
       new URL('./fixtures/nonchain-report.md', import.meta.url),
       'utf8',
