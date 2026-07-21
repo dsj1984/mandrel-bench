@@ -39,6 +39,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
@@ -422,69 +423,91 @@ export function derivedSecurityInputs(
 }
 
 /**
- * Discover the lifecycle ledger + per-Story signals inside a delivered
- * workspace. A clean `/deliver` merge RELOCATES the ledger from the live
- * `temp/epic-<id>/` directory into a timestamped `temp/archive/epic-<id>-...`
- * directory (the cleaner listener fires on `epic.merge.confirmed`), so we look
- * in the archive FIRST, then the live dir. Among candidates we prefer the
- * ledger whose last record is `epic.complete` (a fully-merged run), else the
- * first found.
+ * Discover the lifecycle ledger, the per-Story signals streams, and the
+ * plan-metrics invocation ledger inside a delivered workspace.
+ *
+ * The layout is mandrel 2.x's (`.agents/scripts/lib/config/temp-paths.js`):
+ *
+ *   temp/run-<rid>/lifecycle.ndjson
+ *   temp/run-<rid>/plan-metrics.json
+ *   temp/run-<rid>/stories/story-<sid>/signals.ndjson
+ *   temp/standalone/stories/story-<sid>/signals.ndjson
+ *   temp/standalone/plan-metrics.json
+ *
+ * There is no `temp/archive/` relocation on 2.x and the `epic.complete`
+ * lifecycle event was retired, so neither the archive scan nor the
+ * completed-ledger preference the 1.x reader used has a counterpart here.
+ * Where completion used to break ties between candidate ledgers, recency does:
+ * the most recently modified `lifecycle.ndjson` is this run's, not a stale one.
+ *
+ * Signals are collected across EVERY discovered run directory (including
+ * `temp/standalone`, which carries no lifecycle ledger of its own) because a
+ * single cell can route Stories through both.
  *
  * @param {object} args
  * @param {string} args.workspacePath
  * @param {object} [deps]
  * @param {(p: string) => boolean} [deps.existsImpl]
  * @param {(p: string, opts?: object) => string[]} [deps.readdirImpl]
- * @param {(p: string, enc: string) => string} [deps.readFileImpl]
- * @returns {{ lifecyclePath: string, signalsPaths: string[] } | null}
+ * @param {(p: string) => { mtimeMs: number }} [deps.statImpl]
+ * @returns {{ lifecyclePath: string, signalsPaths: string[], planMetricsPath: string|null } | null}
  */
 export function discoverLedger({ workspacePath }, deps = {}) {
   const exists = deps.existsImpl ?? existsSync;
   const readdir = deps.readdirImpl ?? ((p) => readdirSync(p));
-  const read = deps.readFileImpl ?? readFileSync;
+  const stat = deps.statImpl ?? statSync;
 
-  const epicDirs = [];
   const tempDir = path.join(workspacePath, 'temp');
-  const archiveDir = path.join(tempDir, 'archive');
-  // Archive-first (the clean-merge location), then the live temp dir.
-  if (exists(archiveDir)) {
-    for (const name of readdir(archiveDir)) {
-      if (name.startsWith('epic-')) epicDirs.push(path.join(archiveDir, name));
-    }
-  }
+  const standaloneDir = path.join(tempDir, 'standalone');
+  const runDirs = [];
   if (exists(tempDir)) {
     for (const name of readdir(tempDir)) {
-      if (name.startsWith('epic-')) epicDirs.push(path.join(tempDir, name));
+      if (name.startsWith('run-')) runDirs.push(path.join(tempDir, name));
     }
   }
+  if (exists(standaloneDir)) runDirs.push(standaloneDir);
 
   const candidates = [];
-  for (const dir of epicDirs) {
+  for (const dir of runDirs) {
     const lifecyclePath = path.join(dir, 'lifecycle.ndjson');
     if (!exists(lifecyclePath)) continue;
-    let completed = false;
+    let mtimeMs = 0;
     try {
-      const recs = parseNdjson(read(lifecyclePath, 'utf8'));
-      completed = recs.some((r) => r?.event === 'epic.complete');
+      mtimeMs = stat(lifecyclePath)?.mtimeMs ?? 0;
     } catch {
-      // unreadable — still a candidate, just not "completed"
+      // unstattable — still a candidate, just the least recent one.
     }
-    candidates.push({ dir, lifecyclePath, completed });
+    candidates.push({ dir, lifecyclePath, mtimeMs });
   }
   if (candidates.length === 0) return null;
 
-  // Prefer a completed ledger; archive entries already sort ahead of live ones.
-  const chosen = candidates.find((c) => c.completed) ?? candidates[0];
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const chosen = candidates[0];
 
   const signalsPaths = [];
-  const storiesDir = path.join(chosen.dir, 'stories');
-  if (exists(storiesDir)) {
+  for (const dir of runDirs) {
+    const storiesDir = path.join(dir, 'stories');
+    if (!exists(storiesDir)) continue;
     for (const story of readdir(storiesDir)) {
+      // Pin the `story-` prefix so an unrelated sibling directory under
+      // `stories/` cannot be mistaken for a Story stream.
+      if (!story.startsWith('story-')) continue;
       const sp = path.join(storiesDir, story, 'signals.ndjson');
       if (exists(sp)) signalsPaths.push(sp);
     }
   }
-  return { lifecyclePath: chosen.lifecyclePath, signalsPaths };
+
+  // The plan phase and the deliver phase can land in different run
+  // directories, so fall back to the standalone ledger when the chosen run
+  // directory has none.
+  const chosenPlanMetrics = path.join(chosen.dir, 'plan-metrics.json');
+  const standalonePlanMetrics = path.join(standaloneDir, 'plan-metrics.json');
+  let planMetricsPath = null;
+  if (exists(chosenPlanMetrics)) planMetricsPath = chosenPlanMetrics;
+  else if (exists(standalonePlanMetrics))
+    planMetricsPath = standalonePlanMetrics;
+
+  return { lifecyclePath: chosen.lifecyclePath, signalsPaths, planMetricsPath };
 }
 
 /**
@@ -1295,15 +1318,17 @@ export async function runTouch2(opts, deps = {}) {
           2,
         )}\n`,
       );
-      // Lifecycle ledger, when a mandrel-base arm produced one in the touch-2
-      // tree.
+      // Lifecycle + plan-metrics ledgers, when a mandrel-base arm produced
+      // them in the touch-2 tree. Discovery is the same `discoverLedger` seam
+      // the first-touch capture uses, so the 2.x layout fix and plan-metrics
+      // both land here without duplicated logic.
       if (isMandrelArm(arm)) {
         const found = discoverLedger(
           { workspacePath: workspaceForLedger },
           deps.discoverDeps,
         );
+        const read = deps.readFileImpl ?? readFileSync;
         if (found?.lifecyclePath) {
-          const read = deps.readFileImpl ?? readFileSync;
           try {
             writeFileFn(
               path.join(touch2RawDir, 'lifecycle.ndjson'),
@@ -1312,6 +1337,18 @@ export async function runTouch2(opts, deps = {}) {
           } catch (err) {
             logger?.warn?.(
               `[run] touch2: could not copy lifecycle ledger: ${err?.message ?? err}`,
+            );
+          }
+        }
+        if (found?.planMetricsPath) {
+          try {
+            writeFileFn(
+              path.join(touch2RawDir, 'plan-metrics.json'),
+              read(found.planMetricsPath, 'utf8'),
+            );
+          } catch (err) {
+            logger?.warn?.(
+              `[run] touch2: could not copy plan-metrics ledger: ${err?.message ?? err}`,
             );
           }
         }
@@ -1357,6 +1394,10 @@ export async function runTouch2(opts, deps = {}) {
         model,
         extraArgs,
         timeoutMs,
+        // Per-turn transcript capture (Story #154) lands beside the touch-2
+        // cost envelope, so a second-touch run is attributable turn-by-turn on
+        // the same terms as the first.
+        transcriptDir: touch2RawDir ?? undefined,
       },
       { invokeFn: deps.invokeFn, logger },
     );
@@ -1862,6 +1903,23 @@ export async function runOneRun(opts, deps = {}) {
     // cost envelope, the lifecycle ledger, and the plan snapshot all land here).
     const idStampForRaw = sanitizeRunId(`${scenario.id}-${arm}-r${runIndex}`);
 
+    // Per-turn transcript capture directory (Story #154). The session driver
+    // tees each phase's full stream-json event stream here as
+    // `<phase>-transcript.ndjson.gz`, so the turn-count / resident-context cost
+    // levers stay measurable after the sandbox is gone. It must be resolved
+    // BEFORE the session (the plan phase's transcript is written the moment
+    // that phase exits), so the cohort dir is keyed off the CONFIGURED model id
+    // rather than the one `resolveModelId` reads back out of the envelope —
+    // exactly the seam the plan-snapshot dir already uses.
+    const transcriptDir = path.join(
+      cohortDir({
+        resultsDir,
+        scorecard: { model: { id: model }, frameworkVersion },
+      }),
+      '.raw',
+      idStampForRaw,
+    );
+
     // Between-session seam (D-019, Epic #86 Story #94), mandrel arm only. After
     // the PLAN session exits, discover the id(s) it created on the ephemeral
     // repo and snapshot the plan artifacts BEFORE the DELIVER session starts,
@@ -1997,6 +2055,7 @@ export async function runOneRun(opts, deps = {}) {
         model,
         extraArgs,
         timeoutMs,
+        transcriptDir,
       },
       { invokeFn: deps.invokeFn, logger, betweenPhases },
     );
@@ -2038,13 +2097,15 @@ export async function runOneRun(opts, deps = {}) {
       scorecard: { model: { id: modelId }, frameworkVersion },
     });
 
-    // Discover + copy out the lifecycle ledger before teardown.
+    // Discover + copy out the lifecycle, signals, and plan-metrics ledgers
+    // before teardown.
     let lifecycle = [];
     const signals = [];
     let rawRefs;
-    // Standalone-path telemetry (Story #48), filled when the mandrel arm routed
-    // through the single-Story path (no Epic ledger) and its GitHub Story was
-    // recovered. Stays null for the control arm and for Epic-routed cells.
+    // GitHub-recovered telemetry (Story #48), filled when the mandrel arm left
+    // no readable lifecycle ledger in the workspace but its Story (or Stories)
+    // can still be read back from GitHub. Stays null for the control arm and
+    // whenever the workspace ledger was found.
     let standalone = null;
     const rawDir = path.join(cohortDirPath, '.raw');
     // idStampForRaw was resolved before the session (the plan snapshot needs it).
@@ -2074,11 +2135,29 @@ export async function runOneRun(opts, deps = {}) {
             signals.push(r);
           }
         }
-        rawRefs = { lifecycleNdjson: lifeOut, signalsNdjson: signalsOut };
+        // The plan-invocation ledger (Story #155). Best-effort: a cell whose
+        // copy throws still completes and writes its scorecard.
+        let planMetricsOut = null;
+        if (found.planMetricsPath) {
+          const candidate = path.join(dest, 'plan-metrics.json');
+          try {
+            cp(found.planMetricsPath, candidate, { recursive: false });
+            planMetricsOut = candidate;
+          } catch (err) {
+            logger?.warn?.(
+              `[run] could not copy plan-metrics ledger: ${err?.message ?? err}`,
+            );
+          }
+        }
+        rawRefs = {
+          lifecycleNdjson: lifeOut,
+          signalsNdjson: signalsOut,
+          ...(planMetricsOut ? { planMetricsJson: planMetricsOut } : {}),
+        };
       } else {
-        // No Epic ledger — Mandrel routed this cell through the standalone
-        // single-Story path. Recover planning + autonomy from the Story's
-        // GitHub telemetry (Story #48) so the value dims are MEASURED, not null.
+        // No lifecycle ledger in the workspace at all. Recover planning +
+        // autonomy from the Story's GitHub telemetry (Story #48) so the value
+        // dims are MEASURED, not null.
         const ghJson = deps.ghJson ?? defaultGhJson;
         if (effectiveRouting === 'multi-story') {
           // Decomposition-scoped v2 cell: aggregate across every sibling Story
@@ -2139,11 +2218,11 @@ export async function runOneRun(opts, deps = {}) {
               { ghJson },
             );
             logger?.info?.(
-              `[run] no Epic ledger — recovered standalone telemetry from Story #${storyNumber} (routing=story)`,
+              `[run] no workspace ledger — recovered standalone telemetry from Story #${storyNumber} (routing=story)`,
             );
           } else {
             logger?.warn?.(
-              '[run] no Epic ledger and no standalone Story found for the mandrel arm',
+              '[run] no workspace ledger and no standalone Story found for the mandrel arm',
             );
           }
         }
@@ -2159,6 +2238,19 @@ export async function runOneRun(opts, deps = {}) {
       `${JSON.stringify(session.envelope.raw ?? session.envelope, null, 2)}\n`,
     );
     rawRefs = { ...(rawRefs ?? {}), costEnvelope: envelopePath };
+
+    // Surface the per-phase transcripts the session driver captured (Story
+    // #154) alongside the other `.raw/` provenance. Capture is best-effort, so
+    // the list is only added when at least one phase actually landed on disk —
+    // an unwritable transcript leaves `rawRefs` exactly as it was before.
+    const transcriptPaths = Array.isArray(session.transcripts)
+      ? session.transcripts
+          .map((t) => t?.path)
+          .filter((p) => typeof p === 'string' && p.length > 0)
+      : [];
+    if (transcriptPaths.length > 0) {
+      rawRefs = { ...rawRefs, transcripts: transcriptPaths };
+    }
 
     // Score Quality by bringing up the delivered app and probing it — UNLESS the
     // mandrel delivery didn't materialize, in which case there is no app in the

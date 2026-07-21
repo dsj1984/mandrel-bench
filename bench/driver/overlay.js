@@ -26,9 +26,14 @@
  *   - a CLEAN minimal `package.json` so the agent builds the scenario app into an
  *     uncluttered consumer (the copied `node_modules` still resolves the framework
  *     runtime deps by directory presence — node resolution is by on-disk package,
- *     not by what `package.json` declares), and
+ *     not by what `package.json` declares). Since Story #153 the sandbox baseline
+ *     seed already ships this exact file as TRACKED content, so this write is a
+ *     byte-identical seed-wins merge rather than a rewrite, and
  *   - a rewritten `.agentrc.json` whose `github.owner/repo` point at the sandbox
  *     repo (so `/deliver` opens issues/branches/PR there, never against this repo).
+ * Finally it installs a repo-local `post-checkout` hook so the Story worktrees
+ * `/deliver` creates can see the (untracked) overlay — see
+ * {@link installWorktreeOverlayHook}.
  *
  * The CONTROL arm is deliberately NOT overlaid — it is the bare-model baseline
  * and must carry no scaffolding (`provisionSandbox` already strips `.agents/`).
@@ -39,6 +44,7 @@
 
 import {
   appendFileSync,
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -95,16 +101,68 @@ const NODE_CHECK_SWEEP = [
 
 /**
  * The rewritten consumer artifacts the overlay clobbers in place (in addition
- * to copying {@link DEFAULT_OVERLAY_PATHS}): the clean minimal `package.json`
- * and the sandbox-repointed `.agentrc.json`. These are framework-overlay
- * artifacts, not deliverable app code, so they are git-excluded alongside the
- * copied paths — otherwise the headless agent would stage them and they would
- * contaminate the deliverable diff exactly like `.agents/**` does.
+ * to copying {@link DEFAULT_OVERLAY_PATHS}): the sandbox-repointed
+ * `.agentrc.json`. These are framework-overlay artifacts, not deliverable app
+ * code, so they are git-excluded alongside the copied paths — otherwise the
+ * headless agent would stage them and they would contaminate the deliverable
+ * diff exactly like `.agents/**` does.
+ *
+ * `package.json` used to live here (Story #153 removed it). It is no longer an
+ * overlay-only artifact: the sandbox baseline seed now ships a tracked
+ * `package.json` carrying the gate scripts
+ * (`materializeSandboxTemplate` → {@link buildTargetPackageJson}), so the
+ * overlay's write is a seed-wins no-op merge rather than a rewrite. Excluding
+ * it collided with every scenario whose contract claims `package.json` as a
+ * deliverable — see {@link DELIVERABLE_CLAIMABLE_ARTIFACTS}.
  */
-export const REWRITTEN_OVERLAY_ARTIFACTS = Object.freeze([
-  'package.json',
-  '.agentrc.json',
-]);
+export const REWRITTEN_OVERLAY_ARTIFACTS = Object.freeze(['.agentrc.json']);
+
+/**
+ * Overlay-touched artifacts a scenario's own contract may legitimately claim
+ * as **deliverables**. Excluding one of these from git is only correct when
+ * the scenario does NOT claim it: hello-world's contract requires a
+ * `package.json` (its `npm start` app contract and its single-source-file +
+ * `package.json` seed prompt), so git-excluding it forced the headless agent
+ * into a `git add --force` dance and burned turns that were then charged to
+ * the mandrel arm's measured overhead (Story #153).
+ */
+export const DELIVERABLE_CLAIMABLE_ARTIFACTS = Object.freeze(['package.json']);
+
+/**
+ * Whether a scenario's contract claims `package.json` as a deliverable.
+ *
+ * Two crisp signals, in precedence order:
+ *   1. an explicit `deliverables` array on the scenario naming it, and
+ *   2. an `app.startCommand` that invokes a package-manager script
+ *      (`npm start`, `pnpm run start`, `yarn start`, …) — which is only
+ *      satisfiable by a delivered `package.json`.
+ *
+ * A `null`/absent scenario means "no contract to consult": the baseline seed
+ * ships a tracked `package.json` for every scenario, so the safe default is to
+ * treat it as claimed and leave it visible to git.
+ *
+ * @param {object|null} [scenario]  Parsed `scenario.json`.
+ * @returns {boolean}
+ */
+export function scenarioClaimsPackageJson(scenario = null) {
+  if (scenario == null) return true;
+  if (typeof scenario !== 'object' || Array.isArray(scenario)) return true;
+
+  if (Array.isArray(scenario.deliverables)) {
+    if (
+      scenario.deliverables.some((d) => String(d).trim() === 'package.json')
+    ) {
+      return true;
+    }
+  }
+
+  const startCommand = scenario.app?.startCommand;
+  if (typeof startCommand === 'string') {
+    if (/^\s*(npm|pnpm|yarn|bun)\b/.test(startCommand)) return true;
+  }
+
+  return false;
+}
 
 /**
  * Every overlaid path the deliverable diff must never contain: the copied
@@ -113,11 +171,27 @@ export const REWRITTEN_OVERLAY_ARTIFACTS = Object.freeze([
  * pipeline can run with the overlay present while the headless agent's
  * `git add` / commit never picks any of it up.
  *
+ * A {@link DELIVERABLE_CLAIMABLE_ARTIFACTS} entry is excluded only when the
+ * scenario's contract does NOT claim it (Story #153).
+ *
  * @param {readonly string[]} [overlayPaths=DEFAULT_OVERLAY_PATHS]
+ * @param {{ scenario?: object|null }} [opts]
  * @returns {string[]} De-duplicated, stable-ordered relative paths.
  */
-export function overlayExcludePaths(overlayPaths = DEFAULT_OVERLAY_PATHS) {
-  return [...new Set([...overlayPaths, ...REWRITTEN_OVERLAY_ARTIFACTS])];
+export function overlayExcludePaths(
+  overlayPaths = DEFAULT_OVERLAY_PATHS,
+  { scenario = null } = {},
+) {
+  const contractArtifacts = scenarioClaimsPackageJson(scenario)
+    ? []
+    : DELIVERABLE_CLAIMABLE_ARTIFACTS;
+  return [
+    ...new Set([
+      ...overlayPaths,
+      ...REWRITTEN_OVERLAY_ARTIFACTS,
+      ...contractArtifacts,
+    ]),
+  ];
 }
 
 /**
@@ -133,6 +207,8 @@ export function overlayExcludePaths(overlayPaths = DEFAULT_OVERLAY_PATHS) {
  * @param {object} opts
  * @param {string} opts.workspacePath  Absolute path of the provisioned clone.
  * @param {readonly string[]} [opts.overlayPaths=DEFAULT_OVERLAY_PATHS]
+ * @param {object|null} [opts.scenario]  Parsed `scenario.json`, consulted for
+ *   the deliverable-contract carve-out (see {@link overlayExcludePaths}).
  * @param {object} [deps]
  * @param {(p: string, enc: string) => string} [deps.readFileFn]
  * @param {(p: string, data: string) => void} [deps.appendFileFn]
@@ -142,7 +218,11 @@ export function overlayExcludePaths(overlayPaths = DEFAULT_OVERLAY_PATHS) {
  * @returns {{ excludeFile: string, added: string[], patterns: string[] }}
  */
 export function excludeOverlayFromGit(opts = {}, deps = {}) {
-  const { workspacePath, overlayPaths = DEFAULT_OVERLAY_PATHS } = opts;
+  const {
+    workspacePath,
+    overlayPaths = DEFAULT_OVERLAY_PATHS,
+    scenario = null,
+  } = opts;
 
   if (typeof workspacePath !== 'string' || workspacePath.length === 0) {
     throw new TypeError(
@@ -162,7 +242,9 @@ export function excludeOverlayFromGit(opts = {}, deps = {}) {
   // Anchor each pattern to the repo root so `.claude` excludes the directory
   // without also masking an unrelated nested path, and so `CLAUDE.md` /
   // `package.json` only match the root artifact the overlay wrote.
-  const patterns = overlayExcludePaths(overlayPaths).map((rel) => `/${rel}`);
+  const patterns = overlayExcludePaths(overlayPaths, { scenario }).map(
+    (rel) => `/${rel}`,
+  );
 
   let current = '';
   if (exists(excludeFile)) {
@@ -190,6 +272,123 @@ export function excludeOverlayFromGit(opts = {}, deps = {}) {
   );
 
   return { excludeFile, added: missing, patterns };
+}
+
+/**
+ * Render the repo-local `post-checkout` hook body that links the clone-root
+ * overlay into every newly-created linked worktree.
+ *
+ * Pure (path list in → shell text out) so the exact script is unit-assertable
+ * without touching disk.
+ *
+ * @param {readonly string[]} linkPaths  Relative overlay paths to link.
+ * @returns {string} POSIX `sh` script text.
+ */
+export function buildWorktreeOverlayHook(linkPaths) {
+  const offending = linkPaths.find((rel) => /['\n]/.test(rel));
+  if (offending !== undefined) {
+    throw new TypeError(
+      `buildWorktreeOverlayHook cannot shell-quote overlay path: ${offending}`,
+    );
+  }
+  const words = linkPaths.map((rel) => `'${rel}'`).join(' ');
+  return [
+    '#!/bin/sh',
+    '# mandrel-bench: framework-overlay visibility in linked worktrees (Story #153).',
+    '# `git worktree add` materializes a fresh tree that cannot see the clone',
+    "# root's UNTRACKED overlay (.agents/, .claude/, node_modules, .agentrc.json),",
+    "# so the framework's own gate scripts ('node .agents/scripts/...') are",
+    '# unresolvable from inside a Story worktree and agents invent symlink',
+    '# workarounds. Link the overlay in once, at checkout time.',
+    '#',
+    '# Never fails a checkout: every path exits 0.',
+    'set -u',
+    '',
+    'common_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0',
+    '[ -n "$common_dir" ] || exit 0',
+    'clone_root=$(CDPATH= cd -- "$common_dir/.." 2>/dev/null && pwd -P) || exit 0',
+    'here=$(pwd -P) || exit 0',
+    '',
+    '# The main worktree already holds the overlay itself — nothing to link.',
+    'if [ "$here" = "$clone_root" ]; then exit 0; fi',
+    '',
+    `for rel in ${words}; do`,
+    '  [ -e "$here/$rel" ] && continue',
+    '  [ -e "$clone_root/$rel" ] || continue',
+    '  ln -s "$clone_root/$rel" "$here/$rel" 2>/dev/null || true',
+    'done',
+    '',
+    'exit 0',
+    '',
+  ].join('\n');
+}
+
+/**
+ * Install the repo-local `post-checkout` hook into a provisioned sandbox clone
+ * so `git worktree add` (which Mandrel's `/deliver` runs per Story) yields a
+ * worktree that can actually see the framework overlay.
+ *
+ * Without it the Story worktree is a checkout of TRACKED content only: the
+ * overlay lives at the clone root as untracked files, `.agents/scripts/*` does
+ * not resolve from inside the worktree, and the `check-baselines` gate fails
+ * on an unresolvable script — a bench artifact that burned turns on every
+ * mandrel-arm run (Story #153).
+ *
+ * The linked names are exactly the {@link overlayExcludePaths} set, so the
+ * clone's existing `.git/info/exclude` (shared with every linked worktree via
+ * the common git dir) already covers them — no new exclusion surface.
+ *
+ * Idempotent: the hook file is rewritten in place on a re-run.
+ *
+ * @param {object} opts
+ * @param {string} opts.workspacePath  Absolute path of the provisioned clone.
+ * @param {readonly string[]} [opts.overlayPaths=DEFAULT_OVERLAY_PATHS]
+ * @param {object|null} [opts.scenario]
+ * @param {object} [deps]
+ * @param {(p: string, opts: object) => void} [deps.mkdirFn]
+ * @param {(p: string, data: string) => void} [deps.writeFileFn]
+ * @param {(p: string, mode: number) => void} [deps.chmodFn]
+ * @param {{ info?: Function, warn?: Function }} [deps.logger]
+ * @returns {{ hookPath: string, linkPaths: string[] }}
+ */
+export function installWorktreeOverlayHook(opts = {}, deps = {}) {
+  const {
+    workspacePath,
+    overlayPaths = DEFAULT_OVERLAY_PATHS,
+    scenario = null,
+  } = opts;
+  if (typeof workspacePath !== 'string' || workspacePath.length === 0) {
+    throw new TypeError(
+      'installWorktreeOverlayHook requires a non-empty workspacePath',
+    );
+  }
+
+  const mkdir = deps.mkdirFn ?? mkdirSync;
+  const writeFile = deps.writeFileFn ?? writeFileSync;
+  const chmod = deps.chmodFn ?? chmodSync;
+  const logger = deps.logger;
+
+  const linkPaths = overlayExcludePaths(overlayPaths, { scenario });
+  const hooksDir = path.join(workspacePath, '.git', 'hooks');
+  const hookPath = path.join(hooksDir, 'post-checkout');
+
+  mkdir(hooksDir, { recursive: true });
+  writeFile(hookPath, buildWorktreeOverlayHook(linkPaths));
+  // Best-effort: a hook that cannot be marked executable is inert (git skips
+  // it) and the run degrades to the pre-Story-#153 behaviour — never a reason
+  // to abort provisioning. Injected-fs tests write no real file at all.
+  try {
+    chmod(hookPath, 0o755);
+  } catch (err) {
+    logger?.warn?.(
+      `[overlay] could not chmod +x ${hookPath}: ${err?.message ?? err}`,
+    );
+  }
+  logger?.info?.(
+    `[overlay] installed worktree post-checkout hook → ${hookPath}`,
+  );
+
+  return { hookPath, linkPaths };
 }
 
 /**
@@ -446,6 +645,7 @@ export function overlayFrameworkUnderTest(opts = {}, deps = {}) {
     sandbox,
     sourceRoot = repoRoot(),
     overlayPaths = DEFAULT_OVERLAY_PATHS,
+    scenario = null,
   } = opts;
 
   let resolvedBase;
@@ -523,7 +723,7 @@ export function overlayFrameworkUnderTest(opts = {}, deps = {}) {
   // pipeline runs with the overlay present but the headless agent never stages
   // it — keeping the deliverable diff to app code only (Story #56).
   const { added: excluded } = excludeOverlayFromGit(
-    { workspacePath, overlayPaths },
+    { workspacePath, overlayPaths, scenario },
     {
       readFileFn: readFile,
       appendFileFn: deps.appendFileFn,
@@ -533,5 +733,19 @@ export function overlayFrameworkUnderTest(opts = {}, deps = {}) {
     },
   );
 
-  return { overlaid: true, arm, copied, agentrc, excluded };
+  // Make the overlay visible inside the Story worktrees `/deliver` creates
+  // (Story #153) — without this the framework's own gate scripts do not
+  // resolve from `.worktrees/story-<id>/` and agents burn turns inventing
+  // symlink workarounds.
+  const { hookPath } = installWorktreeOverlayHook(
+    { workspacePath, overlayPaths, scenario },
+    {
+      mkdirFn: deps.mkdirFn,
+      writeFileFn: writeFile,
+      chmodFn: deps.chmodFn,
+      logger,
+    },
+  );
+
+  return { overlaid: true, arm, copied, agentrc, excluded, hookPath };
 }

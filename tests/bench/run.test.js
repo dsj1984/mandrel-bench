@@ -224,33 +224,132 @@ test('buildRunIdentity: produces a schema-shaped run stamp', () => {
   assert.equal(run.benchmarkVersion, '0.5.0');
 });
 
-test('discoverLedger: archive-first, prefers a completed ledger', () => {
-  const archiveLife = path.join(
-    '/ws',
-    'temp',
-    'archive',
-    'epic-100-9',
-    'lifecycle.ndjson',
-  );
-  const files = {
-    [archiveLife]: '{"event":"epic.start"}\n{"event":"epic.complete"}\n',
+// ---------------------------------------------------------------------------
+// discoverLedger — mandrel 2.x temp layout
+//   temp/run-<rid>/{lifecycle.ndjson,plan-metrics.json,stories/story-<sid>/…}
+//   temp/standalone/{plan-metrics.json,stories/story-<sid>/signals.ndjson}
+// ---------------------------------------------------------------------------
+
+const P = (...parts) => path.join('/ws', 'temp', ...parts);
+
+/**
+ * Build `discoverLedger` deps from a flat set of existing paths.
+ *
+ * @param {string[]} paths existing files/directories
+ * @param {Record<string, number>} [mtimes] lifecycle path → mtimeMs
+ */
+function ledgerDeps(paths, mtimes = {}) {
+  const set = new Set(paths);
+  return {
+    existsImpl: (p) => set.has(p),
+    readdirImpl: (dir) => {
+      const prefix = `${dir}${path.sep}`;
+      const names = new Set();
+      for (const p of set) {
+        if (!p.startsWith(prefix)) continue;
+        names.add(p.slice(prefix.length).split(path.sep)[0]);
+      }
+      return [...names];
+    },
+    statImpl: (p) => ({ mtimeMs: mtimes[p] ?? 0 }),
   };
+}
+
+test('discoverLedger: finds a 2.x run directory ledger', () => {
+  const life = P('run-7', 'lifecycle.ndjson');
   const found = discoverLedger(
     { workspacePath: '/ws' },
-    {
-      existsImpl: (p) =>
-        p === path.join('/ws', 'temp', 'archive') ||
-        p === path.join('/ws', 'temp') ||
-        p === archiveLife,
-      readdirImpl: (p) => {
-        if (p === path.join('/ws', 'temp', 'archive')) return ['epic-100-9'];
-        if (p === path.join('/ws', 'temp')) return ['archive'];
-        return [];
-      },
-      readFileImpl: (p) => files[p] ?? '',
-    },
+    ledgerDeps([P(), P('run-7'), life]),
   );
-  assert.equal(found.lifecyclePath, archiveLife);
+  assert.equal(found.lifecyclePath, life);
+  assert.deepEqual(found.signalsPaths, []);
+  assert.equal(found.planMetricsPath, null);
+});
+
+test('discoverLedger: collects per-Story signals under the 2.x stories/ segment', () => {
+  const life = P('run-7', 'lifecycle.ndjson');
+  const runSignals = P('run-7', 'stories', 'story-12', 'signals.ndjson');
+  const standaloneSignals = P(
+    'standalone',
+    'stories',
+    'story-13',
+    'signals.ndjson',
+  );
+  const found = discoverLedger(
+    { workspacePath: '/ws' },
+    ledgerDeps([
+      P(),
+      P('run-7'),
+      life,
+      P('run-7', 'stories'),
+      runSignals,
+      P('standalone'),
+      P('standalone', 'stories'),
+      standaloneSignals,
+    ]),
+  );
+  assert.equal(found.lifecyclePath, life);
+  assert.deepEqual(
+    found.signalsPaths.sort(),
+    [runSignals, standaloneSignals].sort(),
+  );
+});
+
+test('discoverLedger: ignores non-story siblings under stories/', () => {
+  const life = P('run-7', 'lifecycle.ndjson');
+  const found = discoverLedger(
+    { workspacePath: '/ws' },
+    ledgerDeps([
+      P(),
+      P('run-7'),
+      life,
+      P('run-7', 'stories'),
+      P('run-7', 'stories', 'scratch', 'signals.ndjson'),
+    ]),
+  );
+  assert.deepEqual(found.signalsPaths, []);
+});
+
+test('discoverLedger: prefers the most recently modified lifecycle ledger', () => {
+  const stale = P('run-6', 'lifecycle.ndjson');
+  const fresh = P('run-7', 'lifecycle.ndjson');
+  const found = discoverLedger(
+    { workspacePath: '/ws' },
+    ledgerDeps([P(), P('run-6'), stale, P('run-7'), fresh], {
+      [stale]: 1000,
+      [fresh]: 2000,
+    }),
+  );
+  assert.equal(found.lifecyclePath, fresh);
+});
+
+test('discoverLedger: the retired 1.x archive layout no longer resolves', () => {
+  const archiveLife = P('archive', 'epic-7', 'lifecycle.ndjson');
+  const found = discoverLedger(
+    { workspacePath: '/ws' },
+    ledgerDeps([P(), P('archive'), P('archive', 'epic-7'), archiveLife]),
+  );
+  assert.equal(found, null);
+});
+
+test('discoverLedger: discovers plan-metrics in the chosen run directory', () => {
+  const life = P('run-7', 'lifecycle.ndjson');
+  const planMetrics = P('run-7', 'plan-metrics.json');
+  const found = discoverLedger(
+    { workspacePath: '/ws' },
+    ledgerDeps([P(), P('run-7'), life, planMetrics]),
+  );
+  assert.equal(found.planMetricsPath, planMetrics);
+});
+
+test('discoverLedger: falls back to the standalone plan-metrics ledger', () => {
+  const life = P('run-7', 'lifecycle.ndjson');
+  const planMetrics = P('standalone', 'plan-metrics.json');
+  const found = discoverLedger(
+    { workspacePath: '/ws' },
+    ledgerDeps([P(), P('run-7'), life, P('standalone'), planMetrics]),
+  );
+  assert.equal(found.planMetricsPath, planMetrics);
 });
 
 test('discoverLedger: returns null when no ledger exists', () => {
@@ -1604,6 +1703,166 @@ test('runFirstBenchmark: threads per-scenario epicIds into the mandrel arm sessi
   );
   // The explicit epicIds map wins over the scenario.json default (99).
   assert.equal(record.sessions.find((s) => s.arm === 'mandrel').epicId, 4222);
+});
+
+test('runOneRun: threads the cell .raw/<idStamp>/ capture dir into the session and lists the returned transcripts on rawRefs (Story #154)', async () => {
+  const record = freshRecord();
+  const seen = [];
+  const deps = benchDeps(record);
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel'],
+      n: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    {
+      ...deps,
+      runSessionFn: (o) => {
+        seen.push(o.transcriptDir);
+        return {
+          arm: o.arm,
+          scenarioId: o.scenario.id,
+          model: o.model,
+          prompt: 'p',
+          status: 0,
+          envelope: fakeEnvelope(),
+          transcripts: [
+            {
+              phase: 'plan',
+              path: `${o.transcriptDir}/plan-transcript.ndjson.gz`,
+            },
+            {
+              phase: 'deliver',
+              path: `${o.transcriptDir}/deliver-transcript.ndjson.gz`,
+            },
+          ],
+        };
+      },
+    },
+  );
+
+  // The capture dir is the cell's own `.raw/<idStamp>/` — the same directory
+  // the cost envelope and the plan snapshot land in, so a cell's per-turn
+  // record sits beside the aggregate it was summed into.
+  assert.equal(seen.length, 1);
+  assert.equal(path.basename(seen[0]), 'hello-world-mandrel-r1');
+  assert.equal(path.basename(path.dirname(seen[0])), '.raw');
+  assert.ok(seen[0].startsWith('/results/'));
+
+  const { rawRefs } = result.scorecards[0];
+  assert.deepEqual(rawRefs.transcripts, [
+    `${seen[0]}/plan-transcript.ndjson.gz`,
+    `${seen[0]}/deliver-transcript.ndjson.gz`,
+  ]);
+  // Capture is additive — the pre-existing provenance breadcrumb is untouched.
+  assert.equal(rawRefs.costEnvelope, `${seen[0]}/cost-envelope.json`);
+});
+
+test('runOneRun: a session that captured no transcript leaves rawRefs without the key (best-effort capture)', async () => {
+  const record = freshRecord();
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel'],
+      n: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    // benchDeps' session seam returns no `transcripts` at all — the same shape
+    // an unwritable capture directory produces.
+    benchDeps(record),
+  );
+  assert.equal('transcripts' in result.scorecards[0].rawRefs, false);
+  assert.ok(result.scorecards[0].rawRefs.costEnvelope);
+});
+
+/**
+ * `discoverLedger` deps for a provisioned workspace whose only run directory
+ * is `temp/run-7/`, carrying both a lifecycle ledger and a plan-metrics one.
+ * Matching is suffix-based because the workspace root is a runtime temp path.
+ */
+const LEDGERED_WORKSPACE_DEPS = {
+  existsImpl: (p) =>
+    p.endsWith(`${path.sep}temp`) ||
+    p.endsWith(path.join('temp', 'run-7')) ||
+    p.endsWith('lifecycle.ndjson') ||
+    p.endsWith('plan-metrics.json'),
+  readdirImpl: (p) => (p.endsWith(`${path.sep}temp`) ? ['run-7'] : []),
+  statImpl: () => ({ mtimeMs: 1 }),
+};
+
+test('runOneRun: copies the plan-metrics ledger into .raw/<cell>/ and names it on rawRefs (Story #155)', async () => {
+  const record = freshRecord();
+  const cpCalls = [];
+  const deps = benchDeps(record);
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel'],
+      n: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    {
+      ...deps,
+      discoverDeps: LEDGERED_WORKSPACE_DEPS,
+      cpFn: (src, dest) => cpCalls.push({ src, dest }),
+    },
+  );
+
+  const { rawRefs } = result.scorecards[0];
+  const expected = path.join(
+    '/results',
+    'claude-opus-4-8',
+    '1.70.0',
+    '.raw',
+    'hello-world-mandrel-r1',
+    'plan-metrics.json',
+  );
+  assert.equal(rawRefs.planMetricsJson, expected);
+  assert.ok(
+    cpCalls.some(
+      (c) => c.dest === expected && c.src.endsWith('plan-metrics.json'),
+    ),
+    `plan-metrics was never copied: ${JSON.stringify(cpCalls)}`,
+  );
+  // The pre-existing ledger refs are untouched.
+  assert.ok(rawRefs.lifecycleNdjson.endsWith('lifecycle.ndjson'));
+});
+
+test('runOneRun: a plan-metrics copy that throws warns and still completes the cell (best-effort capture)', async () => {
+  const record = freshRecord();
+  const warns = [];
+  const deps = benchDeps(record);
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel'],
+      n: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    {
+      ...deps,
+      logger: { info() {}, warn: (m) => warns.push(m) },
+      discoverDeps: LEDGERED_WORKSPACE_DEPS,
+      cpFn: (_src, dest) => {
+        if (String(dest).endsWith('plan-metrics.json')) {
+          throw new Error('EACCES');
+        }
+      },
+    },
+  );
+
+  assert.equal(result.scorecards.length, 1);
+  assert.ok(validateScorecard(result.scorecards[0]));
+  assert.equal('planMetricsJson' in result.scorecards[0].rawRefs, false);
+  assert.ok(
+    warns.some((m) => m.includes('could not copy plan-metrics ledger')),
+    `expected a plan-metrics warn, got: ${JSON.stringify(warns)}`,
+  );
 });
 
 test('runFirstBenchmark: resume skips already-checkpointed cells (idempotent)', async () => {

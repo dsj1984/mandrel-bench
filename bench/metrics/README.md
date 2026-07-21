@@ -275,6 +275,16 @@ overheadRatio.timeRatio  = ceremonyMs    / codegenMs   (null if unavailable)
 - This dimension is the most direct lever for the "ceremony-lite path for
   trivial scopes" recommendation when `hello-world` shows a high ratio with no
   quality gain.
+- **Gate bootstrapping is NOT a measured component of ceremony (Story #153).**
+  The v2.7.0 cohort charged the mandrel arm for turns spent inventing the
+  `typecheck`/`lint`/`test` npm scripts the framework's close gates require,
+  because a greenfield sandbox baseline shipped none. That is instrument
+  error, not framework tax: the baseline seed now carries those
+  dependency-free gate scripts as tracked content
+  (`materializeSandboxTemplate` → `buildTargetPackageJson`), so both arms
+  start from a tree where the gate contract is already satisfied. Any future
+  measurement of `ceremonyTokens` must reflect ceremony the framework
+  genuinely imposes, never scaffolding the harness failed to provide.
 
 ---
 

@@ -2,19 +2,26 @@
 /**
  * Unit tests for bench/driver/run-session.js — Story #4216.
  *
- * Verifies the headless `claude -p --output-format json` launcher:
- *   - builds the correct argv (including `--output-format json`),
+ * Verifies the headless `claude -p --output-format stream-json` launcher:
+ *   - builds the correct argv (`--output-format stream-json --verbose`),
  *   - composes distinct Mandrel-arm vs control-arm prompts,
- *   - parses the real session envelope into usage/cost,
+ *   - parses the stream's terminal `result` event into usage/cost, bit-identical
+ *     to what the legacy single-envelope `--output-format json` mode produced,
+ *   - tees each phase's event stream to a gzipped transcript (Story #154),
  *   - drives entirely through an INJECTED invoke function (no real process),
  *   - surfaces a non-zero exit and unparseable stdout as errors.
  *
  * The envelope fixture below is a verbatim shape captured from a live
- * `claude 2.1.178 -p --output-format json` run.
+ * `claude 2.1.178 -p` run; it is also the terminal `result` event of a
+ * stream-json run, which is exactly why the two paths stay bit-compatible.
  */
 
 import assert from 'node:assert/strict';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
+import { gunzipSync } from 'node:zlib';
 
 import {
   aggregateEnvelopes,
@@ -26,9 +33,12 @@ import {
   DEFAULT_BENCH_MODEL,
   isTransientClaudeError,
   parseSessionEnvelope,
+  parseStreamEnvelope,
   rethrowIfTransientClaudeError,
   runSession,
+  transcriptFileName,
   trustWorkspaceForClaude,
+  writeSessionTranscript,
 } from '../../../bench/driver/run-session.js';
 
 const SCENARIO = {
@@ -107,7 +117,7 @@ function queuedInvoke(results) {
 // buildClaudeArgs
 // ---------------------------------------------------------------------------
 
-test('buildClaudeArgs: emits -p and --output-format json with the model', () => {
+test('buildClaudeArgs: emits -p and --output-format stream-json with the model', () => {
   const args = buildClaudeArgs({
     prompt: 'do the thing',
     model: 'claude-opus-4-8',
@@ -115,7 +125,8 @@ test('buildClaudeArgs: emits -p and --output-format json with the model', () => 
   assert.deepEqual(args, [
     '-p',
     '--output-format',
-    'json',
+    'stream-json',
+    '--verbose',
     '--model',
     'claude-opus-4-8',
     'do the thing',
@@ -130,9 +141,12 @@ test('buildClaudeArgs: places the prompt last, after extraArgs', () => {
   });
   assert.equal(args[args.length - 1], 'PROMPT');
   assert.ok(args.includes('--yes'));
-  // --output-format json is non-negotiable: it is what surfaces the envelope.
+  // stream-json is non-negotiable: it surfaces BOTH the per-turn event stream
+  // the transcript capture persists and the terminal usage/cost envelope. It
+  // also REQUIRES --verbose in -p mode — the CLI refuses the pair without it.
   assert.equal(args[1], '--output-format');
-  assert.equal(args[2], 'json');
+  assert.equal(args[2], 'stream-json');
+  assert.ok(args.includes('--verbose'));
 });
 
 test('buildClaudeArgs: rejects empty prompt / model / non-array extraArgs', () => {
@@ -656,6 +670,201 @@ test('aggregateEnvelopes: sums cost/tokens/duration and folds nulls', () => {
     JSON.stringify(realEnvelope({ total_cost_usd: undefined })),
   );
   assert.equal(aggregateEnvelopes([n1, n2]).cost.totalUsd, null);
+});
+
+// ---------------------------------------------------------------------------
+// Per-turn transcript capture (Story #154)
+// ---------------------------------------------------------------------------
+
+/**
+ * A realistic `--output-format stream-json` stdout: the `system:init` event,
+ * one per-turn `assistant` event per turn, and the terminal `result` event that
+ * carries the SAME payload the legacy `--output-format json` mode emitted.
+ *
+ * @param {{ turns?: number, envelope?: object }} [opts]
+ */
+function streamStdout({ turns = 3, envelope = realEnvelope() } = {}) {
+  const lines = [
+    JSON.stringify({
+      type: 'system',
+      subtype: 'init',
+      session_id: envelope.session_id,
+      model: 'claude-opus-4-8',
+    }),
+  ];
+  for (let i = 0; i < turns; i += 1) {
+    lines.push(
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: `turn ${i}` }],
+        },
+        session_id: envelope.session_id,
+      }),
+    );
+  }
+  lines.push(JSON.stringify(envelope));
+  return `${lines.join('\n')}\n`;
+}
+
+test('parseSessionEnvelope: the stream-json terminal result event parses IDENTICALLY to the legacy single-envelope stdout (AC-2)', () => {
+  const env = realEnvelope();
+  const fromLegacy = parseSessionEnvelope(JSON.stringify(env));
+  const fromStream = parseSessionEnvelope(streamStdout({ envelope: env }));
+  const fromStreamStrict = parseStreamEnvelope(streamStdout({ envelope: env }));
+
+  // Bit-compatibility is the whole contract: every existing envelope consumer
+  // (extractUsage, resolveModelId, the persisted cost-envelope.json) must not
+  // be able to tell which output format produced the record.
+  assert.deepEqual(fromStream, fromLegacy);
+  assert.deepEqual(fromStreamStrict, fromLegacy);
+});
+
+test('parseSessionEnvelope: a stream picks the TERMINAL result event, never the leading system:init event', () => {
+  const parsed = parseSessionEnvelope(
+    streamStdout({ envelope: realEnvelope({ total_cost_usd: 1.25 }) }),
+  );
+  assert.equal(parsed.type, 'result');
+  assert.equal(parsed.cost.totalUsd, 1.25);
+});
+
+test('parseStreamEnvelope: throws when the stream carries no terminal result event', () => {
+  const truncated = [
+    JSON.stringify({ type: 'system', subtype: 'init' }),
+    JSON.stringify({ type: 'assistant', message: {} }),
+  ].join('\n');
+  assert.throws(
+    () => parseStreamEnvelope(truncated),
+    /no terminal result event/,
+  );
+});
+
+test("transcriptFileName: per-phase name, defaulting to the control arm's lone session", () => {
+  assert.equal(transcriptFileName('plan'), 'plan-transcript.ndjson.gz');
+  assert.equal(transcriptFileName('deliver'), 'deliver-transcript.ndjson.gz');
+  assert.equal(transcriptFileName(undefined), 'session-transcript.ndjson.gz');
+});
+
+test('runSession (mandrel): writes one gzipped transcript per phase, each holding the per-turn events (AC-1)', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'bench-transcript-'));
+  try {
+    const captureDir = path.join(dir, '.raw', 'hello-world-mandrel-r1');
+    const invoke = queuedInvoke([
+      { stdout: streamStdout({ turns: 2 }) },
+      { stdout: streamStdout({ turns: 5 }) },
+    ]);
+    const session = runSession(
+      {
+        arm: 'mandrel',
+        scenario: SCENARIO,
+        cwd: '/tmp/s',
+        transcriptDir: captureDir,
+      },
+      { invokeFn: invoke },
+    );
+
+    assert.deepEqual(
+      session.transcripts.map((t) => t.phase),
+      ['plan', 'deliver'],
+    );
+    assert.deepEqual(
+      session.transcripts.map((t) => path.basename(t.path)),
+      ['plan-transcript.ndjson.gz', 'deliver-transcript.ndjson.gz'],
+    );
+
+    // Each transcript holds the per-TURN record the terminal envelope
+    // aggregates away — that is exactly what makes turn-level attribution
+    // possible once the sandbox is gone.
+    const turnsPerPhase = session.transcripts.map((t) =>
+      gunzipSync(readFileSync(t.path))
+        .toString('utf-8')
+        .split('\n')
+        .filter((l) => l.trim().length > 0)
+        .map((l) => JSON.parse(l))
+        .filter((e) => e.type === 'assistant'),
+    );
+    assert.equal(turnsPerPhase[0].length, 2);
+    assert.equal(turnsPerPhase[1].length, 5);
+
+    // Capture is additive: the envelope the run returns is untouched by it.
+    assert.equal(session.envelope.cost.totalUsd, 0.346588 * 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runSession (control): the lone session is captured under the `session` phase label', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'bench-transcript-'));
+  try {
+    const invoke = fakeInvoke({ stdout: streamStdout({ turns: 1 }) });
+    const session = runSession(
+      { arm: 'control', scenario: SCENARIO, cwd: '/tmp/s', transcriptDir: dir },
+      { invokeFn: invoke },
+    );
+    assert.deepEqual(
+      session.transcripts.map((t) => t.phase),
+      ['session'],
+    );
+    assert.ok(existsSync(path.join(dir, 'session-transcript.ndjson.gz')));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runSession: no transcriptDir ⇒ capture is skipped entirely, no transcripts listed', () => {
+  const invoke = fakeInvoke({ stdout: streamStdout() });
+  const session = runSession(
+    { arm: 'control', scenario: SCENARIO, cwd: '/tmp/s' },
+    { invokeFn: invoke },
+  );
+  assert.deepEqual(session.transcripts, []);
+});
+
+test('runSession: a transcript write failure warns and STILL returns a complete session record (AC-3)', () => {
+  const warnings = [];
+  const invoke = fakeInvoke({ stdout: streamStdout({ turns: 4 }) });
+  const session = runSession(
+    {
+      arm: 'control',
+      scenario: SCENARIO,
+      cwd: '/tmp/s',
+      transcriptDir: '/definitely/not/writable',
+    },
+    {
+      invokeFn: invoke,
+      logger: { info() {}, warn: (m) => warnings.push(m) },
+      transcriptDeps: {
+        mkdirSync: () => {},
+        writeFileSync: () => {
+          throw new Error('EROFS: read-only file system');
+        },
+      },
+    },
+  );
+
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /transcript capture failed/);
+  assert.match(warnings[0], /EROFS/);
+  // The run is unaffected: full envelope, no transcripts listed.
+  assert.deepEqual(session.transcripts, []);
+  assert.equal(session.status, 0);
+  assert.equal(session.envelope.cost.totalUsd, 0.346588);
+  assert.equal(session.envelope.usage.totalTokens, 4942 + 31340 + 15626 + 4);
+});
+
+test('writeSessionTranscript: an absent directory is a silent no-op (not a warning)', () => {
+  const warnings = [];
+  assert.equal(
+    writeSessionTranscript(
+      { phase: 'plan', stdout: 'x' },
+      {
+        logger: { warn: (m) => warnings.push(m) },
+      },
+    ),
+    null,
+  );
+  assert.deepEqual(warnings, []);
 });
 
 test('runSession: rejects bad arm and empty cwd', () => {
