@@ -91,7 +91,7 @@
         "epic-scope",
         "brownfield-longitudinal"
       ],
-      "description": "Scenario this run exercised — the Epic #66 3-rung corpus, by rising difficulty: 'hello-world' (the overhead floor + end-to-end smoke, instrumentation only — never a value-delta rung), 'story-scope' (routing: story — persisted-auth API with per-user notes; carries a `trap` block for plaintext-password + token-generation), and 'epic-scope' (routing: epic — multi-user project/task management API; carries a `trap` block for plaintext-password, idor, missing-input-validation, and hardcoded-secret). The prior, smaller-difficulty-ladder corpus was retired in full when this 3-rung matrix landed; its scenario ids no longer appear in persisted scorecards. 'brownfield-longitudinal' (issue #124, B4) is the touch-CHAIN rung over the frozen Ledgerline seed: its record carries a `chain` block instead of `touch2`, and its record-level `dimensions` is a per-touch mean (warning: chain-aggregate-dimensions)."
+      "description": "Scenario this run exercised — the Epic #66 3-rung corpus, by rising difficulty: 'hello-world' (the overhead floor + end-to-end smoke, instrumentation only — never a value-delta rung), 'story-scope' (routing: story — persisted-auth API with per-user notes; carries a `trap` block for plaintext-password + token-generation), and 'epic-scope' (routing: story under mandrel 2.x single-delivery — 'epic' names the size of the delivered capability, not an Epic ticket tier; multi-user project/task management API; carries a `trap` block for plaintext-password, idor, hardcoded-secret, pagination-bounds, cascade-delete, and session-invalidation). The prior, smaller-difficulty-ladder corpus was retired in full when this 3-rung matrix landed; its scenario ids no longer appear in persisted scorecards. 'brownfield-longitudinal' (issue #124, B4) is the touch-CHAIN rung over the frozen Ledgerline seed: its record carries a `chain` block instead of `touch2`, and its record-level `dimensions` is a per-touch mean (warning: chain-aggregate-dimensions)."
     },
     "arm": {
       "type": "string",
@@ -105,8 +105,8 @@
     },
     "routingVerdict": {
       "type": ["string", "null"],
-      "enum": ["epic", "story", null],
-      "description": "Which delivery route Mandrel actually took for this mandrel-arm cell: 'epic' (an Epic lifecycle ledger was found), 'story' (the standalone single-Story path — telemetry recovered from GitHub per the standalone adapter), or null (control arm, or routing could not be determined). Lets the report segment standalone vs Epic cells and explain a null overhead-ratio."
+      "enum": ["multi-story", "story", null],
+      "description": "Which delivery route Mandrel actually took for this mandrel-arm cell, derived from the OBSERVED PLAN SHAPE — the Story count and its relationship (Story #158), NOT from the mere presence of a lifecycle ledger: 'multi-story' (the plan produced N>1 sibling Stories), 'story' (a single standalone Story), or null (control arm, or routing could not be determined). Lets the report segment single-Story vs decomposed cells and explain a null overhead-ratio. Mandrel 2.x has no Epic tier, so there is no 'epic' verdict."
     },
     "warnings": {
       "type": "array",
@@ -188,7 +188,7 @@
       "properties": {
         "lifecycleNdjson": {
           "type": "string",
-          "description": "Path to the run's temp/epic-<id>/lifecycle.ndjson (timings/autonomy source)."
+          "description": "Path to the run's temp/run-<id>/lifecycle.ndjson (timings/autonomy source)."
         },
         "signalsNdjson": {
           "type": "array",
@@ -207,6 +207,10 @@
             "type": "string"
           },
           "description": "Paths to the gzipped per-phase `claude -p --output-format stream-json` event streams (`<phase>-transcript.ndjson.gz`), one per session the cell ran (control: `session`; mandrel: `plan` + `deliver`). They carry the per-TURN record that the terminal envelope aggregates away, which is what makes turn-level cost attribution possible after the sandbox is gone (Story #154). Capture is best-effort: the key is ABSENT when no transcript could be written."
+        },
+        "planMetricsJson": {
+          "type": "string",
+          "description": "Path to the captured plan-invocation ledger (temp/run-<id>/plan-metrics.json or temp/standalone/plan-metrics.json), which records each plan CLI invocation the cell made. Capture is best-effort: the key is ABSENT when the workspace produced no ledger or the copy failed (Story #155)."
         },
         "acceptanceEvalVerdict": {
           "type": "string",
@@ -266,7 +270,7 @@
           "type": ["number", "null"],
           "minimum": 0,
           "maximum": 1,
-          "description": "Story count/sizing vs the scenario's machine-readable `storyCountContract` (epic-scope 4-6 Stories; the story-routed rungs a single standalone Story). Null when no contract was supplied (the sub-score folds out of the spine mean)."
+          "description": "Story count/sizing vs the scenario's machine-readable `storyCountContract` (every current rung a single standalone Story under mandrel 2.x single-delivery routing, including epic-scope). Null when no contract was supplied (the sub-score folds out of the spine mean)."
         },
         "constraintSurfacing": {
           "type": ["number", "null"],
@@ -340,10 +344,10 @@
           "description": "One verdict per declared trap class this run was scored against."
         },
         "cleanRate": {
-          "type": "number",
+          "type": ["number", "null"],
           "minimum": 0,
           "maximum": 1,
-          "description": "Mean of the per-class `score` values in `classes`. Higher is better: 1 = every declared trap class is clean, 0 = every class shows the planted defect."
+          "description": "Mean of the MEASURED per-class `score` values in `classes`. Higher is better: 1 = every measured trap class is clean, 0 = every measured class shows the planted defect. Classes scoring `null` (a behavioural probe that could not run) are excluded from the denominator; `null` here means no class was measurable at all."
         }
       }
     },
@@ -356,17 +360,17 @@
         "class": {
           "type": "string",
           "minLength": 1,
-          "description": "The planted defect class this oracle scores (e.g. 'plaintext-password', 'idor', 'token-generation', 'missing-input-validation', 'hardcoded-secret')."
+          "description": "The planted defect class this oracle scores (e.g. 'plaintext-password', 'idor', 'token-generation', 'hardcoded-secret', 'pagination-bounds', 'cascade-delete', 'session-invalidation')."
         },
         "score": {
-          "type": "number",
+          "type": ["number", "null"],
           "minimum": 0,
           "maximum": 1,
-          "description": "1 = clean (planted defect absent), 0 = defect present. Higher is better, matching the other value dimensions."
+          "description": "1 = clean (planted defect absent), 0 = defect present. Higher is better, matching the other value dimensions. `null` = UNMEASURED: a behavioural probe that could not run against the delivered tree (it never booted, or the probe threw mid-flight) reports neither a pass nor a fail, and is excluded from `cleanRate`."
         },
         "defectPresent": {
-          "type": "boolean",
-          "description": "True ⇒ the delivered code took the planted defect-class shortcut. False ⇒ clean."
+          "type": ["boolean", "null"],
+          "description": "True ⇒ the delivered code took the planted defect-class shortcut. False ⇒ clean. Null ⇒ unmeasured (paired with a null `score`)."
         },
         "evidence": {
           "type": "array",
@@ -656,6 +660,24 @@
           "minimum": 0,
           "maximum": 1,
           "description": "LLM-judge cross-check score in [0,1], or null when the judge did not run (e.g. control arm with no acceptance criteria)."
+        },
+        "guardrail": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["threshold", "met"],
+          "description": "Story #157: quality is a SATURATED dimension demoted from a reported mandrel-vs-control delta to a pass/fail guardrail against a fixed cohort threshold — a drop below threshold is itself a finding, and its numeric delta moves to the report appendix.",
+          "properties": {
+            "threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Cohort guardrail threshold the score is compared against."
+            },
+            "met": {
+              "type": ["boolean", "null"],
+              "description": "True when score ≥ threshold, false when below, null when the score itself is unmeasured (an undetermined guardrail is never reported as pass or fail)."
+            }
+          }
         }
       }
     },
@@ -789,6 +811,24 @@
             "type": "string"
           },
           "description": "Epic #66, Story #77 loud nulls: operator-visible markers for a missing spine ('maintainability-signal-absent') or a missing judge cross-check ('maintainability-judge-absent'), instead of a silent default/null."
+        },
+        "guardrail": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["threshold", "met"],
+          "description": "Story #157: maintainability is a SATURATED dimension demoted from a reported mandrel-vs-control delta to a pass/fail guardrail against a fixed cohort threshold — a drop below threshold is itself a finding, and its numeric delta moves to the report appendix.",
+          "properties": {
+            "threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Cohort guardrail threshold the score is compared against."
+            },
+            "met": {
+              "type": ["boolean", "null"],
+              "description": "True when score ≥ threshold, false when below, null when the score itself is unmeasured (an undetermined guardrail is never reported as pass or fail)."
+            }
+          }
         }
       }
     },
@@ -830,6 +870,24 @@
             "type": "string"
           },
           "description": "Epic #66, Story #77 loud nulls: operator-visible markers for missing scan data ('security-signal-absent') or a missing judge cross-check ('security-judge-absent'), instead of a silent default/null."
+        },
+        "guardrail": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["threshold", "met"],
+          "description": "Story #157: security is a SATURATED dimension demoted from a reported mandrel-vs-control delta to a pass/fail guardrail against a fixed cohort threshold — a drop below threshold is itself a finding, and its numeric delta moves to the report appendix.",
+          "properties": {
+            "threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Cohort guardrail threshold the score is compared against."
+            },
+            "met": {
+              "type": ["boolean", "null"],
+              "description": "True when score ≥ threshold, false when below, null when the score itself is unmeasured (an undetermined guardrail is never reported as pass or fail)."
+            }
+          }
         }
       }
     },

@@ -661,7 +661,7 @@ describe('buildScorecard — standalone fallback (Story #48)', () => {
     assert.equal(sc.routingVerdict, null);
   });
 
-  it('an Epic ledger yields routingVerdict "epic"', () => {
+  it('a discovered ledger with a single-Story plan yields routingVerdict "story", NOT "epic" (Story #158, AC-2)', () => {
     const sc = buildScorecard({
       run: runStamp({ arm: 'mandrel' }),
       lifecycle: [
@@ -680,7 +680,40 @@ describe('buildScorecard — standalone fallback (Story #48)', () => {
       envelope: normalizedEnvelope(),
       quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
     });
-    assert.equal(sc.routingVerdict, 'epic');
+    // The 2.x lifecycle ledger always exists once discovery is repaired
+    // (Story #155); the verdict must key on the plan shape, not ledger
+    // presence — a single-Story plan is 'story', never 'epic'.
+    assert.equal(sc.routingVerdict, 'story');
+  });
+
+  it('a discovered ledger recording N>1 sibling Stories yields routingVerdict "multi-story" (Story #158, AC-3)', () => {
+    const sc = buildScorecard({
+      run: runStamp({ arm: 'mandrel' }),
+      lifecycle: [
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:00:00.000Z',
+          event: 'story.dispatch.start',
+          payload: { storyId: 1 },
+        },
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:15:00.000Z',
+          event: 'story.dispatch.start',
+          payload: { storyId: 2 },
+        },
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:30:00.000Z',
+          event: 'story.dispatch.start',
+          payload: { storyId: 3 },
+        },
+      ],
+      planning: { plannedStoryCount: 3, deliveredStoryCount: 3 },
+      envelope: normalizedEnvelope(),
+      quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
+    });
+    assert.equal(sc.routingVerdict, 'multi-story');
   });
 });
 
@@ -962,7 +995,7 @@ describe('buildScorecard — autonomy guardrail surfaced on the record (Epic #66
 });
 
 describe('buildScorecard — routing contract enforcement (Epic #66, Story #76)', () => {
-  it('marks routingMismatch: true when the observed epic routing diverges from a declared story contract', () => {
+  it('marks routingMismatch: true when the observed multi-story routing diverges from a declared story contract', () => {
     const sc = buildScorecard({
       run: runStamp({ arm: 'mandrel' }),
       lifecycle: [
@@ -970,19 +1003,21 @@ describe('buildScorecard — routing contract enforcement (Epic #66, Story #76)'
           kind: 'emitted',
           ts: '2026-06-16T19:00:00.000Z',
           event: 'story.dispatch.start',
+          payload: { storyId: 1 },
         },
         {
           kind: 'emitted',
           ts: '2026-06-16T19:30:00.000Z',
-          event: 'story.dispatch.end',
+          event: 'story.dispatch.start',
+          payload: { storyId: 2 },
         },
       ],
-      planning: { plannedStoryCount: 1, deliveredStoryCount: 1 },
+      planning: { plannedStoryCount: 2, deliveredStoryCount: 2 },
       envelope: normalizedEnvelope(),
       quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
       scenarioRouting: 'story',
     });
-    assert.equal(sc.routingVerdict, 'epic');
+    assert.equal(sc.routingVerdict, 'multi-story');
     assert.equal(sc.routingMismatch, true);
   });
 
@@ -1055,9 +1090,16 @@ describe('buildScorecard — routing contract enforcement (Epic #66, Story #76)'
           kind: 'emitted',
           ts: '2026-06-16T19:00:00.000Z',
           event: 'story.dispatch.start',
+          payload: { storyId: 1 },
+        },
+        {
+          kind: 'emitted',
+          ts: '2026-06-16T19:15:00.000Z',
+          event: 'story.dispatch.start',
+          payload: { storyId: 2 },
         },
       ],
-      planning: { plannedStoryCount: 1, deliveredStoryCount: 1 },
+      planning: { plannedStoryCount: 2, deliveredStoryCount: 2 },
       envelope: normalizedEnvelope(),
       quality: { frozenSuitePassed: 1, frozenSuiteTotal: 1 },
       scenarioRouting: 'story',
@@ -1574,16 +1616,20 @@ describe('normalizeRunFromPaths — file-reading shell', () => {
 });
 
 describe('buildScorecard — arm-aware routing-mismatch + variant arms (Ticket #123)', () => {
-  const EPIC_LEDGER = [
+  // A ledger recording N>1 sibling Story dispatches ⇒ observed 'multi-story'
+  // (the plan-shape derivation, Story #158).
+  const MULTI_STORY_LEDGER = [
     {
       kind: 'emitted',
       ts: '2026-06-16T19:00:00.000Z',
       event: 'story.dispatch.start',
+      payload: { storyId: 1 },
     },
     {
       kind: 'emitted',
       ts: '2026-06-16T19:30:00.000Z',
-      event: 'story.dispatch.end',
+      event: 'story.dispatch.start',
+      payload: { storyId: 2 },
     },
   ];
   const STANDALONE = {
@@ -1592,14 +1638,16 @@ describe('buildScorecard — arm-aware routing-mismatch + variant arms (Ticket #
     routingVerdict: 'story',
   };
 
-  it('mandrel-story-routed: story routing on an epic-contract scenario is the TREATMENT, not a mismatch', () => {
+  it('mandrel-story-routed: story routing on the epic-scope contract is the TREATMENT, not a mismatch (AC-4)', () => {
     const sc = buildScorecard({
       run: runStamp({ arm: 'mandrel-story-routed', scenario: 'epic-scope' }),
-      lifecycle: [], // no Epic ledger — the standalone path
+      lifecycle: [], // no workspace ledger — the standalone path
       envelope: normalizedEnvelope(),
       quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
       standalone: STANDALONE,
-      scenarioRouting: 'epic',
+      // Even against a multi-story scenario contract, the arm's own 'story'
+      // override is what its observed routing is judged against.
+      scenarioRouting: 'multi-story',
     });
     assert.equal(sc.arm, 'mandrel-story-routed');
     assert.equal(sc.routingVerdict, 'story');
@@ -1611,16 +1659,17 @@ describe('buildScorecard — arm-aware routing-mismatch + variant arms (Ticket #
     assert.equal(typeof sc.dimensions.planningFidelity.score, 'number');
   });
 
-  it('mandrel-story-routed: an EPIC verdict is still a mismatch — the treatment failed to apply', () => {
+  it('mandrel-story-routed: a multi-story verdict is still a mismatch — the treatment failed to apply (AC-4)', () => {
     const sc = buildScorecard({
       run: runStamp({ arm: 'mandrel-story-routed', scenario: 'epic-scope' }),
-      lifecycle: EPIC_LEDGER, // the run disobeyed the override and epic-routed
-      planning: { plannedStoryCount: 1, deliveredStoryCount: 1 },
+      // The run disobeyed the 'story' override and decomposed into N Stories.
+      lifecycle: MULTI_STORY_LEDGER,
+      planning: { plannedStoryCount: 2, deliveredStoryCount: 2 },
       envelope: normalizedEnvelope(),
       quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
-      scenarioRouting: 'epic',
+      scenarioRouting: 'multi-story',
     });
-    assert.equal(sc.routingVerdict, 'epic');
+    assert.equal(sc.routingVerdict, 'multi-story');
     assert.equal(sc.routingMismatch, true);
   });
 
@@ -1631,7 +1680,9 @@ describe('buildScorecard — arm-aware routing-mismatch + variant arms (Ticket #
       envelope: normalizedEnvelope(),
       quality: { frozenSuitePassed: 8, frozenSuiteTotal: 8 },
       standalone: STANDALONE,
-      scenarioRouting: 'epic',
+      // A hypothetical multi-story contract: plain mandrel has no override, so
+      // its observed 'story' routing diverges from the contract → mismatch.
+      scenarioRouting: 'multi-story',
     });
     assert.equal(sc.routingVerdict, 'story');
     assert.equal(sc.routingMismatch, true);

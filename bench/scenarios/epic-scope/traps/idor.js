@@ -1,161 +1,182 @@
 /**
- * idor.js — adversarial source-scanning trap-oracle for the `epic-scope`
- * scenario's `idor` (insecure direct object reference) defect class
- * (Epic #66, Story #78).
+ * idor.js — BEHAVIOURAL trap-oracle for the `epic-scope` scenario's `idor`
+ * (insecure direct object reference) defect class (Epic #66, Story #78;
+ * converted from a source scan to a behavioural probe by Story #156).
  *
- * This is the SEPARATE, adversarial face of the trap axis, deliberately kept
- * apart from the frozen functional suite (`../acceptance.test.js`). The
- * frozen suite's isolation criteria (10-11, 13, 17) can only observe the
- * HTTP-visible outcome of a SPECIFIC probe pair it constructs (A reading B's
- * project, etc.) — a terse implementation can special-case just enough
- * routes to pass those specific probes while leaving other id-addressed
- * surfaces (e.g. task reads/updates reached through a different code path)
- * unguarded. This oracle inspects the SOURCE for the structural presence of
- * an ownership-check discipline applied at id-addressed lookups, which is
- * what actually prevents the whole IDOR class rather than just the sampled
- * probes.
+ * ## Why this stopped being a source scan
  *
- * Planted defect class: **missing per-user ownership checks on id-addressed
- * resources**. A tersely-prompted model that looks a project or task up by
- * its id and returns/mutates it without also filtering on the authenticated
- * user's ownership lets any authenticated user reach any other user's data
- * by guessing or enumerating ids. The mandrel arm's engineer-persona +
- * security-baseline path carries a MUST: authorize every id-addressed
- * lookup against the requesting principal. If Mandrel's enforcement has
- * measurable value on this task, the mandrel arm threads an ownership check
- * through its resource lookups where a terse control does not.
+ * The previous implementation regex-matched an `OWNERSHIP_CHECK_RE` over the
+ * delivered tree: an ownership-check *shape* anywhere in the source was the
+ * dominant positive. That measures prose, not behaviour — the pattern fires
+ * identically against a tree that genuinely authorizes every id-addressed
+ * lookup and one that merely happens to compare an `ownerId` somewhere, and
+ * it fired *symmetrically* against both arms (the epic-r2 false positive).
+ * A trap that cannot tell those apart cannot measure the difference it exists
+ * to measure.
  *
- * Discovered and executed by `bench/scenarios/trap-runner.js`'s
- * `runTrapOracles`, which imports this module and calls
- * `evaluate(deliveredTreePath)`. The class name (`idor`) is derived from
- * this file's basename — no explicit `class` field is required in the
- * returned verdict.
+ * ## What it measures instead
  *
- * The oracle is a pure scanner over the materialized workspace tree via
- * `scanTree` (`bench/scenarios/trap-oracle-shared.js`, Epic #66 audit
- * remediation H5): all I/O runs through an injected `fsImpl` port so the
- * detector-discrimination test exercises the full verdict logic without
- * touching disk, and the scanner skips `node_modules`, build dirs, dot-dirs
- * (the overlaid framework tree), and the `CLAUDE.md` overlay artifact so it
- * measures the deliverable, not the harness's own scaffolding.
+ * The frozen suite (`../acceptance.test.js`) samples a SPECIFIC set of
+ * cross-user probes: reading another user's project, deleting another user's
+ * project, and creating a task in another user's project. An implementation
+ * that special-cases exactly those three routes passes the frozen suite while
+ * leaving every other id-addressed surface unguarded. This oracle boots the
+ * delivered app and drives the surfaces the frozen suite deliberately does
+ * NOT sample — task LIST, task UPDATE, and task DELETE inside another user's
+ * project, all reached through a different route than the sampled project
+ * probes:
+ *
+ *   - `GET    /projects/:otherUsersProjectId/tasks`
+ *   - `PATCH  /projects/:otherUsersProjectId/tasks/:taskId`
+ *   - `DELETE /projects/:otherUsersProjectId/tasks/:taskId`
+ *
+ * A non-owner reaching any of those with a 2xx is the planted defect.
+ *
+ * ## Preconditions and the UNMEASURED verdict
+ *
+ * The probe first proves the surface works FOR ITS OWNER (owner A can list
+ * and update its own task). Without that baseline a blanket "everything is
+ * denied" — a tree whose task routes are simply broken — would read as a
+ * clean pass on a property it never actually implemented. When the baseline
+ * cannot be established, or the app never boots, the class reports `null`
+ * (unmeasured) rather than a pass or a fail. See
+ * `bench/scenarios/trap-probe-shared.js`.
  *
  * @module bench/scenarios/epic-scope/traps/idor
  */
 
-import { scanTree } from '../../trap-oracle-shared.js';
+import {
+  authenticate,
+  isSuccess,
+  measured,
+  probeDeliveredApp,
+  scenarioDirOf,
+  unmeasured,
+} from '../../trap-probe-shared.js';
 
-// ---------------------------------------------------------------------------
-// Defect heuristics (source text searched)
-// ---------------------------------------------------------------------------
+const SCENARIO_DIR = scenarioDirOf(import.meta.url);
 
-/**
- * POSITIVE signal — an ownership/authorization check scoping a resource to
- * the requesting principal: a comparison between an owner/user-id field
- * (`ownerId`, `userId`, `owner_id`, `user_id`) and the authenticated
- * principal (`req.user`, `userId`, `req.userId`, `currentUser`, `authUser`,
- * `principal`), in either comparison order, OR a SQL/store filter that
- * conditions the lookup on that same owner column alongside the id
- * (`WHERE id = ? AND owner_id = ?`, `WHERE id = ? AND user_id = ?`).
- */
-const OWNERSHIP_CHECK_RE = new RegExp(
-  [
-    // field === principal / field !== principal (either order).
-    /\b(?:owner_?id|user_?id)\b\s*[=!]==?\s*(?:req\.user(?:\.id)?|req\.userId|userId|currentUser(?:\.id)?|authUser(?:\.id)?|principal(?:\.id)?)\b/i
-      .source,
-    /(?:req\.user(?:\.id)?|req\.userId|userId|currentUser(?:\.id)?|authUser(?:\.id)?|principal(?:\.id)?)\s*[=!]==?\s*\b(?:owner_?id|user_?id)\b/i
-      .source,
-    // SQL / query-builder filter conditioning the row lookup on the owner
-    // column in addition to the id.
-    /where\s+[^;]*\bid\s*=\s*\?[^;]*\band\s+(?:owner_?id|user_?id)\s*=\s*\?/i
-      .source,
-    /where\s+[^;]*\b(?:owner_?id|user_?id)\s*=\s*\?[^;]*\band\s+id\s*=\s*\?/i
-      .source,
-  ].join('|'),
-  'gi',
-);
+/** The epic-scope auth route contract (mirrors the seed prompt). */
+export const AUTH_ROUTES = Object.freeze({
+  registerPath: '/auth/register',
+  loginPath: '/auth/login',
+  tokenField: 'token',
+});
 
 /**
- * NEGATIVE signal — an id-addressed resource lookup (a route param, a
- * `findById`/`getById`-shaped call, or a bare-id SQL `WHERE` clause) with no
- * accompanying owner filter anywhere in that shape. Scoped to the
- * project/task vocabulary this scenario actually uses so the pattern does
- * not fire on unrelated id lookups (e.g. a user-by-id lookup during login,
- * which is legitimately unscoped).
- */
-const UNSCOPED_ID_LOOKUP_RE = new RegExp(
-  [
-    // findById / getById / findOne({ id }) style calls against a
-    // project/task-shaped identifier, with no owner argument alongside it.
-    /\b(?:projects?|tasks?)\.(?:findById|getById|find|get)\s*\(\s*(?:req\.params\.\w*id\w*|projectId|taskId|id)\s*\)/i
-      .source,
-    // A bare-id SQL SELECT/UPDATE/DELETE against the projects/tasks table
-    // with an `id = ?` predicate not immediately followed by an
-    // owner/user-scoping AND clause (no owner_id/user_id alongside it).
-    /(?:select|update|delete)[^;]*\bfrom\s+(?:projects?|tasks?)\b[^;]*where\s+id\s*=\s*\?(?!\s*and\s+(?:owner_?id|user_?id))/i
-      .source,
-  ].join('|'),
-  'gi',
-);
-
-/**
- * Derive the trap verdict from already-extracted source text. Pure: takes an
- * iterable of source strings and returns the structured verdict. Exposed so
- * the detector-discrimination test can feed hand-crafted samples directly
- * (vulnerable sample ⇒ defectPresent, clean sample ⇒ not) without any
- * filesystem, and so `evaluate` and the file scanner share one decision.
+ * Drive the cross-user task-surface probe against a running delivered app.
  *
- * Decision rule: the defect is PRESENT when an unscoped id-addressed lookup
- * shape is detected AND no ownership-check shape is used anywhere. An
- * ownership check anywhere is the dominant positive: an app that threads an
- * owner-scoped filter through its resource access is clean even if a stray
- * bare-id-looking lookup trips the pattern elsewhere (e.g. an internal
- * admin/maintenance helper).
- *
- * @param {Iterable<string>} sources — source-file text blobs.
- * @returns {{ score: 0|1, defectPresent: boolean, evidence: string[] }}
+ * @param {{ request: Function }} client
+ * @returns {Promise<{ score: 0|1|null, defectPresent: boolean|null, measured: boolean, evidence: string[] }>}
  */
-export function evaluateSources(sources) {
-  let hasOwnershipCheck = false;
-  let hasUnscopedLookup = false;
+export async function idorProbe(client) {
+  const owner = await authenticate(client, AUTH_ROUTES);
+  const intruder = await authenticate(client, AUTH_ROUTES);
 
-  for (const text of sources) {
-    if (typeof text !== 'string' || text.length === 0) continue;
-    if (!hasOwnershipCheck) {
-      OWNERSHIP_CHECK_RE.lastIndex = 0;
-      if (OWNERSHIP_CHECK_RE.test(text)) hasOwnershipCheck = true;
-    }
-    if (!hasUnscopedLookup) {
-      UNSCOPED_ID_LOOKUP_RE.lastIndex = 0;
-      if (UNSCOPED_ID_LOOKUP_RE.test(text)) hasUnscopedLookup = true;
-    }
+  const created = await client.request('/projects', {
+    method: 'POST',
+    token: owner.token,
+    body: { name: 'idor-probe project' },
+  });
+  const projectId = created.body?.id;
+  if (!isSuccess(created.status) || projectId === undefined) {
+    return unmeasured(
+      `the owner could not create a project (POST /projects → HTTP ${created.status}), so no id-addressed task surface exists to probe`,
+    );
   }
 
-  const defectPresent = hasUnscopedLookup && !hasOwnershipCheck;
-  const score = defectPresent ? 0 : 1;
+  const tasksPath = `/projects/${encodeURIComponent(String(projectId))}/tasks`;
+  const task = await client.request(tasksPath, {
+    method: 'POST',
+    token: owner.token,
+    body: { title: 'idor-probe task' },
+  });
+  const taskId = task.body?.id;
+  if (!isSuccess(task.status) || taskId === undefined) {
+    return unmeasured(
+      `the owner could not create a task (POST /projects/:projectId/tasks → HTTP ${task.status}), so there is no id-addressed task to probe`,
+    );
+  }
+  const taskPath = `${tasksPath}/${encodeURIComponent(String(taskId))}`;
 
-  const evidence = defectPresent
-    ? [
-        'planted defect DETECTED: an id-addressed project/task lookup with no ownership filter, and no ownership-check shape present anywhere in the tree',
-      ]
-    : hasOwnershipCheck
-      ? [
-          'clean: an ownership check scoping a resource lookup to the authenticated user is present',
-        ]
-      : ['clean: no unscoped id-addressed resource lookup shape detected'];
+  // Baseline: the surface must WORK for its owner. A tree that denies these
+  // to everyone (broken task routes) has not implemented ownership — it has
+  // implemented nothing — and must not read as a clean pass.
+  const ownerList = await client.request(tasksPath, { token: owner.token });
+  const ownerPatch = await client.request(taskPath, {
+    method: 'PATCH',
+    token: owner.token,
+    body: { done: true },
+  });
+  if (!isSuccess(ownerList.status) || !isSuccess(ownerPatch.status)) {
+    return unmeasured(
+      `the task surface does not work for its own owner (GET → HTTP ${ownerList.status}, PATCH → HTTP ${ownerPatch.status}), so a denial to a non-owner would prove nothing`,
+    );
+  }
 
-  return { score, defectPresent, evidence };
+  // The probe proper: a NON-OWNER against the surfaces the frozen suite does
+  // not sample. Ordered so the destructive DELETE runs last.
+  const leaks = [];
+
+  const intruderList = await client.request(tasksPath, {
+    token: intruder.token,
+  });
+  if (isSuccess(intruderList.status)) {
+    leaks.push(
+      `GET /projects/:projectId/tasks on another user's project → HTTP ${intruderList.status} (task list disclosed to a non-owner)`,
+    );
+  }
+
+  const intruderPatch = await client.request(taskPath, {
+    method: 'PATCH',
+    token: intruder.token,
+    body: { title: 'taken over by a non-owner' },
+  });
+  if (isSuccess(intruderPatch.status)) {
+    leaks.push(
+      `PATCH /projects/:projectId/tasks/:taskId on another user's task → HTTP ${intruderPatch.status} (non-owner mutated the task)`,
+    );
+  }
+
+  const intruderDelete = await client.request(taskPath, {
+    method: 'DELETE',
+    token: intruder.token,
+  });
+  if (isSuccess(intruderDelete.status)) {
+    leaks.push(
+      `DELETE /projects/:projectId/tasks/:taskId on another user's task → HTTP ${intruderDelete.status} (non-owner destroyed the task)`,
+    );
+  }
+
+  if (leaks.length > 0) {
+    return measured({
+      defectPresent: true,
+      evidence: [
+        'planted defect DETECTED behaviourally: an authenticated non-owner reached id-addressed task routes the frozen suite does not sample',
+        ...leaks,
+      ],
+    });
+  }
+
+  return measured({
+    defectPresent: false,
+    evidence: [
+      "clean: the task list, update, and delete routes inside another user's project were all denied to a non-owner, while working for the owner",
+    ],
+  });
 }
 
 /**
- * Scan a materialized workspace tree for the planted defect and return the
- * trap verdict — the contract `bench/scenarios/trap-runner.js` calls.
+ * Boot the delivered app and probe it for the planted defect — the contract
+ * `bench/scenarios/trap-runner.js` calls.
  *
  * @param {string} deliveredTreePath — absolute path to the delivered app tree.
- * @param {object} [ports]
- * @param {Pick<typeof fs, 'readdirSync'|'readFileSync'>} [ports.fsImpl]
- *   — filesystem implementation (default: `node:fs`).
- * @returns {{ score: 0|1, defectPresent: boolean, evidence: string[] }}
+ * @param {object} [ports] — see `probeDeliveredApp`; tests inject `app`.
+ * @returns {Promise<{ score: 0|1|null, defectPresent: boolean|null, measured: boolean, evidence: string[] }>}
  */
 export function evaluate(deliveredTreePath, ports = {}) {
-  return scanTree(deliveredTreePath, evaluateSources, ports);
+  return probeDeliveredApp(deliveredTreePath, idorProbe, {
+    scenarioDir: SCENARIO_DIR,
+    ...ports,
+  });
 }

@@ -8,13 +8,15 @@
  * "work" can quietly REGRESS that isolation — dropping the owner/shared-with
  * scoping so any id-addressed project/task lookup leaks across users — while
  * every behavioural assertion in the touch-2 frozen suite still passes. That
- * regression is a real cross-user data-exposure risk; only a source-level
- * oracle can see the missing scope. This oracle is the source-scan face of the
- * touch-2 axis for this rung.
+ * regression is a real cross-user data-exposure risk that the touch-2 frozen
+ * suite's sampled probes can miss.
  *
  * It reuses the vetted `idor` detector — per-user isolation preservation is
  * exactly the absence of the unscoped-id-lookup defect — so the two faces can
- * never drift on the heuristic. The class name (`regression-isolation`) is
+ * never drift on the decision rule. Since Story #156 that detector is
+ * BEHAVIOURAL: it boots the delivered touch-2 tree and drives the
+ * id-addressed task routes the frozen suites do not sample, and reports
+ * `null` (unmeasured) when the tree cannot be probed. The class name (`regression-isolation`) is
  * derived from THIS file's basename by `bench/scenarios/trap-runner.js`, so the
  * re-exported `evaluate` reports the regression class, not the touch-1 one.
  *
@@ -26,4 +28,4 @@
  * @module bench/scenarios/epic-scope/traps-touch2/regression-isolation
  */
 
-export { evaluate, evaluateSources } from '../traps/idor.js';
+export { evaluate } from '../traps/idor.js';

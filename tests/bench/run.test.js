@@ -26,7 +26,6 @@ import {
   cellKey,
   derivedSecurityInputs,
   discoverLedger,
-  discoverPlannedEpicId,
   loadScenario,
   main,
   makeClaudeJudgeTransport,
@@ -224,33 +223,132 @@ test('buildRunIdentity: produces a schema-shaped run stamp', () => {
   assert.equal(run.benchmarkVersion, '0.5.0');
 });
 
-test('discoverLedger: archive-first, prefers a completed ledger', () => {
-  const archiveLife = path.join(
-    '/ws',
-    'temp',
-    'archive',
-    'epic-100-9',
-    'lifecycle.ndjson',
-  );
-  const files = {
-    [archiveLife]: '{"event":"epic.start"}\n{"event":"epic.complete"}\n',
+// ---------------------------------------------------------------------------
+// discoverLedger — mandrel 2.x temp layout
+//   temp/run-<rid>/{lifecycle.ndjson,plan-metrics.json,stories/story-<sid>/…}
+//   temp/standalone/{plan-metrics.json,stories/story-<sid>/signals.ndjson}
+// ---------------------------------------------------------------------------
+
+const P = (...parts) => path.join('/ws', 'temp', ...parts);
+
+/**
+ * Build `discoverLedger` deps from a flat set of existing paths.
+ *
+ * @param {string[]} paths existing files/directories
+ * @param {Record<string, number>} [mtimes] lifecycle path → mtimeMs
+ */
+function ledgerDeps(paths, mtimes = {}) {
+  const set = new Set(paths);
+  return {
+    existsImpl: (p) => set.has(p),
+    readdirImpl: (dir) => {
+      const prefix = `${dir}${path.sep}`;
+      const names = new Set();
+      for (const p of set) {
+        if (!p.startsWith(prefix)) continue;
+        names.add(p.slice(prefix.length).split(path.sep)[0]);
+      }
+      return [...names];
+    },
+    statImpl: (p) => ({ mtimeMs: mtimes[p] ?? 0 }),
   };
+}
+
+test('discoverLedger: finds a 2.x run directory ledger', () => {
+  const life = P('run-7', 'lifecycle.ndjson');
   const found = discoverLedger(
     { workspacePath: '/ws' },
-    {
-      existsImpl: (p) =>
-        p === path.join('/ws', 'temp', 'archive') ||
-        p === path.join('/ws', 'temp') ||
-        p === archiveLife,
-      readdirImpl: (p) => {
-        if (p === path.join('/ws', 'temp', 'archive')) return ['epic-100-9'];
-        if (p === path.join('/ws', 'temp')) return ['archive'];
-        return [];
-      },
-      readFileImpl: (p) => files[p] ?? '',
-    },
+    ledgerDeps([P(), P('run-7'), life]),
   );
-  assert.equal(found.lifecyclePath, archiveLife);
+  assert.equal(found.lifecyclePath, life);
+  assert.deepEqual(found.signalsPaths, []);
+  assert.equal(found.planMetricsPath, null);
+});
+
+test('discoverLedger: collects per-Story signals under the 2.x stories/ segment', () => {
+  const life = P('run-7', 'lifecycle.ndjson');
+  const runSignals = P('run-7', 'stories', 'story-12', 'signals.ndjson');
+  const standaloneSignals = P(
+    'standalone',
+    'stories',
+    'story-13',
+    'signals.ndjson',
+  );
+  const found = discoverLedger(
+    { workspacePath: '/ws' },
+    ledgerDeps([
+      P(),
+      P('run-7'),
+      life,
+      P('run-7', 'stories'),
+      runSignals,
+      P('standalone'),
+      P('standalone', 'stories'),
+      standaloneSignals,
+    ]),
+  );
+  assert.equal(found.lifecyclePath, life);
+  assert.deepEqual(
+    found.signalsPaths.sort(),
+    [runSignals, standaloneSignals].sort(),
+  );
+});
+
+test('discoverLedger: ignores non-story siblings under stories/', () => {
+  const life = P('run-7', 'lifecycle.ndjson');
+  const found = discoverLedger(
+    { workspacePath: '/ws' },
+    ledgerDeps([
+      P(),
+      P('run-7'),
+      life,
+      P('run-7', 'stories'),
+      P('run-7', 'stories', 'scratch', 'signals.ndjson'),
+    ]),
+  );
+  assert.deepEqual(found.signalsPaths, []);
+});
+
+test('discoverLedger: prefers the most recently modified lifecycle ledger', () => {
+  const stale = P('run-6', 'lifecycle.ndjson');
+  const fresh = P('run-7', 'lifecycle.ndjson');
+  const found = discoverLedger(
+    { workspacePath: '/ws' },
+    ledgerDeps([P(), P('run-6'), stale, P('run-7'), fresh], {
+      [stale]: 1000,
+      [fresh]: 2000,
+    }),
+  );
+  assert.equal(found.lifecyclePath, fresh);
+});
+
+test('discoverLedger: the retired 1.x archive layout no longer resolves', () => {
+  const archiveLife = P('archive', 'epic-7', 'lifecycle.ndjson');
+  const found = discoverLedger(
+    { workspacePath: '/ws' },
+    ledgerDeps([P(), P('archive'), P('archive', 'epic-7'), archiveLife]),
+  );
+  assert.equal(found, null);
+});
+
+test('discoverLedger: discovers plan-metrics in the chosen run directory', () => {
+  const life = P('run-7', 'lifecycle.ndjson');
+  const planMetrics = P('run-7', 'plan-metrics.json');
+  const found = discoverLedger(
+    { workspacePath: '/ws' },
+    ledgerDeps([P(), P('run-7'), life, planMetrics]),
+  );
+  assert.equal(found.planMetricsPath, planMetrics);
+});
+
+test('discoverLedger: falls back to the standalone plan-metrics ledger', () => {
+  const life = P('run-7', 'lifecycle.ndjson');
+  const planMetrics = P('standalone', 'plan-metrics.json');
+  const found = discoverLedger(
+    { workspacePath: '/ws' },
+    ledgerDeps([P(), P('run-7'), life, P('standalone'), planMetrics]),
+  );
+  assert.equal(found.planMetricsPath, planMetrics);
 });
 
 test('discoverLedger: returns null when no ledger exists', () => {
@@ -370,19 +468,16 @@ test('scenarioApplicableMusts: reads scenario.security.applicableMusts, else nul
 // resolveDeliveryBranch + materializeMandrelDelivery (Ticket #121, item 1)
 // ---------------------------------------------------------------------------
 
-test('resolveDeliveryBranch: epic routing → epic/<id>, story routing → story-<n>', () => {
-  assert.equal(
-    resolveDeliveryBranch({ routing: 'epic', epicId: 42, storyNumber: null }),
-    'epic/42',
-  );
+test('resolveDeliveryBranch: story routing → story-<n>; no Epic tier on 2.x (Story #158)', () => {
   assert.equal(
     resolveDeliveryBranch({
       routing: 'story',
-      epicId: null,
       storyNumber: 77,
     }),
     'story-77',
   );
+  // A bare storyNumber (routing unset) still resolves to its Story branch.
+  assert.equal(resolveDeliveryBranch({ storyNumber: 88 }), 'story-88');
   assert.equal(resolveDeliveryBranch({ routing: null }), null);
   assert.equal(resolveDeliveryBranch(null), null);
 });
@@ -452,7 +547,7 @@ test('materializeMandrelDelivery: main advanced past baseline → landed:true, s
     gitFn,
     workspacePath: '/ws',
     baselineSha: 'BASELINE',
-    deliveryBranch: 'epic/42',
+    deliveryBranch: 'story-42',
   });
   assert.deepEqual(m, { landed: true, delivered: true, source: 'main' });
 });
@@ -461,17 +556,17 @@ test('materializeMandrelDelivery: unlanded but PR-head branch exists → landed:
   // main is unchanged (== baseline), but the delivery branch has commits.
   const gitFn = makeGit({
     mainSha: 'BASELINE',
-    branches: { 'epic/42': 'PRHEAD_SHA' },
+    branches: { 'story-42': 'PRHEAD_SHA' },
   });
   const m = materializeMandrelDelivery({
     gitFn,
     workspacePath: '/ws',
     baselineSha: 'BASELINE',
-    deliveryBranch: 'epic/42',
+    deliveryBranch: 'story-42',
   });
   assert.deepEqual(m, { landed: false, delivered: true, source: 'branch' });
   assert.ok(
-    gitFn.calls.some((c) => c === 'fetch origin epic/42'),
+    gitFn.calls.some((c) => c === 'fetch origin story-42'),
     'fetched the PR-head branch',
   );
 });
@@ -482,7 +577,7 @@ test('materializeMandrelDelivery: unlanded and no PR-head branch → delivered:f
     gitFn,
     workspacePath: '/ws',
     baselineSha: 'BASELINE',
-    deliveryBranch: 'epic/42',
+    deliveryBranch: 'story-42',
   });
   assert.deepEqual(m, { landed: false, delivered: false, source: 'none' });
 });
@@ -493,7 +588,7 @@ test('materializeMandrelDelivery: unknown baseline → landed:null but main scor
     gitFn,
     workspacePath: '/ws',
     baselineSha: null,
-    deliveryBranch: 'epic/42',
+    deliveryBranch: 'story-42',
   });
   assert.deepEqual(m, { landed: null, delivered: true, source: 'main' });
 });
@@ -1686,6 +1781,93 @@ test('runOneRun: a session that captured no transcript leaves rawRefs without th
   assert.ok(result.scorecards[0].rawRefs.costEnvelope);
 });
 
+/**
+ * `discoverLedger` deps for a provisioned workspace whose only run directory
+ * is `temp/run-7/`, carrying both a lifecycle ledger and a plan-metrics one.
+ * Matching is suffix-based because the workspace root is a runtime temp path.
+ */
+const LEDGERED_WORKSPACE_DEPS = {
+  existsImpl: (p) =>
+    p.endsWith(`${path.sep}temp`) ||
+    p.endsWith(path.join('temp', 'run-7')) ||
+    p.endsWith('lifecycle.ndjson') ||
+    p.endsWith('plan-metrics.json'),
+  readdirImpl: (p) => (p.endsWith(`${path.sep}temp`) ? ['run-7'] : []),
+  statImpl: () => ({ mtimeMs: 1 }),
+};
+
+test('runOneRun: copies the plan-metrics ledger into .raw/<cell>/ and names it on rawRefs (Story #155)', async () => {
+  const record = freshRecord();
+  const cpCalls = [];
+  const deps = benchDeps(record);
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel'],
+      n: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    {
+      ...deps,
+      discoverDeps: LEDGERED_WORKSPACE_DEPS,
+      cpFn: (src, dest) => cpCalls.push({ src, dest }),
+    },
+  );
+
+  const { rawRefs } = result.scorecards[0];
+  const expected = path.join(
+    '/results',
+    'claude-opus-4-8',
+    '1.70.0',
+    '.raw',
+    'hello-world-mandrel-r1',
+    'plan-metrics.json',
+  );
+  assert.equal(rawRefs.planMetricsJson, expected);
+  assert.ok(
+    cpCalls.some(
+      (c) => c.dest === expected && c.src.endsWith('plan-metrics.json'),
+    ),
+    `plan-metrics was never copied: ${JSON.stringify(cpCalls)}`,
+  );
+  // The pre-existing ledger refs are untouched.
+  assert.ok(rawRefs.lifecycleNdjson.endsWith('lifecycle.ndjson'));
+});
+
+test('runOneRun: a plan-metrics copy that throws warns and still completes the cell (best-effort capture)', async () => {
+  const record = freshRecord();
+  const warns = [];
+  const deps = benchDeps(record);
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel'],
+      n: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    {
+      ...deps,
+      logger: { info() {}, warn: (m) => warns.push(m) },
+      discoverDeps: LEDGERED_WORKSPACE_DEPS,
+      cpFn: (_src, dest) => {
+        if (String(dest).endsWith('plan-metrics.json')) {
+          throw new Error('EACCES');
+        }
+      },
+    },
+  );
+
+  assert.equal(result.scorecards.length, 1);
+  assert.ok(validateScorecard(result.scorecards[0]));
+  assert.equal('planMetricsJson' in result.scorecards[0].rawRefs, false);
+  assert.ok(
+    warns.some((m) => m.includes('could not copy plan-metrics ledger')),
+    `expected a plan-metrics warn, got: ${JSON.stringify(warns)}`,
+  );
+});
+
 test('runFirstBenchmark: resume skips already-checkpointed cells (idempotent)', async () => {
   // Seed the checkpoint with the mandrel cell of run 1 already complete.
   const record = freshRecord({
@@ -2379,74 +2561,16 @@ test('main(): BENCH_JANITOR_TTL_HOURS overrides the default janitor TTL', async 
 // Story #94)
 // ---------------------------------------------------------------------------
 
-test('discoverPlannedEpicId: picks the newest type::epic created at/after the run start', () => {
-  const calls = [];
-  const ghJson = (args) => {
-    calls.push(args);
-    return [
-      { number: 10, createdAt: '2026-06-16T19:59:00.000Z' }, // before start — excluded
-      { number: 12, createdAt: '2026-06-16T20:00:05.000Z' },
-      { number: 11, createdAt: '2026-06-16T20:00:01.000Z' },
-    ];
-  };
-  const id = discoverPlannedEpicId(
-    { owner: 'o', repo: 'r', sinceIso: '2026-06-16T20:00:00.000Z' },
-    { ghJson },
-  );
-  assert.equal(id, 12);
-  // Queried the epic label on the right repo.
-  assert.ok(calls[0].includes('type::epic'));
-  assert.ok(calls[0].includes('o/r'));
-});
-
-test('discoverPlannedEpicId: returns null when no epic matches / gh errors', () => {
-  assert.equal(
-    discoverPlannedEpicId(
-      { owner: 'o', repo: 'r', sinceIso: '2026-06-16T20:00:00.000Z' },
-      { ghJson: () => [] },
-    ),
-    null,
-  );
-  assert.equal(
-    discoverPlannedEpicId(
-      { owner: 'o', repo: 'r', sinceIso: '2026-06-16T20:00:00.000Z' },
-      {
-        ghJson: () => {
-          throw new Error('gh down');
-        },
-      },
-    ),
-    null,
-  );
-});
-
-test('snapshotPlanArtifacts (epic routing): writes the Epic body, child Story bodies, and a manifest', () => {
+test('snapshotPlanArtifacts (multi-story routing): writes every sibling Story body + a manifest, no Epic artifact (Story #158)', () => {
   const writes = [];
   const ghJson = (args) => {
-    const key = `${args[0]} ${args[1]}`;
-    if (key === 'issue view') {
+    if (`${args[0]} ${args[1]}` === 'issue view') {
       return {
         number: Number(args[2]),
-        title: 'E',
-        body: 'epic body + tech spec',
+        title: `S${args[2]}`,
+        body: 'acceptance[]/verify[]',
         labels: [],
       };
-    }
-    if (key === 'issue list') {
-      return [
-        {
-          number: 200,
-          title: 'S1',
-          body: 'acceptance[]/verify[]',
-          createdAt: '2026-06-16T20:00:02.000Z',
-        },
-        {
-          number: 5,
-          title: 'old',
-          body: 'stale',
-          createdAt: '2026-06-16T19:00:00.000Z',
-        }, // before start — excluded
-      ];
     }
     return [];
   };
@@ -2454,10 +2578,9 @@ test('snapshotPlanArtifacts (epic routing): writes the Epic body, child Story bo
     {
       owner: 'o',
       repo: 'r',
-      routing: 'epic',
-      epicId: 123,
-      planDir: '/results/.raw/story-scope-mandrel-r1/plan',
-      sinceIso: '2026-06-16T20:00:00.000Z',
+      routing: 'multi-story',
+      storyNumbers: [200, 201, 202],
+      planDir: '/results/.raw/epic-scope-mandrel-r1/plan',
       capturedAt: '2026-06-16T20:00:00.000Z',
     },
     {
@@ -2467,18 +2590,19 @@ test('snapshotPlanArtifacts (epic routing): writes the Epic body, child Story bo
     },
   );
   const names = writes.map((w) => path.basename(w.p));
-  assert.ok(names.includes('epic-123.json'));
   assert.ok(names.includes('story-200.json'));
+  assert.ok(names.includes('story-201.json'));
+  assert.ok(names.includes('story-202.json'));
   assert.ok(names.includes('manifest.json'));
-  // The stale (pre-start) Story is excluded from the snapshot.
-  assert.ok(!names.includes('story-5.json'));
+  // No Epic tier on 2.x — nothing matching `epic-<id>.json` is ever written.
+  assert.ok(!names.some((n) => /^epic-.*\.json$/.test(n)));
   const manifest = JSON.parse(
     writes.find((w) => w.p.endsWith('manifest.json')).data,
   );
-  assert.equal(manifest.routing, 'epic');
-  assert.equal(manifest.epicId, 123);
-  assert.deepEqual(manifest.storyNumbers, [200]);
-  assert.equal(out.manifest.epicId, 123);
+  assert.equal(manifest.routing, 'multi-story');
+  assert.equal('epicId' in manifest, false);
+  assert.deepEqual(manifest.storyNumbers, [200, 201, 202]);
+  assert.deepEqual(out.manifest.storyNumbers, [200, 201, 202]);
 });
 
 test('snapshotPlanArtifacts (story routing): writes the standalone Story body + a manifest', () => {
@@ -2522,10 +2646,10 @@ test('runOneRun (mandrel): threads session.phases onto the scorecard AND runs th
   const record = freshRecord({ betweenResults: [] });
   const deps = benchDeps(record);
 
-  // A scenario that routes epic but carries NO seed Epic id ⇒ the plan-phase
-  // hook must DISCOVER the id created in-session.
+  // A multi-story-routed scenario (Story #158): the plan-phase hook must
+  // DISCOVER the sibling Story ids created in-session and snapshot each.
   const { evaluate } = await loadScenarioFake();
-  const scenario = { ...FAKE_SCENARIO, routing: 'epic' };
+  const scenario = { ...FAKE_SCENARIO, routing: 'multi-story' };
   delete scenario.epicId;
 
   // gh stub answering the plan-phase discovery + snapshot reads.
@@ -2533,17 +2657,10 @@ test('runOneRun (mandrel): threads session.phases onto the scorecard AND runs th
     const key = `${args[0]} ${args[1]}`;
     const labelIdx = args.indexOf('--label');
     const label = labelIdx >= 0 ? args[labelIdx + 1] : '';
-    if (key === 'issue list' && label === 'type::epic') {
-      return [{ number: 321, createdAt: '2026-06-16T20:00:01.000Z' }];
-    }
     if (key === 'issue list' && label === 'type::story') {
       return [
-        {
-          number: 400,
-          title: 'S',
-          body: 'b',
-          createdAt: '2026-06-16T20:00:02.000Z',
-        },
+        { number: 400, createdAt: '2026-06-16T20:00:02.000Z' },
+        { number: 401, createdAt: '2026-06-16T20:00:03.000Z' },
       ];
     }
     if (key === 'issue view') {
@@ -2618,19 +2735,21 @@ test('runOneRun (mandrel): threads session.phases onto the scorecard AND runs th
   assert.ok(Math.abs(sumCost - scorecard.dimensions.efficiency.costUsd) < 1e-9);
   assert.equal(sumTokens, scorecard.dimensions.efficiency.totalTokens);
 
-  // The hook discovered the in-session Epic id (321) and threaded it as the
-  // deliver target.
+  // The hook discovered the in-session sibling Story ids and threaded the
+  // space-separated id list as the deliver target.
   assert.equal(record.betweenResults.length, 1);
-  assert.equal(record.betweenResults[0].deliverTarget, 321);
+  assert.equal(record.betweenResults[0].deliverTarget, '400 401');
 
-  // The plan snapshot landed under this cell's .raw/<stamp>/plan/ dir.
+  // The plan snapshot landed under this cell's .raw/<stamp>/plan/ dir — one
+  // Story artifact per sibling, never an Epic artifact.
   const planWrites = record.writes.filter((w) =>
     w.p.includes(path.join('.raw', 'hello-world-mandrel-r1', 'plan')),
   );
   const names = planWrites.map((w) => path.basename(w.p));
-  assert.ok(names.includes('epic-321.json'));
   assert.ok(names.includes('story-400.json'));
+  assert.ok(names.includes('story-401.json'));
   assert.ok(names.includes('manifest.json'));
+  assert.ok(!names.some((n) => /^epic-.*\.json$/.test(n)));
 });
 
 test('runOneRun (control): carries no phases block', async () => {
@@ -2672,9 +2791,8 @@ test('runOneRun (mandrel): populates scorecard.planQuality from the plan snapsho
   // the plan-quality scorer measures the plan snapshot against.
   const scenario = {
     ...FAKE_SCENARIO,
-    routing: 'epic',
-    epicId: 900,
-    storyCountContract: { mode: 'epic', minStories: 4, maxStories: 6 },
+    routing: 'multi-story',
+    storyCountContract: { mode: 'multi-story', minStories: 4, maxStories: 6 },
     seed: {
       prompt: 'Build a multi-user API',
       acceptance: [
@@ -2683,6 +2801,7 @@ test('runOneRun (mandrel): populates scorecard.planQuality from the plan snapsho
       ],
     },
   };
+  delete scenario.epicId;
   const evaluate = async () => ({
     scenario: 'hello-world',
     passed: true,
@@ -2714,16 +2833,16 @@ test('runOneRun (mandrel): populates scorecard.planQuality from the plan snapsho
     const label = labelIdx >= 0 ? args[labelIdx + 1] : '';
     if (key === 'issue view') {
       const number = Number(args[2]);
-      if (storyBodies[number]) {
-        return { number, title: `S${number}`, body: storyBodies[number] };
-      }
-      return { number, title: 'Epic', body: 'Tech spec body', labels: [] };
+      return {
+        number,
+        title: `S${number}`,
+        body: storyBodies[number] ?? '',
+        labels: [],
+      };
     }
     if (key === 'issue list' && label === 'type::story') {
-      return Object.entries(storyBodies).map(([number, body]) => ({
+      return Object.keys(storyBodies).map((number) => ({
         number: Number(number),
-        title: `S${number}`,
-        body,
         createdAt: '2026-06-16T20:00:02.000Z',
       }));
     }

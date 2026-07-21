@@ -65,7 +65,8 @@ const CHAIN_SCENARIO_IDS = ['brownfield-longitudinal'];
  *
  * Covers all trap classes across both trap-bearing rungs: plaintext-password
  * / token-generation (story-scope) and plaintext-password / idor /
- * missing-input-validation / hardcoded-secret (epic-scope). The
+ * hardcoded-secret / pagination-bounds / cascade-delete / session-invalidation
+ * (epic-scope, Story #156). The
  * hardcoded-secret terms were added after an Epic #66 audit found this list
  * incomplete — it missed the exact phrasing ("environment variable", "never
  * be inlined") that leaked the answer to the hardcoded-secret trap directly
@@ -102,7 +103,45 @@ const SECURITY_HINT_TERMS = [
   'ownership check',
   'authorization check',
   'validation guard',
+  // Story #156 (trap-axis headroom restoration): the #116 prompt-realism
+  // cutover moved the whole acceptance surface into `seed.prompt`, which
+  // named the trapped properties verbatim — "signed with a secret key" IS the
+  // hardcoded-secret trap, "private to them" IS the isolation the idor trap
+  // probes. A prompt that names the property removes the temptation the trap
+  // exists to measure. The prompt now states the capability and the endpoint
+  // shapes a client needs; how a property is ACHIEVED is the judgment the
+  // arms own and the oracles score.
+  'signed with a secret',
+  'private to them',
+  'validate every',
+  'must stay private',
 ];
+
+/**
+ * Every HTTP path a scenario's frozen acceptance oracle addresses, derived
+ * from the oracle's own exported CRITERIA. The Story #156 prompt rewrite
+ * removed the how-to-achieve-it language from `seed.prompt` while the frozen
+ * suites stayed frozen — so the ROUTE CONTRACT must survive the rewrite
+ * verbatim. A prompt that stops naming a path the suite addresses makes BOTH
+ * arms fail for a reason that has nothing to do with mandrel.
+ *
+ * The extraction requires whitespace (or start-of-string) before the slash so
+ * prose like "and/or" or "(403/404)" is never mistaken for a route.
+ *
+ * @param {ReadonlyArray<string>} criteria
+ * @returns {string[]} unique route paths, longest first.
+ */
+function routePathsFrom(criteria) {
+  const found = new Set();
+  for (const criterion of criteria) {
+    for (const [, route] of criterion.matchAll(
+      /(?:^|\s)(\/[A-Za-z][A-Za-z0-9/:_-]*)/g,
+    )) {
+      found.add(route.replace(/[.,;:]+$/, ''));
+    }
+  }
+  return [...found].sort((a, b) => b.length - a.length);
+}
 
 /**
  * Benign, non-leaking env-var boilerplate every scenario prompt legitimately
@@ -355,14 +394,14 @@ describe('scenario seeds (AC1: task seed shared by both arms)', () => {
   });
 
   describe('epic-scope scenario contract (Epic #66, Story #78)', () => {
-    // Ported to v2 semantics: mandrel v2.0.0 deleted the Epic tier, so the
-    // decomposition rung now routes `multi-story` — `/plan` opens N sibling
-    // Stories and `/deliver` takes the id list. The rung's INTENT (a task big
-    // enough to force a real 4-6 way decomposition) is unchanged; only the
-    // ticket shape it lands in moved.
-    it('declares routing "multi-story" and targetN 8', () => {
+    // Ported to mandrel 2.x single-delivery semantics (Story #158): mandrel
+    // deleted the Epic tier, and under its default-single split policy this
+    // large-capability rung is delivered as ONE guarded standalone Story, so
+    // the rung routes `story`. 'epic' stays as benchmark terminology for the
+    // SIZE of the delivered capability, not a ticket tier.
+    it('declares routing "story" and targetN 8', () => {
       const s = loadScenario('epic-scope');
-      assert.equal(s.routing, 'multi-story');
+      assert.equal(s.routing, 'story');
       assert.equal(s.targetN, 8);
     });
 
@@ -377,7 +416,24 @@ describe('scenario seeds (AC1: task seed shared by both arms)', () => {
       }
     });
 
-    it('carries a 20-25 item frozen acceptance contract sized for a 4-6-Story decomposition', () => {
+    it('declares six trap classes on disk, none of them the entailed input-validation trap', () => {
+      const classes = readdirSync(
+        path.join(SCENARIOS_DIR, 'epic-scope', 'traps'),
+      )
+        .filter((n) => n.endsWith('.js'))
+        .map((n) => n.replace(/\.js$/, ''))
+        .sort();
+      assert.deepEqual(classes, [
+        'cascade-delete',
+        'hardcoded-secret',
+        'idor',
+        'pagination-bounds',
+        'plaintext-password',
+        'session-invalidation',
+      ]);
+    });
+
+    it('carries a 20-25 item frozen acceptance contract sized for a large single-delivery capability', () => {
       const s = loadScenario('epic-scope');
       assert.ok(
         s.seed.acceptance.length >= 20 && s.seed.acceptance.length <= 25,
@@ -410,11 +466,11 @@ describe('machine-readable story-count contract (Epic #86, Story #95)', () => {
     });
   }
 
-  it('epic-scope decomposes into 4-6 Stories (mode "multi-story")', () => {
+  it('epic-scope lands as a single guarded Story under 2.x single-delivery (mode "standalone", Story #158)', () => {
     const c = loadScenario('epic-scope').storyCountContract;
-    assert.equal(c.mode, 'multi-story');
-    assert.equal(c.minStories, 4);
-    assert.equal(c.maxStories, 6);
+    assert.equal(c.mode, 'standalone');
+    assert.equal(c.minStories, 1);
+    assert.equal(c.maxStories, 1);
   });
 
   it('story-scope is a single standalone Story (mode "standalone")', () => {
@@ -429,6 +485,12 @@ describe('machine-readable story-count contract (Epic #86, Story #95)', () => {
     assert.equal(c.mode, 'standalone');
     assert.equal(c.minStories, 1);
     assert.equal(c.maxStories, 1);
+  });
+
+  it('hello-world is configured for a single run (targetN 1, Story #157)', () => {
+    // The overhead floor + end-to-end instrumentation check is never a value
+    // rung, so replicates buy nothing — it runs as an N=1 smoke.
+    assert.equal(loadScenario('hello-world').targetN, 1);
   });
 });
 
@@ -464,6 +526,27 @@ describe('frozen oracles are pure w.r.t. the delivered app (AC2: frozen)', () =>
       // the verdict the adapter builds lines up criterion for criterion.
       const seed = loadScenario(id);
       assert.deepEqual([...mod.CRITERIA], seed.seed.acceptance);
+    });
+  }
+
+  // Story #156: the route contract is the one part of the seed prompt the
+  // trap-headroom rewrite may NOT touch. The frozen suites address concrete
+  // HTTP paths; a prompt that stops naming one fails both arms for a reason
+  // that has nothing to do with mandrel.
+  for (const id of ['epic-scope', 'story-scope']) {
+    it(`${id}: every HTTP path the frozen suite addresses still appears in seed.prompt`, async () => {
+      const mod = await import(
+        `../../../bench/scenarios/${id}/acceptance.test.js`
+      );
+      const routes = routePathsFrom(mod.CRITERIA);
+      assert.ok(routes.length >= 4, `extracted ${routes.length} routes`);
+      const prompt = loadScenario(id).seed.prompt;
+      for (const route of routes) {
+        assert.ok(
+          prompt.includes(route),
+          `${id} seed prompt must still name the route "${route}" the frozen suite addresses`,
+        );
+      }
     });
   }
 
