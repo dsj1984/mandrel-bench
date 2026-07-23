@@ -52,6 +52,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 /**
@@ -115,6 +117,81 @@ export function _clearMainCheckoutRootCache() {
 }
 
 /**
+ * Environment variable naming an absolute per-process scratch tempRoot that
+ * every stream writer must land in during a test run (Story #4696).
+ *
+ * The shared test bootstrap (`lib/test-env.js`) sets this to a fresh
+ * `os.tmpdir()` directory before spawning the test runner, so any test that
+ * reaches a writer (`signals-writer`, the lifecycle `LedgerWriter`, etc.)
+ * *without* explicitly injecting an absolute tempRoot still resolves under
+ * scratch instead of the repo's real `temp/` tree. This is the single
+ * injection seam: because every path helper funnels a relative root through
+ * `anchorTempRoot`, one redirect here covers all writers regardless of how
+ * each one resolved its root.
+ */
+export const TEST_TEMP_ROOT_ENV = 'MANDREL_TEST_TEMP_ROOT';
+
+/**
+ * Resolve the absolute scratch tempRoot override, or `null` when none is
+ * configured. Only an **absolute** value is honoured — a relative override
+ * would re-anchor against the repo tree and defeat the isolation, so it is
+ * ignored (treated as unset). Module-internal: the behaviour is exercised
+ * through `anchorTempRoot`, so it is deliberately not exported (keeps the
+ * public seam to `anchorTempRoot` + `TEST_TEMP_ROOT_ENV`).
+ *
+ * @param {NodeJS.ProcessEnv} [env=process.env]
+ * @returns {string|null}
+ */
+function testScratchTempRoot(env = process.env) {
+  const override = env?.[TEST_TEMP_ROOT_ENV];
+  return typeof override === 'string' &&
+    override.length > 0 &&
+    path.isAbsolute(override)
+    ? override
+    : null;
+}
+
+/**
+ * Environment variable that opts a test-context process back into the real
+ * `temp/` tree (Story #4711). The `anchorTempRoot` test-context fallback
+ * refuses to anchor a relative root into the repo's telemetry tree when the
+ * process is a node:test context; a test that genuinely needs the real tree
+ * sets this to `'1'` on its own spawn — an explicit, greppable opt-out
+ * instead of a silent bypass.
+ */
+export const TEST_ALLOW_REAL_TEMP_ENV = 'MANDREL_TEST_ALLOW_REAL_TEMP';
+
+/**
+ * Per-process memo for the lazily-created test-context scratch dir, so every
+ * relative-root resolution in one test process converges on a single scratch
+ * tree (mirrors the `_mainCheckoutRootCache` pattern above).
+ */
+let _testContextScratchDir = null;
+
+/**
+ * Test-only: clear the test-context scratch memo so a suite can exercise the
+ * lazy-arming branch repeatedly in one process.
+ */
+export function _clearTestContextScratchCache() {
+  _testContextScratchDir = null;
+}
+
+/**
+ * Is this process a node:test context? True when the env carries
+ * `NODE_TEST_CONTEXT` (set by the node:test runner on every spawned test
+ * child, regardless of how the runner itself was launched) or when the
+ * process was started with the `--test` flag (a direct `node --test <file>`
+ * runner process, or in-process isolation modes).
+ *
+ * @param {NodeJS.ProcessEnv} env
+ * @param {string[]} execArgv
+ * @returns {boolean}
+ */
+function inNodeTestContext(env, execArgv) {
+  return Boolean(env?.NODE_TEST_CONTEXT) || execArgv.includes('--test');
+}
+
+/**
  * Anchor a resolved `tempRoot` to the main checkout root when it is a
  * relative path (Story #3900). Absolute roots are returned verbatim; a
  * relative root is joined onto the main checkout root so every caller
@@ -123,11 +200,54 @@ export function _clearMainCheckoutRootCache() {
  * root is returned unchanged so behaviour degrades to the prior
  * cwd-relative semantics rather than throwing.
  *
+ * Test isolation (Story #4696): when the scratch override
+ * (`MANDREL_TEST_TEMP_ROOT`) is set, a relative root is joined onto the
+ * scratch dir instead of the main checkout root, so a writer that reaches
+ * the default (or any relative) root under the test bootstrap lands in
+ * scratch and never pollutes the repo's real `temp/` telemetry tree. An
+ * absolute root injected by a well-behaved test still bypasses the redirect
+ * verbatim.
+ *
+ * Process-level arming (Story #4711): the wrapper-armed override above only
+ * covers processes spawned by `run-tests.js` — a direct `node --test <file>`
+ * run used to bypass it and append fixture records to the real tree. When no
+ * override is armed but the process *is* a node:test context (see
+ * `inNodeTestContext`), a per-process scratch dir is created lazily and the
+ * relative root anchors there instead. The scratch dir is memoized and — for
+ * the real `process.env` — written back to `MANDREL_TEST_TEMP_ROOT` so child
+ * processes the test spawns inherit the same scratch tree. Escape hatch: a
+ * test that genuinely needs the real tree sets
+ * `MANDREL_TEST_ALLOW_REAL_TEMP=1` (`TEST_ALLOW_REAL_TEMP_ENV`) to restore
+ * main-checkout anchoring; the `check-test-temp-hygiene` guard remains the
+ * backstop either way.
+ *
  * @param {string} tempRoot
+ * @param {NodeJS.ProcessEnv} [env=process.env]
+ * @param {{ mkdtemp?: typeof mkdtempSync, execArgv?: string[] }} [deps]
+ *   Injectable for tests.
  * @returns {string}
  */
-export function anchorTempRoot(tempRoot) {
+export function anchorTempRoot(tempRoot, env = process.env, deps = {}) {
   if (path.isAbsolute(tempRoot)) return tempRoot;
+  const scratch = testScratchTempRoot(env);
+  if (scratch) return path.join(scratch, tempRoot);
+  const execArgv = deps.execArgv ?? process.execArgv;
+  if (
+    inNodeTestContext(env, execArgv) &&
+    env?.[TEST_ALLOW_REAL_TEMP_ENV] !== '1'
+  ) {
+    if (_testContextScratchDir === null) {
+      const mkdtemp = deps.mkdtemp ?? mkdtempSync;
+      _testContextScratchDir = mkdtemp(
+        path.join(os.tmpdir(), 'mandrel-test-temp-'),
+      );
+      if (env === process.env) {
+        // Children spawned by this test process inherit the same scratch.
+        process.env[TEST_TEMP_ROOT_ENV] = _testContextScratchDir;
+      }
+    }
+    return path.join(_testContextScratchDir, tempRoot);
+  }
   const root = mainCheckoutRoot();
   return root ? path.join(root, tempRoot) : tempRoot;
 }

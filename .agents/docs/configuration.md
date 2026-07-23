@@ -104,7 +104,7 @@ top-level keys are validation errors.
 | `codebaseSnapshot.recentCommitWindow` | No | `integer` | — | — |
 | `complexityGate` | No | `object` | — | Plan-time ceremony-lite complexity gate. Routes trivial single-artifact seeds onto a collapsed plan/deliver path; conservative (full on any doubt). Never relaxes the Story-ticket / PR-to-main / repo-gates / security-baseline non-negotiables. |
 | `complexityGate.enabled` | No | `boolean` | — | Master switch. When false, every seed takes the full plan/deliver ceremony. Default true. |
-| `complexityGate.maxSeedWords` | No | `integer` | — | Seed prose word ceiling for the lite path. A seed above this many words is not trivial and takes the full path. Default 60. |
+| `complexityGate.maxSeedWords` | No | `integer` | — | Seed prose word ceiling for the lite path. A seed above this many words is not trivial and takes the full path. Default 150. |
 | `complexityGate.maxArtifacts` | No | `integer` | — | Enumerated-artifact ceiling for the lite path. A seed enumerating more than this many candidate artifacts is multi-capability and takes the full path. Default 1. |
 | `failOnSharedEditors` | No | `boolean` | — | When true, upgrade shared-editor conflict findings to hard errors (default false — advisory soft findings only). |
 | `requireExplicitCrossStoryDeps` | No | `boolean` | — | When true, upgrade implicit cross-Story dependency findings to hard errors (default false — advisory soft findings only). |
@@ -254,7 +254,8 @@ top-level keys are validation errors.
 | `quality.navigability.routeGlobs` | No | `array<string>` | — | Glob patterns (pages/**, app/**/route.ts) marking paths that add a user-facing route — the route-tree SSOT the navigability lens enumerates and the route-added routing predicate matches against. |
 | `quality.navigability.navRegistry` | No | `array<string>` | — | Tokens identifying the nav-registry SSOT the navigability lens checks every route resolves a nav door against. |
 | `quality.navigability.journeySuite` | No | `string` | — | Path or command for the per-persona journey suite /deliver's per-Story ceremony runs. |
-| `mergeWatch` | No | `object` | — | Knobs consumed by the close-and-land merge wait (Story #4543; defaults in `lib/orchestration/merge-poll.js`). `intervalSeconds` is the poll cadence between `gh pr view` probes after the arm. `maxWaitSeconds` bounds ONE invocation of the merge wait and its expiry returns a resumable `pending` terminal with no label mutation; `maxBudgetSeconds` bounds the CUMULATIVE wait across resumes (anchored at the PR's createdAt, so a resume does not restart the clock) and exhausting it is the genuine give-up that classifies and blocks. `updateAttempts` caps the bounded update of a behind-the-base PR. |
+| `mergeWatch` | No | `object` | — | Knobs consumed by the close-and-land merge wait (Story #4543; defaults in `lib/orchestration/merge-poll.js`). `mode` (Story #4698) selects the close-time merge posture. `intervalSeconds` is the poll cadence between `gh pr view` probes after the arm. `maxWaitSeconds` bounds ONE invocation of the merge wait and its expiry returns a resumable `pending` terminal with no label mutation; `maxBudgetSeconds` bounds the CUMULATIVE wait across resumes (anchored at the PR's createdAt, so a resume does not restart the clock) and exhausting it is the genuine give-up that classifies and blocks. `updateAttempts` caps the bounded update of a behind-the-base PR. |
+| `mergeWatch.mode` | No | `"sync"` \| `"async"` | `"sync"` | Close-time merge-wait posture (Story #4698). `sync` (default) keeps the in-close foreground merge wait unchanged. `async` caps the per-invocation wait to a short ~60s probe window — long enough to catch an instant merge and, via the head-anchored required-check predicate, an instantly-red required check — then returns the resumable `pending` terminal (exit 3) with a `nextCommand`. Opt in when slow CI makes the foreground wait routinely expire: the worker launches `nextCommand` in the background instead of burning the host tool slot polling. `maxBudgetSeconds` (the cumulative give-up) is unchanged. |
 | `mergeWatch.intervalSeconds` | No | `integer` | `30` | Seconds between merge-wait polls. Default 30. |
 | `mergeWatch.maxWaitSeconds` | No | `integer` | `300` | Per-invocation merge-wait bound (seconds). Default 300 (5 minutes) — chosen to fit inside a single host tool invocation (~10 min ceiling) alongside the close gates that precede the wait. Expiry yields `pending` (exit 3), never a block. Headless callers with no host ceiling raise this to land in one block. |
 | `mergeWatch.maxBudgetSeconds` | No | `integer` | `3600` | Cumulative wall-clock budget (seconds) across merge-wait resumes, anchored at the PR's createdAt. Default 3600 (60 minutes). Exhausting this classifies the block and transitions the Story to agent::blocked. |
@@ -265,6 +266,8 @@ top-level keys are validation errors.
 | `codeReview.maxFixAttempts` | No | `integer` | — | Maximum auto-fix retry attempts per finding in /deliver Phase 5 (code-review). 0 disables auto-fix. Default 3. |
 | `codeReview.maxFixScopeFiles` | No | `integer` | — | Maximum file count a single auto-fix may modify before escalating to agent::blocked. Default 5. |
 | `codeReview.autoFixSeverity` | No | `"high"` \| `"medium"` | `"medium"` | Severity threshold for on-branch remediation in /deliver Phase 5 (code-review). `medium` (default) routes 🔴/🟠/🟡 findings into the host-LLM focused-fix routing (Mediums batched per lens: one commit per lens, a single validation + rescan at the end) while 🟢 suggestions still graduate to follow-up issues; `high` reproduces the pre-4399 Critical/High-only routing. Hard cutover — no back-compat flag. |
+| `review` | No | `object` | — | Close-scope review tuning (Story #4699). Governs the Story-scope local-lens pass that runs inside the close subprocess; the maker-blind code-review pass and all hard gates are unaffected. |
+| `review.lensDiffFloor` | No | `integer` | `40` | Changed-line floor for the close-scope lens walk (Story #4699). A diff strictly below this many changed lines (additions + deletions) with zero sensitive-path hits skips lens materialization and records the skip in the findings-yield ledger. Default 40; 0 disables the skip. |
 | `refactorStage` | No | `object` | — | Opt-in, config-gated post-green refactor checkpoint wired into story-deliver (Story #3430, Epic #3418). Strictly additive and default-OFF: when disabled, story-deliver behaves exactly as before. Advisory only — never changes existing close-validation gate semantics. |
 | `refactorStage.enabled` | No | `boolean` | `false` | When true, story-deliver runs an advisory post-green refactor stage (core/code-review-and-quality skill, Post-Green Refactor Pass) after the suite is green. Default false — when unset the stage is skipped and close-validation gate semantics are unchanged. |
 | `acceptanceEval` | No | `object` | — | Story #3819. Bounded per-Story acceptance self-eval loop. After the implementation commits land and before the Story-implementation phase flips to `closing`, an independent (fresh-context) critic pass scores the caller-injected change set against each inline `acceptance[]` item, redrafts the unmet items, and re-evaluates — capped at `maxRounds` redraft rounds, then escalates to `agent::blocked` when criteria remain unmet. There is no `enabled` flag: the loop is a hard cutover (always on). |
@@ -363,12 +366,21 @@ only when the project's source layout differs.
   lands via a PR to `main`, still runs every repo quality gate, and still honours
   `rules/security-baseline.md` — those gates run in `single-story-close.js`
   regardless of route. **Threshold + override:** `enabled` (default `true`;
-  `false` forces every seed to `full`), `maxSeedWords` (default `60`), and
+  `false` forces every seed to `full`), `maxSeedWords` (default `150` —
+  raised from 60 by Story #4707: seed word count is a poor complexity proxy,
+  and the old ceiling punished a well-written 70-word trivial seed with the
+  full two-session ceremony), and
   `maxArtifacts` (default `1`). The defaults are the single source of truth on
   `DEFAULT_COMPLEXITY_GATE` in
   [`lib/orchestration/complexity-gate.js`](../scripts/lib/orchestration/complexity-gate.js);
   a malformed or negative ceiling falls back to the default rather than widening
-  the lite path.
+  the lite path. **Planner downgrade + route marker (Story #4707):** the
+  planner may downgrade a `full` verdict to `lite` only via
+  `plan-persist.js --route-downgrade-reason "<why>"` — the reason is recorded
+  on every created Story's `story-plan-state` checkpoint, so the judgment is
+  auditable and never a silent gate change. A lite-routed plan's Stories carry
+  the runtime-derived `route::lite` label, which `/deliver` reads to execute
+  the Story inline (no sub-agent fan-out) with every close gate unchanged.
 
 ### `delivery`
 
