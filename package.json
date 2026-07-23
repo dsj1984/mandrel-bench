@@ -1,6 +1,6 @@
 {
   "name": "mandrel-bench",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "private": true,
   "type": "module",
   "description": "Benchmark harness that measures the Mandrel framework's value-add over a bare-model control, across framework versions and models. Consumes published `mandrel` as a pinned dependency — the version under test.",

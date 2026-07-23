@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.12.0...mandrel-bench-v0.13.0) (2026-07-23)
+
+
+### Fixed
+
+* **bench:** key resume checkpoint by cohort so a version bump re-runs cells ([#168](https://github.com/dsj1984/mandrel-bench/issues/168)) ([ea90a79](https://github.com/dsj1984/mandrel-bench/commit/ea90a7918f0a3155cd71e163d27e81951509bbb5))
+* **bench:** thread the scenario seed layer into every cell's ephemeral-repo seeding (refs [#171](https://github.com/dsj1984/mandrel-bench/issues/171)) ([#172](https://github.com/dsj1984/mandrel-bench/issues/172)) ([ac8bb57](https://github.com/dsj1984/mandrel-bench/commit/ac8bb57f543e36db6df47bd68e7536bc5b583415))
+
 ## [0.12.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.11.0...mandrel-bench-v0.12.0) (2026-07-21)
 
 
