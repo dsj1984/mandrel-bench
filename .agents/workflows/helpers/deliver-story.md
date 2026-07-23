@@ -14,8 +14,9 @@ description:
 
 ## Overview
 
-The **one** delivery engine in v2 — every Story (`route::lite` runs
-inline with inline critics; engine, gates, envelope byte-identical):
+The **one** delivery engine in v2 — every Story (a lite-**shaped** Story
+runs inline with inline critics, #4722; engine, gates, envelope
+byte-identical):
 
 ```text
 single-story-init.js → implement + commits → derived-level ceremony
@@ -74,7 +75,7 @@ One branch, one PR to `main`, commits against the inline `acceptance[]` /
 ### Step 1a — Bounded acceptance self-eval loop (**required**)
 
 Follow the single-homed include
-[`acceptance-self-eval.md`](acceptance-self-eval.md) (fresh-context critic,
+[`acceptance-self-eval.md`](acceptance-self-eval.md) (single verdict-owner,
 `verify[]`-as-evidence, proceed / redraft / block). Gate invocation (omit
 `--epic`):
 
