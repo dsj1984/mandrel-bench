@@ -891,29 +891,41 @@ export function buildPlanQualityBlock(
 
 /**
  * The default checkpoint filename, sitting beside the results tree root. The
- * checkpoint is an append-only NDJSON ledger of completed `(scenario × arm ×
- * run)` cell keys — the same crash-safe shape as the scorecard store, so a
- * partially-written final line never corrupts the cells before it.
+ * checkpoint is an append-only NDJSON ledger of completed `(frameworkVersion ×
+ * model × scenario × arm × run)` cell keys — the same crash-safe shape as the
+ * scorecard store, so a partially-written final line never corrupts the cells
+ * before it.
  */
 export const CHECKPOINT_FILENAME = '.batch-checkpoint.ndjson';
 
 /**
- * Derive the stable identity string for one `(scenario × arm × run)` cell. This
- * is the unit of resumable work: the batch loop checkpoints a cell once its
- * scorecard has been persisted, and skips a cell on resume when its key is
- * already in the checkpoint. Pure — the same inputs always map to the same key.
+ * Derive the stable identity string for one `(frameworkVersion × model ×
+ * scenario × arm × run)` cell. This is the unit of resumable work: the batch
+ * loop checkpoints a cell once its scorecard has been persisted, and skips a
+ * cell on resume when its key is already in the checkpoint. Pure — the same
+ * inputs always map to the same key.
+ *
+ * The cohort discriminants (`frameworkVersion`, `model`) are part of the key
+ * so a ledger written by one cohort can never resume-skip another's cells: a
+ * fresh run after a `mandrel` version bump must re-run every cell, not match
+ * the stale three-field entries the previous cohort completed. Legacy
+ * `(scenario × arm × run)` keys in an old ledger simply never match — those
+ * cells re-run, which is the safe direction (a harmless duplicate the store
+ * reader de-dups by runId, never lost work).
  *
  * The separator is a unit-separator control char (``) so it can never
  * collide with a scenario id, arm, or run index value.
  *
  * @param {object} args
+ * @param {string} args.frameworkVersion   The pinned `mandrel` version under test.
+ * @param {string} args.model              The requested bench model slug.
  * @param {string} args.scenario
  * @param {'mandrel'|'control'} args.arm
  * @param {number} args.runIndex   1-based.
  * @returns {string}
  */
-export function cellKey({ scenario, arm, runIndex }) {
-  return `${scenario}${arm}${runIndex}`;
+export function cellKey({ frameworkVersion, model, scenario, arm, runIndex }) {
+  return `${frameworkVersion}${model}${scenario}${arm}${runIndex}`;
 }
 
 /**
@@ -2499,6 +2511,16 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
     opts.checkpointPath ?? path.join(resultsDir, CHECKPOINT_FILENAME);
   const doneCells = readCheckpoint({ checkpointPath }, deps.checkpointDeps);
 
+  // Cohort discriminants for the cell key: the same `frameworkVersion` source
+  // `runOneRun` stamps onto every scorecard (the pinned `mandrel` dependency),
+  // resolved ONCE here so every cell key in one batch agrees. Keying the
+  // checkpoint by (frameworkVersion × model) is what stops a stale ledger from
+  // a previous cohort resume-skipping a fresh cohort's cells after a version
+  // bump (the requested `model` slug is used, not the envelope-resolved id —
+  // it is stable before any session runs).
+  const frameworkVersion =
+    deps.frameworkVersion ?? readFrameworkVersion(repoRoot(), deps.versionDeps);
+
   const scorecards = [];
   let skipped = 0;
   let completed = 0;
@@ -2543,7 +2565,13 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
           : 1;
     for (let runIndex = 1; runIndex <= n; runIndex += 1) {
       for (const arm of arms) {
-        const cell = cellKey({ scenario: scenarioId, arm, runIndex });
+        const cell = cellKey({
+          frameworkVersion,
+          model,
+          scenario: scenarioId,
+          arm,
+          runIndex,
+        });
         if (doneCells.has(cell)) {
           skipped += 1;
           logger?.info?.(

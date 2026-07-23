@@ -1570,16 +1570,31 @@ test('runOneRun (control arm): writes the gate package.json directly, without th
 // Story #22 — checkpoint + ceiling pure helpers
 // ---------------------------------------------------------------------------
 
-test('cellKey: stable, separator-isolated identity for a (scenario × arm × run) cell', () => {
-  const a = cellKey({ scenario: 'story-scope', arm: 'mandrel', runIndex: 3 });
-  assert.equal(
-    a,
-    cellKey({ scenario: 'story-scope', arm: 'mandrel', runIndex: 3 }),
-  );
-  // No collision across the three fields (a hostile id can't forge another key).
+test('cellKey: stable, separator-isolated identity for a (frameworkVersion × model × scenario × arm × run) cell', () => {
+  const base = {
+    frameworkVersion: '1.70.0',
+    model: 'claude-opus-4-8',
+    scenario: 'story-scope',
+    arm: 'mandrel',
+    runIndex: 3,
+  };
+  assert.equal(cellKey(base), cellKey({ ...base }));
+  // No collision across the fields (a hostile id can't forge another key).
   assert.notEqual(
-    cellKey({ scenario: 'story', arm: 'db-mandrel', runIndex: 3 }),
-    cellKey({ scenario: 'story-scope', arm: 'mandrel', runIndex: 3 }),
+    cellKey({ ...base, scenario: 'story', arm: 'db-mandrel' }),
+    cellKey(base),
+  );
+  // The cohort discriminants partition the key space: the same
+  // (scenario × arm × run) cell at another framework version or model is a
+  // DIFFERENT cell — this is what stops a stale ledger from resume-skipping a
+  // fresh cohort after a `mandrel` version bump.
+  assert.notEqual(
+    cellKey({ ...base, frameworkVersion: '1.69.0' }),
+    cellKey(base),
+  );
+  assert.notEqual(
+    cellKey({ ...base, model: 'claude-sonnet-5' }),
+    cellKey(base),
   );
 });
 
@@ -1868,11 +1883,27 @@ test('runOneRun: a plan-metrics copy that throws warns and still completes the c
   );
 });
 
+/**
+ * The cohort discriminants the benchDeps harness runs under: benchDeps injects
+ * `frameworkVersion: '1.70.0'`, and the tests never pass `opts.model`, so
+ * `runFirstBenchmark` keys cells at the DEFAULT_BENCH_MODEL slug.
+ */
+const HARNESS_COHORT = {
+  frameworkVersion: '1.70.0',
+  model: 'claude-opus-4-8',
+};
+
 test('runFirstBenchmark: resume skips already-checkpointed cells (idempotent)', async () => {
-  // Seed the checkpoint with the mandrel cell of run 1 already complete.
+  // Seed the checkpoint with the mandrel cell of run 1 already complete —
+  // keyed at the SAME cohort discriminants the run executes under.
   const record = freshRecord({
     checkpoint: [
-      cellKey({ scenario: 'hello-world', arm: 'mandrel', runIndex: 1 }),
+      cellKey({
+        ...HARNESS_COHORT,
+        scenario: 'hello-world',
+        arm: 'mandrel',
+        runIndex: 1,
+      }),
     ],
   });
   const result = await runFirstBenchmark(
@@ -1893,6 +1924,67 @@ test('runFirstBenchmark: resume skips already-checkpointed cells (idempotent)', 
   assert.equal(record.sessions.filter((s) => s.arm === 'mandrel').length, 0);
   assert.equal(record.appended.length, 1);
   assert.equal(record.checkpointed.length, 1);
+});
+
+test('runFirstBenchmark: a checkpoint written at another frameworkVersion does not skip cells (new cohort re-runs)', async () => {
+  // The 2.7.0→2.9.0 regression: the previous cohort completed this exact
+  // (scenario × arm × run) cell, but at ANOTHER framework version. A fresh
+  // cohort run must NOT resume-skip it.
+  const record = freshRecord({
+    checkpoint: [
+      cellKey({
+        ...HARNESS_COHORT,
+        frameworkVersion: '1.69.0',
+        scenario: 'hello-world',
+        arm: 'mandrel',
+        runIndex: 1,
+      }),
+    ],
+  });
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel'],
+      n: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    benchDeps(record), // runs at frameworkVersion 1.70.0
+  );
+  assert.equal(result.skipped, 0);
+  assert.equal(result.scorecards.length, 1);
+  assert.equal(record.sessions.filter((s) => s.arm === 'mandrel').length, 1);
+  // The completed cell is checkpointed under the CURRENT cohort's key.
+  const appendedKey = JSON.parse(record.checkpointed[0].data.trim()).cell;
+  assert.equal(
+    appendedKey,
+    cellKey({
+      ...HARNESS_COHORT,
+      scenario: 'hello-world',
+      arm: 'mandrel',
+      runIndex: 1,
+    }),
+  );
+});
+
+test('runFirstBenchmark: legacy three-field checkpoint entries never match (stale pre-cohort ledger re-runs)', async () => {
+  // A ledger written before the cohort-keyed format carries bare
+  // (scenario × arm × run) keys. They must read as "not done".
+  const record = freshRecord({
+    checkpoint: ['hello-worldmandrel1'],
+  });
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel'],
+      n: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    benchDeps(record),
+  );
+  assert.equal(result.skipped, 0);
+  assert.equal(result.scorecards.length, 1);
 });
 
 test('runFirstBenchmark: maxRuns ceiling stops cleanly after the in-flight cell', async () => {
@@ -2215,7 +2307,12 @@ test('runFirstBenchmark: a resumed batch renders the report over the FULL store,
   };
   const record = freshRecord({
     checkpoint: [
-      cellKey({ scenario: 'hello-world', arm: 'control', runIndex: 1 }),
+      cellKey({
+        ...HARNESS_COHORT,
+        scenario: 'hello-world',
+        arm: 'control',
+        runIndex: 1,
+      }),
     ],
     storeSeed: { [storePath]: `${JSON.stringify(priorControl)}\n` },
   });
