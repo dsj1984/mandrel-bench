@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nProvide a dependency-free Node.js JSON REST API where users sign up, sign in for an opaque bearer session, and manage their own personal notes, with all data surviving a server restart.\n\n## Spec\nSingle ESM HTTP service built on Node's built-in `node:http` — no external web framework and no runtime npm dependencies. Persist users and notes in an on-disk store (prefer built-in `node:sqlite` writing to a file, or an equivalent file-backed store); in-memory-only storage is disqualifying because data MUST survive a restart. Server binds to `process.env.PORT` and falls back to 3000.\n\nEndpoints (all request/response bodies are JSON):\n- `POST /signup` `{username, password}` → 201 `{id, username}`; a duplicate username is a client error (409 or 400), never a 500.\n- `POST /login` `{username, password}` → 200 `{session}` where `session` is an opaque credential (not the raw password); wrong credentials → 401.\n- `GET /me` → 200 `{id, username}` for the caller identified by the session.\n- `POST /notes` `{title, body}` → 201 with the created note as JSON, owned by the caller.\n- `GET /notes` → 200 JSON array of only the caller's notes.\n\nAuth invariant: `/me`, `POST /notes`, and `GET /notes` require a valid session supplied as `Authorization: Bearer <session>`; a missing or invalid session → 401. Notes are per-user private — one user MUST never read another user's notes. Security invariants (rules/security-baseline.md): passwords MUST NOT be stored in plaintext (hash them) and MUST NOT be echoed in any response; sessions MUST be unguessable random tokens; no secrets hardcoded. Malformed JSON, missing/blank required fields, and wrong Content-Type MUST yield a 400 with a JSON error body, never an unhandled crash.\n\n## Changes\n- `src/server.js` — creates\n- `src/store.js` — creates\n- `test/api.test.js` — creates\n- `package.json` — refactors-existing\n\n## Acceptance\n- [ ] AC-1: `npm start` launches a server that listens on the port from PORT (default 3000): setting PORT to a free port and requesting an endpoint returns an HTTP response.\n- [ ] AC-2: POST /signup with {username, password} returns 201 and a JSON body containing the new user's id and username, and does NOT include the password.\n- [ ] AC-3: POST /signup with a username that already exists returns a 4xx client error (not 500) and does not create a duplicate.\n- [ ] AC-4: POST /login with correct credentials returns 200 and a JSON {session}; the session value is not the raw password.\n- [ ] AC-5: POST /login with wrong credentials returns 401.\n- [ ] AC-6: GET /me with a valid Authorization: Bearer <session> returns 200 with the signed-in user's id and username; without a valid session it returns 401.\n- [ ] AC-7: POST /notes with {title, body} and a valid session returns 201 with the created note as JSON owned by that user.\n- [ ] AC-8: GET /notes with a valid session returns 200 and a JSON array containing only that user's notes, and never another user's notes.\n- [ ] AC-9: Malformed or missing JSON body on POST /signup, /login, or /notes returns a 400 with a JSON error body and the server stays up.\n- [ ] AC-10: Data persists across restart: a user and note created before the process stops are still retrievable via /login and GET /notes after the server is restarted against the same on-disk store.\n- [ ] AC-11: The automated test suite exercises signup, login, /me, note create/list, per-user isolation, bad-request handling, and restart persistence, and exits 0 via `npm test`.\n\n## Verify\n- npm test (contract)\n- npm run typecheck (validate)\n- npm run lint (validate)\n\n## Non-Goals\n- No web UI or HTML rendering — JSON API only.\n- No password reset, email verification, or session expiry/refresh flows.\n- No note update or delete endpoints (only create and list).\n- No external web framework or third-party runtime dependencies.\n\n<!-- meta: {\"reason_to_exist\":\"Deliver the accounts-and-notes API as one coherent, restart-durable capability that is only meaningful end-to-end (b: single cohesive service whose auth, persistence, and endpoints cannot be reviewed or shipped in isolation).\"} -->\n\n<!-- plan-story: 63868440e3de950a -->",
+  "labels": [
+    {
+      "id": "LA_kwDOThfM-88AAAACtAWMPA",
+      "name": "plan-run::aa70e1bc",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    },
+    {
+      "id": "LA_kwDOThfM-88AAAACtAWMyA",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOThfM-88AAAACtAWNqw",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 1,
+  "title": "JSON REST API for user accounts and personal notes with persistent store"
+}
