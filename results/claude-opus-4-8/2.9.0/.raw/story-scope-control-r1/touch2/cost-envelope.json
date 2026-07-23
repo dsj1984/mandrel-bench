@@ -1,0 +1,72 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "api_error_status": null,
+  "duration_ms": 100289,
+  "duration_api_ms": 90422,
+  "ttft_ms": 3633,
+  "ttft_stream_ms": 2900,
+  "time_to_request_ms": 1244,
+  "num_turns": 15,
+  "result": "Done. I implemented `POST /password` and committed the work.\n\n## What I added\n\n**`app.js`** — a new authenticated route:\n- Requires a bearer token (`401` if missing/invalid, like the other endpoints).\n- Reads `{\"newPassword\": ...}`; rejects a missing or empty value with `400`. Malformed JSON already falls through to the existing `400` handler.\n- Hashes the new password with the same scrypt helper and updates the user's `password_hash`.\n- **Revokes every session for that user** (including the token that made the request) via `DELETE FROM sessions WHERE user_id = ?`.\n- Returns `200 {id, username}`.\n\nTwo new prepared statements back it: `updatePassword` and `deleteSessionsByUser`.\n\n## Behavior guaranteed\n\n- Sessions issued before the change stop working (old bearer token → `401`).\n- The old password no longer authenticates (`401` on login).\n- The new password works and mints a fresh, valid session.\n\n## Also updated\n\n- **README.md** — endpoint table row plus a note explaining the session-revocation semantics.\n- **test/api.test.js** — a new test covering auth requirement, bad-request handling, session revocation, old-password rejection, and new-password login.\n\nBoth tests pass. Since the checkout had no `.git`, I initialized the repository and committed everything (the SQLite data files are already covered by `.gitignore`).",
+  "stop_reason": "end_turn",
+  "session_id": "03c17e4f-e70e-48d5-9341-79056ebe21d4",
+  "total_cost_usd": 0.6504515000000001,
+  "usage": {
+    "input_tokens": 29,
+    "cache_creation_input_tokens": 24774,
+    "cache_read_input_tokens": 559587,
+    "output_tokens": 4881,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 24774,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 464,
+        "cache_read_input_tokens": 43592,
+        "cache_creation_input_tokens": 377,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 377
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 663,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000748,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 29,
+      "outputTokens": 4881,
+      "cacheReadInputTokens": 559587,
+      "cacheCreationInputTokens": 24774,
+      "webSearchRequests": 0,
+      "costUSD": 0.6497035000000001,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "uuid": "0933ef99-a9f8-4b02-8d14-d9f9ad3b9c30"
+}

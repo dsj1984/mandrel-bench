@@ -1,0 +1,19 @@
+{
+  "body": "## Goal\nProvide a minimal, dependency-free Node.js HTTP server that answers GET / with an HTML \"Hello, World!\" page so the project has a runnable, self-verifying baseline.\n\n## Spec\nSingle ESM source file `server.js`. Create the server with the built-in `node:http` module — no external web framework and no added runtime dependency.\n\nRead the listen port from `process.env.PORT`, coercing with `Number.parseInt(..., 10)`; fall back to `3000` when the variable is unset or non-numeric.\n\nRequest handling: for `GET /`, respond `200` with header `Content-Type: text/html` and a body containing the exact substring `Hello, World!`. Other methods/paths respond `404`.\n\nStructure startup so the request handler is importable by the test while `listen()` is only invoked when the file is run as the entry module (guard on `import.meta.url` matching the process entry, or export a `createServer`/handler and start under the guard).\n\nAdd a `start` script to package.json (`\"start\": \"node server.js\"`) while preserving the existing `type: module` and the `typecheck`, `lint`, and `test` scripts.\n\nA `node --test` test in `server.test.js` starts the server on an ephemeral port (`listen(0)`) and asserts the response status is 200, the `Content-Type` header is `text/html`, and the body includes `Hello, World!`; it also asserts the default-port resolution logic yields 3000 when `PORT` is absent.\n\n## Changes\n- `server.js` — creates\n- `package.json` — refactors-existing\n- `server.test.js` — creates\n\n## Acceptance\n- [ ] AC-1: server.js is the only non-test source file added and imports only Node built-ins (no runtime dependency added to package.json dependencies): the server sources HTTP via `node:http`.\n- [ ] AC-2: The listen port resolves from process.env.PORT and defaults to 3000 when PORT is unset or non-numeric (asserted by server.test.js).\n- [ ] AC-3: A GET request to / returns HTTP status 200 with a Content-Type response header of text/html and a response body containing the exact substring \"Hello, World!\" (asserted by server.test.js).\n- [ ] AC-4: package.json defines an npm start script that launches the server: `node -e \"process.exit(require('./package.json').scripts.start && require('./package.json').scripts.start.includes('server.js') ? 0 : 1)\"` exits 0.\n- [ ] AC-5: package.json declares no new entries under dependencies: `node -e \"process.exit(Object.keys(require('./package.json').dependencies||{}).length === 0 ? 0 : 1)\"` exits 0.\n- [ ] AC-6: `npm test` exits 0 with the server test present.\n\n## Verify\n- npm test (unit)\n- npm run lint (validate)\n- node -e \"process.exit(require('./package.json').scripts.start ? 0 : 1)\" (validate)\n\n## References\n- `README.md` — exists\n\n## Non-Goals\n- No external web framework (Express/Fastify/etc.) or any added runtime dependency.\n- No routing beyond GET / (other paths may return 404).\n- No TLS/HTTPS, structured logging, or process-manager integration.\n\n<!-- meta: {\"reason_to_exist\":\"Deliver the sole runnable HTTP surface (GET / -> HTML \\\"Hello, World!\\\") as one cohesive slice: a single source file, its npm start script, and its test are one coherent change with one reason to exist (c: cohesion — a single-file server plus its start script and test cannot be split without fragmenting one capability).\"} -->\n\n<!-- plan-story: fe08879622c31a89 -->",
+  "labels": [
+    {
+      "id": "LA_kwDOThKlPM8AAAACs9XXvA",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOThKlPM8AAAACs9XY1g",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 1,
+  "title": "Minimal dependency-free Node.js HTTP server serving Hello, World!"
+}

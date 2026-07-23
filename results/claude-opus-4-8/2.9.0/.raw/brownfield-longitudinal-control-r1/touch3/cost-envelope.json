@@ -1,0 +1,72 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "api_error_status": null,
+  "duration_ms": 130636,
+  "duration_api_ms": 128716,
+  "ttft_ms": 2713,
+  "ttft_stream_ms": 2173,
+  "time_to_request_ms": 70,
+  "num_turns": 14,
+  "result": "Done. The work is committed.\n\n## What I found and did\n\nThe checkout was a bare baseline (only README, package.json, .gitignore) — no existing application code. So to reach the end state the change request describes, I built the API such that `/clients` is the primary resource and `/customers` is a working deprecated alias over the same data.\n\n## Implementation\n\n- **`src/store.js`** — a single in-memory store (Map + auto-incrementing id) providing create/get/update/remove/list. One store backs both paths, so a record created via one is visible via the other.\n- **`src/server.js`** — a `node:http` server. The router mounts the same handler at both `clients` and `customers`. On the alias it attaches `Deprecation: true`, a `Warning` header, and a `Link: </clients...>; rel=\"successor-version\"` header. Endpoints:\n  - `POST /clients` → 201 create (+`Location`)\n  - `GET /clients` → paginated list (`?page`, `?pageSize`) returning `{data, page, pageSize, total, totalPages}`\n  - `GET /clients/:id` → fetch (404 if missing)\n  - `PUT`/`PATCH /clients/:id` → update\n  - `DELETE /clients/:id` → 204\n- **`test/api.test.js`** — 7 tests: full CRUD + pagination run against **both** paths, plus explicit checks that the alias carries deprecation headers (and the primary does not), and that data is shared across paths (create via `/customers` → read/update/delete visible via `/clients`).\n- **`API.md`** + a `start` script documenting all of the above.\n\n## Verification\n\n- `npm test` → **7/7 pass**\n- `npm run typecheck` → `node --check` passes on all 3 files\n\nThe primary `/clients` behaviour and the `/customers` alias are both exercised by tests, including the cross-path data-sharing requirement.",
+  "stop_reason": "end_turn",
+  "session_id": "52472faa-4758-4f2b-9c97-91a522dc7e39",
+  "total_cost_usd": 0.6742844999999998,
+  "usage": {
+    "input_tokens": 27,
+    "cache_creation_input_tokens": 22173,
+    "cache_read_input_tokens": 486543,
+    "output_tokens": 8336,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 22173,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 618,
+        "cache_read_input_tokens": 40962,
+        "cache_creation_input_tokens": 406,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 406
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 663,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000748,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 27,
+      "outputTokens": 8336,
+      "cacheReadInputTokens": 486543,
+      "cacheCreationInputTokens": 22173,
+      "webSearchRequests": 0,
+      "costUSD": 0.6735364999999999,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "uuid": "535a74d2-a5c9-4f1d-a379-4d27774e2976"
+}
