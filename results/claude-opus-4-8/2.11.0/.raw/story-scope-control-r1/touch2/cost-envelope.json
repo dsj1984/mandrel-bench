@@ -1,0 +1,76 @@
+{
+  "is_error": false,
+  "duration_api_ms": 90693,
+  "num_turns": 19,
+  "stop_reason": "end_turn",
+  "session_id": "274bcc22-fbd1-4f82-9c24-f6796db5534c",
+  "total_cost_usd": 0.698135,
+  "usage": {
+    "input_tokens": 26,
+    "cache_creation_input_tokens": 27044,
+    "cache_read_input_tokens": 548084,
+    "output_tokens": 6111,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 27044,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 547,
+        "cache_read_input_tokens": 45690,
+        "cache_creation_input_tokens": 648,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 648
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 663,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000748,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 26,
+      "outputTokens": 6111,
+      "cacheReadInputTokens": 548084,
+      "cacheCreationInputTokens": 27044,
+      "webSearchRequests": 0,
+      "costUSD": 0.697387,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. I added `POST /password` end to end and committed the work.\n\n## What I built\n\n**`server.js`** — the new endpoint:\n- `handleChangePassword` authenticates the caller via the same bearer-token flow as the other endpoints, reads the JSON body, and validates `newPassword` with the existing `requireString` helper (rejecting missing/non-string/oversized values with `400`).\n- On success it hashes the password with the existing `scrypt` `hashPassword`, then runs an atomic transaction that **updates the password hash and deletes all of that user's sessions** — so every credential issued before the change (including the one used to make the request) stops working. Returns `200 {ok: true}`.\n- Added two prepared statements (`updatePassword`, `deleteSessionsByUser`) and registered the route.\n\nI used a manual `BEGIN`/`COMMIT`/`ROLLBACK` helper because `node:sqlite`'s `DatabaseSync` (unlike better-sqlite3) has no `.transaction()` method — I verified that against the installed Node v24.16.0.\n\n**Behavior guaranteed** (and covered by a new test):\n- Old sessions no longer work after the change (all revoked).\n- Signing in with the old password fails; the new password works and yields a working session.\n- Missing `newPassword` → `400`; no bearer token → `401`.\n\n**Docs**: updated `API.md`'s endpoint table and implementation notes.\n\nAll 5 tests pass (including the existing subprocess-restart persistence test) and `npm run typecheck` is clean. Committed as `3178ba2` (initialized the repo first, since the checkout had no `.git`).",
+  "ttft_ms": 3518,
+  "ttft_stream_ms": 3022,
+  "time_to_request_ms": 168,
+  "type": "result",
+  "duration_ms": 90822,
+  "uuid": "799c8bf5-d915-49b5-ad1e-140c9990d7e2"
+}

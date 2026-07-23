@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nProvide a self-contained Node.js JSON REST API where users sign up, sign in with a bearer session, and manage their own personal notes, with all data surviving a server restart.\n\n## Spec\nHTTP server built on the Node core `http` module only — no external web framework. ESM (\"type\": \"module\"). Persistence via the built-in `node:sqlite` database written to an on-disk file (path overridable by env, e.g. DB_PATH; default a repo-local data file) — never in-memory; state MUST survive process restart. Listen on `process.env.PORT` (default 3000).\n\nEndpoints (all request/response bodies JSON; unknown routes/methods → 404/405):\n- POST /signup {username, password} → 201 {id, username}. Username unique; duplicate → 409. Passwords stored only as a salted hash (Node `crypto`, e.g. scrypt) — never plaintext.\n- POST /login {username, password} → 200 {session}. `session` is an opaque, unguessable token (crypto.randomBytes) persisted and mapped to the user. Bad credentials → 401.\n- GET /me → 200 {id, username} for the bearer-authenticated user.\n- POST /notes {title, body} → 201 with the created note (id, owner, title, body, plus a created timestamp is acceptable).\n- GET /notes → 200 JSON array of ONLY the authenticated user's notes.\n\nAuth invariant: /me, POST /notes, GET /notes require `Authorization: Bearer <session>`; missing/invalid/unknown token → 401. A user MUST never see another user's notes (ownership scoping enforced in the query, not the handler shape). Bad input (missing/blank username or password, malformed JSON, missing title/body) → 400 with a JSON error body. Password hashing uses constant-time comparison.\n\n## Changes\n- `src/server.js` — creates\n- `src/db.js` — creates\n- `src/auth.js` — creates\n- `package.json` — refactors-existing\n- `test/api.test.js` — creates\n- `.gitignore` — refactors-existing\n\n## Acceptance\n- [ ] AC-1: `npm start` boots an HTTP server that listens on process.env.PORT, defaulting to 3000 when PORT is unset.\n- [ ] AC-2: POST /signup with {username, password} returns 201 and a JSON body containing the new user's id and username; a second signup with the same username returns 409.\n- [ ] AC-3: POST /signup with missing/blank username or password, or malformed JSON, returns 400 with a JSON error body.\n- [ ] AC-4: POST /login with correct credentials returns 200 and {session} with an opaque token; wrong password or unknown username returns 401.\n- [ ] AC-5: GET /me with a valid `Authorization: Bearer <session>` returns 200 and the authenticated user's id and username; missing or invalid token returns 401.\n- [ ] AC-6: POST /notes with {title, body} and a valid session returns 201 and the created note; missing title or body returns 400; no/invalid token returns 401.\n- [ ] AC-7: GET /notes with a valid session returns 200 and a JSON array containing only the authenticated user's notes, never another user's.\n- [ ] AC-8: After the server process is stopped and restarted (same DB file), previously created users can still log in and previously created notes are still listed — data is persisted on disk, not in-memory.\n- [ ] AC-9: Passwords are never stored or returned in plaintext; the stored value is a salted hash.\n\n## Verify\n- npm start (validate)\n- node --test test/api.test.js (e2e)\n- npm run typecheck (validate)\n\n## Non-Goals\n- No external web framework (Express/Fastify/Koa) and no external npm dependencies — Node core only.\n- No password reset, email verification, roles, or session expiry/refresh beyond an opaque persisted token.\n- No note update/delete endpoints, pagination, or sharing between users.\n- No HTTPS/TLS termination, rate limiting, or CORS handling.\n\n<!-- meta: {\"reason_to_exist\":\"A signed-in, multi-user notes service needs a single cohesive HTTP+auth+persistence slice so accounts and notes are durable and privately scoped per user.\"} -->\n\n<!-- plan-story: 9278e3d011c1267a -->",
+  "labels": [
+    {
+      "id": "LA_kwDOThqIGM8AAAACtB7TbA",
+      "name": "plan-run::1acae215",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    },
+    {
+      "id": "LA_kwDOThqIGM8AAAACtB7Tzw",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOThqIGM8AAAACtB7Usg",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 1,
+  "title": "JSON REST API for user accounts and personal notes (ESM, on-disk persistence)"
+}
