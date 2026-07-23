@@ -75,6 +75,7 @@ import {
 import {
   createEphemeralRepo,
   defaultEphemeralRoot,
+  defaultScenarioSandboxDir,
   destroyEphemeralRepo,
   provisionSandbox,
   resetSandboxBaseline,
@@ -2921,8 +2922,21 @@ async function runCell({ scenarioId, arm, ctx, deps }) {
     const seedDir = mkdtempFn(path.join(ephemeralRoot, SANDBOX_DIR_PREFIX));
     let seeded;
     try {
+      // Thread the scenario's optional seed layer
+      // (`bench/scenarios/<id>/sandbox/`) into the baseline commit (Story
+      // #171). Without this, a brownfield scenario's frozen seed app never
+      // reaches the ephemeral repo: every cell starts from the empty
+      // template, agents build unrelated from-scratch apps, and the frozen
+      // suite scores a structural 0 on every touch of every arm (the cohort
+      // 2.9.0 flatline). `materializeSandboxTemplate` skips the directory
+      // when the scenario ships no seed layer, so seedless scenarios are
+      // byte-identical to before.
       seeded = seedFromTemplateFn(
-        { repoFullName: created.repoFullName, workspacePath: seedDir },
+        {
+          repoFullName: created.repoFullName,
+          workspacePath: seedDir,
+          scenarioSandboxDir: defaultScenarioSandboxDir(scenarioId),
+        },
         { logger },
       );
     } finally {
