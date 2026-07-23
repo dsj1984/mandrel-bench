@@ -873,6 +873,86 @@ test('runTouchChain: an unmaterialized mandrel delivery scores null outcome, ski
   assert.equal(scorecard.dimensions.quality.score, t2.dimensions.quality.score);
 });
 
+test('runTouchChain: outcome dynamic range — a green suite scores > 0, an all-fail suite scores a REAL 0, and the two ends stay distinct from the non-materialized null (Story #171)', async () => {
+  // Regression pin for the cohort-2.9.0 flatline: every brownfield touch on
+  // both arms scored outcome = 0 while the run-chain scoring seam
+  // (`outcome = materialized ? quality.score ?? null : null`) was blamed. The
+  // seam was correct — the zeros were real measurements of the WRONG trees
+  // (the scenario seed layer never reached the sandbox; see the `runCell`
+  // seeding fix in bench/run.js). This test pins the seam's dynamic range so
+  // any future flatline fails the bench's own suite: a delivery that meets
+  // its evolved acceptance MUST score above zero, a delivery failing every
+  // frozen test MUST score exactly zero (a measured verdict, never null),
+  // and non-materialized stays null (never a false 0) per the existing
+  // unmaterialized-touch test above.
+  const allFailSuite = (k) => ({
+    // The cohort-2.9.0 shape verbatim: nothing passed, everything retained
+    // failed, additions all failed — regressionRate 1 alongside outcome 0.
+    touchIndex: k,
+    base: {
+      total: 102,
+      retainedTotal: 102,
+      retainedPassed: 0,
+      retainedFailed: ['every-id'],
+      missing: [],
+      supersededIds: [],
+      regressionRate: 1,
+    },
+    additions: {
+      total: 10,
+      passed: 0,
+      failed: ['every-addition'],
+      missing: [],
+      byTouch: {},
+    },
+  });
+  const record = freshChainRecord({
+    landPerTouch: { 1: 'T1SHA', 2: 'T2SHA' },
+    suitePerTouch: { 1: goodSuite(1), 2: allFailSuite(2) },
+  });
+  const deps = chainDeps(record);
+  const touches = normalizeScenarioTouches(CHAIN_SCENARIO, '/scen');
+
+  const scorecard = await runTouchChain(
+    {
+      scenario: CHAIN_SCENARIO,
+      touches,
+      scenarioDir: '/scen',
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.ok(
+    validateScorecard(scorecard),
+    JSON.stringify(validateScorecard.errors, null, 2),
+  );
+  const [t1, t2] = scorecard.chain.touches;
+
+  // A delivery meeting its evolved acceptance scores STRICTLY above zero.
+  assert.equal(t1.materialized, true);
+  assert.equal(typeof t1.outcome, 'number');
+  assert.ok(
+    t1.outcome > 0,
+    `green-suite touch must score outcome > 0, got ${t1.outcome}`,
+  );
+  assert.equal(t1.dimensions.quality.frozenSuitePassRate, 1);
+
+  // A delivery failing every frozen test scores a REAL, measured 0 — the
+  // number 0, not null (null is reserved for non-materialized touches).
+  assert.equal(t2.materialized, true);
+  assert.equal(t2.outcome, 0);
+  assert.notEqual(t2.outcome, null);
+  assert.equal(t2.dimensions.quality.frozenSuitePassRate, 0);
+  assert.equal(t2.regression.regressionRate, 1);
+
+  // The two measured ends are distinct — the axis discriminates.
+  assert.ok(t1.outcome > t2.outcome);
+});
+
 test('runTouchChain (control): one session per touch, commit+push advances, landed stays null, landedCount counts advanced touches', async () => {
   const record = freshChainRecord({
     suitePerTouch: { 1: goodSuite(1), 2: goodSuite(2) },
