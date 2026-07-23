@@ -32,7 +32,7 @@ Epic/Story router, no scope-triage `epic|story` verdict:
 | `--tickets <ids>` | Issue ids to analyze; closed as superseded at persist. |
 | `--no-close-superseded` | Keep the source issues open — no supersede comment, no close. |
 | `--force-review` | STOP at gate #2 for operator review — the only review gate (Story #4542). |
-| `--route-downgrade-reason "<text>"` | Audited `full`→`lite` downgrade (Story #4707), ledgered per Story. |
+| `--route-downgrade-reason "<text>"` | Authored `lite` verdict + reason (Story #4722), ledgered per Story; shape-validated, fails closed to `full`. |
 | `--allow-over-budget` | Permit a plan exceeding `maxTickets`. |
 | `--yes` | Non-interactive: auto-proceed gate #1 and gate #2 HITL waits. |
 | `--dry-run` | Author + validate without GitHub writes; run as a pre-pass. |
@@ -66,11 +66,11 @@ authoring skeleton step 2 starts from.
 
 The envelope carries docs context, codebase snapshot, the story-author
 prompt, `sourceTickets[]`, `duplicates[]` (open **Stories** overlapping the
-seed — never Epics), and the `complexityRoute` signal:
-`"lite"` (trivial single-artifact scope — author one minimal Story, skip
-fresh-critic / Tech-Spec ceremony; every close gate still runs) or `"full"`
-(everything else; fails toward `full` on any doubt). Detail:
-[`helpers/plan-reference.md` § Ceremony-lite gate](helpers/plan-reference.md).
+seed — never Epics), and advisory `complexitySignals` (**no routing
+authority**, Story #4722). A genuinely trivial scope earns
+`--route-downgrade-reason "<why>"` at persist — shape-validated, failing
+closed to `full`. Detail:
+[`helpers/plan-reference.md` § Shape-derived routing](helpers/plan-reference.md).
 Under `--yes`, do not ask free-form operator questions — unresolved
 unknowns land in Key Assumptions.
 
@@ -79,8 +79,9 @@ duplicate-candidate review. Under `--yes`, auto-proceed.
 
 ### 2. Author
 
-**One-shot authoring (Story #4707).** Start from `stories.template.json`
-(or the skeleton below); author `stories.json` in one pass. `body` is a
+**One-shot authoring (Story #4707).** Start from `stories.template.json`;
+author `stories.json` in one pass. Entries are pre-resolved (#4723); keep
+tiers/assumptions valid. `body` is a
 markdown string **or** a structured object; persist parses either,
 serializes the canonical markdown, and syncs the top-level `acceptance[]` /
 `verify[]` into the body — never dual-author those lists.
@@ -182,7 +183,7 @@ persist, re-run the same command; never hand-delete issues.
 
 - [`/deliver`](deliver.md) — delivery entry point.
 - [`/audit-to-stories`](audit-to-stories.md) — audit findings → plan seed.
-- [`helpers/plan-reference.md`](helpers/plan-reference.md) — ceremony-lite,
-  supersede, critic, and persist-resume detail.
+- [`helpers/plan-reference.md`](helpers/plan-reference.md) — on-demand
+  detail.
 - [`core/scope-triage`](../skills/core/scope-triage/SKILL.md) — optional
   split-advisory notes only (no routing verdict).
