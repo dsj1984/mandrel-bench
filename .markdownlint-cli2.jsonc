@@ -16,7 +16,12 @@
   // (tests/bench/report/fixtures/) are frozen machine-emitted renderer
   // output (issue #124, PR-D) — regenerated deliberately, never hand-edited,
   // so lint churn must never touch them.
+  // The .claude/ command + agent trees are generated projections owned by
+  // sync-claude-commands.js / the mandrel sync-agents step (since v2.10.0
+  // role-agent files open with an @-include line, tripping MD041) — never
+  // hand-authored, so they are exempt like the other machine-emitted trees.
   "ignores": [
+    ".claude/**",
     "tests/bench/report/fixtures/**",
     "results/**/reports/**",
     "bench/scenarios/*/sandbox/**",
