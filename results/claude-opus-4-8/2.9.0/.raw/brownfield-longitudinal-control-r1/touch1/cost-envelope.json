@@ -1,0 +1,72 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "api_error_status": null,
+  "duration_ms": 202164,
+  "duration_api_ms": 199450,
+  "ttft_ms": 2377,
+  "ttft_stream_ms": 1695,
+  "time_to_request_ms": 73,
+  "num_turns": 19,
+  "result": "Done. The change request is implemented, tested, and committed.\n\n## What I built\n\nThe baseline was an empty sandbox (only `README.md`, `package.json`, `.gitignore`), so I built a coherent, dependency-free Node HTTP JSON API that supports the credit-notes feature and the order/payment/receivables domain it depends on:\n\n- **`src/store.js`** — in-memory data store (users, customers, orders, payments, credit notes), resettable for tests.\n- **`src/orders.js`** — domain logic: `outstandingForOrder` (`total − payments − credit notes`), order issuing, payments, `issueCreditNote`, and the receivables report.\n- **`src/auth.js`** — bearer-token auth modelling the \"signed-in user\".\n- **`src/app.js`** — tiny router over Node's `http` module wiring up the endpoints.\n- **`src/server.js`** — entry point.\n\n## The feature\n\n- `POST /orders/:orderId/credit-notes` with `{\"amountCents\", \"reason\"}` → returns the created credit note.\n- `GET /orders/:orderId/credit-notes` → returns the order's credit notes as a JSON array.\n\n**Rules enforced:**\n- Requires a signed-in user (401 otherwise).\n- Only an **issued** order can be credited (422 otherwise).\n- Amount can never exceed the **outstanding** balance (`total − payments − existing credit notes`).\n- Credit notes reduce the outstanding amount the `/reports/receivables` report shows for that customer.\n\n## Verification\n\nAll 9 end-to-end tests pass (`npm test`) and `npm run typecheck` is clean. Tests cover the happy path, the array listing, auth enforcement, the issued-only rule, the outstanding-cap (including multi-step crediting up to the exact limit), receivables reduction, invalid inputs, and unknown-order 404s.",
+  "stop_reason": "end_turn",
+  "session_id": "7ec79570-0598-40b7-a4d1-1f721f6abbbb",
+  "total_cost_usd": 1.044161,
+  "usage": {
+    "input_tokens": 36,
+    "cache_creation_input_tokens": 29519,
+    "cache_read_input_tokens": 744864,
+    "output_tokens": 15023,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 29519,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 625,
+        "cache_read_input_tokens": 48280,
+        "cache_creation_input_tokens": 434,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 434
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 719,
+      "outputTokens": 13,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000784,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 36,
+      "outputTokens": 15023,
+      "cacheReadInputTokens": 744864,
+      "cacheCreationInputTokens": 29519,
+      "webSearchRequests": 0,
+      "costUSD": 1.043377,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "uuid": "012fbb61-ed89-45ea-bbd5-ad879dd762bd"
+}
