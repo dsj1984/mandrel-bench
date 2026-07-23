@@ -1,0 +1,72 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "api_error_status": null,
+  "duration_ms": 110982,
+  "duration_api_ms": 110829,
+  "ttft_ms": 2588,
+  "ttft_stream_ms": 2050,
+  "time_to_request_ms": 132,
+  "num_turns": 19,
+  "result": "Done. The task is complete and committed.\n\n## What I built\n\n**`POST /password`** — authenticated endpoint accepting `{\"newPassword\": ...}`.\n\nBehavior matching a security-sensitive account action:\n- **Old sessions die** — all rows in `sessions` for the user are deleted, *including the bearer token used to make the request* (it was issued before the change), so no pre-change credential works afterward.\n- **New password required to sign in** — the `password_hash` is rehashed (scrypt, reusing the existing `hashPassword`) so `/login` only succeeds with the new password.\n- **Old password stops working** — the hash is overwritten, so the old password fails at `/login`.\n- The update + session purge run in one `BEGIN`/`COMMIT` transaction (with `ROLLBACK` on error) so a password change can't leave stale sessions behind.\n\n**Bad requests handled** the same way as the existing endpoints:\n- Missing/invalid bearer credential → `401`\n- Malformed JSON / non-object body → `400`\n- `newPassword` absent, empty, or non-string → `400`\n\nI discovered `node:sqlite`'s `DatabaseSync` has no `.transaction()` helper (unlike better-sqlite3) and used explicit `BEGIN`/`COMMIT`/`ROLLBACK` instead.\n\n**Verification:** added 3 tests (auth required, bad-body 400s, and full rotation flow: old session invalidated → old password rejected → new password logs in). All 12 tests pass, `node --check` lint is clean. README endpoint table updated. Committed as `40e0b58` (I initialized the repo first, since the checkout wasn't yet a git repo; `data/` stays gitignored).",
+  "stop_reason": "end_turn",
+  "session_id": "630413b2-5742-45e1-98ea-222fb62bf1ba",
+  "total_cost_usd": 0.8034704999999999,
+  "usage": {
+    "input_tokens": 35,
+    "cache_creation_input_tokens": 27261,
+    "cache_read_input_tokens": 731585,
+    "output_tokens": 6566,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 27261,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 1,
+        "output_tokens": 573,
+        "cache_read_input_tokens": 45948,
+        "cache_creation_input_tokens": 508,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 508
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 663,
+      "outputTokens": 16,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000743,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 35,
+      "outputTokens": 6566,
+      "cacheReadInputTokens": 731585,
+      "cacheCreationInputTokens": 27261,
+      "webSearchRequests": 0,
+      "costUSD": 0.8027274999999999,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "uuid": "1b79c1c9-0763-4a43-ae94-7202fde20890"
+}

@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nProvide a dependency-free Node.js HTTP server that answers GET / with a Hello, World! HTML response, launchable via npm start.\n\n## Spec\nServer uses only the Node.js built-in `http` module (ESM, no external web framework). It listens on `process.env.PORT` when set, defaulting to 3000. A GET request to path `/` returns HTTP 200 with header `Content-Type: text/html` and a body containing the exact substring `Hello, World!`. package.json declares `\"type\": \"module\"` and a `\"start\"` script that launches the single source file with node. Implementation footprint is exactly one source file plus package.json.\n\n## Changes\n- `server.js` — creates\n- `package.json` — refactors-existing\n\n## Acceptance\n- [ ] AC-1: package.json sets \"type\": \"module\" and defines a \"start\" script that runs the single source file with node.\n- [ ] AC-2: Starting the server with no PORT set makes it listen on port 3000; setting PORT overrides that port.\n- [ ] AC-3: A GET request to / returns HTTP status 200.\n- [ ] AC-4: The response to GET / carries a Content-Type header of text/html.\n- [ ] AC-5: The response body for GET / contains the exact text \"Hello, World!\".\n- [ ] AC-6: The implementation consists of exactly one source file plus package.json, with no external web-framework dependency.\n\n## Verify\n- node --check server.js (validate)\n- PORT=3100 node server.js & then curl -si http://localhost:3100/ shows HTTP/1.1 200, Content-Type: text/html, and body containing Hello, World! (e2e)\n- node server.js & then curl -si http://localhost:3000/ confirms the default port 3000 (e2e)\n\n## Non-Goals\n- Routing beyond GET /\n- External web frameworks or dependencies\n- TLS/HTTPS, logging, or graceful-shutdown handling\n\n<!-- meta: {\"reason_to_exist\":\"Establish a minimal, framework-free HTTP entrypoint that serves the Hello, World! page.\"} -->\n\n<!-- plan-story: 79ab3dd1b835b63b -->",
+  "labels": [
+    {
+      "id": "LA_kwDOThe5A88AAAACtATJPw",
+      "name": "plan-run::4295cac7",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    },
+    {
+      "id": "LA_kwDOThe5A88AAAACtATKaQ",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOThe5A88AAAACtATL2g",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 1,
+  "title": "Minimal ESM HTTP server returning \"Hello, World!\" on GET /"
+}
