@@ -90,7 +90,7 @@ import {
   readFrameworkVersion,
 } from './driver/version-readers.js';
 import { cohortDir } from './report/cohort-path.js';
-import { appendScorecards } from './report/persist.js';
+import { appendScorecards, readStore } from './report/persist.js';
 import {
   renderCohortReport,
   renderDashboardFile,
@@ -914,17 +914,25 @@ export const CHECKPOINT_FILENAME = '.batch-checkpoint.ndjson';
  * cells re-run, which is the safe direction (a harmless duplicate the store
  * reader de-dups by runId, never lost work).
  *
- * The separator is a unit-separator control char (``) so it can never
- * collide with a scenario id, arm, or run index value.
+ * The key is a JSON-encoded `[scenario, arm]` pair, so a scenario id or arm
+ * value can never collide across the two fields.
  *
- * @param {object} args
- * @param {string} args.frameworkVersion   The pinned `mandrel` version under test.
- * @param {string} args.model              The requested bench model slug.
- * @param {string} args.scenario
- * @param {'mandrel'|'control'} args.arm
- * @param {number} args.runIndex   1-based.
- * @returns {string}
+ * @param {Array<object>} scorecards  Records read from the cohort store.
+ * @returns {Map<string, number>}  JSON `[scenario, arm]` key → count.
  */
+export function countStoreCellsByScenarioArm(scorecards) {
+  const counts = new Map();
+  if (!Array.isArray(scorecards)) return counts;
+  for (const sc of scorecards) {
+    const scenario = sc?.scenario;
+    const arm = sc?.arm;
+    if (typeof scenario !== 'string' || typeof arm !== 'string') continue;
+    const key = JSON.stringify([scenario, arm]);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
 export function cellKey({ frameworkVersion, model, scenario, arm, runIndex }) {
   return `${frameworkVersion}${model}${scenario}${arm}${runIndex}`;
 }
@@ -2615,6 +2623,34 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
   const frameworkVersion =
     deps.frameworkVersion ?? readFrameworkVersion(repoRoot(), deps.versionDeps);
 
+  // Resume guard (Story #183): the checkpoint (`results/.batch-checkpoint.ndjson`,
+  // gitignored) can outlive a checkout-reverted cohort store — a `git checkout`
+  // reverts the tracked `scorecards.ndjson` but leaves the checkpoint intact, so
+  // a cell the checkpoint marks done may have NO scorecard on disk. Skipping it
+  // then silently under-counts the cohort. Read the target store ONCE up front
+  // (not per cell) and cross-check every checkpoint-done cell against it below.
+  // Because scorecards are persisted without a `runIndex` field (the cohort key
+  // is model × frameworkVersion × scenario × arm), run `i` of a (scenario, arm)
+  // cell is present exactly when the store holds at least `i` scorecards for that
+  // pair — matching is by COUNT. The store path is derived from the batch's
+  // requested `model` slug + `frameworkVersion` (the same discriminants the cell
+  // key uses); a store that is absent (or under a different resolved-id slug)
+  // reads as empty, which fails SAFE — the cell re-runs (a harmless duplicate the
+  // reader de-dups by runId) rather than being skipped.
+  const cohortStorePath = path.join(
+    cohortDir({
+      resultsDir,
+      scorecard: { model: { id: model }, frameworkVersion },
+    }),
+    'scorecards.ndjson',
+  );
+  const readStoreFn =
+    deps.storeReaderFn ??
+    ((storePath) => readStore({ storePath }, deps.persistDeps));
+  const storeCellCounts = countStoreCellsByScenarioArm(
+    readStoreFn(cohortStorePath),
+  );
+
   const scorecards = [];
   let skipped = 0;
   let completed = 0;
@@ -2667,11 +2703,24 @@ export async function runFirstBenchmark(opts = {}, deps = {}) {
           runIndex,
         });
         if (doneCells.has(cell)) {
-          skipped += 1;
+          // The checkpoint says done — but only skip when the cohort store
+          // actually holds this cell (Story #183). Scorecards carry no
+          // `runIndex`, so run `i` of a (scenario, arm) cell is present when the
+          // store holds at least `i` scorecards for that pair. A desync
+          // (checkpoint done, store missing it) fails SAFE: re-run rather than
+          // silently under-count.
+          const storeCount =
+            storeCellCounts.get(JSON.stringify([scenarioId, arm])) ?? 0;
+          if (storeCount >= runIndex) {
+            skipped += 1;
+            logger?.info?.(
+              `[run] ⏭️  resume: skip completed ${scenarioId} / ${arm} / run ${runIndex}/${n}`,
+            );
+            continue;
+          }
           logger?.info?.(
-            `[run] ⏭️  resume: skip completed ${scenarioId} / ${arm} / run ${runIndex}/${n}`,
+            `[run] ♻️  resume: checkpoint marks ${scenarioId} / ${arm} / run ${runIndex}/${n} done but store holds only ${storeCount} scorecard(s) for this cell — re-running (checkpoint/store desync)`,
           );
-          continue;
         }
         logger?.info?.(
           `[run] === ${scenarioId} / ${arm} / run ${runIndex}/${n} ===`,
