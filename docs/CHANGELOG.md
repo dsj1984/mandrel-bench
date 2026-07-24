@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.13.0...mandrel-bench-v0.14.0) (2026-07-24)
+
+
+### Fixed
+
+* **bench:** score touch-2 materialization by an absolute landing check (refs [#177](https://github.com/dsj1984/mandrel-bench/issues/177)) ([#178](https://github.com/dsj1984/mandrel-bench/issues/178)) ([1bd8d27](https://github.com/dsj1984/mandrel-bench/commit/1bd8d27caa5145fc64d22eddd498bae52ab82a24))
+
 ## [0.13.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.12.0...mandrel-bench-v0.13.0) (2026-07-23)
 
 
