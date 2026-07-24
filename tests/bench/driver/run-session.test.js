@@ -32,6 +32,7 @@ import {
   buildMandrelLightPrompt,
   buildMandrelPlanPrompt,
   DEFAULT_BENCH_MODEL,
+  detectEscalatedTerminal,
   isTransientClaudeError,
   parseSessionEnvelope,
   parseStreamEnvelope,
@@ -1336,4 +1337,112 @@ test('runSession (mandrel-story-routed): betweenPhases deliverTarget threads int
     { invokeFn: invoke2 },
   );
   assert.doesNotMatch(invoke2.calls[1].prompt, /\/deliver 42/);
+});
+
+// ---------------------------------------------------------------------------
+// detectEscalatedTerminal — read the machine envelope, not a side effect
+//
+// mandrel 2.14.0 (#4746) made /deliver-light's over-scope outcome TERMINAL: the
+// gate emits `status: "escalated"` and the session ends WITHOUT invoking /plan.
+// That silently broke the original escalation signal (Story #190), which
+// inferred escalation from a /plan ledger in the workspace — so a correct, safe
+// escalation was recorded as `deliveryPath: light` with null quality, looking
+// like the cheapest "light win" in the cohort.
+// ---------------------------------------------------------------------------
+
+/** One stream-json event carrying `text` as a tool_result body. */
+function toolResultEvent(text) {
+  return JSON.stringify({
+    type: 'user',
+    message: { content: [{ type: 'tool_result', content: text }] },
+  });
+}
+
+/** The envelope `deliver-light` prints, wrapped in its terminal markers. */
+function terminalBody(envelope) {
+  return [
+    'Exit code 2',
+    '',
+    '--- STORY DELIVER TERMINAL ---',
+    JSON.stringify(envelope),
+    '--- END TERMINAL ---',
+  ].join('\n');
+}
+
+const ESCALATED_ENVELOPE = {
+  kind: 'story-deliver-terminal',
+  storyId: null,
+  status: 'escalated',
+  phase: 'suitability-gate',
+  escalation: {
+    reasons: [
+      'shape: changes[] declares 12 entries (> maxChanges 2) — not a trivial footprint; full route',
+    ],
+    created: { receiptStory: false, storyBranch: false, worktree: false },
+  },
+};
+
+test('detectEscalatedTerminal: an escalated terminal envelope in a tool_result is detected', () => {
+  const stdout = [
+    JSON.stringify({ type: 'system', subtype: 'init' }),
+    toolResultEvent(terminalBody(ESCALATED_ENVELOPE)),
+    JSON.stringify({ type: 'result', subtype: 'success', result: 'done' }),
+  ].join('\n');
+  assert.equal(detectEscalatedTerminal(stdout), true);
+});
+
+test('detectEscalatedTerminal: a LANDED terminal envelope is not an escalation', () => {
+  const stdout = toolResultEvent(
+    terminalBody({
+      kind: 'story-deliver-terminal',
+      storyId: 7,
+      status: 'landed',
+      phase: 'post-land',
+    }),
+  );
+  assert.equal(detectEscalatedTerminal(stdout), false);
+});
+
+test('detectEscalatedTerminal: a session with no terminal envelope is not an escalation', () => {
+  const stdout = [
+    JSON.stringify({ type: 'system', subtype: 'init' }),
+    toolResultEvent('npm test\n141 passing'),
+    JSON.stringify({ type: 'result', subtype: 'success', result: 'delivered' }),
+  ].join('\n');
+  assert.equal(detectEscalatedTerminal(stdout), false);
+});
+
+test('detectEscalatedTerminal: malformed input is classified false, never thrown — it is a classifier, not a gate', () => {
+  assert.equal(detectEscalatedTerminal(''), false);
+  assert.equal(detectEscalatedTerminal(null), false);
+  assert.equal(detectEscalatedTerminal(undefined), false);
+  // An event mentioning the envelope kind but unparseable as JSON.
+  assert.equal(
+    detectEscalatedTerminal('{ story-deliver-terminal not json'),
+    false,
+  );
+  // Markers present, body unparseable.
+  assert.equal(
+    detectEscalatedTerminal(
+      toolResultEvent(
+        '--- STORY DELIVER TERMINAL ---\n{"kind":"story-deliver-terminal" oops\n--- END TERMINAL ---',
+      ),
+    ),
+    false,
+  );
+});
+
+test('detectEscalatedTerminal: handles a structured (array) tool_result body — the same escaping the wire format uses', () => {
+  const stdout = JSON.stringify({
+    type: 'user',
+    message: {
+      content: [
+        {
+          type: 'tool_result',
+          content: [{ type: 'text', text: terminalBody(ESCALATED_ENVELOPE) }],
+        },
+      ],
+    },
+  });
+  assert.equal(detectEscalatedTerminal(stdout), true);
 });
