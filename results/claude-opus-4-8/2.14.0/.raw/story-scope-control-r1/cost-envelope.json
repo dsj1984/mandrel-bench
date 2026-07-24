@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 119021,
+  "num_turns": 16,
+  "stop_reason": "end_turn",
+  "session_id": "d6006f9b-e990-4d27-b8ce-bd4fde63108c",
+  "total_cost_usd": 0.750201,
+  "usage": {
+    "input_tokens": 31,
+    "cache_creation_input_tokens": 23268,
+    "cache_read_input_tokens": 571670,
+    "output_tokens": 9225,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 23268,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 559,
+        "cache_read_input_tokens": 42199,
+        "cache_creation_input_tokens": 456,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 456
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 816,
+      "outputTokens": 18,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000906,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 31,
+      "outputTokens": 9225,
+      "cacheReadInputTokens": 571670,
+      "cacheCreationInputTokens": 23268,
+      "webSearchRequests": 0,
+      "costUSD": 0.749295,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. Built and committed a framework-free JSON REST API in Node.js (ESM).\n\n**What's there:**\n- `src/server.js` — `node:http` server, routing table, JSON body parsing/validation, bearer-token auth\n- `src/store.js` — data access + scrypt password hashing and session tokens\n- `src/db.js` — persistent on-disk **SQLite** store via `node:sqlite` (file at `data/app.db`, overridable with `DB_PATH`)\n- `test/api.test.js` — 9 `node:test` cases, all passing\n- `npm start` script added; `data/` db files git-ignored\n\n**Endpoints:**\n| Method | Path | Auth | Behavior |\n|--------|------|------|----------|\n| POST | `/signup` | — | `{username,password}` → `{id, username}` (201; 409 if taken) |\n| POST | `/login` | — | → `{session}` bearer token (401 on bad creds) |\n| GET | `/me` | Bearer | → `{id, username}` |\n| POST | `/notes` | Bearer | `{title, body}` → created note |\n| GET | `/notes` | Bearer | → array of the user's own notes |\n\nBad requests are handled: 400 for invalid/missing JSON fields, 401 for missing/invalid tokens, 404 for unknown routes.\n\n**Verified:** `PORT`/env respected (defaults to 3000), and I confirmed persistence by starting the server, creating a user + note, killing it, restarting, and reading both back — data survived the restart. Note: `node:sqlite` prints an experimental-feature warning to stderr, which is expected on Node 24 and doesn't affect behavior.",
+  "ttft_ms": 3908,
+  "ttft_stream_ms": 1737,
+  "time_to_request_ms": 42,
+  "type": "result",
+  "duration_ms": 123964,
+  "uuid": "c58f866e-3307-45b3-897a-046ec936f5a7"
+}
