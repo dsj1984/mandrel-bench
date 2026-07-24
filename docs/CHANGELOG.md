@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.16.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.15.0...mandrel-bench-v0.16.0) (2026-07-24)
+
+
+### Added
+
+* **bench:** add mandrel-light arm routing light scenarios through /deliver-light (refs [#190](https://github.com/dsj1984/mandrel-bench/issues/190)) ([#192](https://github.com/dsj1984/mandrel-bench/issues/192)) ([edac58f](https://github.com/dsj1984/mandrel-bench/commit/edac58f895ca1de7c514d807a8eb36c82f5d3cf7))
+* **bench:** thread /plan --amends through change-request touches (refs [#191](https://github.com/dsj1984/mandrel-bench/issues/191)) ([#194](https://github.com/dsj1984/mandrel-bench/issues/194)) ([2dbe124](https://github.com/dsj1984/mandrel-bench/commit/2dbe12433d97bfe6af96765002dbd19de72c6453))
+
 ## [0.15.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.14.0...mandrel-bench-v0.15.0) (2026-07-24)
 
 
