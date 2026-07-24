@@ -2003,79 +2003,89 @@ export async function runOneRun(opts, deps = {}) {
     const effectiveRouting =
       forcedRouting ??
       (typeof scenario?.routing === 'string' ? scenario.routing : null);
-    const betweenPhases = isMandrelArm(arm)
-      ? ({ planEnvelope }) => {
-          try {
-            const modelForRaw = resolveModelId(planEnvelope, model);
-            const planDir = path.join(
-              cohortDir({
-                resultsDir,
-                scorecard: { model: { id: modelForRaw }, frameworkVersion },
-              }),
-              '.raw',
-              idStampForRaw,
-              'plan',
-            );
-            const routing = effectiveRouting;
-            let storyNumber = null;
-            let storyNumbers = null;
-            let deliverTarget = null;
-            if (routing === 'multi-story') {
-              // `/plan` opens N sibling Stories and `/deliver` takes the id
-              // list; the space-separated ids interpolate straight into the
-              // `/deliver <ids> --yes` prompt.
-              storyNumbers = discoverStories(
-                {
-                  owner: sandbox.owner,
-                  repo: sandbox.repo,
-                  sinceIso: runStartedAt,
-                },
-                { ghJson: planGhJson },
-              );
-              deliverTarget =
-                storyNumbers.length > 0 ? storyNumbers.join(' ') : null;
-            } else if (routing === 'story') {
-              storyNumber = discoverStandaloneStory(
-                {
-                  owner: sandbox.owner,
-                  repo: sandbox.repo,
-                  sinceIso: runStartedAt,
-                },
-                { ghJson: planGhJson },
-              );
-              deliverTarget = storyNumber;
-            }
-            planSnapshot = snapshotPlanArtifacts(
-              {
-                owner: sandbox.owner,
-                repo: sandbox.repo,
-                routing,
-                storyNumber,
-                storyNumbers,
-                planDir,
-                capturedAt: runStartedAt,
-              },
-              {
-                ghJson: planGhJson,
-                mkdirImpl: mkdir,
-                writeFileImpl: writeFile,
-                logger,
-              },
-            );
-            deliveredTarget = { routing, storyNumber, storyNumbers };
-            return { deliverTarget };
-          } catch (err) {
-            logger?.warn?.(
-              `[run] plan-phase id-discovery/snapshot failed (continuing): ${err?.message ?? err}`,
-            );
-            deliveredTarget = {
-              routing: effectiveRouting,
-              storyNumber: null,
-              storyNumbers: null,
-            };
-            return { deliverTarget: null };
-          }
+    // Discover the Stories a `/plan` invocation authored and snapshot their
+    // bodies for plan-quality scoring. Shared by BOTH plan-bearing paths
+    // (Story #196): the two-session mandrel arm captures it between its
+    // phases, and an ESCALATED mandrel-light cell captures it after its
+    // single session — an escalated cell ran `/plan` by definition, so its
+    // plan earns the same scoring rather than passing unscored. Sets
+    // `planSnapshot` / `deliveredTarget`; the returned `deliverTarget` drives
+    // the mandrel arm's follow-on /deliver session (the light path has none).
+    const capturePlanArtifacts = (modelForRaw) => {
+      try {
+        const planDir = path.join(
+          cohortDir({
+            resultsDir,
+            scorecard: { model: { id: modelForRaw }, frameworkVersion },
+          }),
+          '.raw',
+          idStampForRaw,
+          'plan',
+        );
+        const routing = effectiveRouting;
+        let storyNumber = null;
+        let storyNumbers = null;
+        let deliverTarget = null;
+        if (routing === 'multi-story') {
+          // `/plan` opens N sibling Stories and `/deliver` takes the id
+          // list; the space-separated ids interpolate straight into the
+          // `/deliver <ids> --yes` prompt.
+          storyNumbers = discoverStories(
+            {
+              owner: sandbox.owner,
+              repo: sandbox.repo,
+              sinceIso: runStartedAt,
+            },
+            { ghJson: planGhJson },
+          );
+          deliverTarget =
+            storyNumbers.length > 0 ? storyNumbers.join(' ') : null;
+        } else if (routing === 'story') {
+          storyNumber = discoverStandaloneStory(
+            {
+              owner: sandbox.owner,
+              repo: sandbox.repo,
+              sinceIso: runStartedAt,
+            },
+            { ghJson: planGhJson },
+          );
+          deliverTarget = storyNumber;
         }
+        planSnapshot = snapshotPlanArtifacts(
+          {
+            owner: sandbox.owner,
+            repo: sandbox.repo,
+            routing,
+            storyNumber,
+            storyNumbers,
+            planDir,
+            capturedAt: runStartedAt,
+          },
+          {
+            ghJson: planGhJson,
+            mkdirImpl: mkdir,
+            writeFileImpl: writeFile,
+            logger,
+          },
+        );
+        deliveredTarget = { routing, storyNumber, storyNumbers };
+        return { deliverTarget };
+      } catch (err) {
+        logger?.warn?.(
+          `[run] plan-phase id-discovery/snapshot failed (continuing): ${err?.message ?? err}`,
+        );
+        deliveredTarget = {
+          routing: effectiveRouting,
+          storyNumber: null,
+          storyNumbers: null,
+        };
+        return { deliverTarget: null };
+      }
+    };
+
+    const betweenPhases = isMandrelArm(arm)
+      ? ({ planEnvelope }) =>
+          capturePlanArtifacts(resolveModelId(planEnvelope, model))
       : undefined;
 
     const session = runSessionFn(
@@ -2155,6 +2165,15 @@ export async function runOneRun(opts, deps = {}) {
       if (found) {
         if (armDrivesDeliverLight(arm) && found.planMetricsPath) {
           lightPlanInvoked = true;
+          // An escalated light cell ran `/plan` inside its single session, so
+          // its plan artifacts exist NOW (the between-phases hook never fired
+          // — there are no phases). Capture them here so the plan is scored
+          // like any other arm's: without this the cell's plan-quality stays
+          // empty and an under-decomposed escalation — the exact failure the
+          // suitability gate exists to prevent — passes at ceiling quality
+          // (Story #196). A light cell that never escalated has no `/plan`
+          // ledger, so this never fires and its plan-quality stays absent.
+          capturePlanArtifacts(resolveModelId(session.envelope, model));
         }
         const dest = path.join(rawDir, idStampForRaw);
         mkdir(dest);
