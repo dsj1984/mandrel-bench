@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nProduce queued task reports in a background worker and boot the whole platform (API server + worker) from `npm start` so queued export jobs complete with no extra command.\n\n## Spec\nWorker: continuously picks up export_jobs in the shared store with status queued/pending, produces the report for the job's project — {name: the project's name, total: its task count, done: how many of its tasks are done} — stores the report on the job, and marks the job status \"completed\". Report production happens ONLY here, never in the API request handler. Picking up a job is safe under concurrency and restart: a job queued before a restart is still picked up and completed afterward (it survives because it lives in the on-disk store). The worker loop is idempotent — it does not re-process an already-completed job.\n\nRuntime: `npm start` (script scaffolded by the store unit, pointing at src/index.js) brings up the WHOLE platform — the API server and the worker together in one command — so a client that POSTs an export and polls sees it reach \"completed\" without any extra command. The combined entrypoint applies pending migrations on boot (reusing the API/store boot path) before serving.\n\nThis unit depends on the API unit because the combined `npm start` entrypoint wires up the API server module and because the end-to-end export flow (register -> login -> create project -> add tasks -> POST export -> poll to completed) is verified here against the running API + worker.\n\n## Changes\n- `src/worker/worker.js` — creates\n- `src/index.js` — creates\n- `test/worker.test.js` — creates\n- `test/export.e2e.test.js` — creates\n\n## Acceptance\n- [ ] AC-1: The worker picks a queued export job, computes {name, total, done} for its project (project name, task count, count of done tasks), stores it on the job, and marks the job status \"completed\"\n- [ ] AC-2: The report is produced by the worker, not the request handler: immediately after POST /exports the job has no report, and it gains one only after the worker runs\n- [ ] AC-3: `npm start` boots both the API server and the worker so that a full flow (register -> login -> create project -> add tasks -> POST export -> poll GET export) reaches status \"completed\" carrying the correct {report:{name,total,done}} with no extra command\n- [ ] AC-4: A job queued before the platform restarts still reaches \"completed\" after `npm start` is run again (the queued job survives on disk)\n\n## Verify\n- node --test test/worker.test.js (unit)\n- node --test test/export.e2e.test.js (e2e)\n- npm run typecheck (validate)\n\n## Non-Goals\n- Defining the export endpoints (the API unit enqueues; this unit produces)\n- Schema changes (the store unit owns export_jobs)\n\n<!-- meta: {\"reason_to_exist\":\"Isolates the asynchronous report-production execution model and the full-platform boot into one revertable unit where the end-to-end export flow is verified (b: risk isolation; wave 2, after the API surface it wires up).\"} -->\n\n---\nblocked by #1\nblocked by #2\n\n<!-- plan-story: 9cdfa8565fb6ae65 -->",
+  "labels": [
+    {
+      "id": "LA_kwDOTiYQ8s8AAAACtInD8A",
+      "name": "plan-run::3f192478",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    },
+    {
+      "id": "LA_kwDOTiYQ8s8AAAACtInFBw",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTiYQ8s8AAAACtInJGA",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 4,
+  "title": "Background report worker and whole-platform `npm start`"
+}

@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nEstablish the single persistent on-disk store, its schema, an idempotent migration runner, and the npm script surface every other unit plugs into.\n\n## Spec\nThis unit is the sole owner of the schema; the API, worker, and admin CLI depend on it and never define schema changes themselves.\n\nStore: a single on-disk SQLite database file (e.g. Node's built-in node:sqlite) at a path configurable by env with a repo-local default — never an in-memory store, so all data survives a process restart. No external web framework or ORM.\n\nSchema (owned only here): users (id, unique username, password hash column, an `active` flag defaulting to active); projects (id, name, owner_id -> users, created_at); tasks (id, title, project_id -> projects, done flag defaulting to false, created_at); export_jobs (id, project_id, status, a column to hold the produced report, created_at); plus whatever bookkeeping table the migration runner needs to record applied migrations, and a token/session persistence table if bearer tokens are stored server-side (the API unit decides token mechanism, but any persisted token state lives in this schema). Passwords are stored only as a hash — the plaintext password is never persisted (security invariant; the hashing itself is implemented by the API unit).\n\nMigration runner: applies pending migrations in order, records which have been applied, and is safe to run repeatedly — a second run when already current applies nothing and still exits 0. Expose a programmatic entry (e.g. an exported migrate()) so the API server can apply pending migrations on boot without shelling out.\n\npackage.json gains \"migrate\", \"start\", and \"admin\" scripts. \"migrate\" runs this runner; \"start\" and \"admin\" point at entrypoints the later units create (src/index.js and the admin CLI) — scaffolding all three scripts here keeps package.json out of the other units' change sets so they can be delivered in parallel.\n\n## Changes\n- `src/store/db.js` — creates\n- `src/store/schema.js` — creates\n- `src/store/migrate.js` — creates\n- `package.json` — refactors-existing\n- `test/store.migrate.test.js` — creates\n\n## Acceptance\n- [ ] AC-1: On a fresh checkout `npm run migrate` exits 0 and creates the on-disk store file at the configured (default) path\n- [ ] AC-2: Re-running is a no-op when current: a second `npm run migrate` exits 0 and applies no further migrations\n- [ ] AC-3: The store is on-disk, not in-memory: after the migrate process exits, a store file still exists on disk at the store path (data survives a restart)\n- [ ] AC-4: package.json defines \"migrate\", \"start\", and \"admin\" scripts\n- [ ] AC-5: The schema defines users (with an `active` flag defaulting to active), projects, tasks, and export_jobs, and users store only a password hash — no plaintext-password column exists\n- [ ] AC-6: A programmatic migration entry point is exported so the API server can apply pending migrations on boot: `node --test test/store.migrate.test.js` exercises it and exits 0\n\n## Verify\n- node --test test/store.migrate.test.js (unit)\n- npm run migrate (validate)\n- npm run typecheck (validate)\n\n## Non-Goals\n- HTTP endpoints, the worker loop, or the admin CLI behavior (their own units)\n- Password hashing implementation (the API unit owns it; this unit only reserves the hash column)\n\n<!-- meta: {\"reason_to_exist\":\"The schema SSOT + idempotent migration foundation is one coherent concern every other unit depends on (c: cohesion — the dependency-root run first in wave 0).\"} -->\n\n<!-- plan-story: 5bf27bcdfc5bdde0 -->",
+  "labels": [
+    {
+      "id": "LA_kwDOTiYQ8s8AAAACtInD8A",
+      "name": "plan-run::3f192478",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    },
+    {
+      "id": "LA_kwDOTiYQ8s8AAAACtInFBw",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTiYQ8s8AAAACtInJGA",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 1,
+  "title": "Shared on-disk store, schema, and idempotent migrations"
+}

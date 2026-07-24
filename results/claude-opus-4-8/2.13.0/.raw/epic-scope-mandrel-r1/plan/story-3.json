@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nGive operators a repo-run admin CLI to inspect current store counts and deactivate an account so it can no longer log in.\n\n## Spec\nRun from the repository as `npm run admin -- <command>` (the \"admin\" script is scaffolded by the store unit). Reads and writes the same shared on-disk store.\n\nCommands: `stats` prints a single JSON object {users, projects, tasks} counting the rows currently in the store. `deactivate-user <username>` sets the named account's `active` flag false so the API's login check (owned by the API unit) rejects it. This unit's observable contract is the store state change — it flips the flag; the login-rejection behavior is asserted by the API unit — so this unit is verifiable without the API running, keeping it deliverable in parallel with the API.\n\nRobustness: an unknown command, a missing username argument, or deactivating a username that does not exist exits non-zero with a sensible message and never crashes with an unhandled stack trace.\n\n## Changes\n- `src/admin/cli.js` — creates\n- `test/admin.test.js` — creates\n\n## Acceptance\n- [ ] AC-1: `npm run admin -- stats` prints exactly one JSON object with numeric users, projects, and tasks fields reflecting the store's current row counts\n- [ ] AC-2: `npm run admin -- deactivate-user <username>` sets that user's `active` flag to false in the store (observable via the store, e.g. reflected by a subsequent login rejection or a store read)\n- [ ] AC-3: `npm run admin -- deactivate-user <unknown-username>` exits non-zero without an unhandled crash\n- [ ] AC-4: An unknown admin subcommand exits non-zero with a sensible message rather than crashing\n\n## Verify\n- node --test test/admin.test.js (unit)\n- npm run admin -- stats (validate)\n\n## Non-Goals\n- The API login-rejection check for deactivated users (the API unit owns that behavior)\n- Any schema change (the store unit owns the `active` column)\n\n<!-- meta: {\"reason_to_exist\":\"Operator tooling is a separate entrypoint and audience from the HTTP surface (a: runs in wave 1 in parallel with rest-api-server; file-disjoint, depends only on the store).\"} -->\n\n---\nblocked by #1\n\n<!-- plan-story: eb804b854cfcdd20 -->",
+  "labels": [
+    {
+      "id": "LA_kwDOTiYQ8s8AAAACtInD8A",
+      "name": "plan-run::3f192478",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    },
+    {
+      "id": "LA_kwDOTiYQ8s8AAAACtInFBw",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTiYQ8s8AAAACtInJGA",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 3,
+  "title": "Operator admin CLI: stats and deactivate-user"
+}

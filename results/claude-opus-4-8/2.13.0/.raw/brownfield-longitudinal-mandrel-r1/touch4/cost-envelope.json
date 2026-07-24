@@ -1,0 +1,157 @@
+{
+  "aggregatedFromPhases": true,
+  "phases": [
+    {
+      "is_error": false,
+      "duration_api_ms": 191913,
+      "num_turns": 17,
+      "stop_reason": "end_turn",
+      "session_id": "546c81fd-31ac-4ca5-820e-380b6cef92c9",
+      "total_cost_usd": 1.2836199999999998,
+      "usage": {
+        "input_tokens": 30,
+        "cache_creation_input_tokens": 54935,
+        "cache_read_input_tokens": 873376,
+        "output_tokens": 11860,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 54935,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 801,
+            "cache_read_input_tokens": 73202,
+            "cache_creation_input_tokens": 1027,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 1027
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "modelUsage": {
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 857,
+          "outputTokens": 15,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.000932,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000,
+          "canonicalModel": "claude-haiku-4-5",
+          "provider": "firstParty"
+        },
+        "claude-opus-4-8": {
+          "inputTokens": 30,
+          "outputTokens": 11860,
+          "cacheReadInputTokens": 873376,
+          "cacheCreationInputTokens": 54935,
+          "webSearchRequests": 0,
+          "costUSD": 1.2826879999999998,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
+          "canonicalModel": "claude-opus-4-8",
+          "provider": "firstParty"
+        }
+      },
+      "permission_denials": [],
+      "terminal_reason": "completed",
+      "fast_mode_state": "off",
+      "subtype": "success",
+      "api_error_status": null,
+      "result": "Planning pipeline complete. One Story persisted to `main`, `agent::ready`, no delivery performed (as instructed).\n\n## Summary\n\n**Story #7 — \"Split client name into firstName and lastName\"** ([issue](https://github.com/dsj1984/bench-sbx-2026-07-24-brownfield-longitudinal-mandrel-72244a0a/issues/7)) · `plan-run::048aba10` · `agent::ready`\n\nAuthored as a single cohesive Story (default-single policy — one capability slice across schema/service/repo/migration/reports, not independent seams).\n\n**Key findings that shaped the spec** (from reading the codebase):\n- The \"client\" resource is internally `customer` (`cus_` ids), exposed at `/clients` with a deprecated `/customers` alias sharing one data path.\n- Migrations run at startup inside `openDb()` → `runMigrations`, so the \"migrate existing records at server startup\" requirement is satisfied by an additive `006-client-names.sql` migration plus an idempotent backfill.\n- The receivables report currently reads `orders.customer_name` — a **snapshot taken at order-creation time**. The requirement says \"current full name,\" so the spec routes `listReceivables()` to join the live `customers` row instead of the stale order value. This was the least-obvious part of the request.\n\n**Deliberate decisions recorded as assumptions/non-goals:**\n- A single `src/lib/name.js` split helper is the shared source of truth for both the startup backfill and the legacy-`name` write path (no drift).\n- Legacy `customers.name` column kept (additive migration), not dropped.\n- Order-time `customerName` snapshot on the `orders` table left as-is — only the receivables *display* is made live-current.\n- Explicit `firstName`/`lastName` win over a co-submitted legacy `name`; single-word name → empty firstName, word as lastName.\n\n**Pipeline gates:** Gate #1 auto-proceeded (`--yes`; 0 duplicates; advisory `/deliver-light` suggestion recorded, not auto-rerouted). Critics all skipped-and-ledgered (1 story, no slicing divergence, under budget). Dry-run clean apart from a soft spec-word advisory, which I trimmed before the real persist. 7 acceptance criteria and 4 verify commands attached.\n\nNext step (not run this session): `/deliver 7`.",
+      "ttft_ms": 3245,
+      "ttft_stream_ms": 1630,
+      "time_to_request_ms": 72,
+      "type": "result",
+      "duration_ms": 200582,
+      "uuid": "ad26e0c2-0304-4e32-ac42-b0b672e941cc"
+    },
+    {
+      "is_error": false,
+      "duration_api_ms": 871184,
+      "num_turns": 61,
+      "stop_reason": "end_turn",
+      "session_id": "0c8ca36c-6dda-45f4-8588-e850fc3be18c",
+      "total_cost_usd": 5.499044250000002,
+      "usage": {
+        "input_tokens": 81,
+        "cache_creation_input_tokens": 122732,
+        "cache_read_input_tokens": 4366097,
+        "output_tokens": 47596,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 122732,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 1043,
+            "cache_read_input_tokens": 138660,
+            "cache_creation_input_tokens": 3366,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 3366
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "modelUsage": {
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 860,
+          "outputTokens": 16,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.00094,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000,
+          "canonicalModel": "claude-haiku-4-5",
+          "provider": "firstParty"
+        },
+        "claude-opus-4-8": {
+          "inputTokens": 101,
+          "outputTokens": 61091,
+          "cacheReadInputTokens": 4761421,
+          "cacheCreationInputTokens": 180699,
+          "webSearchRequests": 0,
+          "costUSD": 5.498104250000002,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
+          "canonicalModel": "claude-opus-4-8",
+          "provider": "firstParty"
+        }
+      },
+      "permission_denials": [],
+      "terminal_reason": "completed",
+      "fast_mode_state": "off",
+      "subtype": "success",
+      "api_error_status": null,
+      "result": "Story #7 **landed**. PR [#8](https://github.com/dsj1984/bench-sbx-2026-07-24-brownfield-longitudinal-mandrel-72244a0a/pull/8) merged to `main`, all close gates passed, code review returned 0 findings, and the ticket flipped to `agent::done`.\n\n## Delivery summary\n\n**Discovered & delivered** the plan the pipeline had already opened. This repo uses the Story-only v2 model (no Epic label exists), so the deliverable was **Story #7 — \"Split client name into firstName and lastName\"** (`agent::ready`, plan-run `048aba10`). Delivered inline via the single-story engine — `story-7` → PR #8 → squash-merge to `main`.\n\n**Terminal envelope:** `status: landed`, phase `post-land`, PR state `MERGED`, checks `success`, gates `validation/baseSync/codeReview` all passed.\n\n**What shipped** (9 declared files + 1 regression test):\n- `src/lib/name.js` — the single split rule (before-last-space = firstName, last word = lastName; single word ⇒ lastName only) plus full-name derivation, shared by the backfill and the write path.\n- Migration `006-client-names.sql` adds `first_name`/`last_name` (`TEXT NOT NULL`); `openDb()` backfills pre-existing rows in place, idempotently.\n- Write path accepts `firstName`+`lastName` **or** a legacy `name` (split); explicit parts win over a co-submitted `name`; a non-empty effective `lastName` is required on create (422 `E_VALIDATION`).\n- Responses carry `firstName`/`lastName` plus a derived full `name`; the receivables report joins the **live** client row so it shows the current name, not the order-time snapshot.\n- Added `tests/client-names.test.js` covering the new behaviors.\n\n**Verification:** full suite **142 pass / 0 fail**; lint + typecheck clean. A fresh maker-blind acceptance-critic scored **7/7 ACs met**; the acceptance-eval gate returned `proceed`. The critic flagged missing regression coverage for the new behavior, which I addressed by adding the dedicated test file before closing.\n\nOne cosmetic degradation: the post-land `main` fast-forward was skipped because the main checkout had pre-existing unrelated dirty files (`package.json`, `temp/standalone/plan-metrics.json` from before this session) — the merge itself stands.",
+      "ttft_ms": 3117,
+      "ttft_stream_ms": 2104,
+      "time_to_request_ms": 85,
+      "type": "result",
+      "duration_ms": 912629,
+      "uuid": "5d3e89a1-ab24-4189-b581-d17758613fb2"
+    }
+  ]
+}

@@ -1,0 +1,157 @@
+{
+  "aggregatedFromPhases": true,
+  "phases": [
+    {
+      "is_error": false,
+      "duration_api_ms": 68740,
+      "num_turns": 12,
+      "stop_reason": "end_turn",
+      "session_id": "f5549ca4-cfdf-4262-b873-5b4f92a9269c",
+      "total_cost_usd": 0.9678704999999999,
+      "usage": {
+        "input_tokens": 21,
+        "cache_creation_input_tokens": 65928,
+        "cache_read_input_tokens": 421275,
+        "output_tokens": 3880,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 65928,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 622,
+            "cache_read_input_tokens": 48431,
+            "cache_creation_input_tokens": 987,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 987
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "modelUsage": {
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 773,
+          "outputTokens": 15,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.000848,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000,
+          "canonicalModel": "claude-haiku-4-5",
+          "provider": "firstParty"
+        },
+        "claude-opus-4-8": {
+          "inputTokens": 21,
+          "outputTokens": 3880,
+          "cacheReadInputTokens": 421275,
+          "cacheCreationInputTokens": 65928,
+          "webSearchRequests": 0,
+          "costUSD": 0.9670224999999999,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
+          "canonicalModel": "claude-opus-4-8",
+          "provider": "firstParty"
+        }
+      },
+      "permission_denials": [],
+      "terminal_reason": "completed",
+      "fast_mode_state": "off",
+      "subtype": "success",
+      "api_error_status": null,
+      "result": "Planning pipeline complete. One Story authored, critiqued, and persisted — no delivery performed, per session scope.\n\n## Summary\n\n**Story #1 — Minimal ESM Node HTTP server returning Hello, World!**\n🔗 https://github.com/dsj1984/bench-sbx-2026-07-24-hello-world-mandrel-43be97d8/issues/1\nStatus: `agent::ready` · Cohort label: `plan-run::10018ce9`\n\n**Pipeline run (all HITL gates auto-approved under `--yes`):**\n- **Interrogate** — seed envelope written; 0 duplicates, 0 source tickets. A `/deliver-light` suggestion was surfaced as advisory only (recorded, not an auto-reroute).\n- **Author** — single cohesive Story (default-single policy; no split warranted). Files: `server.js` (creates), `package.json` (refactors-existing — it already exists with `\"type\": \"module\"`, so the Story only adds the `start` script).\n- **Critics** — consolidation and pre-mortem both skipped (draft ≤5 stories, no risk-heuristic/external-dependency hits); text-hygiene clean.\n- **Persist** — dry-run passed all gates (the first dry-run caught a file-assumption mismatch on `package.json`, which I corrected), then real persist created the issue.\n\n**Contract captured in the Story:**\n- ESM, built-in `http` only — no external web framework or added deps\n- Binds `process.env.PORT`, defaults to `3000`\n- `GET /` → `200`, `Content-Type: text/html`, body contains exact `Hello, World!`\n- npm `start` script; exactly one source file plus `package.json`\n- Acceptance criteria + `e2e` curl check and `node --check` validate step\n\nTo build it, deliver with `/deliver 1` in a delivery session.",
+      "ttft_ms": 4253,
+      "ttft_stream_ms": 3246,
+      "time_to_request_ms": 166,
+      "type": "result",
+      "duration_ms": 76789,
+      "uuid": "ec3e5972-4e72-4f50-92c9-f7dd645cde5b"
+    },
+    {
+      "is_error": false,
+      "duration_api_ms": 137678,
+      "num_turns": 25,
+      "stop_reason": "end_turn",
+      "session_id": "628307e6-a3ba-4f13-9c13-11cf564d37e9",
+      "total_cost_usd": 1.3134105,
+      "usage": {
+        "input_tokens": 45,
+        "cache_creation_input_tokens": 48591,
+        "cache_read_input_tokens": 1267065,
+        "output_tokens": 7715,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 48591,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 814,
+            "cache_read_input_tokens": 64983,
+            "cache_creation_input_tokens": 2902,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 2902
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "modelUsage": {
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 788,
+          "outputTokens": 16,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.000868,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000,
+          "canonicalModel": "claude-haiku-4-5",
+          "provider": "firstParty"
+        },
+        "claude-opus-4-8": {
+          "inputTokens": 45,
+          "outputTokens": 7715,
+          "cacheReadInputTokens": 1267065,
+          "cacheCreationInputTokens": 48591,
+          "webSearchRequests": 0,
+          "costUSD": 1.3125425000000002,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
+          "canonicalModel": "claude-opus-4-8",
+          "provider": "firstParty"
+        }
+      },
+      "permission_denials": [],
+      "terminal_reason": "completed",
+      "fast_mode_state": "off",
+      "subtype": "success",
+      "api_error_status": null,
+      "result": "Delivered. The terminal envelope reports **`status: landed`**.\n\n## Story #1 — Minimal ESM Node HTTP server returning Hello, World!\n\n**Delivered and merged.** PR [#2](https://github.com/dsj1984/bench-sbx-2026-07-24-hello-world-mandrel-43be97d8/pull/2) squash-merged to `main`; Story flipped to `agent::done`.\n\n**What shipped** (change set: `server.js`, `package.json`):\n- `server.js` — ESM, `node:http` only, binds `process.env.PORT` with `3000` fallback; `GET /` → `200` / `Content-Type: text/html` / body containing `Hello, World!`.\n- `package.json` — added `\"start\": \"node server.js\"` (already `\"type\": \"module\"`).\n\n**Gates & verification:**\n- Acceptance self-eval (inline, low-risk route): 4/4 criteria `met` → `proceed`.\n- `node --check` + live e2e (`HTTP/1.1 200`, `Content-Type: text/html`, `Hello, World!`) all passed.\n- Close-validation gates: `passed`; code review: 0 findings; auto-merge (squash) confirmed.\n\n**Terminal envelope:**\n```json\n{\"kind\":\"story-deliver-terminal\",\"storyId\":1,\"status\":\"landed\",\"phase\":\"post-land\",\"storyBranch\":\"story-1\",\"baseBranch\":\"main\",\"pr\":{\"number\":2,\"url\":\"https://github.com/dsj1984/bench-sbx-2026-07-24-hello-world-mandrel-43be97d8/pull/2\",\"autoMergeEnabled\":true,\"state\":\"MERGED\",\"checksStatus\":\"success\"},\"gates\":{\"validation\":\"passed\",\"baseSync\":\"passed\",\"codeReview\":\"passed\"},\"tail\":{\"followUps\":true,\"statusResync\":true,\"refCleanup\":true,\"baseFastForward\":false},\"blocked\":null,\"failure\":null,\"nextCommand\":null,\"elapsedSeconds\":20}\n```\n\nOne non-blocking degradation: the post-land `main` fast-forward was skipped because the working tree is dirty (the pre-existing untracked `temp/` from before this run). The merge stands; `main` on `origin` has the change. Single-Story run, so no per-run epilogue.",
+      "ttft_ms": 2787,
+      "ttft_stream_ms": 1718,
+      "time_to_request_ms": 113,
+      "type": "result",
+      "duration_ms": 171851,
+      "uuid": "81c79471-a9a9-469c-a60e-a8292857b332"
+    }
+  ]
+}
