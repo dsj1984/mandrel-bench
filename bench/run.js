@@ -1493,7 +1493,10 @@ export async function runTouch2(opts, deps = {}) {
     const quality = await withRunningAppFn(
       { workspacePath: touch2Cwd, app: scenario.app },
       async (baseUrl, appInfo) => {
+        // Same dep threading as touch 1: the real `restart` plus the delivered
+        // `workspacePath` for workspace-executed seams (Story #184).
         const restart = appInfo?.restart;
+        const oracleDeps = { restart, workspacePath: touch2Cwd };
         if (isMandrelArm(arm)) {
           const r = await scoreQualityFn({
             evaluate: touch2Evaluate,
@@ -1501,14 +1504,14 @@ export async function runTouch2(opts, deps = {}) {
             storyId: 1,
             epicId: null,
             transport: 'in-process',
-            evaluateDeps: { restart },
+            evaluateDeps: oracleDeps,
           });
           return qualityInputs({
             frozen: r.frozen,
             crossCheckDecision: r.crossCheck?.decision ?? null,
           });
         }
-        const frozen = await touch2Evaluate(baseUrl, { restart });
+        const frozen = await touch2Evaluate(baseUrl, oracleDeps);
         return qualityInputs({ frozen, crossCheckDecision: null });
       },
       deps.appRunnerDeps,
@@ -2235,8 +2238,15 @@ export async function runOneRun(opts, deps = {}) {
           async (baseUrl, appInfo) => {
             // Thread the app-runner's real `restart` into the frozen oracle so a
             // persistence criterion can test survival across an actual server
-            // restart (Ticket #122, item 5).
+            // restart (Ticket #122, item 5), and the delivered `workspacePath`
+            // so a multi-seam oracle can exercise workspace-executed seams
+            // (admin CLI / migrations via `npm run …`, Story #184). Oracles
+            // that need neither simply ignore them.
             const restart = appInfo?.restart;
+            const oracleDeps = {
+              restart,
+              workspacePath: handle.workspacePath,
+            };
             if (isMandrelArm(arm)) {
               const r = await scoreQualityFn({
                 evaluate,
@@ -2244,14 +2254,14 @@ export async function runOneRun(opts, deps = {}) {
                 storyId: 1,
                 epicId: scenario.epicId ?? null,
                 transport: 'in-process',
-                evaluateDeps: { restart },
+                evaluateDeps: oracleDeps,
               });
               return qualityInputs({
                 frozen: r.frozen,
                 crossCheckDecision: r.crossCheck?.decision ?? null,
               });
             }
-            const frozen = await evaluate(baseUrl, { restart });
+            const frozen = await evaluate(baseUrl, oracleDeps);
             return qualityInputs({ frozen, crossCheckDecision: null });
           },
           deps.appRunnerDeps,
@@ -2535,8 +2545,9 @@ export async function runOneRun(opts, deps = {}) {
  * @param {number} [opts.n]   Explicit operator override for the run count,
  *   applied uniformly to EVERY scenario in this batch. When omitted (the
  *   default), each scenario's own `scenario.targetN` (its declared per-rung
- *   sizing contract — `scenario.json`'s `targetN`, e.g. 4 for hello-world, 8
- *   for story-scope/epic-scope) is used instead, falling back to 1 for a
+ *   sizing contract — `scenario.json`'s `targetN`, e.g. 8 for story-scope but
+ *   only 2 for the expensive-by-construction epic-scope decomposition rung,
+ *   Story #184) is used instead, falling back to 1 for a
  *   scenario that declares none (Epic #66 audit remediation, H1 — `targetN`
  *   was previously declared in every scenario contract but never read by the
  *   runtime, so a multi-scenario batch with no explicit override silently

@@ -1387,6 +1387,80 @@ async function loadScenarioFake() {
   };
 }
 
+test('runOneRun: threads the delivered workspacePath + restart hook into the frozen-oracle deps on BOTH arms (Story #184)', async () => {
+  // The epic-scope multi-seam oracle exercises workspace-executed seams
+  // (`npm run admin …` / `npm run migrate`) and the real-restart persistence
+  // probe. Both capabilities ride on run.js threading `{ restart,
+  // workspacePath }` into the oracle deps — directly for the control arm,
+  // via the cross-check adapter's `evaluateDeps` for the mandrel arm.
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  const fakeRestart = async () => ({ ready: true, port: 40000 });
+  deps.withRunningAppFn = async (_o, fn) =>
+    fn('http://127.0.0.1:40000', {
+      ready: true,
+      port: 40000,
+      restart: fakeRestart,
+    });
+  const sandbox = {
+    repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
+    owner: 'dsj1984',
+    repo: 'legacy-sandbox-repo',
+    baselineRef: 'bench-baseline',
+  };
+  const { scenario } = await loadScenarioFake();
+
+  // Control arm: the oracle receives the deps object directly.
+  const seenControl = [];
+  const evaluate = async (_baseUrl, oracleDeps) => {
+    seenControl.push(oracleDeps);
+    return {
+      scenario: 'hello-world',
+      passed: true,
+      criteria: [{ met: true }, { met: true }],
+    };
+  };
+  await runOneRun(
+    {
+      scenario,
+      evaluate,
+      arm: 'control',
+      runIndex: 1,
+      sandbox,
+      resultsDir: '/results',
+    },
+    deps,
+  );
+  assert.equal(seenControl.length, 1);
+  assert.equal(seenControl[0].workspacePath, '/ws-control');
+  assert.equal(seenControl[0].restart, fakeRestart);
+
+  // Mandrel arm: the same deps flow through the adapter's evaluateDeps.
+  const seenMandrel = [];
+  deps.scoreScenarioQualityFn = async (o) => {
+    seenMandrel.push(o.evaluateDeps);
+    return {
+      frozen: { criteria: [{ met: true }, { met: true }] },
+      crossCheck: { decision: 'proceed' },
+      agree: true,
+    };
+  };
+  await runOneRun(
+    {
+      scenario,
+      evaluate,
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox,
+      resultsDir: '/results',
+    },
+    deps,
+  );
+  assert.equal(seenMandrel.length, 1);
+  assert.equal(seenMandrel[0].workspacePath, '/ws-mandrel');
+  assert.equal(seenMandrel[0].restart, fakeRestart);
+});
+
 // ---------------------------------------------------------------------------
 // Epic #66, Story #74 — trap-runner substrate wired into loadScenario /
 // runOneRun (replaces the single-oracle scenario.trapOracle field).
@@ -2145,7 +2219,8 @@ test('runFirstBenchmark: with no explicit n, resolves per-scenario run count fro
   const record = freshRecord();
   const deps = benchDeps(record);
   // Two scenarios with different declared targetN — mirrors the real corpus's
-  // hello-world (targetN 4) vs story-scope/epic-scope (targetN 8) split. The
+  // per-rung split (e.g. story-scope targetN 8 vs the expensive epic-scope
+  // decomposition rung's targetN 2, Story #184). The
   // fake loader keys off the scenario.json path loadScenario() constructs
   // (`.../scenarios/<id>/scenario.json`) so each scenario resolves its OWN
   // fixture rather than the single shared FAKE_SCENARIO.
