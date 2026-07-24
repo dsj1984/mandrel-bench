@@ -23,6 +23,7 @@ import {
   appendCheckpoint,
   buildRunIdentity,
   CHECKPOINT_FILENAME,
+  captureTouch2Baseline,
   cellKey,
   derivedSecurityInputs,
   discoverLedger,
@@ -30,6 +31,7 @@ import {
   main,
   makeClaudeJudgeTransport,
   materializeMandrelDelivery,
+  materializeTouch2Delivery,
   parseOptionalNumericEnv,
   planningInputs,
   prepareTouch2Workspace,
@@ -3281,6 +3283,215 @@ test('runTouch2 (mandrel): flags materialized=false + null outcome when the chan
   // The session's real spend is still recorded (it ran and cost money).
   assert.equal(block.cost, 0.42);
   assert.equal(typeof block.totalTokens, 'number');
+});
+
+// ---------------------------------------------------------------------------
+// Touch-2 materialization: the ABSOLUTE landing check (Story #177). The probe
+// used to read `origin/main` from the LOCAL remote-tracking ref AFTER the
+// session, fetch, and call an unmoved ref "the PR did not land" — which only
+// held while that ref was stale. These fakes model the base as TWO refs so the
+// fetch-order race the cohort 2.11.0 false negative rode is expressible.
+// ---------------------------------------------------------------------------
+
+/**
+ * A fake `gitFn` modelling the sandbox base branch as a remote ref plus the
+ * workspace's local remote-tracking ref. `fetch` copies remote → local;
+ * `land()` merges the change-request PR into the remote and, when
+ * `tailFastForward` is set, ALSO advances the local ref — exactly what the
+ * delivery's own post-land tail did in cohort 2.11.0
+ * (`tail.baseFastForward: true`), which is what poisoned the old delta read.
+ */
+function makeSandboxGit({
+  touch1Sha = 'touch1sha',
+  tailFastForward = false,
+} = {}) {
+  const state = { remote: touch1Sha, local: touch1Sha, head: touch1Sha };
+  const calls = [];
+  const fn = (args) => {
+    calls.push(args.join(' '));
+    if (args[0] === 'fetch') {
+      state.local = state.remote;
+      return '';
+    }
+    if (args[0] === 'checkout' || args[0] === 'reset') {
+      state.head = state.local;
+      return '';
+    }
+    if (args[0] === 'rev-parse') {
+      return `${args[1] === 'HEAD' ? state.head : state.local}\n`;
+    }
+    return '';
+  };
+  fn.calls = calls;
+  fn.state = state;
+  fn.land = (mergedSha = 'mergedsha') => {
+    state.remote = mergedSha;
+    if (tailFastForward) state.local = mergedSha;
+  };
+  return fn;
+}
+
+/** Standard `runTouch2` opts for the mandrel arm. */
+function touch2Opts(overrides = {}) {
+  return {
+    scenario: FAKE_SCENARIO_WITH_CR,
+    touch2Evaluate: fakeTouch2Evaluate,
+    scenarioDir: '/repo/bench/scenarios/story-scope',
+    arm: 'mandrel',
+    runIndex: 1,
+    model: 'claude-opus-4-8',
+    sandbox: { owner: 'o', repo: 'r', repoUrl: 'u' },
+    handle: { workspacePath: '/ws-mandrel' },
+    frameworkVersion: '1.70.0',
+    benchmarkVersion: '0.5.0',
+    env: { node: 'v24.16.0', os: 'darwin' },
+    timeoutMs: 1000,
+    ...overrides,
+  };
+}
+
+/**
+ * Drive one mandrel touch-2 through a scripted sandbox base. `lands` decides
+ * whether the change-request PR merges during the session; `tailFastForward`
+ * decides whether the delivery's tail advanced the LOCAL ref before the probe.
+ */
+async function runTouch2WithSandbox({ lands, tailFastForward }) {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  const gitFn = makeSandboxGit({ tailFastForward });
+  deps.gitFn = (args) => {
+    record.git.push(args.join(' '));
+    return gitFn(args);
+  };
+  deps.runSessionFn = (o) => {
+    // The change-request session merges its PR into the sandbox base.
+    if (lands) gitFn.land();
+    return {
+      arm: o.arm,
+      scenarioId: o.scenario.id,
+      model: o.model,
+      prompt: 'p',
+      status: 0,
+      envelope: fakeEnvelope(),
+    };
+  };
+  deps.runTrapOraclesFn = async () => ({ classes: [], cleanRate: null });
+  return runTouch2(touch2Opts(), deps);
+}
+
+test('runTouch2 (mandrel): a MERGED change-request PR scores materialized=true even when the delivery tail already fast-forwarded the base (cohort 2.11.0 false negative)', async () => {
+  const block = await runTouch2WithSandbox({
+    lands: true,
+    tailFastForward: true,
+  });
+
+  // Pre-Story-#177 this cell read pre === post and scored materialized:false /
+  // outcome:null / frozenSuiteTotal:0 — the continuity delta went incomparable
+  // for a touch-2 whose PR was MERGED.
+  assert.equal(block.materialized, true);
+  assert.equal(typeof block.outcome, 'number');
+  assert.ok(
+    block.frozenSuiteTotal > 0,
+    'the merged tree is scored against a non-empty frozen suite',
+  );
+});
+
+test('runTouch2 (mandrel): the materialization verdict is identical whether or not the base was pre-fetched before the probe (no fetch-order dependence)', async () => {
+  const preFetched = await runTouch2WithSandbox({
+    lands: true,
+    tailFastForward: true,
+  });
+  const notPreFetched = await runTouch2WithSandbox({
+    lands: true,
+    tailFastForward: false,
+  });
+
+  // The verdict must rest on whether the base CARRIES the delivery, never on
+  // the local remote-tracking ref still being stale at probe time.
+  assert.deepEqual(
+    {
+      materialized: preFetched.materialized,
+      frozenSuiteTotal: preFetched.frozenSuiteTotal,
+      outcome: preFetched.outcome,
+    },
+    {
+      materialized: notPreFetched.materialized,
+      frozenSuiteTotal: notPreFetched.frozenSuiteTotal,
+      outcome: notPreFetched.outcome,
+    },
+  );
+  assert.equal(preFetched.materialized, true);
+});
+
+test('runTouch2 (mandrel): a change-request PR that never merges stays materialized=false with a null outcome, pre-fetched or not (no false positive)', async () => {
+  for (const tailFastForward of [true, false]) {
+    const block = await runTouch2WithSandbox({ lands: false, tailFastForward });
+    assert.equal(
+      block.materialized,
+      false,
+      `tailFastForward=${tailFastForward}`,
+    );
+    // Never a false 0 and never a false positive: the outcome is unmeasured.
+    assert.equal(block.outcome, null);
+    assert.equal(block.frozenSuiteTotal, 0);
+    // The session's real spend is still recorded (it ran and cost money).
+    assert.equal(block.cost, 0.42);
+  }
+});
+
+test('captureTouch2Baseline: refreshes the base ref BEFORE reading it, so a stale local ref cannot understate the baseline', () => {
+  const gitFn = makeSandboxGit();
+  gitFn.state.remote = 'freshsha'; // remote moved; the local ref is stale
+  const baseline = captureTouch2Baseline({ gitFn, cwd: '/ws' });
+  assert.equal(baseline, 'freshsha');
+  assert.equal(gitFn.calls[0], 'fetch origin main');
+});
+
+test('captureTouch2Baseline: an unreadable base ref yields null (no comparable baseline)', () => {
+  const gitFn = (args) => {
+    if (args[0] === 'rev-parse') throw new Error('unknown revision');
+    return '';
+  };
+  assert.equal(captureTouch2Baseline({ gitFn, cwd: '/ws' }), null);
+});
+
+test('materializeTouch2Delivery: base advanced past the pre-session baseline → materialized', () => {
+  const gitFn = makeSandboxGit();
+  gitFn.land('mergedsha');
+  const m = materializeTouch2Delivery({
+    gitFn,
+    cwd: '/ws',
+    baselineSha: 'touch1sha',
+  });
+  assert.deepEqual(m, { materialized: true, baseSha: 'mergedsha' });
+});
+
+test('materializeTouch2Delivery: base still at the pre-session baseline → not materialized (honest null, not a false 0)', () => {
+  const gitFn = makeSandboxGit();
+  const m = materializeTouch2Delivery({
+    gitFn,
+    cwd: '/ws',
+    baselineSha: 'touch1sha',
+  });
+  assert.deepEqual(m, { materialized: false, baseSha: 'touch1sha' });
+});
+
+test('materializeTouch2Delivery: no comparable baseline → prior best-effort behaviour (score the fetched base)', () => {
+  const gitFn = makeSandboxGit();
+  const m = materializeTouch2Delivery({ gitFn, cwd: '/ws', baselineSha: null });
+  assert.deepEqual(m, { materialized: true, baseSha: 'touch1sha' });
+});
+
+test('materializeTouch2Delivery: an unreachable base is a non-landing, never an assumed success', () => {
+  const gitFn = () => {
+    throw new Error('could not read from remote repository');
+  };
+  const m = materializeTouch2Delivery({
+    gitFn,
+    cwd: '/ws',
+    baselineSha: 'touch1sha',
+  });
+  assert.deepEqual(m, { materialized: false, baseSha: null });
 });
 
 test('runTouch2 (control): reduces the workspace to delivered code only and scores the change request there', async () => {
