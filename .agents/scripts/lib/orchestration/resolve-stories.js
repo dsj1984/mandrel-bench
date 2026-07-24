@@ -300,6 +300,9 @@ export async function readNativeBlockedBy({
  * @param {Map<number, number[]>} nativeEdges
  * @param {number[]} foreignDone Ids outside the set already satisfied.
  * @param {(msg: string) => void} [warn]
+ * @param {object} [injectedRules] Test seam forwarded to the shape
+ *   derivation — skips the `audit-rules.json` disk read. Production callers
+ *   omit it (the real manifest, memoized per process, is the default).
  * @returns {{ kind: string, stories: object[], dag: object[], done: number[] }}
  */
 export function buildStoriesEnvelope({
@@ -308,6 +311,7 @@ export function buildStoriesEnvelope({
   foreignDone = [],
   warn,
   config,
+  injectedRules,
 }) {
   const sorted = [...stories].sort((a, b) => a.id - b.id);
   const inSetDone = sorted.filter(isSatisfiedBlocker).map((s) => s.id);
@@ -321,13 +325,26 @@ export function buildStoriesEnvelope({
     // `route::lite` label is a human-visible hint only, never the control
     // signal: a lost label cannot misroute delivery. Model-side fan-out
     // only; close gates are untouched.
+    //
+    // `storyCount` (Story #4736) carries the run's topology into that same
+    // decision: a run resolving exactly ONE Story is inline whatever its
+    // shape, because the isolation a sub-agent buys only matters against a
+    // concurrently-dispatched sibling. It is the resolved set size — not the
+    // undelivered remainder — so the mode a caller reads for a given `--ids`
+    // list never changes as siblings land mid-run.
     stories: sorted.map(({ id, title, body, url, labels, state }) => ({
       id,
       title,
       url,
       labels,
       state,
-      dispatchMode: resolveStoryDispatchMode({ body, labels, config }).mode,
+      dispatchMode: resolveStoryDispatchMode({
+        body,
+        labels,
+        config,
+        storyCount: sorted.length,
+        injectedRules,
+      }).mode,
     })),
     dag: storiesToDag(sorted, nativeEdges, warn),
     done: [...new Set([...inSetDone, ...foreignDone])].sort((a, b) => a - b),
