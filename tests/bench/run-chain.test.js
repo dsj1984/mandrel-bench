@@ -770,6 +770,100 @@ test('runTouchChain (mandrel): both touches advance — force-pushed baseline, p
   assert.equal(record.teardowns.length, 2);
 });
 
+// ---------------------------------------------------------------------------
+// Amendment threading (Story #191): touch 1 plans plainly; each later touch
+// plans as `/plan --amends #<priorStoryId>` so the delta envelope engages.
+// ---------------------------------------------------------------------------
+
+test('runTouchChain (mandrel): touch 1 plans plainly; touch 2 amends the Story touch 1 landed (AC-1)', async () => {
+  const record = freshChainRecord({
+    landPerTouch: { 1: 'T1SHA', 2: 'T2SHA' },
+    suitePerTouch: { 1: goodSuite(1), 2: goodSuite(2) },
+  });
+  const deps = chainDeps(record);
+
+  // Each touch's post-session discovery surfaces a distinct standalone Story id.
+  let discovered = 0;
+  const storyIds = [201, 202];
+  deps.ghJson = (args) => {
+    if (`${args[0]} ${args[1]}` === 'issue list') {
+      const number = storyIds[Math.min(discovered, storyIds.length - 1)];
+      discovered += 1;
+      return [{ number, createdAt: '2026-07-12T09:00:05.000Z' }];
+    }
+    return [];
+  };
+
+  // Capture amendsStoryId per touch while still simulating the mandrel land.
+  const amends = [];
+  deps.runSessionFn = (o) => {
+    amends.push(o.amendsStoryId ?? null);
+    const k = amends.length;
+    const landSha = record.landPerTouch?.[k];
+    if (landSha && o.arm.startsWith('mandrel')) record.remoteMainSha = landSha;
+    return {
+      arm: o.arm,
+      scenarioId: o.scenario.id,
+      model: o.model,
+      prompt: 'p',
+      status: 0,
+      envelope: fakeEnvelope(),
+      phases: [
+        { phase: 'plan', costUsd: 0.21, tokens: 6000, wallClockMs: 1000 },
+        { phase: 'deliver', costUsd: 0.21, tokens: 6000, wallClockMs: 2000 },
+      ],
+    };
+  };
+
+  const touches = normalizeScenarioTouches(CHAIN_SCENARIO, '/scen');
+  await runTouchChain(
+    {
+      scenario: CHAIN_SCENARIO,
+      touches,
+      scenarioDir: '/scen',
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+      ephemeralRoot: '/tmp/e',
+    },
+    deps,
+  );
+
+  // Touch 1 has no prior Story ⇒ plain /plan; touch 2 amends touch 1's #201.
+  assert.deepEqual(amends, [null, 201]);
+});
+
+test('runTouchChain (control): no touch is ever amended — control has no Story to amend (AC-2)', async () => {
+  const record = freshChainRecord({
+    suitePerTouch: { 1: goodSuite(1), 2: goodSuite(2) },
+  });
+  const deps = chainDeps(record);
+  const baseRunSession = deps.runSessionFn;
+  const amends = [];
+  deps.runSessionFn = (o) => {
+    amends.push(o.amendsStoryId ?? null);
+    return baseRunSession(o);
+  };
+
+  const touches = normalizeScenarioTouches(CHAIN_SCENARIO, '/scen');
+  await runTouchChain(
+    {
+      scenario: CHAIN_SCENARIO,
+      touches,
+      scenarioDir: '/scen',
+      arm: 'control',
+      runIndex: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+      ephemeralRoot: '/tmp/e',
+    },
+    deps,
+  );
+
+  assert.deepEqual(amends, [null, null]);
+});
+
 test('runTouchChain: a failing base suite does NOT advance — main rewound to last-good, next touch seeds from the seed (skip-forward)', async () => {
   const record = freshChainRecord({
     landPerTouch: { 1: 'T1SHA', 2: 'T2SHA' },

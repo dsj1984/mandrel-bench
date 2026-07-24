@@ -123,6 +123,32 @@ export function buildControlPrompt(input) {
 }
 
 /**
+ * Normalize an `--amends` prior-Story id into the positive integer the drive
+ * interpolates, or `null` when it is unresolvable (Story #191). Tolerates a
+ * numeric value or a numeric string with an optional leading `#` (`123`,
+ * `#123`, `"123"`), mirroring `plan-context.js`'s own `--amends` parse. Any
+ * non-positive, non-integer, or non-numeric input collapses to `null` so the
+ * caller falls back to plain `/plan` rather than emitting a malformed flag —
+ * the "no resolvable prior Story id" fallback is a normalization outcome, never
+ * a throw.
+ *
+ * @param {unknown} raw
+ * @returns {number|null}
+ */
+function normalizeAmendsStoryId(raw) {
+  if (typeof raw === 'number') {
+    return Number.isInteger(raw) && raw > 0 ? raw : null;
+  }
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim().replace(/^#/, '');
+    if (!/^\d+$/.test(trimmed)) return null;
+    const n = Number.parseInt(trimmed, 10);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  }
+  return null;
+}
+
+/**
  * Mandrel-arm PLAN-phase prompt (D-019). Session 1 of the ordered two-session
  * mandrel run drives `/plan` to completion and STOPS — it does NOT deliver.
  * Splitting `/plan` and `/deliver` into their own sessions makes each phase's
@@ -149,14 +175,44 @@ export function buildControlPrompt(input) {
  * routing-mismatch exclusion is made arm-aware to match (see
  * bench/driver/arms.js `routingOverrideForArm`).
  *
+ * **Amendment override (change-request touches, Story #191).** When
+ * `amendsStoryId` resolves to a positive Story id the prompt drives
+ * `/plan --amends #<id> --yes` — mandrel 2.13.0's delta-envelope mode (prior
+ * Story body + acceptance + delivered file map) instead of a from-scratch
+ * re-interrogation. This is what the change-request second-touch and each
+ * chain touch after the first pass so the amendment envelope actually engages;
+ * it takes precedence over the story-routing override and any seed Epic id
+ * (amending a shipped Story neither re-routes nor enters at an Epic). An
+ * absent / unresolvable id (null, non-positive, non-numeric) falls back to the
+ * current plain-`/plan` behaviour without erroring — the guarantee greenfield
+ * touch-1 and the control arm rely on.
+ *
  * @param {object} input
  * @param {{ id: string, taskPrompt: string, epicId?: number|string }} input.scenario
  * @param {boolean} [input.storyRouted]  Force single-standalone-Story routing.
+ * @param {number|string|null} [input.amendsStoryId]  Prior Story id to amend
+ *   (delta-envelope planning); null/unresolvable ⇒ plain `/plan` fallback.
  * @returns {string}
  */
 export function buildMandrelPlanPrompt(input) {
-  const { scenario, storyRouted = false } = input ?? {};
+  const { scenario, storyRouted = false, amendsStoryId = null } = input ?? {};
   assertScenario(scenario, 'buildMandrelPlanPrompt');
+  const amendsId = normalizeAmendsStoryId(amendsStoryId);
+  if (amendsId !== null) {
+    // Delta-envelope amendment (Story #191): amend the shipped prior Story
+    // rather than re-interrogate the repo. Precedes storyRouted / epicId — the
+    // amendment enters at the existing Story, not a fresh idea or an Epic.
+    const drive =
+      `A prior Story (#${amendsId}) has already shipped in this repository for ` +
+      `the work below, and the change described in the task AMENDS it. Author ` +
+      `the amendment with \`/plan --amends #${amendsId} --yes\` (the --yes flag ` +
+      `drives /plan headlessly through its HITL stop gates) — this plans from a ` +
+      `DELTA envelope (the prior Story body, its acceptance, and the delivered ` +
+      `file map) rather than re-interrogating the whole repository from scratch. ` +
+      `Run ONLY the planning pipeline in this session — do NOT deliver, and do ` +
+      `not pre-stage any planning artifact.`;
+    return `${MANDREL_UNATTENDED_PREAMBLE}${drive}\n\nTask (${scenario.id}):\n${scenario.taskPrompt}`;
+  }
   if (storyRouted) {
     const drive =
       `Author the plan with \`/plan --idea "<the task described below>" --yes\` ` +
@@ -272,10 +328,13 @@ export function buildMandrelLightPrompt(input) {
  * @param {'plan'|'deliver'} [input.phase]  Mandrel phase selector.
  * @param {number|string|null} [input.deliverTarget]  Passed through to the
  *   deliver-phase builder.
+ * @param {number|string|null} [input.amendsStoryId]  Prior Story id to amend
+ *   (Story #191); passed through to the plan-phase builder for the two-session
+ *   mandrel family. Ignored on the control and light paths (they run no /plan).
  * @returns {string}
  */
 export function buildArmPrompt(input) {
-  const { arm, scenario, phase, deliverTarget } = input ?? {};
+  const { arm, scenario, phase, deliverTarget, amendsStoryId } = input ?? {};
   const base = KNOWN_ARMS.includes(arm) ? baseArm(arm) : arm;
 
   if (base === 'control') {
@@ -290,7 +349,7 @@ export function buildArmPrompt(input) {
     }
     const storyRouted = routingOverrideForArm(arm) === 'story';
     if (phase === 'plan') {
-      return buildMandrelPlanPrompt({ scenario, storyRouted });
+      return buildMandrelPlanPrompt({ scenario, storyRouted, amendsStoryId });
     }
     if (phase === 'deliver') {
       return buildMandrelDeliverPrompt({ scenario, deliverTarget });
@@ -1042,6 +1101,10 @@ function phaseRecord(phase, envelope) {
  * @param {string} [opts.transcriptDir]  Absolute capture directory for the
  *   per-phase event streams (bench/run.js threads the cell's `.raw/<idStamp>/`).
  *   Omit to disable capture entirely.
+ * @param {number|string|null} [opts.amendsStoryId]  Prior Story id to amend on
+ *   the plan phase (Story #191, change-request touches). Consumed only by the
+ *   two-session mandrel path; inert for control / mandrel-light. Null or
+ *   unresolvable ⇒ plain `/plan`.
  * @param {object} [deps]
  * @param {object} [deps.transcriptDeps]  Injectable fs/gzip for the transcript
  *   writer, so a unit test can assert the capture and the write-failure path
@@ -1077,6 +1140,11 @@ export function runSession(opts = {}, deps = {}) {
     sessionMaxRetries = DEFAULT_SESSION_MAX_RETRIES,
     sessionRetryBaseMs = DEFAULT_SESSION_RETRY_BASE_MS,
     transcriptDir,
+    // Prior Story id to amend on the plan phase (Story #191). Consumed ONLY by
+    // the two-session mandrel plan/deliver path below; the control and light
+    // paths run no /plan phase, so a value threaded for them is inert (the
+    // "only the mandrel family passes --amends" guard is structural).
+    amendsStoryId = null,
   } = opts;
 
   if (!KNOWN_ARMS.includes(arm)) {
@@ -1190,7 +1258,11 @@ export function runSession(opts = {}, deps = {}) {
   // between-phases discovery, deliver phase, envelope aggregation — is the
   // identical machinery.
   const storyRouted = routingOverrideForArm(arm) === 'story';
-  const planPrompt = buildMandrelPlanPrompt({ scenario, storyRouted });
+  const planPrompt = buildMandrelPlanPrompt({
+    scenario,
+    storyRouted,
+    amendsStoryId,
+  });
   const plan = invokeOneSession({
     prompt: planPrompt,
     arm,

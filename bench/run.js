@@ -783,6 +783,36 @@ export function snapshotPlanArtifacts(
 }
 
 /**
+ * Resolve the single prior-Story id a change-request touch amends (Story #191)
+ * from the routing target the prior touch's delivery discovered
+ * (`{ routing, storyNumber, storyNumbers }` — the shape `runOneRun`'s
+ * between-phases hook and `run-chain`'s per-touch discovery both produce):
+ *
+ *   - story routing → the standalone `storyNumber`,
+ *   - multi-story routing → the LAST discovered sibling id (the most recently
+ *     landed Story of the plan — a deterministic single representative for the
+ *     delta envelope),
+ *   - anything with no positive-integer id (control arm, discovery failed,
+ *     empty siblings) → `null`, so the touch falls back to plain `/plan`
+ *     without erroring.
+ *
+ * Pure; only positive integers count as resolvable ids.
+ *
+ * @param {{ routing?: string, storyNumber?: unknown, storyNumbers?: unknown }|null} deliveredTarget
+ * @returns {number|null}
+ */
+export function resolvePriorStoryId(deliveredTarget) {
+  if (!deliveredTarget || typeof deliveredTarget !== 'object') return null;
+  const { storyNumber, storyNumbers } = deliveredTarget;
+  if (Number.isInteger(storyNumber) && storyNumber > 0) return storyNumber;
+  if (Array.isArray(storyNumbers)) {
+    const ints = storyNumbers.filter((n) => Number.isInteger(n) && n > 0);
+    if (ints.length > 0) return ints[ints.length - 1];
+  }
+  return null;
+}
+
+/**
  * Extract candidate acceptance-criterion strings from a Story body's markdown.
  * Returns the body's list-item lines (bullets `-`/`*`/`+` or numbered `1.`),
  * stripped of their markers and inline bold/backtick emphasis; when the body
@@ -1248,6 +1278,9 @@ export function materializeTouch2Delivery({ gitFn, cwd, baselineSha }, logger) {
  * @param {string} opts.benchmarkVersion
  * @param {{ node: string, os: string, host?: string }} opts.env
  * @param {number} opts.timeoutMs
+ * @param {number|null} [opts.priorStoryId]  The Story id touch 1 landed
+ *   (Story #191). Threaded into the touch-2 plan phase as `--amends #<id>` for
+ *   the two-session mandrel family; null ⇒ plain `/plan`.
  * @param {object} [deps]
  * @returns {Promise<object|null>} the `touch2` scorecard block, or null.
  */
@@ -1267,6 +1300,10 @@ export async function runTouch2(opts, deps = {}) {
     // Directory to persist the touch-2 delivery's raw telemetry into before
     // sandbox teardown (Ticket #121, item 4). Null ⇒ skip the persistence.
     touch2RawDir = null,
+    // The Story id touch 1 landed (Story #191): threaded into the touch-2 plan
+    // phase as `--amends #<id>` so the amendment envelope engages instead of a
+    // from-scratch re-plan. Null (control arm, discovery failed) ⇒ plain /plan.
+    priorStoryId = null,
   } = opts;
 
   if (
@@ -1405,6 +1442,14 @@ export async function runTouch2(opts, deps = {}) {
       id: scenario.id,
       taskPrompt: scenario.changeRequest.prompt,
     };
+    // Amendment seam (Story #191): a change-request touch on the two-session
+    // mandrel family plans as `/plan --amends #<priorStoryId>` so the delta
+    // envelope engages. Guarded to that family — control edits its working copy
+    // directly (no Story to amend), and the mandrel-light single-session path is
+    // out of scope — and to a resolvable id, so an unknown prior Story falls
+    // back to plain /plan (runSession ignores a null amendsStoryId).
+    const amendsStoryId =
+      isMandrelArm(arm) && !armDrivesDeliverLight(arm) ? priorStoryId : null;
     const extraArgs = [...SESSION_EXTRA_ARGS];
     const session = runSessionFn(
       {
@@ -1418,6 +1463,7 @@ export async function runTouch2(opts, deps = {}) {
         // cost envelope, so a second-touch run is attributable turn-by-turn on
         // the same terms as the first.
         transcriptDir: touch2RawDir ?? undefined,
+        amendsStoryId,
       },
       { invokeFn: deps.invokeFn, logger },
     );
@@ -2451,6 +2497,11 @@ export async function runOneRun(opts, deps = {}) {
             // Persist the touch-2 delivery's raw telemetry here before teardown
             // (Ticket #121, item 4).
             touch2RawDir: path.join(rawDir, idStampForRaw, 'touch2'),
+            // The Story touch 1 landed (Story #191): resolved from the routing
+            // target the plan phase discovered, so the change-request touch
+            // plans as `/plan --amends #<id>`. Null for the control arm and on
+            // any discovery failure ⇒ plain /plan fallback.
+            priorStoryId: resolvePriorStoryId(deliveredTarget),
           },
           deps,
         );

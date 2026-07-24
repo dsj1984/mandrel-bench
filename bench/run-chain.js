@@ -54,6 +54,7 @@ import path from 'node:path';
 import { buildScorecard } from './collect/normalize.js';
 import { withRunningApp as defaultWithRunningApp } from './driver/app-runner.js';
 import {
+  armDrivesDeliverLight,
   armSeedsStaticClaudeMd,
   isMandrelArm,
   routingOverrideForArm,
@@ -88,6 +89,7 @@ import {
   repoRoot,
   resolveDeliveryBranch,
   resolveModelId,
+  resolvePriorStoryId,
   SESSION_EXTRA_ARGS,
   sanitizeRunId,
   scenarioApplicableMusts,
@@ -602,6 +604,12 @@ export async function runTouchChain(opts, deps = {}) {
   // last-good (advanced) touch — 0 is the seed itself.
   let chainBaselineSha = seedBaselineSha;
   let lastGoodTouch = 0;
+  // The Story the IMMEDIATELY-PRIOR touch landed (Story #191): each chain touch
+  // after the first plans as `/plan --amends #<priorStoryId>` so the amendment
+  // envelope engages. Null until the first mandrel touch discovers a Story id,
+  // so touch 1 (and any touch after a discovery failure, and every control
+  // touch) plans plainly.
+  let priorStoryId = null;
 
   let cohortDirPath = null;
   let modelId = model;
@@ -662,6 +670,16 @@ export async function runTouchChain(opts, deps = {}) {
         }
 
         const runStartedAt = nowIso();
+        // Amendment seam (Story #191): touches after the first plan as
+        // `/plan --amends #<priorStoryId>` on the two-session mandrel family, so
+        // the delta envelope engages instead of a from-scratch re-plan. Guarded
+        // to that family (control commits directly; the light single-session
+        // path is out of scope) and to a resolvable id — touch 1's null
+        // priorStoryId, and any unresolved prior id, falls back to plain /plan.
+        const amendsStoryId =
+          isMandrelArm(arm) && !armDrivesDeliverLight(arm)
+            ? priorStoryId
+            : null;
         const session = runSessionFn(
           {
             arm,
@@ -670,6 +688,7 @@ export async function runTouchChain(opts, deps = {}) {
             model,
             extraArgs: [...SESSION_EXTRA_ARGS],
             timeoutMs,
+            amendsStoryId,
           },
           { invokeFn: deps.invokeFn, logger },
         );
@@ -763,6 +782,15 @@ export async function runTouchChain(opts, deps = {}) {
               `[chain] touch${k}: delivery-target discovery failed (PR-head branch unrecoverable): ${err?.message ?? err}`,
             );
           }
+          // Advance the amendment target for the NEXT touch (Story #191): the
+          // Story THIS touch landed is what touch k+1 amends. A failed
+          // discovery leaves it null, so the next touch falls back to plain
+          // /plan rather than amending a Story that was never resolved.
+          priorStoryId = resolvePriorStoryId({
+            routing,
+            storyNumber,
+            storyNumbers,
+          });
           const deliveryBranch = resolveDeliveryBranch({
             routing,
             storyNumber,

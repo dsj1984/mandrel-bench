@@ -1131,6 +1131,122 @@ test('buildMandrelPlanPrompt (storyRouted): ignores a seed Epic id — entering 
   assert.doesNotMatch(prompt, /#42/);
 });
 
+// ---------------------------------------------------------------------------
+// Amendment threading (Story #191): a change-request touch drives
+// `/plan --amends #<priorStoryId>` so mandrel 2.13.0's delta envelope engages.
+// ---------------------------------------------------------------------------
+
+test('buildMandrelPlanPrompt (amends): drives /plan --amends #<id>, never the --idea drive', () => {
+  const prompt = buildMandrelPlanPrompt({
+    scenario: SCENARIO,
+    amendsStoryId: 108,
+  });
+  assert.match(prompt, /\/plan --amends #108 --yes/);
+  assert.doesNotMatch(prompt, /\/plan --idea/);
+  assert.doesNotMatch(prompt, /\/deliver/);
+  assert.match(prompt, /DELTA envelope/);
+  assert.match(prompt, /do NOT deliver/);
+  assert.match(prompt, /hello-world/);
+});
+
+test('buildMandrelPlanPrompt (amends): tolerates a #-prefixed or string id', () => {
+  assert.match(
+    buildMandrelPlanPrompt({ scenario: SCENARIO, amendsStoryId: '#77' }),
+    /\/plan --amends #77 --yes/,
+  );
+  assert.match(
+    buildMandrelPlanPrompt({ scenario: SCENARIO, amendsStoryId: '77' }),
+    /\/plan --amends #77 --yes/,
+  );
+});
+
+test('buildMandrelPlanPrompt (amends): takes precedence over the story-routing override and a seed Epic id', () => {
+  const overRouted = buildMandrelPlanPrompt({
+    scenario: SCENARIO,
+    storyRouted: true,
+    amendsStoryId: 5,
+  });
+  assert.match(overRouted, /\/plan --amends #5 --yes/);
+  assert.doesNotMatch(overRouted, /ROUTING OVERRIDE/);
+
+  const overEpic = buildMandrelPlanPrompt({
+    scenario: { ...SCENARIO, epicId: 42 },
+    amendsStoryId: 5,
+  });
+  assert.match(overEpic, /\/plan --amends #5 --yes/);
+  assert.doesNotMatch(overEpic, /\/plan 42/);
+});
+
+test('buildMandrelPlanPrompt (amends): an unresolvable id falls back to plain /plan without erroring', () => {
+  for (const bad of [null, undefined, 0, -3, 1.5, 'abc', '', '#', Number.NaN]) {
+    const prompt = buildMandrelPlanPrompt({
+      scenario: SCENARIO,
+      amendsStoryId: bad,
+    });
+    assert.doesNotMatch(prompt, /--amends/);
+    assert.match(prompt, /\/plan --idea/);
+  }
+});
+
+test('buildArmPrompt (plan phase): threads amendsStoryId into the plan builder; the deliver phase never carries --amends', () => {
+  assert.equal(
+    buildArmPrompt({
+      arm: 'mandrel',
+      scenario: SCENARIO,
+      phase: 'plan',
+      amendsStoryId: 9,
+    }),
+    buildMandrelPlanPrompt({ scenario: SCENARIO, amendsStoryId: 9 }),
+  );
+  assert.doesNotMatch(
+    buildArmPrompt({
+      arm: 'mandrel',
+      scenario: SCENARIO,
+      phase: 'deliver',
+      amendsStoryId: 9,
+    }),
+    /--amends/,
+  );
+});
+
+test('runSession (mandrel): amendsStoryId lands as /plan --amends on the PLAN phase only', () => {
+  const invoke = fakeInvoke();
+  runSession(
+    { arm: 'mandrel', scenario: SCENARIO, cwd: '/tmp/s', amendsStoryId: 321 },
+    { invokeFn: invoke, betweenPhases: () => ({ deliverTarget: 55 }) },
+  );
+  // calls[0] = plan phase, calls[1] = deliver phase.
+  assert.match(invoke.calls[0].prompt, /\/plan --amends #321 --yes/);
+  assert.doesNotMatch(invoke.calls[1].prompt, /--amends/);
+  assert.match(invoke.calls[1].prompt, /\/deliver 55 --yes/);
+});
+
+test('runSession (control): amendsStoryId is inert — the bare prompt never carries --amends or /plan', () => {
+  const invoke = fakeInvoke();
+  runSession(
+    { arm: 'control', scenario: SCENARIO, cwd: '/tmp/s', amendsStoryId: 321 },
+    { invokeFn: invoke },
+  );
+  assert.equal(invoke.calls.length, 1);
+  assert.doesNotMatch(invoke.calls[0].prompt, /--amends|\/plan/);
+});
+
+test('runSession (mandrel-light): amendsStoryId is inert — the single /deliver-light session never carries --amends', () => {
+  const invoke = fakeInvoke();
+  runSession(
+    {
+      arm: 'mandrel-light',
+      scenario: SCENARIO,
+      cwd: '/tmp/s',
+      amendsStoryId: 321,
+    },
+    { invokeFn: invoke },
+  );
+  assert.equal(invoke.calls.length, 1);
+  assert.doesNotMatch(invoke.calls[0].prompt, /--amends/);
+  assert.match(invoke.calls[0].prompt, /\/deliver-light/);
+});
+
 test('buildArmPrompt (control-claudemd): byte-identical to the control prompt — arm 3 differs only by the seeded CLAUDE.md', () => {
   assert.equal(
     buildArmPrompt({ arm: 'control-claudemd', scenario: SCENARIO }),

@@ -43,6 +43,7 @@ import {
   resolveDeliveryBranch,
   resolveEpicIds,
   resolveModelId,
+  resolvePriorStoryId,
   runFirstBenchmark,
   runOneRun,
   runTouch2,
@@ -3470,6 +3471,152 @@ test('prepareTouch2Workspace (control): reduces to DELIVERED CODE ONLY — fresh
   assert.equal(filter('/ws-control/package.json'), true);
 });
 
+// ---------------------------------------------------------------------------
+// Amendment threading (Story #191): resolvePriorStoryId + runTouch2 passing
+// `--amends #<priorStoryId>` on the change-request touch.
+// ---------------------------------------------------------------------------
+
+test('resolvePriorStoryId: story routing → the standalone storyNumber', () => {
+  assert.equal(
+    resolvePriorStoryId({ routing: 'story', storyNumber: 108 }),
+    108,
+  );
+});
+
+test('resolvePriorStoryId: multi-story routing → the LAST discovered sibling id', () => {
+  assert.equal(
+    resolvePriorStoryId({
+      routing: 'multi-story',
+      storyNumbers: [201, 202, 203],
+    }),
+    203,
+  );
+});
+
+test('resolvePriorStoryId: unresolvable targets → null (control arm / discovery failure / empty siblings)', () => {
+  for (const bad of [
+    null,
+    undefined,
+    {},
+    { routing: 'story', storyNumber: null },
+    { routing: 'story', storyNumber: 0 },
+    { routing: 'story', storyNumber: -4 },
+    { routing: 'multi-story', storyNumbers: [] },
+    { routing: 'multi-story', storyNumbers: null },
+    { routing: 'multi-story', storyNumbers: ['x'] },
+  ]) {
+    assert.equal(resolvePriorStoryId(bad), null);
+  }
+});
+
+test('runTouch2 (mandrel): threads --amends #<priorStoryId> into the touch-2 plan session (AC-1)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  const seen = [];
+  deps.runSessionFn = (o) => {
+    seen.push({ arm: o.arm, amendsStoryId: o.amendsStoryId });
+    return {
+      arm: o.arm,
+      scenarioId: o.scenario.id,
+      model: o.model,
+      prompt: 'p',
+      status: 0,
+      envelope: fakeEnvelope(),
+    };
+  };
+  await runTouch2(
+    {
+      scenario: FAKE_SCENARIO_WITH_CR,
+      touch2Evaluate: fakeTouch2Evaluate,
+      scenarioDir: '/repo/bench/scenarios/story-scope',
+      arm: 'mandrel',
+      runIndex: 1,
+      model: 'claude-opus-4-8',
+      sandbox: { owner: 'o', repo: 'r', repoUrl: 'u' },
+      handle: { workspacePath: '/ws-mandrel' },
+      frameworkVersion: '1.70.0',
+      benchmarkVersion: '0.5.0',
+      env: { node: 'v24.16.0', os: 'darwin' },
+      timeoutMs: 1000,
+      priorStoryId: 108,
+    },
+    deps,
+  );
+  assert.deepEqual(seen, [{ arm: 'mandrel', amendsStoryId: 108 }]);
+});
+
+test('runTouch2 (control): never receives amendsStoryId even when a prior Story id is present (AC-2)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  const seen = [];
+  deps.runSessionFn = (o) => {
+    seen.push({ arm: o.arm, amendsStoryId: o.amendsStoryId });
+    return {
+      arm: o.arm,
+      scenarioId: o.scenario.id,
+      model: o.model,
+      prompt: 'p',
+      status: 0,
+      envelope: fakeEnvelope(),
+    };
+  };
+  await runTouch2(
+    {
+      scenario: FAKE_SCENARIO_WITH_CR,
+      touch2Evaluate: fakeTouch2Evaluate,
+      scenarioDir: '/repo/bench/scenarios/story-scope',
+      arm: 'control',
+      runIndex: 1,
+      model: 'claude-opus-4-8',
+      sandbox: { owner: 'o', repo: 'r', repoUrl: 'u' },
+      handle: { workspacePath: '/ws-control' },
+      frameworkVersion: '1.70.0',
+      benchmarkVersion: '0.5.0',
+      env: { node: 'v24.16.0', os: 'darwin' },
+      timeoutMs: 1000,
+      priorStoryId: 108,
+    },
+    deps,
+  );
+  assert.deepEqual(seen, [{ arm: 'control', amendsStoryId: null }]);
+});
+
+test('runTouch2 (mandrel): a null prior Story id falls back to plain /plan — amendsStoryId stays null (AC-2)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  const seen = [];
+  deps.runSessionFn = (o) => {
+    seen.push({ arm: o.arm, amendsStoryId: o.amendsStoryId });
+    return {
+      arm: o.arm,
+      scenarioId: o.scenario.id,
+      model: o.model,
+      prompt: 'p',
+      status: 0,
+      envelope: fakeEnvelope(),
+    };
+  };
+  await runTouch2(
+    {
+      scenario: FAKE_SCENARIO_WITH_CR,
+      touch2Evaluate: fakeTouch2Evaluate,
+      scenarioDir: '/repo/bench/scenarios/story-scope',
+      arm: 'mandrel',
+      runIndex: 1,
+      model: 'claude-opus-4-8',
+      sandbox: { owner: 'o', repo: 'r', repoUrl: 'u' },
+      handle: { workspacePath: '/ws-mandrel' },
+      frameworkVersion: '1.70.0',
+      benchmarkVersion: '0.5.0',
+      env: { node: 'v24.16.0', os: 'darwin' },
+      timeoutMs: 1000,
+      priorStoryId: null,
+    },
+    deps,
+  );
+  assert.deepEqual(seen, [{ arm: 'mandrel', amendsStoryId: null }]);
+});
+
 test('runTouch2 (mandrel): runs a fresh session against the full-pipeline tree and returns a touch2 block with the full dimension set + regression', async () => {
   const record = freshRecord();
   const deps = benchDeps(record);
@@ -3918,6 +4065,70 @@ test('runOneRun: attaches a touch2 block when the scenario declares a changeRequ
   assert.equal(scorecard.touch2.inheritance, 'full-pipeline');
   assert.ok(scorecard.touch2.dimensions);
   assert.equal(scorecard.touch2.regression.cleanRate, 1);
+});
+
+test('runOneRun (mandrel): the Story touch 1 landed flows into touch 2 as --amends #<id> (Story #191, AC-1 end-to-end)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  deps.runTrapOraclesFn = async () => ({
+    classes: [{ class: 'regression-hashing', score: 1, defectPresent: false }],
+    cleanRate: 1,
+  });
+  // Plan-phase discovery: touch 1's /plan opened the standalone Story #108.
+  deps.ghJson = (args) => {
+    const key = `${args[0]} ${args[1]}`;
+    if (key === 'issue list') {
+      return [{ number: 108, createdAt: '2026-06-16T20:00:02.000Z' }];
+    }
+    if (key === 'issue view') {
+      return { number: Number(args[2]), title: 'T', body: 'B', labels: [] };
+    }
+    return [];
+  };
+  // Capture each session's amends id and whether it was the two-phase (touch-1)
+  // call — the real runSession runs the injected betweenPhases hook.
+  const sessions = [];
+  deps.runSessionFn = (o, d) => {
+    const hasBetween = typeof d.betweenPhases === 'function';
+    if (hasBetween) {
+      d.betweenPhases({
+        scenario: o.scenario,
+        planEnvelope: fakeEnvelope(),
+        cwd: o.cwd,
+      });
+    }
+    sessions.push({ hasBetween, amendsStoryId: o.amendsStoryId ?? null });
+    return {
+      arm: o.arm,
+      scenarioId: o.scenario.id,
+      model: o.model,
+      prompt: 'p',
+      status: 0,
+      envelope: fakeEnvelope(),
+    };
+  };
+
+  await runOneRun(
+    {
+      scenario: FAKE_SCENARIO_WITH_CR,
+      evaluate: async () => ({ passed: true, criteria: [{ met: true }] }),
+      scenarioDir: '/repo/bench/scenarios/story-scope',
+      touch2Evaluate: fakeTouch2Evaluate,
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox: { owner: 'o', repo: 'r', repoUrl: 'u', baselineSha: 's' },
+      resultsDir: '/results',
+      ephemeralRoot: '/tmp/e',
+    },
+    deps,
+  );
+
+  // Touch 1 (the two-phase plan/deliver session) gets no --amends; touch 2
+  // amends the Story #108 the discovery surfaced.
+  const touch1 = sessions.find((s) => s.hasBetween);
+  const touch2 = sessions.find((s) => !s.hasBetween);
+  assert.equal(touch1.amendsStoryId, null);
+  assert.equal(touch2.amendsStoryId, 108);
 });
 
 test('runOneRun: no changeRequest ⇒ no touch2 block on the scorecard', async () => {
