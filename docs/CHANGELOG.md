@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.17.0...mandrel-bench-v0.18.0) (2026-07-24)
+
+
+### Fixed
+
+* **bench:** detect light-arm escalation from the terminal envelope, not a /plan ledger ([#200](https://github.com/dsj1984/mandrel-bench/issues/200)) ([d45191c](https://github.com/dsj1984/mandrel-bench/commit/d45191c26246642570c328d6dfe70617ba50aa06))
+* **bench:** escalation is the LAST terminal envelope, not any of them (refs [#200](https://github.com/dsj1984/mandrel-bench/issues/200)) ([#202](https://github.com/dsj1984/mandrel-bench/issues/202)) ([895b002](https://github.com/dsj1984/mandrel-bench/commit/895b00265aa1d81094a33b4b0ef67dedae1ed825))
+
 ## [0.17.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.16.0...mandrel-bench-v0.17.0) (2026-07-24)
 
 
