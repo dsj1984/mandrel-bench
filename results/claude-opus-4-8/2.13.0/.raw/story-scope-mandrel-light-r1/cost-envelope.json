@@ -1,0 +1,86 @@
+{
+  "is_error": false,
+  "duration_api_ms": 287721,
+  "num_turns": 32,
+  "stop_reason": "end_turn",
+  "session_id": "55318296-6720-48bb-aa81-afa2c997101c",
+  "total_cost_usd": 2.0877384999999995,
+  "usage": {
+    "input_tokens": 53,
+    "cache_creation_input_tokens": 68068,
+    "cache_read_input_tokens": 1803745,
+    "output_tokens": 20153,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 68068,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 821,
+        "cache_read_input_tokens": 84307,
+        "cache_creation_input_tokens": 3148,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 3148
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 986,
+      "outputTokens": 22,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.001096,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 53,
+      "outputTokens": 20153,
+      "cacheReadInputTokens": 1803745,
+      "cacheCreationInputTokens": 68068,
+      "webSearchRequests": 0,
+      "costUSD": 2.0866424999999995,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [
+    {
+      "tool_name": "Bash",
+      "tool_use_id": "toolu_01NWLAaPpK1u8NtZKuQZ2a3o",
+      "tool_input": {
+        "command": "cd \"/private/var/folders/9_/_b_wsjg97pz469z8wzf02hhc0000gn/T/bench-sbx-9XRmhq/.worktrees/story-1\" && rm -rf /tmp/notes-smoke && PORT=39517 DATA_FILE=/tmp/notes-smoke/store.json node src/server.js >/tmp/notes-smoke.log 2>&1 &\nSVPID=$!\nsleep 1\necho \"== signup ==\" && curl -s -XPOST localhost:39517/signup -d '{\"username\":\"zoe\",\"password\":\"pw\"}'\necho; echo \"== login ==\" && S=$(curl -s -XPOST localhost:39517/login -d '{\"username\":\"zoe\",\"password\":\"pw\"}' | node -pe 'JSON.parse(require(\"fs\").readFileSync(0)).session')\necho \"session=$S\"\necho \"== me ==\" && curl -s localhost:39517/me -H \"Authorization: Bearer $S\"\necho; echo \"== create note ==\" && curl -s -XPOST localhost:39517/notes -H \"Authorization: Bearer $S\" -d '{\"title\":\"t\",\"body\":\"b\"}'\necho; echo \"== list ==\" && curl -s localhost:39517/notes -H \"Authorization: Bearer $S\"\necho; echo \"== unauth me ==\" && curl -s -o /dev/null -w \"%{http_code}\" localhost:39517/me\nkill $SVPID 2>/dev/null\necho; echo \"== persisted file ==\"; cat /tmp/notes-smoke/store.json | node -pe 'const d=JSON.parse(require(\"fs\").readFileSync(0)); `users=${d.users.length} notes=${d.notes.length} sessions=${Object.keys(d.sessions).length}`'",
+        "description": "Live smoke test of running server"
+      }
+    }
+  ],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Delivered. Terminal envelope `status: landed`, exit 0 — the work is on `main`.\n\n## Summary\n\nStory #1 shipped via a single `/deliver-light` session, through the unchanged single-story engine (init → implement → self-eval → diff backstop → close), landing as **PR #2 (squash-merged to `main`, all checks green)**.\n\n**What was built** — a framework-free JSON REST API on Node's core `http` module:\n\n| File | Role |\n|---|---|\n| `src/server.js` | HTTP handler: `POST /signup` (201 `{id,username}`, 400 missing, 409 duplicate), `POST /login` (200 `{session}`, 401 bad creds), `GET /me`, `POST /notes` (201 note), `GET /notes` (JSON array) — all note/me routes gated on a `Authorization: Bearer` session. Listens on `PORT` (default 3000). |\n| `src/store.js` | Persistent on-disk store — a JSON document flushed via write-temp-then-rename (atomic, crash-safe). scrypt-hashed passwords with per-user salt and constant-time compare. |\n| `tests/contract/api.test.js` | 9 contract tests: wire shapes, status codes, per-user note isolation, malformed-JSON handling, and a real reload-from-disk **restart-durability** case. |\n| `package.json` | Added `\"start\": \"node src/server.js\"`. |\n\n**Design notes**\n- \"Equivalent on-disk store\" chosen over embedded SQLite: zero dependencies, no experimental flags, atomic writes. Users, notes, *and* live sessions survive a restart.\n- Bad requests handled: 400 (missing/blank fields, malformed or oversized body), 401 (missing/invalid token or wrong creds), 404 (unknown route), 409 (duplicate username).\n\n**Gates** — every close gate passed: typecheck/lint/format/test validation, base-sync, and code review (0 findings). The acceptance self-eval scored AC-1 `met` → `proceed`; the diff backstop was clean (4 files ≤ 4, no sensitive paths).\n\nOne cosmetic note from the tail: the post-land base fast-forward of the local `main` was skipped (`dirty-tree`) — the merge itself stands on the remote; that's a local-checkout tidy-up only.\n\nRun it locally with `npm start` (or `PORT=8080 npm start`); `npm test` runs the suite.",
+  "ttft_ms": 4046,
+  "ttft_stream_ms": 2882,
+  "time_to_request_ms": 199,
+  "type": "result",
+  "duration_ms": 317624,
+  "uuid": "e2f5efad-bf36-4a9d-90a3-81d4279346c8"
+}

@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 120893,
+  "num_turns": 21,
+  "stop_reason": "end_turn",
+  "session_id": "c5fa7440-a11f-4138-919e-ecae252754e5",
+  "total_cost_usd": 1.5209750000000004,
+  "usage": {
+    "input_tokens": 37,
+    "cache_creation_input_tokens": 86432,
+    "cache_read_input_tokens": 985720,
+    "output_tokens": 6508,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 86432,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 737,
+        "cache_read_input_tokens": 66755,
+        "cache_creation_input_tokens": 3112,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 3112
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 825,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.00091,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 37,
+      "outputTokens": 6508,
+      "cacheReadInputTokens": 985720,
+      "cacheCreationInputTokens": 86432,
+      "webSearchRequests": 0,
+      "costUSD": 1.5200650000000007,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "**Delivered.** Terminal status: `landed` (PR #2 merged, Story #1 → `agent::done`).\n\n## Summary\n\nLanded via a single `/deliver-light` session through the unchanged single-story engine — no `/plan`, no session split.\n\n**What shipped** (2 files, PR [#2](https://github.com/dsj1984/bench-sbx-2026-07-24-hello-world-mandrel-light-db7de66f/pull/2) → `main`):\n- `server.js` — ESM HTTP server on `node:http` (no framework). Reads `PORT` env (defaults to 3000); `GET /` → `200` with `Content-Type: text/html` and body `Hello, World!`.\n- `package.json` — added `\"start\": \"node server.js\"`.\n\n**Gates (all passed):**\n| Gate | Result |\n|---|---|\n| Suitability | `proceed-light` (predicted + ledgered verdict both `lite`) |\n| Acceptance self-eval | `proceed` (1/1 met, `npm test` green) |\n| Diff backstop | clean (2 files ≤ 4, no sensitive paths) |\n| close-validation (typecheck/lint/format) | passed |\n| base-sync / push / PR / code-review / auto-merge | passed (0 findings) |\n\nOne mid-flight correction: the first close failed the biome **format** gate (repo uses tabs + double quotes); I ran `biome format --write`, amended the commit, and re-ran close, which landed.\n\nRuntime-verified before landing: `curl -i` returned `HTTP/1.1 200 OK`, `Content-Type: text/html`, body `Hello, World!`.\n\nNote: two post-land tail steps degraded (`refCleanup`, `baseFastForward`) because the worktree's gitignored `temp/` left the tree dirty — per the engine contract this degrades the report only; the merge stands.",
+  "ttft_ms": 3480,
+  "ttft_stream_ms": 2387,
+  "time_to_request_ms": 148,
+  "type": "result",
+  "duration_ms": 152451,
+  "uuid": "ab0e6c5c-4d38-438d-8371-cd01a1f6c1ff"
+}

@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 357173,
+  "num_turns": 40,
+  "stop_reason": "end_turn",
+  "session_id": "3827b593-bb12-42ad-ac99-5af64d320e9a",
+  "total_cost_usd": 2.6867254999999997,
+  "usage": {
+    "input_tokens": 68,
+    "cache_creation_input_tokens": 79253,
+    "cache_read_input_tokens": 2624171,
+    "output_tokens": 23234,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 79253,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 943,
+        "cache_read_input_tokens": 95984,
+        "cache_creation_input_tokens": 2656,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2656
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 850,
+      "outputTokens": 14,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.0009199999999999999,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 68,
+      "outputTokens": 23234,
+      "cacheReadInputTokens": 2624171,
+      "cacheCreationInputTokens": 79253,
+      "webSearchRequests": 0,
+      "costUSD": 2.6858054999999994,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Delivered. Terminal envelope reports **`status: landed`** — PR #4 merged into `main`, Story #3 `agent::done`.\n\n## Summary\n\nThe task exceeded `/deliver-light`'s trivial-footprint ceiling (7 files vs. its max of 2), so its suitability gate correctly escalated to `/plan` under `--yes`. I followed that recommendation: authored a single cohesive Story (#3), ran the plan critics (both skipped for a draft this small), persisted, and delivered it through the standard `/plan → /deliver` engine — same gates, same PR-to-`main` landing.\n\n**What shipped (PR [#4](https://github.com/dsj1984/bench-sbx-2026-07-24-brownfield-longitudinal-mandrel-light-8b88a59a/pull/4), squash-merged):**\n- `GET /users` — admin-only, returns each user as exactly `{id, name, email, role}` (no credential fields).\n- `PATCH /users/:id/role` — admin-only, `{role: \"admin\"|\"member\"}`; 422 on an invalid role, 404 on an unknown user, 409 `E_CONFLICT` when demoting the last remaining admin (checked before any write).\n- **Immediate effect** — the load-bearing subtlety: bearer tokens embed the role claim, so `requireAuth` now sources the caller's *current* role from the `users` table via `findUserById(payload.sub)` rather than trusting the token. A demoted admin loses access and a promoted member gains it on their **existing** token, no re-login.\n\n**Files:** created `routes/users.routes.js`, `services/users.service.js`, `schemas/user.schema.js`, `tests/users.test.js`; edited `repositories/users.repo.js` (`listUsers`/`updateUserRole`/`countAdmins`), `lib/auth/middleware.js`, `app.js`.\n\n**Verification:**\n- Full suite green: **124/124** tests (9 new `users.test.js` contract tests + zero regression in the existing auth suite), lint clean.\n- Acceptance self-eval: **6/6 met → `proceed`**.\n- Close-path code review (clean-code / security / performance lenses): 0 findings.\n\nOne cosmetic note: the post-land fast-forward of local `main` was skipped because your working tree carries a pre-existing uncommitted `package.json` change — this degrades only the report, not the merge (which is confirmed landed).",
+  "ttft_ms": 4451,
+  "ttft_stream_ms": 3479,
+  "time_to_request_ms": 2229,
+  "type": "result",
+  "duration_ms": 420238,
+  "uuid": "a8864161-cdbe-4a04-a462-905b5389f582"
+}
