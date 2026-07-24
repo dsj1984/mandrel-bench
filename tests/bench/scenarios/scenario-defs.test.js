@@ -32,6 +32,7 @@ import {
 import { evaluate as evaluateEpicScope } from '../../../bench/scenarios/epic-scope/acceptance.test.js';
 import { evaluate as evaluateHello } from '../../../bench/scenarios/hello-world/acceptance.test.js';
 import { evaluate as evaluateStoryScope } from '../../../bench/scenarios/story-scope/acceptance.test.js';
+import { computeDecompositionSanity } from '../../../bench/score/plan-quality.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIOS_DIR = path.resolve(
@@ -393,16 +394,19 @@ describe('scenario seeds (AC1: task seed shared by both arms)', () => {
     });
   });
 
-  describe('epic-scope scenario contract (Epic #66, Story #78)', () => {
-    // Ported to mandrel 2.x single-delivery semantics (Story #158): mandrel
-    // deleted the Epic tier, and under its default-single split policy this
-    // large-capability rung is delivered as ONE guarded standalone Story, so
-    // the rung routes `story`. 'epic' stays as benchmark terminology for the
-    // SIZE of the delivered capability, not a ticket tier.
-    it('declares routing "story" and targetN 8', () => {
+  describe('epic-scope scenario contract (Story #184; evolves Epic #66, Story #78)', () => {
+    // The DECOMPOSITION rung (Story #184): the seed carries four genuinely
+    // separable units (a store+migrations unit the others depend on, an HTTP
+    // API, a background report worker, and an admin CLI), so the rung routes
+    // `multi-story` — /plan is expected to author N>1 sibling Stories and
+    // /deliver takes the discovered id list. 'epic' stays as benchmark
+    // terminology for the SIZE of the delivered capability, not a ticket
+    // tier (Story #158). A true epic cell is expensive by construction, so
+    // the rung documents itself as N=1-2 (`targetN` 2).
+    it('declares routing "multi-story" and targetN 2 (an N=1-2 rung by design)', () => {
       const s = loadScenario('epic-scope');
-      assert.equal(s.routing, 'story');
-      assert.equal(s.targetN, 8);
+      assert.equal(s.routing, 'multi-story');
+      assert.equal(s.targetN, 2);
     });
 
     it('the seed prompt contains no security-hint terms (trap headroom, §12)', () => {
@@ -433,12 +437,26 @@ describe('scenario seeds (AC1: task seed shared by both arms)', () => {
       ]);
     });
 
-    it('carries a 20-25 item frozen acceptance contract sized for a large single-delivery capability', () => {
+    it('carries a 24-30 item frozen acceptance contract spanning the composed system', () => {
       const s = loadScenario('epic-scope');
       assert.ok(
-        s.seed.acceptance.length >= 20 && s.seed.acceptance.length <= 25,
-        `expected 20-25 acceptance criteria, got ${s.seed.acceptance.length}`,
+        s.seed.acceptance.length >= 24 && s.seed.acceptance.length <= 30,
+        `expected 24-30 acceptance criteria, got ${s.seed.acceptance.length}`,
       );
+    });
+
+    it('the acceptance contract covers the worker, admin-CLI, and migration seams, not just the API (Story #184)', () => {
+      const joined = loadScenario('epic-scope').seed.acceptance.join(' ');
+      assert.ok(/\/exports/.test(joined), 'worker seam (export jobs) covered');
+      assert.ok(
+        /npm run admin -- stats/.test(joined),
+        'admin-CLI stats seam covered',
+      );
+      assert.ok(
+        /deactivate-user/.test(joined),
+        'admin-CLI deactivate seam covered',
+      );
+      assert.ok(/npm run migrate/.test(joined), 'migration seam covered');
     });
   });
 });
@@ -446,8 +464,8 @@ describe('scenario seeds (AC1: task seed shared by both arms)', () => {
 describe('machine-readable story-count contract (Epic #86, Story #95)', () => {
   // The plan-quality axis (bench/score/plan-quality.js) reads decomposition
   // sanity from a MACHINE-READABLE `storyCountContract` on each scenario spec —
-  // NOT from prose. Epic-scope decomposes into 4-6 Stories; the story-routed
-  // rungs stay a single standalone Story.
+  // NOT from prose. Epic-scope demands genuine decomposition (3-5 Stories,
+  // Story #184); the story-routed rungs stay a single standalone Story.
   for (const id of SCENARIO_IDS) {
     it(`${id}/scenario.json declares a well-formed storyCountContract`, () => {
       const s = loadScenario(id);
@@ -466,11 +484,31 @@ describe('machine-readable story-count contract (Epic #86, Story #95)', () => {
     });
   }
 
-  it('epic-scope lands as a single guarded Story under 2.x single-delivery (mode "standalone", Story #158)', () => {
+  it('epic-scope demands genuine decomposition (mode "multi-story", 3-5 Stories, Story #184)', () => {
     const c = loadScenario('epic-scope').storyCountContract;
-    assert.equal(c.mode, 'standalone');
-    assert.equal(c.minStories, 1);
-    assert.equal(c.maxStories, 1);
+    assert.equal(c.mode, 'multi-story');
+    assert.equal(c.minStories, 3);
+    assert.equal(c.maxStories, 5);
+  });
+
+  it('a run that collapses the epic into ONE Story fails decomposition sanity rather than passing silently (Story #184, AC-2)', () => {
+    const c = loadScenario('epic-scope').storyCountContract;
+    const collapsed = computeDecompositionSanity({
+      storyCountContract: c,
+      plannedStoryCount: 1,
+    });
+    assert.equal(collapsed.withinContract, false);
+    assert.ok(
+      typeof collapsed.score === 'number' && collapsed.score < 1,
+      `a 1-Story collapse must not score a clean 1 (got ${collapsed.score})`,
+    );
+    // A conforming multi-Story plan still scores cleanly.
+    const conforming = computeDecompositionSanity({
+      storyCountContract: c,
+      plannedStoryCount: 4,
+    });
+    assert.equal(conforming.withinContract, true);
+    assert.equal(conforming.score, 1);
   });
 
   it('story-scope is a single standalone Story (mode "standalone")', () => {
@@ -1132,16 +1170,20 @@ describe('story-scope frozen oracle behavior', () => {
 });
 
 describe('epic-scope frozen oracle behavior', () => {
-  // A dynamic fetch stub modelling a conforming, isolating multi-user
-  // project/task backend, so the full auth + project + task round-trip
-  // (including per-user ownership scoping, pagination, filtering, cascade
-  // delete, and a consistent error envelope) can be driven deterministically
-  // without a real server.
-  function makeEpicScopeFetch({ leakCrossOwnerReads = false } = {}) {
+  // A dynamic FIXTURE SYSTEM modelling a conforming delivered tree for the
+  // multi-seam platform (Story #184): a fetch stub for the API + worker
+  // seams (export jobs complete after a couple of polls, as a background
+  // worker would), and an exec stub for the admin-CLI + migration seams
+  // (`npm run admin -- …` / `npm run migrate` observed over stdout/exit
+  // codes) — so the full composed round-trip can be driven deterministically
+  // without a real server, worker process, or npm.
+  function makeEpicScopeSystem({ leakCrossOwnerReads = false } = {}) {
     const users = new Map(); // username → { id, username, password }
+    const deactivated = new Set(); // usernames the admin CLI deactivated
     const tokens = new Map(); // token → userId
     const projects = new Map(); // projectId → { id, name, ownerId, createdAt }
     const tasks = new Map(); // taskId → { id, title, projectId, assigneeId, createdAt, done }
+    const exportJobs = new Map(); // exportId → { id, projectId, status, polls }
     let seq = 0;
 
     const send = (status, json) => ({
@@ -1168,7 +1210,7 @@ describe('epic-scope frozen oracle behavior', () => {
       return p && p.ownerId === userId ? p : undefined;
     };
 
-    return async (url, init = {}) => {
+    const fetchImpl = async (url, init = {}) => {
       const u = new URL(String(url));
       const parts = u.pathname.split('/').filter(Boolean);
       const method = (init.method ?? 'GET').toUpperCase();
@@ -1178,7 +1220,7 @@ describe('epic-scope frozen oracle behavior', () => {
           body = JSON.parse(init.body);
         } catch {
           // A conforming backend rejects a syntactically malformed JSON body
-          // with a 4xx rather than crashing (criterion 22's robustness probe).
+          // with a 4xx rather than crashing (criterion 25's robustness probe).
           return err(400, 'malformed JSON body');
         }
       }
@@ -1204,6 +1246,8 @@ describe('epic-scope frozen oracle behavior', () => {
         const user = users.get(body?.username);
         if (!user || user.password !== body?.password)
           return err(401, 'unauthorized');
+        // A deactivated account (admin CLI seam) can no longer log in.
+        if (deactivated.has(user.username)) return err(403, 'deactivated');
         const token = `tok-${++seq}`;
         tokens.set(token, user.id);
         return send(200, { token });
@@ -1349,13 +1393,100 @@ describe('epic-scope frozen oracle behavior', () => {
         return send(204);
       }
 
+      // WORKER SEAM — export/report jobs. A create responds "queued" and the
+      // job completes only after a couple of subsequent polls, modelling a
+      // background worker finishing it out-of-band.
+      if (
+        parts[0] === 'projects' &&
+        parts[2] === 'exports' &&
+        parts.length === 3 &&
+        method === 'POST'
+      ) {
+        const pid = decodeURIComponent(parts[1]);
+        if (!ownedProject(pid, userId)) return err(404, 'not found');
+        const id = `export-${++seq}`;
+        exportJobs.set(id, { id, projectId: pid, status: 'queued', polls: 0 });
+        return send(202, { id, status: 'queued' });
+      }
+
+      if (
+        parts[0] === 'projects' &&
+        parts[2] === 'exports' &&
+        parts.length === 4 &&
+        method === 'GET'
+      ) {
+        const pid = decodeURIComponent(parts[1]);
+        const eid = decodeURIComponent(parts[3]);
+        if (!ownedProject(pid, userId)) return err(404, 'not found');
+        const job = exportJobs.get(eid);
+        if (!job || job.projectId !== pid) return err(404, 'not found');
+        job.polls += 1;
+        if (job.status !== 'completed' && job.polls >= 2) {
+          const project = projects.get(pid);
+          const projectTasks = [...tasks.values()].filter(
+            (t) => t.projectId === pid,
+          );
+          job.status = 'completed';
+          job.report = {
+            name: project?.name ?? '',
+            total: projectTasks.length,
+            done: projectTasks.filter((t) => t.done === true).length,
+          };
+        }
+        return send(200, {
+          id: job.id,
+          status: job.status,
+          ...(job.report ? { report: job.report } : {}),
+        });
+      }
+
       return err(404, 'route not found');
     };
+
+    // ADMIN-CLI + MIGRATION SEAMS — an injectable `npm` executor over the
+    // SAME live state the fetch stub serves, mirroring a real CLI reading the
+    // shared on-disk store.
+    const execImpl = (npmArgs) => {
+      const args = Array.isArray(npmArgs) ? npmArgs : [];
+      const scriptArgs = args.filter((a) => a !== 'run' && a !== '--silent');
+      if (scriptArgs[0] === 'migrate') {
+        return { status: 0, stdout: 'migrations up to date\n', stderr: '' };
+      }
+      if (scriptArgs[0] === 'admin' && scriptArgs[1] === '--') {
+        if (scriptArgs[2] === 'stats') {
+          return {
+            status: 0,
+            stdout: `${JSON.stringify({
+              users: users.size,
+              projects: projects.size,
+              tasks: tasks.size,
+            })}\n`,
+            stderr: '',
+          };
+        }
+        if (
+          scriptArgs[2] === 'deactivate-user' &&
+          typeof scriptArgs[3] === 'string'
+        ) {
+          if (!users.has(scriptArgs[3])) {
+            return { status: 1, stdout: '', stderr: 'no such user\n' };
+          }
+          deactivated.add(scriptArgs[3]);
+          return { status: 0, stdout: 'deactivated\n', stderr: '' };
+        }
+      }
+      return { status: 1, stdout: '', stderr: `unknown command\n` };
+    };
+
+    return { fetchImpl, execImpl };
   }
 
-  it('passes the full multi-user auth + project + task round-trip against a conforming, isolating backend', async () => {
+  it('passes the full composed-system round-trip (API + worker + admin CLI + migrations) against a conforming fixture system (Story #184, AC-3/AC-1)', async () => {
+    const system = makeEpicScopeSystem();
     const result = await evaluateEpicScope('http://127.0.0.1:3000', {
-      fetchImpl: makeEpicScopeFetch(),
+      fetchImpl: system.fetchImpl,
+      execImpl: system.execImpl,
+      sleepFn: async () => {},
       uniqueSuffix: (() => {
         let n = 0;
         return () => `fixed-${++n}`;
@@ -1370,34 +1501,118 @@ describe('epic-scope frozen oracle behavior', () => {
         .map((c) => `[${c.index}] ${c.criterion} — ${c.evidence}`)
         .join('; ')}`,
     );
-    assert.equal(result.criteria.length, 24);
+    assert.equal(result.criteria.length, 27);
     assert.deepEqual(
       result.criteria.map((c) => c.index),
-      Array.from({ length: 24 }, (_, i) => i),
+      Array.from({ length: 27 }, (_, i) => i),
+    );
+  });
+
+  it('fails the CLI and migration criteria when the workspace seams cannot be observed (no execImpl / workspacePath)', async () => {
+    // The same conforming fixture WITHOUT the exec channel: HTTP criteria
+    // still pass, but the admin-CLI (22, 23) and migration (24) seams record
+    // unmet with an explicit no-workspace-access evidence line — a delivered
+    // tree without a working `npm run admin`/`npm run migrate` cannot score
+    // those seams for free.
+    const system = makeEpicScopeSystem();
+    const result = await evaluateEpicScope('http://127.0.0.1:3000', {
+      fetchImpl: system.fetchImpl,
+      sleepFn: async () => {},
+      uniqueSuffix: (() => {
+        let n = 0;
+        return () => `nocli-${++n}`;
+      })(),
+    });
+    assert.equal(result.passed, false);
+    for (const index of [22, 23, 24]) {
+      const c = result.criteria.find((x) => x.index === index);
+      assert.equal(c.met, false, `criterion ${index} must be unmet`);
+      assert.ok(
+        /no workspace access|could not run|exit/.test(c.evidence),
+        `criterion ${index} names the missing CLI channel: ${c.evidence}`,
+      );
+    }
+    // The pure-HTTP criteria are unaffected by the missing CLI channel.
+    const httpIndices = [0, 2, 5, 7, 19, 20];
+    for (const index of httpIndices) {
+      const c = result.criteria.find((x) => x.index === index);
+      assert.equal(c.met, true, `criterion ${index} should still be met`);
+    }
+  });
+
+  it('fails the worker-seam criterion when the export job never completes', async () => {
+    // A "worker never runs" system: export jobs are created queued but no
+    // poll ever completes them — criterion 20 (bounded completion) must fail
+    // while the create-shape criterion 19 still passes.
+    const system = makeEpicScopeSystem();
+    const fetchImpl = async (url, init = {}) => {
+      const res = await system.fetchImpl(url, init);
+      const u = new URL(String(url));
+      if (
+        /\/exports\/[^/]+$/.test(u.pathname) &&
+        (init.method ?? 'GET').toUpperCase() === 'GET'
+      ) {
+        const payload = await res.json();
+        const stuck = { ...payload, status: 'queued' };
+        delete stuck.report;
+        return {
+          status: res.status,
+          headers: res.headers,
+          async text() {
+            return JSON.stringify(stuck);
+          },
+          async json() {
+            return stuck;
+          },
+        };
+      }
+      return res;
+    };
+    const result = await evaluateEpicScope('http://127.0.0.1:3000', {
+      fetchImpl,
+      execImpl: system.execImpl,
+      sleepFn: async () => {},
+      exportPollTimeoutMs: 50,
+      uniqueSuffix: (() => {
+        let n = 0;
+        return () => `stuck-${++n}`;
+      })(),
+    });
+    const c19 = result.criteria.find((c) => c.index === 19);
+    const c20 = result.criteria.find((c) => c.index === 20);
+    assert.equal(c19.met, true, 'the queued create shape still conforms');
+    assert.equal(
+      c20.met,
+      false,
+      'a job that never completes must fail the worker-seam criterion',
     );
   });
 
   it("flags the isolation criterion when the backend leaks another user's project by id", async () => {
     // A backend that returns ANY project by id regardless of ownership fails
-    // criterion 11 (cross-user read isolation).
+    // criterion 9 (cross-user read isolation).
+    const system = makeEpicScopeSystem({ leakCrossOwnerReads: true });
     const result = await evaluateEpicScope('http://127.0.0.1:3000', {
-      fetchImpl: makeEpicScopeFetch({ leakCrossOwnerReads: true }),
+      fetchImpl: system.fetchImpl,
+      execImpl: system.execImpl,
+      sleepFn: async () => {},
       uniqueSuffix: (() => {
         let n = 0;
         return () => `iso-${++n}`;
       })(),
     });
-    const c11 = result.criteria.find((c) => c.index === 11);
+    const c9 = result.criteria.find((c) => c.index === 9);
     assert.equal(
-      c11.met,
+      c9.met,
       false,
-      'criterion 11 (cross-user read isolation) should be unmet',
+      'criterion 9 (cross-user read isolation) should be unmet',
     );
     assert.equal(result.passed, false);
   });
 
   it('flags the pagination criterion when the backend ignores pageSize', async () => {
-    const base = makeEpicScopeFetch();
+    const system = makeEpicScopeSystem();
+    const base = system.fetchImpl;
     const fetchImpl = async (url, init = {}) => {
       const u = new URL(String(url));
       const res = await base(url, init);
@@ -1429,13 +1644,15 @@ describe('epic-scope frozen oracle behavior', () => {
     };
     const result = await evaluateEpicScope('http://127.0.0.1:3000', {
       fetchImpl,
+      execImpl: system.execImpl,
+      sleepFn: async () => {},
       uniqueSuffix: (() => {
         let n = 0;
         return () => `page-${++n}`;
       })(),
     });
-    const c18 = result.criteria.find((c) => c.index === 18);
-    assert.equal(c18.met, false, 'pagination criterion should be unmet');
+    const c15 = result.criteria.find((c) => c.index === 15);
+    assert.equal(c15.met, false, 'pagination criterion should be unmet');
   });
 
   it('does not throw when the backend is unreachable', async () => {
@@ -1445,7 +1662,7 @@ describe('epic-scope frozen oracle behavior', () => {
       },
     });
     assert.equal(result.passed, false);
-    assert.equal(result.criteria.length, 24);
+    assert.equal(result.criteria.length, 27);
     assert.ok(result.criteria[0].evidence.includes('ECONNREFUSED'));
   });
 });

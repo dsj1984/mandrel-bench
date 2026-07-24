@@ -1,13 +1,13 @@
 /**
  * tests/bench/scenarios/epic-scope/acceptance-restart.test.js
  *
- * Criterion 23 — persistence across a REAL server restart (Ticket #122,
+ * Criterion 26 — persistence across a REAL server restart (Ticket #122,
  * item 5). The former criterion never restarted anything: it re-logged-in
- * in-process, so a pure in-memory Map scored 24/24. The oracle now drives the
+ * in-process, so a pure in-memory Map scored a clean sweep. The oracle now drives the
  * app-runner's real `restart` hook; an in-memory store loses its state on
- * restart and MUST fail criterion 23, while an on-disk store survives.
+ * restart and MUST fail the persistence criterion, while an on-disk store survives.
  *
- * These tests exercise the oracle's criterion-23 branch with an injected
+ * These tests exercise the oracle's persistence-criterion branch with an injected
  * `restart` and a fake in-memory app whose state either survives or is cleared
  * on restart — no real server, no filesystem.
  */
@@ -23,7 +23,7 @@ import { evaluate } from '../../../../bench/scenarios/epic-scope/acceptance.test
  * when true the state survives (an on-disk store).
  *
  * The router supports the subset of endpoints the oracle drives; anything else
- * returns a generic 200 so evaluate() never throws before criterion 23.
+ * returns a generic 200 so evaluate() never throws before the persistence criterion.
  */
 function makeFakeApp({ persistent }) {
   let users = new Map(); // username → { id, password }
@@ -101,7 +101,7 @@ function makeFakeApp({ persistent }) {
       );
     }
 
-    // Everything else: generic OK so evaluate() never throws before crit 23.
+    // Everything else: generic OK so evaluate() never throws before the persistence criterion.
     return json(200, {});
   };
 
@@ -117,32 +117,36 @@ function makeFakeApp({ persistent }) {
   return { fetchImpl, restart };
 }
 
-const CRIT_23 = 23;
+const CRIT_PERSIST = 26;
 
-describe('epic-scope criterion 23 — persistence across a REAL restart (Ticket #122, item 5)', () => {
-  it('an IN-MEMORY app (state cleared on restart) FAILS criterion 23', async () => {
+describe('epic-scope criterion 26 — persistence across a REAL restart (Ticket #122, item 5)', () => {
+  it('an IN-MEMORY app (state cleared on restart) FAILS the persistence criterion (26)', async () => {
     const app = makeFakeApp({ persistent: false });
     const result = await evaluate('http://fake', {
       fetchImpl: app.fetchImpl,
       restart: app.restart,
       uniqueSuffix: () => 'fixed',
     });
-    const c23 = result.criteria.find((c) => c.index === CRIT_23);
-    assert.equal(c23.met, false, 'in-memory store must fail persistence');
+    const cPersist = result.criteria.find((c) => c.index === CRIT_PERSIST);
+    assert.equal(cPersist.met, false, 'in-memory store must fail persistence');
   });
 
-  it('an ON-DISK app (state survives restart) PASSES criterion 23', async () => {
+  it('an ON-DISK app (state survives restart) PASSES the persistence criterion (26)', async () => {
     const app = makeFakeApp({ persistent: true });
     const result = await evaluate('http://fake', {
       fetchImpl: app.fetchImpl,
       restart: app.restart,
       uniqueSuffix: () => `u${Math.random().toString(36).slice(2)}`,
     });
-    const c23 = result.criteria.find((c) => c.index === CRIT_23);
-    assert.equal(c23.met, true, 'persistent store must survive the restart');
+    const cPersist = result.criteria.find((c) => c.index === CRIT_PERSIST);
+    assert.equal(
+      cPersist.met,
+      true,
+      'persistent store must survive the restart',
+    );
   });
 
-  it('without a restart hook, criterion 23 degrades to the in-process re-login signal', async () => {
+  it('without a restart hook, criterion 26 degrades to the in-process re-login signal', async () => {
     // A persistent app with NO restart hook: the criterion still records a
     // (weaker) pass rather than throwing (standalone/unit face).
     const app = makeFakeApp({ persistent: true });
@@ -150,8 +154,8 @@ describe('epic-scope criterion 23 — persistence across a REAL restart (Ticket 
       fetchImpl: app.fetchImpl,
       uniqueSuffix: () => `u${Math.random().toString(36).slice(2)}`,
     });
-    const c23 = result.criteria.find((c) => c.index === CRIT_23);
-    assert.equal(typeof c23.met, 'boolean');
-    assert.ok(/no restart hook available/.test(c23.evidence));
+    const cPersist = result.criteria.find((c) => c.index === CRIT_PERSIST);
+    assert.equal(typeof cPersist.met, 'boolean');
+    assert.ok(/no restart hook available/.test(cPersist.evidence));
   });
 });

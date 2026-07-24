@@ -8,7 +8,7 @@
  * input-validation trap (whose positive signal the frozen suite already
  * required, making it non-differential by construction). The seed prompt states the cascade as a
  * capability ("deleting a project also removes the tasks in it") and the
- * frozen suite (`../acceptance.test.js`, criterion 13) samples exactly one
+ * frozen suite (`../acceptance.test.js`, criterion 10) samples exactly one
  * consequence of it: after `DELETE /projects/:id`, a subsequent `GET` of that
  * project no longer returns it. What the frozen suite never asks is whether
  * the TASKS actually went away, or merely became unreachable through the one

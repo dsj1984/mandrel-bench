@@ -1387,6 +1387,80 @@ async function loadScenarioFake() {
   };
 }
 
+test('runOneRun: threads the delivered workspacePath + restart hook into the frozen-oracle deps on BOTH arms (Story #184)', async () => {
+  // The epic-scope multi-seam oracle exercises workspace-executed seams
+  // (`npm run admin …` / `npm run migrate`) and the real-restart persistence
+  // probe. Both capabilities ride on run.js threading `{ restart,
+  // workspacePath }` into the oracle deps — directly for the control arm,
+  // via the cross-check adapter's `evaluateDeps` for the mandrel arm.
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  const fakeRestart = async () => ({ ready: true, port: 40000 });
+  deps.withRunningAppFn = async (_o, fn) =>
+    fn('http://127.0.0.1:40000', {
+      ready: true,
+      port: 40000,
+      restart: fakeRestart,
+    });
+  const sandbox = {
+    repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
+    owner: 'dsj1984',
+    repo: 'legacy-sandbox-repo',
+    baselineRef: 'bench-baseline',
+  };
+  const { scenario } = await loadScenarioFake();
+
+  // Control arm: the oracle receives the deps object directly.
+  const seenControl = [];
+  const evaluate = async (_baseUrl, oracleDeps) => {
+    seenControl.push(oracleDeps);
+    return {
+      scenario: 'hello-world',
+      passed: true,
+      criteria: [{ met: true }, { met: true }],
+    };
+  };
+  await runOneRun(
+    {
+      scenario,
+      evaluate,
+      arm: 'control',
+      runIndex: 1,
+      sandbox,
+      resultsDir: '/results',
+    },
+    deps,
+  );
+  assert.equal(seenControl.length, 1);
+  assert.equal(seenControl[0].workspacePath, '/ws-control');
+  assert.equal(seenControl[0].restart, fakeRestart);
+
+  // Mandrel arm: the same deps flow through the adapter's evaluateDeps.
+  const seenMandrel = [];
+  deps.scoreScenarioQualityFn = async (o) => {
+    seenMandrel.push(o.evaluateDeps);
+    return {
+      frozen: { criteria: [{ met: true }, { met: true }] },
+      crossCheck: { decision: 'proceed' },
+      agree: true,
+    };
+  };
+  await runOneRun(
+    {
+      scenario,
+      evaluate,
+      arm: 'mandrel',
+      runIndex: 1,
+      sandbox,
+      resultsDir: '/results',
+    },
+    deps,
+  );
+  assert.equal(seenMandrel.length, 1);
+  assert.equal(seenMandrel[0].workspacePath, '/ws-mandrel');
+  assert.equal(seenMandrel[0].restart, fakeRestart);
+});
+
 // ---------------------------------------------------------------------------
 // Epic #66, Story #74 — trap-runner substrate wired into loadScenario /
 // runOneRun (replaces the single-oracle scenario.trapOracle field).
@@ -1895,9 +1969,78 @@ const HARNESS_COHORT = {
   model: 'claude-opus-4-8',
 };
 
+/** The cohort store path the HARNESS_COHORT batch reads (Story #183) + writes. */
+const HARNESS_STORE_PATH = path.join(
+  '/results',
+  'claude-opus-4-8',
+  '1.70.0',
+  'scorecards.ndjson',
+);
+
+/**
+ * Build a schema-complete store scorecard for a `(scenario, arm)` cell, so a
+ * test can seed the cohort store the resume guard (Story #183) cross-checks the
+ * checkpoint against. Only `scenario`/`arm` drive the guard's COUNT match; the
+ * rest of the stamp + dimensions keep the record valid for the report renderer,
+ * which re-reads the FULL store at the end of a batch.
+ */
+function storeScorecard({ scenario = 'hello-world', arm, runId }) {
+  return {
+    schemaVersion: 1,
+    runId,
+    timestamp: '2026-06-16T19:00:00.000Z',
+    model: { id: 'claude-opus-4-8' },
+    frameworkVersion: '1.70.0',
+    benchmarkVersion: '0.5.0',
+    env: { node: 'v24.16.0', os: 'darwin', host: 'test-host' },
+    scenario,
+    arm,
+    dimensions: {
+      quality: {
+        score: 1,
+        frozenSuitePassRate: 1,
+        frozenSuitePassed: 2,
+        frozenSuiteTotal: 2,
+        acceptanceEvalScore: null,
+      },
+      planningFidelity: {
+        score: null,
+        rePlanCount: 0,
+        plannedStoryCount: 0,
+        deliveredStoryCount: 0,
+        fileFootprintDrift: 0,
+      },
+      autonomy: { score: 1, hitlStops: 0, blockedEvents: 0, manualRescues: 0 },
+      efficiency: {
+        wallClockMs: 20000,
+        totalTokens: 80000,
+        inputTokens: 3000,
+        outputTokens: 1200,
+        dispatches: 0,
+        costUsd: 0.16,
+      },
+      overheadRatio: {
+        tokenRatio: 0,
+        timeRatio: 0,
+        ceremonyTokens: 0,
+        codegenTokens: 80000,
+      },
+    },
+    rawRefs: { costEnvelope: '/x' },
+  };
+}
+
+/** Serialize one or more store scorecards into seed NDJSON for `storeSeed`. */
+function storeSeedText(cards) {
+  return cards.map((c) => `${JSON.stringify(c)}\n`).join('');
+}
+
 test('runFirstBenchmark: resume skips already-checkpointed cells (idempotent)', async () => {
   // Seed the checkpoint with the mandrel cell of run 1 already complete —
-  // keyed at the SAME cohort discriminants the run executes under.
+  // keyed at the SAME cohort discriminants the run executes under. Story #183:
+  // a genuine resume requires the checkpoint AND the store to agree, so seed the
+  // store with the matching scorecard too (checkpoint-only is now a desync that
+  // deliberately re-runs — pinned by the desync test below).
   const record = freshRecord({
     checkpoint: [
       cellKey({
@@ -1907,6 +2050,11 @@ test('runFirstBenchmark: resume skips already-checkpointed cells (idempotent)', 
         runIndex: 1,
       }),
     ],
+    storeSeed: {
+      [HARNESS_STORE_PATH]: storeSeedText([
+        storeScorecard({ arm: 'mandrel', runId: 'hw-mandrel-prior-r1' }),
+      ]),
+    },
   });
   const result = await runFirstBenchmark(
     {
@@ -1926,6 +2074,152 @@ test('runFirstBenchmark: resume skips already-checkpointed cells (idempotent)', 
   assert.equal(record.sessions.filter((s) => s.arm === 'mandrel').length, 0);
   assert.equal(record.appended.length, 1);
   assert.equal(record.checkpointed.length, 1);
+});
+
+test('runFirstBenchmark: a checkpoint-done cell absent from the store re-runs (desync fail-safe, Story #183)', async () => {
+  // AC-1: the observed desync — a `git checkout` reverted the tracked store but
+  // the gitignored checkpoint survived, so the checkpoint marks the mandrel cell
+  // done while NO scorecard for it exists on disk. The guard must re-run it (a
+  // harmless duplicate the reader de-dups by runId), not silently under-count.
+  const record = freshRecord({
+    checkpoint: [
+      cellKey({
+        ...HARNESS_COHORT,
+        scenario: 'hello-world',
+        arm: 'mandrel',
+        runIndex: 1,
+      }),
+    ],
+    // No storeSeed: the store lacks the checkpoint-done cell.
+  });
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel'],
+      n: 1,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    benchDeps(record),
+  );
+  assert.equal(result.skipped, 0);
+  assert.equal(result.scorecards.length, 1);
+  assert.equal(result.scorecards[0].arm, 'mandrel');
+  assert.equal(record.sessions.filter((s) => s.arm === 'mandrel').length, 1);
+  assert.equal(record.appended.length, 1);
+});
+
+test('runFirstBenchmark: checkpoint-done cells present in the store are skipped by COUNT (Story #183)', async () => {
+  // AC-2: both mandrel runs are checkpointed AND the store holds two mandrel
+  // scorecards for the (scenario, arm) pair — because scorecards carry no
+  // runIndex, count 2 ≥ each run index means both are present → both skip
+  // exactly as a genuine resume did before the guard. Control is uncheckpointed
+  // so it runs (and exercises the report renderer over the full store).
+  const record = freshRecord({
+    checkpoint: [
+      cellKey({
+        ...HARNESS_COHORT,
+        scenario: 'hello-world',
+        arm: 'mandrel',
+        runIndex: 1,
+      }),
+      cellKey({
+        ...HARNESS_COHORT,
+        scenario: 'hello-world',
+        arm: 'mandrel',
+        runIndex: 2,
+      }),
+    ],
+    storeSeed: {
+      [HARNESS_STORE_PATH]: storeSeedText([
+        storeScorecard({ arm: 'mandrel', runId: 'hw-mandrel-r1' }),
+        storeScorecard({ arm: 'mandrel', runId: 'hw-mandrel-r2' }),
+      ]),
+    },
+  });
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel', 'control'],
+      n: 2,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    benchDeps(record),
+  );
+  // Both mandrel runs skip; both control runs execute.
+  assert.equal(result.skipped, 2);
+  assert.equal(result.scorecards.length, 2);
+  assert.ok(result.scorecards.every((sc) => sc.arm === 'control'));
+  assert.equal(record.sessions.filter((s) => s.arm === 'mandrel').length, 0);
+});
+
+test('runFirstBenchmark: a partially-present cohort re-runs only the missing count (Story #183)', async () => {
+  // The COUNT boundary: the checkpoint marks BOTH mandrel runs done but the
+  // store holds only ONE scorecard (one run's card was reverted). run 1
+  // (count 1 ≥ 1) is skipped; run 2 (count 1 ≥ 2 is false) re-runs — the store
+  // is brought back to the true N without a hand recovery.
+  const record = freshRecord({
+    checkpoint: [
+      cellKey({
+        ...HARNESS_COHORT,
+        scenario: 'hello-world',
+        arm: 'mandrel',
+        runIndex: 1,
+      }),
+      cellKey({
+        ...HARNESS_COHORT,
+        scenario: 'hello-world',
+        arm: 'mandrel',
+        runIndex: 2,
+      }),
+    ],
+    storeSeed: {
+      [HARNESS_STORE_PATH]: storeSeedText([
+        storeScorecard({ arm: 'mandrel', runId: 'hw-mandrel-r1' }),
+      ]),
+    },
+  });
+  const result = await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel'],
+      n: 2,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    benchDeps(record),
+  );
+  assert.equal(result.skipped, 1);
+  assert.equal(result.scorecards.length, 1);
+  assert.equal(result.scorecards[0].arm, 'mandrel');
+  assert.equal(record.sessions.filter((s) => s.arm === 'mandrel').length, 1);
+});
+
+test('runFirstBenchmark: reads the cohort store at most once per batch for the resume guard (Story #183)', async () => {
+  // AC-3: the guard reads the store ONCE up front, not per cell. Two cells run
+  // this batch (n=2, one arm), yet the injected store reader fires exactly once.
+  const record = freshRecord();
+  let storeReads = 0;
+  const deps = {
+    ...benchDeps(record),
+    storeReaderFn: (storePath) => {
+      storeReads += 1;
+      assert.equal(storePath, HARNESS_STORE_PATH);
+      return [];
+    },
+  };
+  await runFirstBenchmark(
+    {
+      scenarios: ['hello-world'],
+      arms: ['mandrel'],
+      n: 2,
+      sandbox: SANDBOX,
+      resultsDir: '/results',
+    },
+    deps,
+  );
+  assert.equal(storeReads, 1);
 });
 
 test('runFirstBenchmark: a checkpoint written at another frameworkVersion does not skip cells (new cohort re-runs)', async () => {
@@ -2145,7 +2439,8 @@ test('runFirstBenchmark: with no explicit n, resolves per-scenario run count fro
   const record = freshRecord();
   const deps = benchDeps(record);
   // Two scenarios with different declared targetN — mirrors the real corpus's
-  // hello-world (targetN 4) vs story-scope/epic-scope (targetN 8) split. The
+  // per-rung split (e.g. story-scope targetN 8 vs the expensive epic-scope
+  // decomposition rung's targetN 2, Story #184). The
   // fake loader keys off the scenario.json path loadScenario() constructs
   // (`.../scenarios/<id>/scenario.json`) so each scenario resolves its OWN
   // fixture rather than the single shared FAKE_SCENARIO.

@@ -20,7 +20,7 @@
  * an attacker can then mint a session for any user at will. That is the same
  * failure the class is named for, reached through the surface this rung has.
  *
- * The frozen suite (`../acceptance.test.js`, criterion 7) only sends an
+ * The frozen suite (`../acceptance.test.js`, criterion 4) only sends an
  * obviously-bogus token string (`not-a-valid-token`), which any implementation
  * rejects by construction — a lookup miss. It never sends a *derived* token,
  * so the whole "is this credential actually verified?" surface is unasserted.
