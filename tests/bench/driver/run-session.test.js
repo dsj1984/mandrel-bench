@@ -29,6 +29,7 @@ import {
   buildClaudeArgs,
   buildControlPrompt,
   buildMandrelDeliverPrompt,
+  buildMandrelLightPrompt,
   buildMandrelPlanPrompt,
   DEFAULT_BENCH_MODEL,
   isTransientClaudeError,
@@ -194,6 +195,32 @@ test('buildArmPrompt: control arm is bare — no Mandrel pipeline', () => {
   assert.doesNotMatch(prompt, /\/plan|\/deliver/);
   assert.match(prompt, /autonomously/i);
   assert.match(prompt, /hello-world/);
+});
+
+test('buildArmPrompt: mandrel-light drives a SINGLE /deliver-light session — no /plan, no /deliver pair', () => {
+  const prompt = buildArmPrompt({ arm: 'mandrel-light', scenario: SCENARIO });
+  assert.match(prompt, /\/deliver-light[\s\S]*--yes/);
+  // It must NOT DRIVE the two-session /plan + /deliver pipeline (the prompt may
+  // still NAME /plan in the escalation caveat, but never invokes it).
+  assert.doesNotMatch(prompt, /\/plan (--idea|--yes|\d)/);
+  assert.doesNotMatch(prompt, /\/deliver [^-]/);
+  // Carries the unattended auto-proceed directive and the task.
+  assert.match(prompt, /implicit approval|never block/i);
+  assert.match(prompt, /hello-world/);
+  // A phase selector is ignored — /deliver-light has no /plan phase to split.
+  const withPhase = buildArmPrompt({
+    arm: 'mandrel-light',
+    scenario: SCENARIO,
+    phase: 'plan',
+  });
+  assert.equal(withPhase, prompt);
+});
+
+test('buildMandrelLightPrompt: single /deliver-light drive with the escalation note', () => {
+  const prompt = buildMandrelLightPrompt({ scenario: SCENARIO });
+  assert.match(prompt, /\/deliver-light[\s\S]*--yes/);
+  assert.match(prompt, /escalate/i);
+  assert.throws(() => buildMandrelLightPrompt({ scenario: {} }), /string id/);
 });
 
 test('buildArmPrompt: rejects bad arm and missing scenario fields', () => {
@@ -371,6 +398,29 @@ test('runSession (control): drives a SINGLE session with no phases block', () =>
   );
   assert.equal(invoke.calls.length, 1);
   assert.doesNotMatch(invoke.calls[0].prompt, /\/plan|\/deliver/);
+  assert.equal(out.phases, null);
+  assert.equal(out.envelope.cost.totalUsd, 0.346588);
+});
+
+test('runSession (mandrel-light): drives a SINGLE /deliver-light session with no phases block', () => {
+  const invoke = fakeInvoke();
+  const hookCalls = [];
+  const out = runSession(
+    { arm: 'mandrel-light', scenario: SCENARIO, cwd: '/tmp/s' },
+    {
+      invokeFn: invoke,
+      // The two-session between-phases hook must NEVER run for the light arm.
+      betweenPhases: (ctx) => {
+        hookCalls.push(ctx);
+        return { deliverTarget: 1 };
+      },
+    },
+  );
+  assert.equal(invoke.calls.length, 1);
+  assert.equal(hookCalls.length, 0);
+  assert.match(invoke.calls[0].prompt, /\/deliver-light[\s\S]*--yes/);
+  assert.doesNotMatch(invoke.calls[0].prompt, /\/plan (--idea|--yes|\d)/);
+  assert.equal(out.arm, 'mandrel-light');
   assert.equal(out.phases, null);
   assert.equal(out.envelope.cost.totalUsd, 0.346588);
 });

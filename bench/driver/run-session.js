@@ -48,7 +48,12 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
 
-import { baseArm, KNOWN_ARMS, routingOverrideForArm } from './arms.js';
+import {
+  armDrivesDeliverLight,
+  baseArm,
+  KNOWN_ARMS,
+  routingOverrideForArm,
+} from './arms.js';
 
 /**
  * Pinned default model id. The harness records the exact model on every
@@ -211,6 +216,39 @@ export function buildMandrelDeliverPrompt(input) {
 }
 
 /**
+ * Mandrel-arm LIGHT prompt (arm 5, `mandrel-light`, Story #190). Drives
+ * `/deliver-light` as ONE session straight from the scenario task prompt —
+ * the single-session path mandrel 2.13.0 added for genuinely small work,
+ * replacing the two-session `/plan` + `/deliver` pair. This is the whole point
+ * of the arm: to measure that single-session lever, which no other arm invokes.
+ *
+ * `/deliver-light` runs its own suitability gate and, on an over-scope prompt,
+ * ESCALATES back to `/plan` (under `--yes` it fails closed to recommending
+ * `/plan`); the harness records which path the cell actually took so an
+ * escalation is never counted as a light win (see bench/run.js's `deliveryPath`
+ * classification). The prompt itself just invokes `/deliver-light "<task>"
+ * --yes`; the unattended preamble auto-proceeds its HITL stop gates, and the
+ * escalation decision is `/deliver-light`'s own, not the prompt's.
+ *
+ * @param {object} input
+ * @param {{ id: string, taskPrompt: string }} input.scenario
+ * @returns {string}
+ */
+export function buildMandrelLightPrompt(input) {
+  const { scenario } = input ?? {};
+  assertScenario(scenario, 'buildMandrelLightPrompt');
+  const drive =
+    `Deliver the task below with a SINGLE \`/deliver-light "<the task ` +
+    `described below>" --yes\` session (the --yes flag drives /deliver-light ` +
+    `headlessly through its HITL stop gates). Do NOT run /plan first and do ` +
+    `NOT split the work into multiple sessions — /deliver-light is the ` +
+    `single-session delivery path. If /deliver-light's own suitability gate ` +
+    `judges the task over-scope it will escalate to /plan; follow its ` +
+    `recommendation, but do not pre-empt that decision yourself.`;
+  return `${MANDREL_UNATTENDED_PREAMBLE}${drive}\n\nTask (${scenario.id}):\n${scenario.taskPrompt}`;
+}
+
+/**
  * Compose the prompt sent to `claude -p` for a given arm + scenario (+ phase).
  * A thin phase-aware dispatcher over the per-phase builders above, keyed on
  * the arm's BASE shape (bench/driver/arms.js) so the Ticket #123 variants
@@ -245,6 +283,11 @@ export function buildArmPrompt(input) {
   }
 
   if (base === 'mandrel') {
+    // Arm 5 (`mandrel-light`, Story #190): a single `/deliver-light` session
+    // regardless of phase — it has no /plan phase to split.
+    if (armDrivesDeliverLight(arm)) {
+      return buildMandrelLightPrompt({ scenario });
+    }
     const storyRouted = routingOverrideForArm(arm) === 'story';
     if (phase === 'plan') {
       return buildMandrelPlanPrompt({ scenario, storyRouted });
@@ -974,6 +1017,12 @@ function phaseRecord(phase, envelope) {
  * `claude -p --output-format json` sessions and return the parsed usage/cost.
  *
  * - **control** — ONE session (`buildControlPrompt`); `phases` is null.
+ * - **mandrel-light** (arm 5, Story #190) — ONE session driving
+ *   `/deliver-light` (`buildMandrelLightPrompt`) straight from the task
+ *   prompt, in place of the two-session plan/deliver pair; `phases` is null
+ *   (there is no separate /plan phase to attribute). It is still a
+ *   mandrel-base arm, so every other decision (overlay, materialization,
+ *   scoring pipeline) is identical to `mandrel`.
  * - **mandrel** — TWO ordered sessions (D-019): session 1 drives `/plan`
  *   (`buildMandrelPlanPrompt`), then the injected `deps.betweenPhases` hook runs
  *   the between-session id-discovery + plan snapshot (see bench/run.js) and
@@ -1087,6 +1136,42 @@ export function runSession(opts = {}, deps = {}) {
     });
     const transcripts = [];
     recordTranscript(transcripts, 'session', transcriptPath);
+    return {
+      arm,
+      scenarioId: scenario.id,
+      model,
+      prompt,
+      status,
+      envelope,
+      phases: null,
+      transcripts,
+    };
+  }
+
+  // Mandrel-LIGHT arm (arm 5, Story #190): a SINGLE `/deliver-light` session
+  // straight from the task prompt, in place of the two-session plan/deliver
+  // pair. `phases` is null (there is no separate /plan phase to attribute);
+  // everything downstream (overlay, materialization, scoring pipeline) is the
+  // identical mandrel-base machinery. The between-phases hook is a two-session
+  // seam, so a light run never invokes it — bench/run.js discovers the
+  // delivered standalone Story and classifies light-vs-escalated post-session.
+  if (armDrivesDeliverLight(arm)) {
+    const prompt = buildMandrelLightPrompt({ scenario });
+    const { status, envelope, transcriptPath } = invokeOneSession({
+      prompt,
+      arm,
+      scenarioId: scenario.id,
+      cwd,
+      model,
+      extraArgs,
+      timeoutMs,
+      invokeFn,
+      logger,
+      phase: 'deliver-light',
+      ...retryOpts,
+    });
+    const transcripts = [];
+    recordTranscript(transcripts, 'deliver-light', transcriptPath);
     return {
       arm,
       scenarioId: scenario.id,

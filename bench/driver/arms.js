@@ -21,6 +21,20 @@
  *     merge A/B: the routing divergence from the scenario contract IS the
  *     treatment, so the routing-mismatch exclusion is made ARM-AWARE (the
  *     expected routing for this arm is `story`), not globally weakened.
+ *   - **`mandrel-light`** (arm 5, Story #190): the full mandrel overlay, but a
+ *     light-shaped scenario is delivered as ONE `/deliver-light` session
+ *     straight from the scenario task prompt instead of the two-session
+ *     `/plan` + `/deliver` pair. It exists to measure mandrel 2.13.0's
+ *     single-session `/deliver-light` path — the biggest planned overhead
+ *     lever — which no other arm invokes, so a `mandrel-light` cell is directly
+ *     comparable to a `mandrel` cell on the same rung. It is a MANDREL-family
+ *     arm (`isMandrelArm` true) for autonomy, per-arm bands, and
+ *     materialization, and honours the scenario's declared routing (a light
+ *     delivery is a single standalone Story), so it declares no routing
+ *     override. Because `/deliver-light` escalates over-scope back to `/plan`,
+ *     the cell records which path it actually took (light vs escalated) so an
+ *     escalated cell is never counted as a light win — see
+ *     `armDrivesDeliverLight` and bench/run.js's `deliveryPath` classification.
  *
  * Every variant maps onto exactly one BASE arm (`baseArm`), and all
  * pipeline-shape decisions (overlay vs bare clone, one session vs two-phase
@@ -43,6 +57,7 @@ export const KNOWN_ARMS = Object.freeze([
   'control',
   'control-claudemd',
   'mandrel-story-routed',
+  'mandrel-light',
 ]);
 
 /** The default arm set — unchanged by Ticket #123 (arms 3/4 are opt-in). */
@@ -60,6 +75,7 @@ export function baseArm(arm) {
   switch (arm) {
     case 'mandrel':
     case 'mandrel-story-routed':
+    case 'mandrel-light':
       return 'mandrel';
     case 'control':
     case 'control-claudemd':
@@ -81,7 +97,11 @@ export function baseArm(arm) {
  * @returns {boolean}
  */
 export function isMandrelArm(arm) {
-  return arm === 'mandrel' || arm === 'mandrel-story-routed';
+  return (
+    arm === 'mandrel' ||
+    arm === 'mandrel-story-routed' ||
+    arm === 'mandrel-light'
+  );
 }
 
 /**
@@ -111,6 +131,26 @@ export function isControlArm(arm) {
  */
 export function routingOverrideForArm(arm) {
   return arm === 'mandrel-story-routed' ? 'story' : null;
+}
+
+/**
+ * Whether this arm delivers a light-shaped scenario as ONE `/deliver-light`
+ * session (arm 5, `mandrel-light`, Story #190) instead of the two-session
+ * `/plan` + `/deliver` pair every other mandrel-base arm drives. True ONLY for
+ * `mandrel-light`; false (and never throwing) for every other arm, so the
+ * driver's session-shape branch and bench/run.js's `deliveryPath` classifier
+ * both key off this one predicate rather than string-matching the arm inline.
+ *
+ * The arm declares NO routing override (`routingOverrideForArm` returns null
+ * for it): a light delivery is a single standalone Story, which the
+ * light-shaped scenarios already declare (`routing: 'story'`), so the arm
+ * honours the scenario contract rather than forcing a routing.
+ *
+ * @param {string} arm
+ * @returns {boolean}
+ */
+export function armDrivesDeliverLight(arm) {
+  return arm === 'mandrel-light';
 }
 
 /**

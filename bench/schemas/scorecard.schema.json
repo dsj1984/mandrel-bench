@@ -99,9 +99,10 @@
         "mandrel",
         "control",
         "control-claudemd",
-        "mandrel-story-routed"
+        "mandrel-story-routed",
+        "mandrel-light"
       ],
-      "description": "Which arm produced this run. 'mandrel' clones carry .agents/ and run the /plan→/deliver pipeline; 'control' clones have no scaffolding and receive the bare task prompt. Ticket #123 adds two OPT-IN variant arms (additional cells within the same cohort — D-014 identity unchanged): 'control-claudemd' (arm 3) is the identical control path plus one static generic CLAUDE.md seeded into the workspace, and 'mandrel-story-routed' (arm 4) is the full mandrel pipeline with the plan-phase prompt forcing single-standalone-Story routing (its expected routing is 'story' by construction, so the routing-mismatch exclusion compares against that override — see bench/driver/arms.js). All arms are costed by the same `claude -p` envelope (apples-to-apples by construction)."
+      "description": "Which arm produced this run. 'mandrel' clones carry .agents/ and run the /plan→/deliver pipeline; 'control' clones have no scaffolding and receive the bare task prompt. Ticket #123 adds two OPT-IN variant arms (additional cells within the same cohort — D-014 identity unchanged): 'control-claudemd' (arm 3) is the identical control path plus one static generic CLAUDE.md seeded into the workspace, and 'mandrel-story-routed' (arm 4) is the full mandrel pipeline with the plan-phase prompt forcing single-standalone-Story routing (its expected routing is 'story' by construction, so the routing-mismatch exclusion compares against that override — see bench/driver/arms.js). Story #190 adds 'mandrel-light' (arm 5): the full mandrel overlay, but a light-shaped scenario is delivered as ONE /deliver-light session instead of the two-session /plan+/deliver pair — it measures mandrel 2.13.0's single-session /deliver-light path against the mandrel baseline on the same rung, and carries a `deliveryPath` block recording whether the cell delivered light or escalated to /plan. All arms are costed by the same `claude -p` envelope (apples-to-apples by construction)."
     },
     "routingVerdict": {
       "type": ["string", "null"],
@@ -180,6 +181,23 @@
         "$ref": "#/$defs/phaseEnvelope"
       },
       "description": "Per-phase session envelopes for the mandrel arm's ordered two-session run (D-019, Epic #86 Story #94, docs/target-architecture.md §8). The mandrel arm runs `/plan` (session 1) then `/deliver` (session 2) as separate headless `claude -p` sessions, each with its own cost/tokens/wall-clock, so a finding can be attributed to the planning half vs the delivery half. The per-phase `costUsd` and `tokens` SUM to this record's `dimensions.efficiency.costUsd` and `dimensions.efficiency.totalTokens` by construction (the run envelope is the sum of the phase envelopes). Present on mandrel-arm records only; ABSENT for the control arm (a single session) — a control record is valid without it."
+    },
+    "deliveryPath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "escalated"],
+      "description": "Story #190: which delivery path a `mandrel-light` (arm 5) cell ACTUALLY took. The `mandrel-light` arm drives a single `/deliver-light` session, whose suitability gate escalates an over-scope prompt back to `/plan`; recording the observed path keeps an escalated cell from being silently counted as a single-session light win. Present ONLY on `mandrel-light` records; ABSENT for every other arm (which has no light path), so their records stay unchanged.",
+      "properties": {
+        "path": {
+          "type": "string",
+          "enum": ["light", "escalated"],
+          "description": "'light' = the cell delivered the task as a single `/deliver-light` session; 'escalated' = `/deliver-light`'s suitability gate judged the prompt over-scope and escalated to `/plan` (evidenced by a /plan invocation in the workspace, or an observed multi-story routing verdict)."
+        },
+        "escalated": {
+          "type": "boolean",
+          "description": "true iff `path` is 'escalated' — a redundant boolean projection so a consumer can filter escalated cells out of the light-win pool without string-matching `path`."
+        }
+      }
     },
     "rawRefs": {
       "type": "object",

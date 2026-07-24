@@ -4255,6 +4255,129 @@ test('runOneRun (arm 4): mandrel-story-routed drives story discovery and is EXEM
   );
 });
 
+// ---------------------------------------------------------------------------
+// Story #190 — mandrel-light (arm 5): route a light-shaped scenario through a
+// single /deliver-light session, scored through the SAME mandrel pipeline, and
+// record light-vs-escalated so an escalation is not counted as a light win.
+// ---------------------------------------------------------------------------
+
+test('runOneRun (arm 5): mandrel-light delivers via a SINGLE session and scores through the mandrel pipeline, recording deliveryPath=light (AC-1, AC-4)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  // A single standalone Story delivered by /deliver-light; GitHub telemetry
+  // recovers it so the mandrel value dims are MEASURED (not the control null).
+  deps.ghJson = (args) => {
+    const key = `${args[0]} ${args[1]}`;
+    if (key === 'issue list') {
+      return [{ number: 190, createdAt: '2026-07-23T20:30:00.000Z' }];
+    }
+    if (key === 'issue view') {
+      return {
+        number: 190,
+        state: 'CLOSED',
+        labels: [{ name: 'type::story' }, { name: 'agent::done' }],
+        comments: [
+          {
+            body: '<!-- ap:structured-comment type="story-init" -->\n"standalone": true',
+          },
+        ],
+      };
+    }
+    if (key === 'pr list') {
+      return [
+        {
+          number: 191,
+          mergedAt: '2026-07-23T20:50:00.000Z',
+          files: [{ path: 'src/server.js' }],
+        },
+      ];
+    }
+    return [];
+  };
+
+  const { evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      // A light-shaped scenario (routing: story — a light delivery is a single
+      // standalone Story).
+      scenario: { ...FAKE_SCENARIO, routing: 'story' },
+      evaluate,
+      arm: 'mandrel-light',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
+        owner: 'dsj1984',
+        repo: 'legacy-sandbox-repo',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.equal(scorecard.arm, 'mandrel-light');
+  // The mandrel pipeline ran (overlay, NOT the bare control path) — AC-4.
+  assert.deepEqual(record.overlays, ['mandrel-light']);
+  assert.deepEqual(record.overlayScenarioIds, ['hello-world']);
+  // ONE session drove the cell (no /plan + /deliver pair) — AC-1.
+  assert.equal(record.sessions.length, 1);
+  assert.equal(record.sessions[0].arm, 'mandrel-light');
+  // Scores as a mandrel-family arm: planning fidelity is measured, not null.
+  assert.equal(typeof scorecard.dimensions.planningFidelity.score, 'number');
+  // Records the path a cell took: a clean light delivery (no escalation) — AC-3.
+  assert.deepEqual(scorecard.deliveryPath, { path: 'light', escalated: false });
+  assert.ok(
+    validateScorecard(scorecard),
+    `scorecard invalid: ${JSON.stringify(validateScorecard.errors)}`,
+  );
+});
+
+test('runOneRun (arm 5): a mandrel-light cell that escalated to /plan records deliveryPath=escalated — NOT a light win (AC-3)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  // /deliver-light's suitability gate judged the prompt over-scope and
+  // escalated to /plan — which left a plan-invocation ledger in the workspace.
+  // Model that ledger via the discover seams (a run-<n> dir carrying a
+  // lifecycle.ndjson AND a plan-metrics.json — the escalation signal).
+  const has = (p) =>
+    p.endsWith('/temp') ||
+    p.endsWith('/temp/run-1/lifecycle.ndjson') ||
+    p.endsWith('/temp/run-1/plan-metrics.json');
+  deps.discoverDeps = {
+    existsImpl: (p) => has(p),
+    readdirImpl: (p) => (p.endsWith('/temp') ? ['run-1'] : []),
+    statImpl: () => ({ mtimeMs: 1 }),
+  };
+
+  const { evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario: { ...FAKE_SCENARIO, routing: 'story' },
+      evaluate,
+      arm: 'mandrel-light',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
+        owner: 'dsj1984',
+        repo: 'legacy-sandbox-repo',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.equal(scorecard.arm, 'mandrel-light');
+  // The plan-invocation ledger flips the path to 'escalated' so the cell is
+  // not silently pooled as a single-session light win.
+  assert.deepEqual(scorecard.deliveryPath, {
+    path: 'escalated',
+    escalated: true,
+  });
+  assert.ok(
+    validateScorecard(scorecard),
+    `scorecard invalid: ${JSON.stringify(validateScorecard.errors)}`,
+  );
+});
+
 test('main(): rejects an unknown BENCH_ARMS value BEFORE any sandbox is provisioned (fail fast)', async () => {
   const messages = { error: [] };
   const logger = {
@@ -4344,4 +4467,50 @@ test('main(): accepts the opt-in variant arms in BENCH_ARMS and runs one cell pe
     'mandrel',
     'mandrel-story-routed',
   ]);
+});
+
+test('main(): BENCH_ARMS=mandrel,mandrel-light runs one cell per arm alongside the mandrel baseline (AC-1, AC-2)', async () => {
+  const logger = { info: () => {}, warn: () => {}, error: () => {} };
+  const cellArms = [];
+  await main(
+    {
+      BENCH_GITHUB_TOKEN: 'ghp_x',
+      BENCH_SANDBOX_OWNER: 'dsj1984',
+      BENCH_ARMS: 'mandrel,mandrel-light',
+    },
+    {
+      logger,
+      sweepJanitorFn: () => ({
+        candidates: [],
+        deleted: [],
+        failed: [],
+        dryRun: false,
+      }),
+      createEphemeralRepoFn: ({ owner, name }) => ({
+        repoFullName: `${owner}/${name}`,
+      }),
+      seedFromTemplateFn: ({ repoFullName }) => ({
+        repoFullName,
+        baselineSha: 'deadbeef',
+        repoUrl: `https://github.com/${repoFullName}.git`,
+      }),
+      destroyEphemeralRepoFn: ({ repoFullName }) => ({
+        deleted: true,
+        repoFullName,
+      }),
+      runFirstBenchmarkFn: async (opts) => {
+        cellArms.push(...opts.arms);
+        return {
+          scorecards: [],
+          cohorts: [],
+          dashboardPath: 'x',
+          skipped: 0,
+          stopped: null,
+        };
+      },
+      mkdtempFn: (p) => `${p}fake`,
+      rmFn: () => {},
+    },
+  );
+  assert.deepEqual(cellArms, ['mandrel', 'mandrel-light']);
 });
