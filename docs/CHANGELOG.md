@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.15.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.14.0...mandrel-bench-v0.15.0) (2026-07-24)
+
+
+### Added
+
+* **bench:** redesign epic-scope into a true multi-seam decomposition rung (refs [#184](https://github.com/dsj1984/mandrel-bench/issues/184)) ([#187](https://github.com/dsj1984/mandrel-bench/issues/187)) ([69eb479](https://github.com/dsj1984/mandrel-bench/commit/69eb479f4055e7d469745e0968c9e4a2d1832585))
+
+
+### Fixed
+
+* **bench:** verify the cohort store holds a cell before resume-skipping it (refs [#183](https://github.com/dsj1984/mandrel-bench/issues/183)) ([#185](https://github.com/dsj1984/mandrel-bench/issues/185)) ([1549915](https://github.com/dsj1984/mandrel-bench/commit/154991552a79f98c5816e9e03f11cd0af8cc7a43))
+
 ## [0.14.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.13.0...mandrel-bench-v0.14.0) (2026-07-24)
 
 
