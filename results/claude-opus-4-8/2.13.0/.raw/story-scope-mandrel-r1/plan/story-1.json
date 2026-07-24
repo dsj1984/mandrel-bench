@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nDeliver a dependency-free Node.js JSON REST API where users sign up, sign in, and manage their own private notes, with all data surviving a server restart.\n\n## Spec\nFramework-free HTTP server on Node's built-in `node:http` (no Express/Fastify/etc). Listens on `process.env.PORT`, default 3000. Bodies are JSON.\n\nContract:\n- `POST /signup` `{username, password}` → `201 {id, username}`. Usernames unique; duplicate → `409`.\n- `POST /login` `{username, password}` → `200 {session}`, `session` an opaque unguessable token (crypto-random). Wrong creds → `401`.\n- `GET /me` → `200 {id, username}`.\n- `POST /notes` `{title, body}` → `201` created note (with id + owner).\n- `GET /notes` → `200` array of ONLY the caller's notes.\n\nAuth invariant (security, load-bearing): `/me`, `POST /notes`, `GET /notes` require a valid session via `Authorization: Bearer <session>`; missing/invalid/unknown → `401`, never leaking another user's data. Notes are strictly owner-scoped — a user MUST NOT read another's notes. Passwords MUST be hashed+salted (never plaintext) and MUST never appear in any response.\n\nPersistence invariant (load-bearing): users, notes, and the session→user mapping live in a durable on-disk store — an embedded SQLite file (built-in `node:sqlite`) or equivalent (e.g. an atomically-written JSON file), NOT in-memory. A restart MUST preserve prior users/notes and prior users MUST still log in. Store path is configurable with a sensible default and is git-ignored.\n\nBad-request handling: malformed JSON, missing/empty required fields → `400` with a JSON error body; unknown route/method → `404`/`405`. The server never crashes on bad input.\n\n## Changes\n- `package.json` — refactors-existing\n- `src/server.js` — creates\n- `src/store.js` — creates\n- `test/api.test.js` — creates\n- `.gitignore` — refactors-existing\n\n## Acceptance\n- [ ] AC-1: `npm start` boots the server on the PORT env var (default 3000) with no external web framework in package.json dependencies.\n- [ ] AC-2: POST /signup with {username, password} returns 201 and a JSON body containing the new user's id and username; the password never appears in the response.\n- [ ] AC-3: A second POST /signup with an already-taken username returns a 4xx (e.g. 409) rather than creating a duplicate.\n- [ ] AC-4: POST /login with correct credentials returns 200 and {session}; POST /login with a wrong password returns 401.\n- [ ] AC-5: GET /me with a valid Authorization: Bearer <session> returns 200 {id, username}; GET /me with a missing or invalid token returns 401.\n- [ ] AC-6: POST /notes with a valid session and {title, body} returns 201 with the created note; GET /notes returns a JSON array containing only the authenticated user's notes and none belonging to another user.\n- [ ] AC-7: Persistence: after creating a user and a note, killing the process, and starting a fresh server against the same on-disk store, GET /notes for that user (re-authenticated) still returns the previously created note.\n- [ ] AC-8: Malformed JSON or missing required fields on POST /signup, /login, or /notes returns a 400 with a JSON error body and does not crash the server.\n- [ ] AC-9: The on-disk store file/path is listed in .gitignore and is not committed.\n\n## Verify\n- npm start & then curl the signup/login/me/notes flow, or run the automated suite below (contract)\n- node --test test/api.test.js (contract)\n- npm run typecheck (validate)\n\n## Non-Goals\n- No web UI, HTML pages, or client SDK — JSON HTTP endpoints only.\n- No note update or delete endpoints, no note sharing between users.\n- No third-party web framework, ORM, or auth library.\n- No password-reset, email verification, rate limiting, or session-expiry policy.\n\n<!-- meta: {\"reason_to_exist\":\"Stand up the complete accounts-and-notes API as one cohesive, restart-durable capability delivered and self-verified in a single pass (c: one coherent HTTP service — server, store, and auth are inseparable).\"} -->\n\n<!-- plan-story: 144895cd61b4b081 -->",
+  "labels": [
+    {
+      "id": "LA_kwDOTiSxZM8AAAACtHyICw",
+      "name": "plan-run::bc7203dc",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    },
+    {
+      "id": "LA_kwDOTiSxZM8AAAACtHyI2w",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTiSxZM8AAAACtHyKqw",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 1,
+  "title": "JSON REST API for user accounts and personal notes with on-disk persistence"
+}

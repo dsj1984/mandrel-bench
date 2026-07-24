@@ -1,0 +1,76 @@
+{
+  "is_error": false,
+  "duration_api_ms": 273572,
+  "num_turns": 31,
+  "stop_reason": "end_turn",
+  "session_id": "ad48db56-294e-432c-ac8e-76a6c0677f05",
+  "total_cost_usd": 1.6642625000000002,
+  "usage": {
+    "input_tokens": 44,
+    "cache_creation_input_tokens": 51021,
+    "cache_read_input_tokens": 1336925,
+    "output_tokens": 19382,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 51021,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 705,
+        "cache_read_input_tokens": 69785,
+        "cache_creation_input_tokens": 530,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 530
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 735,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.00082,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 44,
+      "outputTokens": 19382,
+      "cacheReadInputTokens": 1336925,
+      "cacheCreationInputTokens": 51021,
+      "webSearchRequests": 0,
+      "costUSD": 1.6634425000000002,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "The work is complete and committed. Here's a summary of what I implemented:\n\n## Project sharing with roles\n\n**New endpoint:** `POST /projects/:id/shares` accepting `{\"userId\": ..., \"role\": \"viewer\"|\"editor\"}`.\n\n### Changes by unit (scope kept to API + store schema, as required)\n\n**Store schema** (`src/store/migrations.js`) — appended migration `2` adding a `project_shares` table (composite PK on `project_id`+`user_id`, a `CHECK` constraint on `role`, cascade on delete, index for lookups). Existing migration 1 is untouched.\n\n**Store repo** (`src/store/repo.js`):\n- `getProjectAccess(db, projectId, userId)` — resolves the caller's role (`owner`/`editor`/`viewer`/`null`) in one place.\n- `findUserById` — to validate the share target exists.\n- `shareProject` — idempotent upsert (re-sharing changes the role).\n- `deleteProject` now also cleans up shares.\n\n**API server** (`src/api/server.js`) — replaced the owner-only gate with a `requireProjectAccess(db, user, id, minRole)` helper backed by a role hierarchy (owner > editor > viewer), then set each route's minimum role:\n- View project / list tasks / exports → `viewer`\n- Create/update/delete tasks → `editor`\n- Delete project and share it → `owner`\n\n### Privacy & error handling\n- A user with **no** relationship gets `404` — existence stays hidden, matching the pre-existing convention.\n- A member whose role is too low gets `403` (they legitimately know the project exists).\n- Only the owner can share; an editor sharing gets `403`.\n- Bad requests return `400`: unknown user, unrecognised role, missing `userId`, or sharing with the project's own owner.\n\n**Worker and admin CLI** are unchanged. All 7 tests pass (including a new sharing test covering roles, permission boundaries, privacy, bad requests, and role promotion), `node --check` passes on all files, and migrations apply cleanly on a fresh DB. README updated.",
+  "ttft_ms": 4545,
+  "ttft_stream_ms": 3917,
+  "time_to_request_ms": 107,
+  "type": "result",
+  "duration_ms": 275972,
+  "uuid": "e2c9c045-8a2b-42c4-9d6e-da060e1a9e63"
+}

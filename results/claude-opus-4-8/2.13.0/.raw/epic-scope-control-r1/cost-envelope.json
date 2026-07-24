@@ -1,0 +1,76 @@
+{
+  "is_error": false,
+  "duration_api_ms": 259521,
+  "num_turns": 22,
+  "stop_reason": "end_turn",
+  "session_id": "5abb9300-47c9-4edb-a31c-269464d9b3b2",
+  "total_cost_usd": 1.3787745000000002,
+  "usage": {
+    "input_tokens": 41,
+    "cache_creation_input_tokens": 37140,
+    "cache_read_input_tokens": 937795,
+    "output_tokens": 21470,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 37140,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 676,
+        "cache_read_input_tokens": 55893,
+        "cache_creation_input_tokens": 541,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 541
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 1427,
+      "outputTokens": 19,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.0015220000000000001,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 41,
+      "outputTokens": 21470,
+      "cacheReadInputTokens": 937795,
+      "cacheCreationInputTokens": 37140,
+      "webSearchRequests": 0,
+      "costUSD": 1.3772525000000002,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. The platform is built, tested, and committed.\n\n## What was delivered\n\nOne repository, four cooperating units over a single persistent on-disk SQLite store (`node:sqlite`) — **no external web framework and zero runtime dependencies**:\n\n- **Unit 1 — Store & migrations** (`src/store/`): the sole owner of the schema. `npm run migrate` applies pending migrations and is idempotent (verified: second run reports \"up to date\"). `repo.js` holds all schema-aware queries so the other units never write SQL.\n- **Unit 2 — REST API** (`src/api/server.js`): `node:http`, applies migrations on boot. Register/login with bearer tokens (scrypt-hashed passwords), owner-scoped projects, paginated/filterable tasks (`?page`/`?pageSize`/`?done`), and async export jobs that respond `202` immediately with **no report**. Every request is wrapped so malformed input returns `400` rather than crashing the process.\n- **Unit 3 — Worker** (`src/worker/worker.js`): polls the shared store, atomically claims queued jobs (`BEGIN IMMEDIATE`), builds each `{name, total, done}` report, and marks it `completed`. Report generation lives only here.\n- **Unit 4 — Admin CLI** (`src/admin/cli.js`): `npm run admin -- stats` and `deactivate-user <username>` (deactivated users can no longer log in).\n\n`npm start` brings up the API server **and** the worker together.\n\n## Verification\n- 6-test end-to-end suite passes (auth enforcement, user isolation, CRUD, pagination/filter, async export via worker, cascade delete, malformed-request resilience, admin CLI).\n- Live smoke test: booted via `npm start`, an export completed through the worker, data survived a full restart, and `admin stats` reported correct counts.\n\nScripts added: `start`, `migrate`, `admin`. The runtime `data/` directory is gitignored. Work committed as `7341bae`.",
+  "ttft_ms": 4314,
+  "ttft_stream_ms": 3710,
+  "time_to_request_ms": 116,
+  "type": "result",
+  "duration_ms": 265343,
+  "uuid": "74ca066c-6061-4c03-aa0c-d2354c27e5a7"
+}

@@ -1,0 +1,76 @@
+{
+  "is_error": false,
+  "duration_api_ms": 396490,
+  "num_turns": 35,
+  "stop_reason": "end_turn",
+  "session_id": "25da8a20-5ae6-4707-bdc9-61f63f50f0e6",
+  "total_cost_usd": 2.6032595,
+  "usage": {
+    "input_tokens": 65,
+    "cache_creation_input_tokens": 71343,
+    "cache_read_input_tokens": 2368531,
+    "output_tokens": 28177,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 71343,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 1,
+        "output_tokens": 615,
+        "cache_read_input_tokens": 90071,
+        "cache_creation_input_tokens": 566,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 566
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 739,
+      "outputTokens": 15,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.0008139999999999999,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 65,
+      "outputTokens": 28177,
+      "cacheReadInputTokens": 2368531,
+      "cacheCreationInputTokens": 71343,
+      "webSearchRequests": 0,
+      "costUSD": 2.6024455,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. The change request is implemented end to end and committed.\n\n## What changed\n\n**New structured names.** Clients now carry `firstName` and `lastName`. Create/update accept them, and every client response includes both (plus the joined full `name`, kept for backward compatibility).\n\n**Legacy `name` still works.** Writes that send a single `name` are split on the last space — everything before is the first name, the last word is the last name, a single word becomes just the last name (empty first name). Both the create and update paths honor this, and a partial update (e.g. `firstName` only) keeps the untouched part and recomputes the full name.\n\n**Startup migration.** A new SQL migration (`006-client-name-parts.sql`) adds `first_name`/`last_name` columns; `server.js` then backfills any pre-split records in place. It's idempotent (only touches rows still missing both parts), so restarts are no-ops.\n\n**Report shows current name.** The receivables query now joins `customers` and derives each row's name from the client's *current* first/last name (`TRIM(first || ' ' || last)`) instead of the stale order-time snapshot — verified by renaming a client after an order was issued and seeing the new name in the report.\n\n## Files touched\n- `src/lib/names.js` (new) — `splitName` / `fullName` helpers\n- `src/db/migrations/006-client-name-parts.sql` (new)\n- `src/schemas/customer.schema.js`, `src/routes/clients.routes.js`, `src/services/customers.service.js`, `src/repositories/customers.repo.js`, `src/repositories/orders.repo.js`, `src/server.js`\n\nAll 140 existing tests pass, and `typecheck` + `lint` are clean. The layering conventions were preserved (SQL only in repos; validation via `validate()` plus the cross-field name check in the route/service, matching the existing empty-body pattern).",
+  "ttft_ms": 2910,
+  "ttft_stream_ms": 1781,
+  "time_to_request_ms": 97,
+  "type": "result",
+  "duration_ms": 399509,
+  "uuid": "c7cf2ce5-19ad-4075-aeaf-fb99d647a6f4"
+}

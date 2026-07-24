@@ -1,0 +1,76 @@
+{
+  "is_error": false,
+  "duration_api_ms": 148115,
+  "num_turns": 17,
+  "stop_reason": "end_turn",
+  "session_id": "8b39f0fe-aaeb-431a-b70b-12bf8c5ffa38",
+  "total_cost_usd": 0.936963,
+  "usage": {
+    "input_tokens": 32,
+    "cache_creation_input_tokens": 33124,
+    "cache_read_input_tokens": 694980,
+    "output_tokens": 10293,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 33124,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 1,
+        "output_tokens": 551,
+        "cache_read_input_tokens": 51842,
+        "cache_creation_input_tokens": 576,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 576
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 663,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000748,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 32,
+      "outputTokens": 10293,
+      "cacheReadInputTokens": 694980,
+      "cacheCreationInputTokens": 33124,
+      "webSearchRequests": 0,
+      "costUSD": 0.936215,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. The change request is complete and committed.\n\n## What I did\n\n**Moved the customer endpoints to `/clients`** — create, fetch, update, delete, and the paginated list now live under `/clients`, with identical behaviour (same validation, same auth/role rules, same `cus_`-prefixed records).\n\n**Kept `/customers` working as a deprecated alias** — both path families register through the *same service functions* (`src/services/customers.service.js`), so they share one data store. A record created via `/clients` is fetchable via `/customers` and vice versa. Alias responses carry standard RFC 8594 `Deprecation: true` and `Link: </clients>; rel=\"successor-version\"` headers so integrations know to migrate.\n\n## How\n\n- Renamed `src/routes/customers.routes.js` → `src/routes/clients.routes.js` (via `git mv`, preserving history) and refactored the CRUD registration into a small parametric helper that registers both bases — no duplicated handler logic.\n- Updated the import/registration in `src/app.js`.\n- Adhered to the four load-bearing conventions in `docs/CONVENTIONS.md` (errors only via `sendError`, `validate()` before service calls, routes→services→repositories layering untouched, money handling irrelevant here).\n- Added `tests/clients.test.js` covering the new paths plus cross-path data visibility in both directions and the deprecation header.\n\n## Verification\n\n- `npm run typecheck` ✅\n- `npm run lint` ✅\n- `npm test` — **140/140 pass**, including the original `/customers` suite (still green as the alias) and the new `/clients` suite.\n\nCommitted as `03c9906`.",
+  "ttft_ms": 3456,
+  "ttft_stream_ms": 2837,
+  "time_to_request_ms": 126,
+  "type": "result",
+  "duration_ms": 149794,
+  "uuid": "0ef71109-5012-405d-b1f0-d4012b7ee11a"
+}
