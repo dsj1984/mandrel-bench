@@ -1119,6 +1119,99 @@ export function prepareTouch2Workspace({ arm, workspacePath }, deps = {}) {
 }
 
 /**
+ * Capture the touch-2 LANDING BASELINE — the sandbox base-branch head as it
+ * stands BEFORE the change-request session runs (Story #177).
+ *
+ * This is the fixed reference point `materializeTouch2Delivery` answers its
+ * absolute question against. Taken before the session, it provably predates
+ * every commit the touch-2 delivery can produce, so the verdict cannot be
+ * confused by WHO fetched the base first (see that function's contract).
+ *
+ * The ref is refreshed before it is read: a stale local remote-tracking ref
+ * would understate the baseline, and the touch-1 head it still names would then
+ * read as "new work" after the probe's own fetch — a false positive. `null` is
+ * returned when the base cannot be resolved at all (no comparable baseline);
+ * the caller then falls back to the prior best-effort behaviour.
+ *
+ * @param {object} args
+ * @param {(args: string[], cwd: string) => string} args.gitFn
+ * @param {string} args.cwd  The touch-2 workspace (a sandbox clone).
+ * @param {{ warn?: Function, info?: Function }} [logger]
+ * @returns {string|null} the pre-session base SHA, or null when unresolvable.
+ */
+export function captureTouch2Baseline({ gitFn, cwd }, logger) {
+  try {
+    gitFn(['fetch', 'origin', 'main'], cwd);
+  } catch (err) {
+    logger?.warn?.(
+      `[run] touch2: could not refresh origin/main before the change-request session: ${err?.message ?? err}`,
+    );
+  }
+  try {
+    return gitFn(['rev-parse', 'origin/main'], cwd).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Materialize the mandrel arm's delivered touch-2 code into the workspace and
+ * classify whether the change request ACTUALLY LANDED (Story #177).
+ *
+ * The verdict is ABSOLUTE — "does the fetched base carry the touch-2 delivery?"
+ * — answered by comparing the fetched base head against the `baselineSha`
+ * pinned BEFORE the session by `captureTouch2Baseline`. It replaces the delta
+ * check this probe used to run, which read `origin/main` from the LOCAL
+ * remote-tracking ref *after* the session, fetched, and treated "the ref did
+ * not move during my fetch" as "the PR did not land". That inference only held
+ * while the local ref was stale: in cohort 2.11.0 the delivery's own post-land
+ * tail had already fast-forwarded the base (`tail.baseFastForward: true`), so
+ * pre === post and a touch-2 that demonstrably landed (PR MERGED) scored
+ * `materialized: false` with an empty frozen suite, rendering the continuity
+ * delta incomparable. Against a pre-session baseline the answer is the same
+ * whether the delivery's tail fetched first or the probe did.
+ *
+ * The honest-signal contract is unchanged: a genuinely unlanded change still
+ * yields `materialized: false` (the caller scores a null outcome, never a false
+ * 0 on the stale touch-1 tree), and an unreachable base is a non-landing rather
+ * than an assumed success. `baselineSha: null` (no comparable baseline) keeps
+ * the prior best-effort behaviour — score the fetched base.
+ *
+ * @param {object} args
+ * @param {(args: string[], cwd: string) => string} args.gitFn
+ * @param {string} args.cwd  The touch-2 workspace (a sandbox clone).
+ * @param {string|null} args.baselineSha  Pre-session base SHA, or null.
+ * @param {{ warn?: Function, info?: Function }} [logger]
+ * @returns {{ materialized: boolean, baseSha: string|null }}
+ */
+export function materializeTouch2Delivery({ gitFn, cwd, baselineSha }, logger) {
+  let baseSha = null;
+  try {
+    gitFn(['fetch', 'origin', 'main'], cwd);
+    gitFn(['checkout', 'main'], cwd);
+    gitFn(['reset', '--hard', 'origin/main'], cwd);
+    baseSha = gitFn(['rev-parse', 'HEAD'], cwd).trim() || null;
+  } catch (err) {
+    logger?.warn?.(
+      `[run] touch2: could not materialize merged code (run may have blocked): ${err?.message ?? err}`,
+    );
+    return { materialized: false, baseSha: null };
+  }
+  if (!baselineSha || !baseSha) {
+    // No comparable baseline — the landing question is unanswerable here, so
+    // preserve the prior best-effort behaviour rather than inventing a verdict.
+    return { materialized: true, baseSha };
+  }
+  if (baseSha === baselineSha) {
+    logger?.warn?.(
+      `[run] touch2: change-request PR did not land — the fetched base still carries nothing past the pre-session baseline ${baseSha.slice(0, 8)}; scoring touch-2 outcome as null (stale touch-1 tree), not a false 0.`,
+    );
+    return { materialized: false, baseSha };
+  }
+  return { materialized: true, baseSha };
+}
+
+/**
  * Run the scenario's frozen change request as the SECOND TOUCH against the
  * touch-1 delivered tree, and score it with the full dimension set, its own
  * frozen behavioural suite, and the phase-scoped (`traps-touch2/`) regression
@@ -1287,6 +1380,15 @@ export async function runTouch2(opts, deps = {}) {
     deps.rmFn ?? ((p) => rmSync(p, { recursive: true, force: true }));
 
   try {
+    // Pin the LANDING BASELINE before the change-request session runs (Story
+    // #177). Captured here — ahead of every commit the delivery can author —
+    // it is the fixed reference `materializeTouch2Delivery` answers its
+    // absolute "did this land?" question against, so the verdict no longer
+    // depends on the local remote-tracking ref still being stale at probe time.
+    const touch2BaselineSha = isMandrelArm(arm)
+      ? captureTouch2Baseline({ gitFn, cwd: touch2Cwd }, logger)
+      : null;
+
     // A fresh session drives the CHANGE REQUEST. The bridged scenario carries the
     // change-request prompt as its task; no `epicId` is threaded (the second
     // touch discovers/authors its own plan in-session for the mandrel arm).
@@ -1319,43 +1421,23 @@ export async function runTouch2(opts, deps = {}) {
 
     // Materialize the delivered second-touch code. The mandrel arm's clean
     // /deliver auto-merged onto the sandbox default branch, so pull it into the
-    // touch-2 workspace; the control arm committed directly in `touch2Cwd`.
+    // touch-2 workspace; the control arm committed directly in `touch2Cwd` and
+    // is therefore always materialized (no probe, unchanged by Story #177).
     //
     // GUARD (baseline autopsy): auto-merge is flaky. When the change-request PR
-    // does NOT land, `origin/main` still points at the touch-1 HEAD, so the reset
-    // below silently restores touch-1 code and the frozen touch-2 suite scores a
-    // STALE tree — a fabricated 0 indistinguishable from a genuine failure.
-    // Capture the pre-touch-2 HEAD and compare: an unchanged SHA means the change
-    // never materialized, surfaced as `materialized:false` + a null outcome (the
-    // honest autonomy signal that the unattended PR failed to land) rather than a
-    // false quality score on stale code.
-    let materialized = true;
-    if (isMandrelArm(arm)) {
-      let preSha = null;
-      try {
-        preSha = gitFn(['rev-parse', 'origin/main'], touch2Cwd).trim();
-      } catch {
-        // No comparable baseline ref — leave materialized true and fall back to
-        // the prior best-effort behaviour.
-      }
-      try {
-        gitFn(['fetch', 'origin', 'main'], touch2Cwd);
-        gitFn(['checkout', 'main'], touch2Cwd);
-        gitFn(['reset', '--hard', 'origin/main'], touch2Cwd);
-        const postSha = gitFn(['rev-parse', 'HEAD'], touch2Cwd).trim();
-        if (preSha && postSha === preSha) {
-          materialized = false;
-          logger?.warn?.(
-            `[run] touch2: change-request PR did not land — origin/main unchanged at ${postSha.slice(0, 8)}; scoring touch-2 outcome as null (stale touch-1 tree), not a false 0.`,
-          );
-        }
-      } catch (err) {
-        materialized = false;
-        logger?.warn?.(
-          `[run] touch2: could not materialize merged code (run may have blocked): ${err?.message ?? err}`,
-        );
-      }
-    }
+    // does NOT land, the base still points at the touch-1 HEAD, so the reset
+    // silently restores touch-1 code and the frozen touch-2 suite scores a STALE
+    // tree — a fabricated 0 indistinguishable from a genuine failure. The probe
+    // asks whether the fetched base carries anything past the pre-session
+    // baseline; when it does not, the change never materialized and is surfaced
+    // as `materialized:false` + a null outcome (the honest autonomy signal that
+    // the unattended PR failed to land) rather than a false quality score.
+    const materialized = isMandrelArm(arm)
+      ? materializeTouch2Delivery(
+          { gitFn, cwd: touch2Cwd, baselineSha: touch2BaselineSha },
+          logger,
+        ).materialized
+      : true;
 
     // An unmaterialized change: record the session's real spend but leave the
     // outcome + behavioural dimensions unmeasured — scoring the stale tree would
