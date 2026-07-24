@@ -4802,6 +4802,69 @@ test('runOneRun (arm 5): a mandrel-light cell that did NOT escalate carries no p
   );
 });
 
+test('runOneRun (arm 5): a TERMINATED escalation (mandrel 2.14.0 #4746) is recorded as escalated from the session envelope — not as a cheap light win', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  // Since #4746 an over-scope /deliver-light ends at the suitability gate: it
+  // emits an `escalated` terminal envelope and NEVER invokes /plan, so the
+  // workspace carries no plan ledger. Model exactly that: a lifecycle ledger
+  // (the session ran) with NO plan-metrics.json (nothing planned).
+  const has = (p) =>
+    p.endsWith('/temp') || p.endsWith('/temp/run-1/lifecycle.ndjson');
+  deps.discoverDeps = {
+    existsImpl: (p) => has(p),
+    readdirImpl: (p) => (p.endsWith('/temp') ? ['run-1'] : []),
+    statImpl: () => ({ mtimeMs: 1 }),
+  };
+  // The session driver classifies the terminal envelope and surfaces it.
+  deps.runSessionFn = (o) => {
+    record.sessions.push({ arm: o.arm });
+    return {
+      arm: o.arm,
+      scenarioId: o.scenario.id,
+      model: o.model,
+      prompt: 'p',
+      status: 2,
+      envelope: fakeEnvelope(),
+      phases: null,
+      transcripts: [],
+      escalated: true,
+    };
+  };
+
+  const { evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario: { ...FAKE_SCENARIO, routing: 'story' },
+      evaluate,
+      arm: 'mandrel-light',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
+        owner: 'dsj1984',
+        repo: 'legacy-sandbox-repo',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  // Without the envelope signal this cell reads as `light` with null quality —
+  // indistinguishable from a light delivery that produced nothing, and the
+  // cheapest cell in the cohort. The terminal envelope is the truth.
+  assert.deepEqual(scorecard.deliveryPath, {
+    path: 'escalated',
+    escalated: true,
+  });
+  // A terminated escalation planned nothing, so nothing is scored — and no
+  // plan-quality is fabricated for it.
+  assert.equal('planQuality' in scorecard, false);
+  assert.ok(
+    validateScorecard(scorecard),
+    `scorecard invalid: ${JSON.stringify(validateScorecard.errors)}`,
+  );
+});
+
 test('main(): rejects an unknown BENCH_ARMS value BEFORE any sandbox is provisioned (fail fast)', async () => {
   const messages = { error: [] };
   const logger = {

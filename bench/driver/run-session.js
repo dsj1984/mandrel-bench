@@ -824,6 +824,91 @@ export function writeSessionTranscript(input, deps = {}) {
   }
 }
 
+/** Markers `single-story-close` / `deliver-light` wrap their terminal envelope in. */
+const TERMINAL_OPEN = '--- STORY DELIVER TERMINAL ---';
+const TERMINAL_CLOSE = '--- END TERMINAL ---';
+
+/**
+ * Did this session end in an `escalated` terminal envelope?
+ *
+ * Mandrel 2.14.0 (#4746) made `/deliver-light`'s over-scope outcome TERMINAL:
+ * the suitability gate emits a `status: "escalated"` envelope and the session
+ * ends **without ever invoking `/plan`**. That broke the bench's original
+ * escalation signal (Story #190), which inferred escalation from a `/plan`
+ * invocation ledger left in the workspace — with the fix there is no such
+ * ledger, so a correct, safe escalation was recorded as `deliveryPath: light`
+ * with null quality: indistinguishable from a light delivery that produced
+ * nothing, and superficially the cheapest "light win" in the cohort.
+ *
+ * Read the machine-emitted envelope instead of a side effect. The CLI prints
+ * exactly one envelope between the terminal markers, so this is deterministic
+ * output — never model prose. Scans the raw stream-json stdout: the envelope
+ * arrives inside a `tool_result`, so each event is parsed and its result text
+ * searched, which keeps JSON-escaping handled by the parser rather than by a
+ * regex over the wire format.
+ *
+ * @param {string} stdout  Raw `--output-format stream-json` stdout.
+ * @returns {boolean} true iff a terminal envelope with status `escalated` was emitted.
+ */
+export function detectEscalatedTerminal(stdout) {
+  if (typeof stdout !== 'string' || stdout.length === 0) return false;
+  for (const line of stdout.split('\n')) {
+    const trimmed = line.trim();
+    // Cheap pre-filter: only parse events that could carry the envelope.
+    if (trimmed.length === 0 || !trimmed.includes('story-deliver-terminal')) {
+      continue;
+    }
+    let event;
+    try {
+      event = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    const content = event?.message?.content;
+    for (const part of Array.isArray(content) ? content : []) {
+      if (part?.type !== 'tool_result') continue;
+      const raw = part.content;
+      const text =
+        typeof raw === 'string'
+          ? raw
+          : Array.isArray(raw)
+            ? raw
+                .map((x) => (typeof x?.text === 'string' ? x.text : ''))
+                .join('')
+            : '';
+      if (terminalEnvelopeIsEscalated(text)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Parse the envelope out of one tool-result body and report whether it
+ * escalated. A body with no markers, or an unparseable envelope between them,
+ * is simply "not an escalation" — this is a classifier, never a gate, so it
+ * must not throw on malformed output.
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+function terminalEnvelopeIsEscalated(text) {
+  if (typeof text !== 'string') return false;
+  const open = text.indexOf(TERMINAL_OPEN);
+  if (open < 0) return false;
+  const bodyStart = open + TERMINAL_OPEN.length;
+  const close = text.indexOf(TERMINAL_CLOSE, bodyStart);
+  const body = close < 0 ? text.slice(bodyStart) : text.slice(bodyStart, close);
+  try {
+    const envelope = JSON.parse(body.trim());
+    return (
+      envelope?.kind === 'story-deliver-terminal' &&
+      envelope?.status === 'escalated'
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Launch ONE headless `claude -p --output-format stream-json` session, parse
  * its terminal envelope, tee the event stream to the capture directory, and
@@ -846,7 +931,7 @@ export function writeSessionTranscript(input, deps = {}) {
  * @param {(ms: number) => void} [args.sleepFn]  Backoff sleeper (injected in tests).
  * @param {string} [args.transcriptDir]  Capture dir for the event stream.
  * @param {object} [args.transcriptDeps]  Injectable fs/gzip for the capture.
- * @returns {{ status: number, envelope: ReturnType<typeof parseSessionEnvelope>, transcriptPath: string|null }}
+ * @returns {{ status: number, envelope: ReturnType<typeof parseSessionEnvelope>, transcriptPath: string|null, escalated: boolean }}
  */
 function invokeOneSession({
   prompt,
@@ -935,7 +1020,14 @@ function invokeOneSession({
       }`,
   );
 
-  return { status, envelope, transcriptPath };
+  // Classify an `escalated` terminal from the SAME stdout the transcript tees,
+  // so the signal survives regardless of what the session did afterwards.
+  return {
+    status,
+    envelope,
+    transcriptPath,
+    escalated: detectEscalatedTerminal(stdout),
+  };
 }
 
 /**
@@ -1225,7 +1317,7 @@ export function runSession(opts = {}, deps = {}) {
   // delivered standalone Story and classifies light-vs-escalated post-session.
   if (armDrivesDeliverLight(arm)) {
     const prompt = buildMandrelLightPrompt({ scenario });
-    const { status, envelope, transcriptPath } = invokeOneSession({
+    const { status, envelope, transcriptPath, escalated } = invokeOneSession({
       prompt,
       arm,
       scenarioId: scenario.id,
@@ -1249,6 +1341,10 @@ export function runSession(opts = {}, deps = {}) {
       envelope,
       phases: null,
       transcripts,
+      // Terminal-envelope escalation signal (mandrel #4746): true when the
+      // suitability gate ended the session instead of delivering. Present only
+      // on the light path — the arm that can escalate.
+      escalated,
     };
   }
 

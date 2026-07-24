@@ -2154,7 +2154,12 @@ export async function runOneRun(opts, deps = {}) {
     // suitability gate escalated the over-scope prompt to /plan. Captured here
     // and folded into the scorecard's `deliveryPath` block so an escalated cell
     // is never miscounted as a light win. Stays false for every non-light arm.
-    let lightPlanInvoked = false;
+    // Primary signal since mandrel 2.14.0 (#4746): the session ended in an
+    // `escalated` TERMINAL envelope, having never invoked /plan. The workspace
+    // ledger below stays as a second trigger for the pre-2.14.0 shape, where an
+    // escalation continued into an in-session /plan and left one behind — so a
+    // cohort spanning the upgrade classifies correctly either way.
+    let lightPlanInvoked = session.escalated === true;
     const rawDir = path.join(cohortDirPath, '.raw');
     // idStampForRaw was resolved before the session (the plan snapshot needs it).
     if (isMandrelArm(arm)) {
@@ -2165,14 +2170,14 @@ export async function runOneRun(opts, deps = {}) {
       if (found) {
         if (armDrivesDeliverLight(arm) && found.planMetricsPath) {
           lightPlanInvoked = true;
-          // An escalated light cell ran `/plan` inside its single session, so
-          // its plan artifacts exist NOW (the between-phases hook never fired
-          // — there are no phases). Capture them here so the plan is scored
-          // like any other arm's: without this the cell's plan-quality stays
-          // empty and an under-decomposed escalation — the exact failure the
-          // suitability gate exists to prevent — passes at ceiling quality
-          // (Story #196). A light cell that never escalated has no `/plan`
-          // ledger, so this never fires and its plan-quality stays absent.
+          // A light cell that RAN `/plan` in-session left its artifacts in the
+          // workspace, and the between-phases hook never fired (there are no
+          // phases), so capture them here — otherwise the plan-quality block
+          // stays empty and an under-decomposed escalation, the exact failure
+          // the suitability gate exists to prevent, passes at ceiling quality
+          // (Story #196). Since mandrel 2.14.0 (#4746) an escalation TERMINATES
+          // before invoking /plan, so this branch no longer fires for it: there
+          // is genuinely no plan to score, and none is fabricated.
           capturePlanArtifacts(resolveModelId(session.envelope, model));
         }
         const dest = path.join(rawDir, idStampForRaw);
