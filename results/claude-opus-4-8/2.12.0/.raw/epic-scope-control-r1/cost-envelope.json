@@ -1,0 +1,76 @@
+{
+  "is_error": false,
+  "duration_api_ms": 138979,
+  "num_turns": 13,
+  "stop_reason": "end_turn",
+  "session_id": "051a9480-3d66-47b8-9a1c-f3b56c9641ab",
+  "total_cost_usd": 0.7960565000000001,
+  "usage": {
+    "input_tokens": 25,
+    "cache_creation_input_tokens": 25760,
+    "cache_read_input_tokens": 479881,
+    "output_tokens": 11891,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 25760,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 671,
+        "cache_read_input_tokens": 44765,
+        "cache_creation_input_tokens": 289,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 289
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 1036,
+      "outputTokens": 16,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.001116,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 25,
+      "outputTokens": 11891,
+      "cacheReadInputTokens": 479881,
+      "cacheCreationInputTokens": 25760,
+      "webSearchRequests": 0,
+      "costUSD": 0.7949404999999999,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. Built and committed a complete JSON REST API.\n\n## What was built\n\nA dependency-free Node.js (ESM) server using only built-ins — `node:http`, `node:sqlite` (the persistent on-disk store), and `node:crypto`.\n\n**`src/db.js`** — Opens/creates `data/app.db` (overridable via `DB_PATH`), enables WAL + foreign keys, and defines `users`, `tokens`, `projects`, and `tasks` tables with cascading deletes.\n\n**`src/auth.js`** — scrypt password hashing with per-user salts, random bearer token issuance, and `Authorization: Bearer` → user resolution.\n\n**`src/server.js`** — Hand-rolled router covering every endpoint in the spec:\n- `POST /auth/register`, `POST /auth/login`\n- `GET/POST /projects`, `GET/DELETE /projects/:id` (owner-scoped)\n- `GET/POST /projects/:id/tasks` (with `?page`, `?pageSize`, `?done=true|false`), `PATCH/DELETE /projects/:id/tasks/:taskId`\n\n**`package.json`** — Added `\"start\": \"node src/server.js\"` and `main`. Port from `PORT` (default 3000).\n\n## Robustness verified\n\nI ran a 22-assertion smoke test (kept out of the commit) that passed fully, confirming: auth flows, duplicate/missing-field rejection, ownership isolation (bob gets 403 on alice's project), assignee validation, pagination totals, done-filtering, cascade delete, malformed JSON returning 400 without crashing, and — critically — **data surviving a full server restart**. `npm run typecheck` passes.\n\nOne design choice worth flagging: project/task endpoints scope strictly to the **owner** — an assignee can be given a task but the current spec only grants the project owner read/write access to it, which matches the task description (\"the projects they own\"). If you want assignees to see tasks assigned to them, that'd be a small follow-up.",
+  "ttft_ms": 4225,
+  "ttft_stream_ms": 2034,
+  "time_to_request_ms": 89,
+  "type": "result",
+  "duration_ms": 140608,
+  "uuid": "14b99fdd-33b8-419d-a3e0-27d9164e86bf"
+}

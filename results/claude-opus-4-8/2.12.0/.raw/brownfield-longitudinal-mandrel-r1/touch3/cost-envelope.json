@@ -1,0 +1,157 @@
+{
+  "aggregatedFromPhases": true,
+  "phases": [
+    {
+      "is_error": false,
+      "duration_api_ms": 95822,
+      "num_turns": 18,
+      "stop_reason": "end_turn",
+      "session_id": "4c6a1995-d2d6-4e94-b8c7-c2e06a46b070",
+      "total_cost_usd": 0.840161,
+      "usage": {
+        "input_tokens": 24,
+        "cache_creation_input_tokens": 39491,
+        "cache_read_input_tokens": 606080,
+        "output_tokens": 5649,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 39491,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 694,
+            "cache_read_input_tokens": 57746,
+            "cache_creation_input_tokens": 1039,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 1039
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "modelUsage": {
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 781,
+          "outputTokens": 17,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.000866,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000,
+          "canonicalModel": "claude-haiku-4-5",
+          "provider": "firstParty"
+        },
+        "claude-opus-4-8": {
+          "inputTokens": 24,
+          "outputTokens": 5649,
+          "cacheReadInputTokens": 606080,
+          "cacheCreationInputTokens": 39491,
+          "webSearchRequests": 0,
+          "costUSD": 0.839295,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
+          "canonicalModel": "claude-opus-4-8",
+          "provider": "firstParty"
+        }
+      },
+      "permission_denials": [],
+      "terminal_reason": "completed",
+      "fast_mode_state": "off",
+      "subtype": "success",
+      "api_error_status": null,
+      "result": "Planning pipeline complete. One Story persisted and set to `agent::ready`.\n\n## Summary\n\n**Story #5 — \"Expose customer endpoints under /clients with /customers as a deprecated alias\"**\n🔗 https://github.com/dsj1984/.../issues/5 · label `plan-run::02cdedc7` · `agent::ready`\n\n**Why one Story:** The two halves (new `/clients` surface + `/customers` deprecated alias) are tightly coupled — they share the same service, repository, and data. Splitting would violate the default-single policy's \"near-zero overlap / architectural seam\" test.\n\n**The contract folded into `## Spec`:**\n- All five ops (`POST`, `GET` list, `GET /:id`, `PATCH`, `DELETE`) served under `/clients` with byte-identical behaviour to today's `/customers` routes — same status codes, bodies, auth, `requireRole('admin')` on delete, validation, and `cus_` id prefix.\n- **Same data through both prefixes** — backed by the unchanged `customers.service.js`/repo, so a record created via one path is visible via the other (explicit acceptance criterion + no data-layer fork).\n- `/customers` kept as a working **deprecated alias**, flagged via a `Deprecation` response header without changing the body; `/clients` carries no such header.\n- Preserve conventions: error envelope via `sendError`/`ApiError`, `routes→services→repositories` layering, and share handler logic rather than copy-paste.\n\n**Verification:** new `tests/clients.test.js` (contract), unchanged `tests/customers.test.js` must still pass (proves the alias), `npm test`, `npm run lint`.\n\n**Gates:** interrogate (no duplicates) → author → critics (consolidation + pre-mortem both skipped/proceed; one advisory text-hygiene citation fixed) → dry-run persist (all validators green) → persist. HITL gates #1/#2 auto-proceeded under `--yes`. No delivery run, per instructions.\n\nDeliver later with `/deliver 5`.",
+      "ttft_ms": 4011,
+      "ttft_stream_ms": 1863,
+      "time_to_request_ms": 145,
+      "type": "result",
+      "duration_ms": 103245,
+      "uuid": "286aad62-7e5f-4caf-ad48-7874046f65ca"
+    },
+    {
+      "is_error": false,
+      "duration_api_ms": 396899,
+      "num_turns": 44,
+      "stop_reason": "end_turn",
+      "session_id": "98e1de90-8e54-4496-ab73-56e3a60cb08e",
+      "total_cost_usd": 3.25658125,
+      "usage": {
+        "input_tokens": 61,
+        "cache_creation_input_tokens": 94286,
+        "cache_read_input_tokens": 2599723,
+        "output_tokens": 22727,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 94286,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 1014,
+            "cache_read_input_tokens": 110194,
+            "cache_creation_input_tokens": 3386,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 3386
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "modelUsage": {
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 784,
+          "outputTokens": 17,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.000869,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000,
+          "canonicalModel": "claude-haiku-4-5",
+          "provider": "firstParty"
+        },
+        "claude-opus-4-8": {
+          "inputTokens": 73,
+          "outputTokens": 27216,
+          "cacheReadInputTokens": 2769337,
+          "cacheCreationInputTokens": 133873,
+          "webSearchRequests": 0,
+          "costUSD": 3.2557122499999993,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
+          "canonicalModel": "claude-opus-4-8",
+          "provider": "firstParty"
+        }
+      },
+      "permission_denials": [],
+      "terminal_reason": "completed",
+      "fast_mode_state": "off",
+      "subtype": "success",
+      "api_error_status": null,
+      "result": "**Story #5 delivered and landed.** Here is the terminal envelope:\n\n```json\n{\"kind\":\"story-deliver-terminal\",\"storyId\":5,\"status\":\"landed\",\"phase\":\"post-land\",\n \"storyBranch\":\"story-5\",\"baseBranch\":\"main\",\n \"pr\":{\"number\":6,\"url\":\".../pull/6\",\"autoMergeEnabled\":true,\"state\":\"MERGED\"},\n \"gates\":{\"validation\":\"passed\",\"baseSync\":\"passed\",\"codeReview\":\"passed\"},\n \"tail\":{\"followUps\":true,\"statusResync\":true,\"refCleanup\":true,\"baseFastForward\":false},\n \"failure\":null,\"nextCommand\":null,\"elapsedSeconds\":17}\n```\n\n## Summary\n\nThe planning pipeline had produced a **Story-only** ticket (v2 model — no `type::epic`): **Story #5, \"Expose customer endpoints under /clients with /customers as a deprecated alias.\"** I delivered the existing plan unchanged.\n\n**What shipped** (PR #6, squash-merged to `main`, Story `agent::done`):\n- `registerCustomerRoutes` parameterized over a base path — `/clients` (canonical) and `/customers` (deprecated alias) register from **one shared definition**, backed by the same service, repository, and rows. No data-layer fork, no duplicated handlers.\n- A `markDeprecated` prelude sets `Deprecation: true` on **all** `/customers` responses (success and error paths, since `res.setHeader` survives `writeHead`); `/clients` responses carry no such header. Response bodies, status codes, auth/role, validation, and the error envelope are byte-identical across both prefixes.\n- `tests/clients.test.js` covering all five ACs (CRUD+list parity, cross-prefix data visibility both directions, the deprecation-header contrast with identical bodies, admin-only delete). `tests/helpers/http.js` extended to expose response headers (backward-compatible).\n\n**Gates:** full suite 137/137 pass (existing `tests/customers.test.js` unmodified vs `main` and all passing — AC-3); lint/format clean; fresh maker-blind acceptance-critic scored all 5 criteria `met` → gate `proceed`; Story-scope code review returned 0 findings.\n\nOne benign degradation: the post-land fast-forward of local `main` was skipped because the main checkout had pre-existing uncommitted changes (the `package.json` / `plan-metrics.json` dirt present before this session) — the merge stands regardless. Single-Story run, so the per-run epilogue is skipped.",
+      "ttft_ms": 4528,
+      "ttft_stream_ms": 1908,
+      "time_to_request_ms": 103,
+      "type": "result",
+      "duration_ms": 434880,
+      "uuid": "2d73fc3f-f933-4319-b127-6bd7b8f5ae03"
+    }
+  ]
+}

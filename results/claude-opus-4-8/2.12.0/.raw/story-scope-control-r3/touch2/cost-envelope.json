@@ -1,0 +1,76 @@
+{
+  "is_error": false,
+  "duration_api_ms": 79992,
+  "num_turns": 18,
+  "stop_reason": "end_turn",
+  "session_id": "65eb3c61-c788-4fd9-bfd9-03b0726bfc65",
+  "total_cost_usd": 0.6346499999999999,
+  "usage": {
+    "input_tokens": 24,
+    "cache_creation_input_tokens": 25140,
+    "cache_read_input_tokens": 497924,
+    "output_tokens": 5337,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 25140,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 440,
+        "cache_read_input_tokens": 44060,
+        "cache_creation_input_tokens": 374,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 374
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 663,
+      "outputTokens": 16,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000743,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 24,
+      "outputTokens": 5337,
+      "cacheReadInputTokens": 497924,
+      "cacheCreationInputTokens": 25140,
+      "webSearchRequests": 0,
+      "costUSD": 0.633907,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. I implemented `POST /password` end to end and committed it.\n\n## What changed\n\n**`server.js`** — Added the endpoint and two prepared statements:\n- Requires bearer auth (401 if missing/invalid), same as the other authenticated routes.\n- Validates the body: non-string or empty `newPassword` → 400.\n- Stores a fresh scrypt hash via the existing `hashPassword`, so the old password stops working and sign-in now requires the new one.\n- Deletes **all** of the user's sessions (including the caller's own) so any token issued before the change is immediately rejected.\n- Returns `200 {ok: true}`.\n\n**`server.test.js`** — Added a test asserting the full security contract: old session works before the change; 401 without auth; 400 for missing/empty/non-string `newPassword`; after the change the old token is rejected, the old password fails login, and the new password logs in successfully.\n\n**`README.md`** — Documented the endpoint in the table and added a note explaining the session-revocation behavior.\n\nAll three tests pass. The `data.sqlite*` files are gitignored, so the commit contains only source.\n\nOne design note worth surfacing: the spec's `send` helper always writes a JSON body, so I returned `200 {ok:true}` rather than a `204` (which must be body-less) to stay consistent with the rest of the API.",
+  "ttft_ms": 2385,
+  "ttft_stream_ms": 1511,
+  "time_to_request_ms": 163,
+  "type": "result",
+  "duration_ms": 81190,
+  "uuid": "097348fd-e431-47b7-986f-f12038271371"
+}

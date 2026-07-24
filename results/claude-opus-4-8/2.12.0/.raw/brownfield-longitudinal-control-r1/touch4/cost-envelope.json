@@ -1,0 +1,76 @@
+{
+  "is_error": false,
+  "duration_api_ms": 434401,
+  "num_turns": 44,
+  "stop_reason": "end_turn",
+  "session_id": "f38b005c-54d2-4659-a172-74426cfe94b1",
+  "total_cost_usd": 2.4506984999999997,
+  "usage": {
+    "input_tokens": 53,
+    "cache_creation_input_tokens": 71685,
+    "cache_read_input_tokens": 1936289,
+    "output_tokens": 30585,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 71685,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 630,
+        "cache_read_input_tokens": 90593,
+        "cache_creation_input_tokens": 386,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 386
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 739,
+      "outputTokens": 15,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.0008139999999999999,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 53,
+      "outputTokens": 30585,
+      "cacheReadInputTokens": 1936289,
+      "cacheCreationInputTokens": 71685,
+      "webSearchRequests": 0,
+      "costUSD": 2.4498844999999996,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. The change request is implemented, tested, and committed.\n\n## What changed\n\n**Data model & migration**\n- `src/lib/names.js` — new shared helpers: `splitName` (everything before the last space → first name, last word → last name, single word → last name only) and `fullName` (joins with a space, tolerating an empty first name).\n- `src/db/migrations/006-client-names.js` — adds `first_name`/`last_name` columns and backfills every existing client in place using the same split rule.\n- `src/db/migrate.js` — the runner now also executes `.js` migrations (their default export gets the db handle), so the backfill can reuse the write-path logic. Migrations still run on startup and stay idempotent via `schema_migrations`.\n\n**API surface**\n- `src/schemas/customer.schema.js` — `firstName`, `lastName`, and the legacy `name` are all accepted; a create must supply either `name` or both `firstName`/`lastName` (`missingNameProblems`).\n- `src/services/customers.service.js` — resolves names on create/patch: explicit first/last win, otherwise the single `name` is split; patches only touch provided fields.\n- `src/repositories/customers.repo.js` — stores/returns `firstName` and `lastName`; responses include both plus the joined `name`. The `name` column is kept synced to the full name.\n- `src/repositories/orders.repo.js` — the receivables report joins the client record and shows the **current** full name rather than the order-time snapshot.\n\n**Verification**\n- All 138 existing tests pass; lint and typecheck clean.\n- Live checks confirmed: structured create, legacy-name split (including single-word), patch by first name and by legacy name, the report reflecting the current name after a rename, legacy-DB backfill, and migration idempotency.\n\nBackward compatibility is preserved — old writes sending `name` still work and responses still include a `name` field (now the joined full name).",
+  "ttft_ms": 2257,
+  "ttft_stream_ms": 1500,
+  "time_to_request_ms": 50,
+  "type": "result",
+  "duration_ms": 438922,
+  "uuid": "c328c01d-f21e-4a9f-9947-086eb63f51d3"
+}
