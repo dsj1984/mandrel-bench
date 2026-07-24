@@ -4589,6 +4589,219 @@ test('runOneRun (arm 5): a mandrel-light cell that escalated to /plan records de
   );
 });
 
+// ---------------------------------------------------------------------------
+// Story #196 — plan quality on ESCALATED mandrel-light cells
+//
+// An escalated light cell runs `/plan` inside its single session (that is what
+// deliveryPath=escalated records), but the between-phases snapshot hook never
+// fires — there are no phases. Before this the plan-quality block stayed empty,
+// so an under-decomposed escalation (cohort 2.13.0 epic-scope: 1 Story against
+// a 3-5 contract) passed at ceiling quality — the exact failure the suitability
+// gate exists to prevent.
+// ---------------------------------------------------------------------------
+
+/**
+ * Discover seams for a light workspace carrying a `/plan` ledger — the
+ * escalation signal (a run dir with BOTH lifecycle.ndjson and plan-metrics.json).
+ */
+function escalatedLightDiscoverDeps() {
+  const has = (p) =>
+    p.endsWith('/temp') ||
+    p.endsWith('/temp/run-1/lifecycle.ndjson') ||
+    p.endsWith('/temp/run-1/plan-metrics.json');
+  return {
+    existsImpl: (p) => has(p),
+    readdirImpl: (p) => (p.endsWith('/temp') ? ['run-1'] : []),
+    statImpl: () => ({ mtimeMs: 1 }),
+  };
+}
+
+/**
+ * Wire an in-memory FS + `gh` fake so the plan snapshot round-trips the given
+ * Story bodies: the snapshot WRITES them and the plan-quality scorer READS the
+ * same bytes back, rather than scoring a disk stub.
+ */
+function wirePlanSnapshotFakes(deps, record, storyBodies) {
+  const fsMap = new Map();
+  deps.writeFileFn = (p, data) => {
+    fsMap.set(p, data);
+    record.writes.push({ p, data });
+  };
+  deps.readFileImpl = (p) => fsMap.get(p) ?? '';
+  deps.ghJson = (args) => {
+    const key = `${args[0]} ${args[1]}`;
+    const labelIdx = args.indexOf('--label');
+    const label = labelIdx >= 0 ? args[labelIdx + 1] : '';
+    if (key === 'issue view') {
+      const number = Number(args[2]);
+      return {
+        number,
+        title: `S${number}`,
+        body: storyBodies[number] ?? '',
+        labels: [],
+      };
+    }
+    if (key === 'issue list' && label === 'type::story') {
+      return Object.keys(storyBodies).map((number) => ({
+        number: Number(number),
+        createdAt: '2026-06-16T20:00:02.000Z',
+      }));
+    }
+    return [];
+  };
+}
+
+/** A multi-story scenario carrying the frozen spec the scorer measures against. */
+function epicShapedScenario() {
+  const scenario = {
+    ...FAKE_SCENARIO,
+    routing: 'multi-story',
+    storyCountContract: { mode: 'multi-story', minStories: 3, maxStories: 5 },
+    seed: {
+      prompt: 'Build a multi-user project and task platform',
+      acceptance: [
+        'POST /auth/register with valid credentials returns 201 and persists the user',
+        'POST /auth/login returns 200 with a bearer token',
+      ],
+    },
+  };
+  delete scenario.epicId;
+  return scenario;
+}
+
+test('runOneRun (arm 5): an ESCALATED mandrel-light cell records a populated planQuality scored against the storyCountContract (Story #196 AC-1)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  deps.discoverDeps = escalatedLightDiscoverDeps();
+  // A CONFORMING escalated plan: 4 Stories, inside the 3-5 contract.
+  wirePlanSnapshotFakes(deps, record, {
+    901: '## Acceptance\n- POST /auth/register with valid credentials returns 201 and persists the user',
+    902: '## Acceptance\n- POST /auth/login returns 200 with a bearer token',
+    903: '## Acceptance\n- POST /projects with a valid name returns 201',
+    904: '## Acceptance\n- GET /projects returns only the authenticated user projects',
+  });
+
+  const { evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario: epicShapedScenario(),
+      evaluate,
+      arm: 'mandrel-light',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
+        owner: 'dsj1984',
+        repo: 'legacy-sandbox-repo',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.deepEqual(scorecard.deliveryPath, {
+    path: 'escalated',
+    escalated: true,
+  });
+  assert.ok(
+    scorecard.planQuality && typeof scorecard.planQuality === 'object',
+    'escalated light cell carries a planQuality block',
+  );
+  assert.equal(typeof scorecard.planQuality.score, 'number');
+  assert.equal(scorecard.planQuality.plannedStoryCount, 4);
+  // Inside [3, 5] → decomposition sanity at ceiling.
+  assert.equal(scorecard.planQuality.decompositionSanity, 1);
+  assert.ok(
+    validateScorecard(scorecard),
+    `scorecard invalid: ${JSON.stringify(validateScorecard.errors)}`,
+  );
+});
+
+test('runOneRun (arm 5): an escalated light cell that UNDER-DECOMPOSES is visibly penalised, not ceiling-scored (Story #196 AC-2 — the cohort 2.13.0 epic-scope case)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  deps.discoverDeps = escalatedLightDiscoverDeps();
+  // The observed regression: ONE Story against a 3-5 contract.
+  wirePlanSnapshotFakes(deps, record, {
+    901: '## Acceptance\n- POST /auth/register with valid credentials returns 201 and persists the user',
+  });
+
+  const { evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario: epicShapedScenario(),
+      evaluate,
+      arm: 'mandrel-light',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
+        owner: 'dsj1984',
+        repo: 'legacy-sandbox-repo',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.equal(scorecard.planQuality.plannedStoryCount, 1);
+  // The contract violation is VISIBLE: decomposition sanity is off its ceiling
+  // and drags the headline plan score below 1 — the cell can no longer pass as
+  // a clean escalation.
+  assert.ok(
+    scorecard.planQuality.decompositionSanity < 1,
+    `expected decompositionSanity < 1 for 1 Story against a 3-5 contract, got ${scorecard.planQuality.decompositionSanity}`,
+  );
+  assert.ok(
+    scorecard.planQuality.score < 1,
+    `expected a sub-ceiling plan score, got ${scorecard.planQuality.score}`,
+  );
+  assert.ok(
+    validateScorecard(scorecard),
+    `scorecard invalid: ${JSON.stringify(validateScorecard.errors)}`,
+  );
+});
+
+test('runOneRun (arm 5): a mandrel-light cell that did NOT escalate carries no planQuality — absent stays absent (Story #196 AC-3)', async () => {
+  const record = freshRecord();
+  const deps = benchDeps(record);
+  // A pure light run: a lifecycle ledger but NO plan-metrics.json, so nothing
+  // escalated and there is no plan to score.
+  const has = (p) =>
+    p.endsWith('/temp') || p.endsWith('/temp/run-1/lifecycle.ndjson');
+  deps.discoverDeps = {
+    existsImpl: (p) => has(p),
+    readdirImpl: (p) => (p.endsWith('/temp') ? ['run-1'] : []),
+    statImpl: () => ({ mtimeMs: 1 }),
+  };
+  wirePlanSnapshotFakes(deps, record, {
+    901: '## Acceptance\n- POST /auth/register with valid credentials returns 201 and persists the user',
+  });
+
+  const { evaluate } = await loadScenarioFake();
+  const scorecard = await runOneRun(
+    {
+      scenario: epicShapedScenario(),
+      evaluate,
+      arm: 'mandrel-light',
+      runIndex: 1,
+      sandbox: {
+        repoUrl: 'git@github.com:dsj1984/legacy-sandbox-repo.git',
+        owner: 'dsj1984',
+        repo: 'legacy-sandbox-repo',
+      },
+      resultsDir: '/results',
+    },
+    deps,
+  );
+
+  assert.deepEqual(scorecard.deliveryPath, { path: 'light', escalated: false });
+  // No fabricated score for a cell that never planned.
+  assert.equal('planQuality' in scorecard, false);
+  assert.ok(
+    validateScorecard(scorecard),
+    `scorecard invalid: ${JSON.stringify(validateScorecard.errors)}`,
+  );
+});
+
 test('main(): rejects an unknown BENCH_ARMS value BEFORE any sandbox is provisioned (fail fast)', async () => {
   const messages = { error: [] };
   const logger = {
