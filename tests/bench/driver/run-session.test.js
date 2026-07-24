@@ -34,6 +34,7 @@ import {
   DEFAULT_BENCH_MODEL,
   detectEscalatedTerminal,
   isTransientClaudeError,
+  lastTerminalStatus,
   parseSessionEnvelope,
   parseStreamEnvelope,
   rethrowIfTransientClaudeError,
@@ -1430,6 +1431,55 @@ test('detectEscalatedTerminal: malformed input is classified false, never thrown
     ),
     false,
   );
+});
+
+test('detectEscalatedTerminal: LAST envelope wins — an escalated gate the session then re-ran and LANDED is not an escalation', () => {
+  // Observed live in the 2.14.0 cohort: a story-scope light cell emitted
+  // [escalated, landed, landed] — the model declared an over-scope footprint,
+  // got the escalated envelope, re-ran the gate with a corrected footprint, and
+  // genuinely delivered (PR merged, frozen suite 6/6). Treating ANY escalated
+  // envelope as escalation mislabels that successful delivery as a refusal.
+  const stdout = [
+    JSON.stringify({ type: 'system', subtype: 'init' }),
+    toolResultEvent(terminalBody(ESCALATED_ENVELOPE)),
+    toolResultEvent(
+      terminalBody({
+        kind: 'story-deliver-terminal',
+        storyId: 1,
+        status: 'landed',
+        phase: 'post-land',
+      }),
+    ),
+    JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      result: 'Delivered.',
+    }),
+  ].join('\n');
+  assert.equal(detectEscalatedTerminal(stdout), false);
+  assert.equal(lastTerminalStatus(stdout), 'landed');
+});
+
+test('detectEscalatedTerminal: a session that landed and then escalated ends escalated — order, not precedence', () => {
+  const stdout = [
+    toolResultEvent(
+      terminalBody({
+        kind: 'story-deliver-terminal',
+        storyId: 1,
+        status: 'landed',
+        phase: 'post-land',
+      }),
+    ),
+    toolResultEvent(terminalBody(ESCALATED_ENVELOPE)),
+  ].join('\n');
+  assert.equal(detectEscalatedTerminal(stdout), true);
+  assert.equal(lastTerminalStatus(stdout), 'escalated');
+});
+
+test('lastTerminalStatus: a session emitting no terminal envelope has no status', () => {
+  assert.equal(lastTerminalStatus('{"type":"system"}'), null);
+  assert.equal(lastTerminalStatus(''), null);
+  assert.equal(lastTerminalStatus(null), null);
 });
 
 test('detectEscalatedTerminal: handles a structured (array) tool_result body — the same escaping the wire format uses', () => {

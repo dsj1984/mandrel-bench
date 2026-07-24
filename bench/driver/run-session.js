@@ -840,18 +840,38 @@ const TERMINAL_CLOSE = '--- END TERMINAL ---';
  * with null quality: indistinguishable from a light delivery that produced
  * nothing, and superficially the cheapest "light win" in the cohort.
  *
- * Read the machine-emitted envelope instead of a side effect. The CLI prints
- * exactly one envelope between the terminal markers, so this is deterministic
- * output — never model prose. Scans the raw stream-json stdout: the envelope
+ * Read the machine-emitted envelope instead of a side effect — deterministic
+ * CLI output, never model prose. Scans the raw stream-json stdout: the envelope
  * arrives inside a `tool_result`, so each event is parsed and its result text
  * searched, which keeps JSON-escaping handled by the parser rather than by a
  * regex over the wire format.
  *
+ * **LAST envelope wins.** A session can emit more than one: the model may
+ * declare an over-scope footprint, receive an `escalated` envelope, then re-run
+ * the gate with a corrected footprint and go on to deliver. Observed live —
+ * a story-scope light cell emitted `[escalated, landed, landed]` and genuinely
+ * landed. Treating *any* escalated envelope as escalation mislabels that
+ * successful delivery, so only the session's FINAL terminal outcome counts.
+ *
  * @param {string} stdout  Raw `--output-format stream-json` stdout.
- * @returns {boolean} true iff a terminal envelope with status `escalated` was emitted.
+ * @returns {boolean} true iff the session's LAST terminal envelope is `escalated`.
  */
 export function detectEscalatedTerminal(stdout) {
-  if (typeof stdout !== 'string' || stdout.length === 0) return false;
+  return lastTerminalStatus(stdout) === 'escalated';
+}
+
+/**
+ * The `status` of the LAST terminal envelope in a session's stdout, or null
+ * when the session emitted none. Split out from
+ * {@link detectEscalatedTerminal} so the "which outcome ended the session"
+ * question has one implementation.
+ *
+ * @param {string} stdout
+ * @returns {string|null}
+ */
+export function lastTerminalStatus(stdout) {
+  if (typeof stdout !== 'string' || stdout.length === 0) return null;
+  let last = null;
   for (const line of stdout.split('\n')) {
     const trimmed = line.trim();
     // Cheap pre-filter: only parse events that could carry the envelope.
@@ -876,36 +896,35 @@ export function detectEscalatedTerminal(stdout) {
                 .map((x) => (typeof x?.text === 'string' ? x.text : ''))
                 .join('')
             : '';
-      if (terminalEnvelopeIsEscalated(text)) return true;
+      const status = terminalEnvelopeStatus(text);
+      if (status !== null) last = status;
     }
   }
-  return false;
+  return last;
 }
 
 /**
- * Parse the envelope out of one tool-result body and report whether it
- * escalated. A body with no markers, or an unparseable envelope between them,
- * is simply "not an escalation" — this is a classifier, never a gate, so it
- * must not throw on malformed output.
+ * The `status` of the terminal envelope in one tool-result body, or null when
+ * the body carries none. A body with no markers, or an unparseable envelope
+ * between them, is simply "no status" — this is a classifier, never a gate, so
+ * it must not throw on malformed output.
  *
  * @param {string} text
- * @returns {boolean}
+ * @returns {string|null}
  */
-function terminalEnvelopeIsEscalated(text) {
-  if (typeof text !== 'string') return false;
+function terminalEnvelopeStatus(text) {
+  if (typeof text !== 'string') return null;
   const open = text.indexOf(TERMINAL_OPEN);
-  if (open < 0) return false;
+  if (open < 0) return null;
   const bodyStart = open + TERMINAL_OPEN.length;
   const close = text.indexOf(TERMINAL_CLOSE, bodyStart);
   const body = close < 0 ? text.slice(bodyStart) : text.slice(bodyStart, close);
   try {
     const envelope = JSON.parse(body.trim());
-    return (
-      envelope?.kind === 'story-deliver-terminal' &&
-      envelope?.status === 'escalated'
-    );
+    if (envelope?.kind !== 'story-deliver-terminal') return null;
+    return typeof envelope.status === 'string' ? envelope.status : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
