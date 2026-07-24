@@ -1,0 +1,76 @@
+{
+  "is_error": false,
+  "duration_api_ms": 34104,
+  "num_turns": 7,
+  "stop_reason": "end_turn",
+  "session_id": "44385c46-ed43-4f18-a21f-5c8337aabe23",
+  "total_cost_usd": 0.2726845,
+  "usage": {
+    "input_tokens": 11,
+    "cache_creation_input_tokens": 14004,
+    "cache_read_input_tokens": 175209,
+    "output_tokens": 1770,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 14004,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 1,
+        "output_tokens": 253,
+        "cache_read_input_tokens": 32876,
+        "cache_creation_input_tokens": 422,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 422
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 655,
+      "outputTokens": 16,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000735,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 11,
+      "outputTokens": 1770,
+      "cacheReadInputTokens": 175209,
+      "cacheCreationInputTokens": 14004,
+      "webSearchRequests": 0,
+      "costUSD": 0.2719495,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. Built and committed a minimal HTTP server.\n\n**Files:**\n- `server.js` — ESM, uses only `node:http`. Listens on `process.env.PORT || 3000`. `GET /` returns HTTP 200 with `Content-Type: text/html` and body `Hello, World!` (404 for anything else).\n- `package.json` — added `\"start\": \"node server.js\"` and `\"main\": \"server.js\"`, preserving the repo's existing `typecheck`/`lint`/`test` scripts.\n\n**Verified:** started on port 3999 and curled `/` — got `200 OK`, `Content-Type: text/html`, body `Hello, World!`.\n\n**Committed:** `0adbcd1 feat: add minimal hello-world HTTP server`.",
+  "ttft_ms": 3077,
+  "ttft_stream_ms": 2510,
+  "time_to_request_ms": 516,
+  "type": "result",
+  "duration_ms": 37741,
+  "uuid": "83898d04-1c54-4f82-8494-b466db752bc0"
+}

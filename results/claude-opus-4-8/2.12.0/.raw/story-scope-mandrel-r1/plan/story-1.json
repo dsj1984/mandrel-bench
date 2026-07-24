@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nProvide a dependency-free Node.js JSON REST API where users sign up, sign in for an opaque bearer session, and manage their own personal notes, with all data surviving a server restart.\n\n## Spec\nESM, Node built-ins only — no external web framework. Server listens on process.env.PORT (default 3000). Persistence is an on-disk store (embedded SQLite file via node:sqlite, or an equivalent atomically-written on-disk store) — NOT in-memory; data survives restart. All request/response bodies are JSON.\n\nEndpoints:\n- POST /signup {username, password} -> 201 {id, username}. Reject duplicate username and missing/blank fields with 4xx.\n- POST /login {username, password} -> 200 {session} where session is an opaque credential (unguessable token). Wrong credentials -> 401.\n- GET /me -> 200 {id, username} for the caller identified by Authorization: Bearer <session>. Missing/invalid session -> 401.\n- POST /notes {title, body} -> 201 with the created note (including its id and owner association). Requires a valid session.\n- GET /notes -> 200 JSON array of ONLY the caller's own notes. Requires a valid session.\n\nInvariants: passwords are never stored in plaintext (hash+salt); a note is only ever visible to its owner (no cross-user leakage); malformed JSON, missing fields, and unknown routes return sensible 4xx status codes rather than crashing the process. An npm \"start\" script launches the server.\n\n## Changes\n- `src/server.js` — creates\n- `src/store.js` — creates\n- `test/api.test.js` — creates\n- `package.json` — refactors-existing\n\n## Acceptance\n- [ ] AC-1: POST /signup with {username,password} creates a user and responds 201 with JSON {id, username}; a second signup with the same username is rejected with a 4xx status.\n- [ ] AC-2: POST /login with correct credentials responds 200 with JSON {session} carrying an opaque token; login with wrong credentials responds 401.\n- [ ] AC-3: GET /me with a valid Authorization: Bearer <session> responds 200 with the caller's {id, username}; a missing or invalid session responds 401.\n- [ ] AC-4: POST /notes with {title,body} and a valid session responds 201 with the created note; GET /notes responds 200 with a JSON array containing only that caller's own notes and never another user's notes.\n- [ ] AC-5: Malformed JSON bodies, missing required fields, and unknown routes return sensible 4xx status codes without crashing the server.\n- [ ] AC-6: Users and notes created before a server restart are still present and usable after restarting the process (on-disk persistence, not in-memory).\n- [ ] AC-7: The server binds to process.env.PORT when set and defaults to 3000, and `npm start` launches it.\n\n## Verify\n- npm test (e2e)\n- npm run typecheck (validate)\n- npm run lint (validate)\n\n## Non-Goals\n- No web/HTML UI — JSON API only.\n- No session expiry, refresh tokens, or logout endpoint.\n- No note update/delete endpoints (only create and list).\n- No external dependencies or web framework.\n- No rate limiting, HTTPS/TLS termination, or CORS handling.\n\n<!-- meta: {\"reason_to_exist\":\"A multi-user notes service needs authenticated accounts and per-user note isolation backed by durable storage, delivered without external framework dependencies.\"} -->\n\n<!-- plan-story: b1b25f3160d1ae82 -->",
+  "labels": [
+    {
+      "id": "LA_kwDOThygYc8AAAACtDJqgQ",
+      "name": "plan-run::06a61cff",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    },
+    {
+      "id": "LA_kwDOThygYc8AAAACtDJq1w",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOThygYc8AAAACtDJrwA",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 1,
+  "title": "JSON REST API for user accounts and personal notes with persistent on-disk store"
+}
