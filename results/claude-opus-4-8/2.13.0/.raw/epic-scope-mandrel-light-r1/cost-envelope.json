@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 593304,
+  "num_turns": 50,
+  "stop_reason": "end_turn",
+  "session_id": "87e8020d-26e0-4bcf-bb08-f168487af8f0",
+  "total_cost_usd": 4.024011499999999,
+  "usage": {
+    "input_tokens": 88,
+    "cache_creation_input_tokens": 100599,
+    "cache_read_input_tokens": 3824479,
+    "output_tokens": 44146,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 100599,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1194,
+        "cache_read_input_tokens": 116886,
+        "cache_creation_input_tokens": 3100,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 3100
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 1597,
+      "outputTokens": 19,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.001692,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 88,
+      "outputTokens": 44146,
+      "cacheReadInputTokens": 3824479,
+      "cacheCreationInputTokens": 100599,
+      "webSearchRequests": 0,
+      "costUSD": 4.0223195,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Delivered and landed. Here's the outcome.\n\n## Terminal result\n```\nstatus: landed · PR #2 MERGED · Story #1 → agent::done\ngates: validation ✓  baseSync ✓  codeReview ✓ (0 findings)\n```\nPR: https://github.com/dsj1984/bench-sbx-2026-07-24-epic-scope-mandrel-light-cdd9fd96/pull/2\n\n## Routing note\nThe task was **epic-scope**, so `/deliver-light`'s suitability gate correctly refused it (7 changed units vs. the light ceiling of 2) and, under `--yes`, failed closed to recommending `/plan`. Per the driver's instruction I followed that recommendation rather than forcing light delivery: `/plan` authored one cohesive Story #1 → `/deliver` ran the single-story engine → PR to `main` → merged.\n\n## What shipped\nOne Node.js repo (ESM, `node:http` + `node:sqlite`, **zero external deps**) with four units over one on-disk SQLite store:\n\n- **Unit 1 — store + migrations** (`src/store/`): sole schema owner with a `schema_migrations` ledger; `npm run migrate` is idempotent; the API also migrates on boot.\n- **Unit 2 — REST API** (`src/api/`): auth (register/login, salted-scrypt hashing, bearer tokens), owner-scoped project CRUD with task cascade, paginated/`?done`-filterable task CRUD, and **async** export jobs — `POST .../exports` enqueues and returns `{id,status:\"queued\"}` without computing the report.\n- **Unit 3 — worker** (`src/worker/`): completes queued jobs into `{report:{name,total,done}}`. `npm start` (`src/index.js`) boots API + worker together.\n- **Unit 4 — admin CLI** (`src/admin/cli.js`): `npm run admin -- stats` and `deactivate-user <username>`.\n\nMalformed/unauth/unknown requests return JSON 4xx and never crash the server; all data persists on disk.\n\n## Verification\n- **14/14 tests pass** (`npm test`) — e2e HTTP + real-subprocess CLI coverage of every acceptance criterion.\n- Typecheck + lint clean; biome format auto-applied at close.\n- **Live smoke** via real `npm start`: registered → created project/tasks → requested an export → polled to `status:\"completed\"` with `{name,total,done}` **with no extra command**; unauth request → 401; `admin stats` → `{users,projects,tasks}`.\n- Acceptance self-eval: `proceed` (10/10 met).\n\nOne benign note: the post-land fast-forward of the *local* `main` was skipped because the working tree has untracked `temp/` artifacts — the merge on `origin/main` stands regardless.",
+  "ttft_ms": 3983,
+  "ttft_stream_ms": 2946,
+  "time_to_request_ms": 879,
+  "type": "result",
+  "duration_ms": 643035,
+  "uuid": "08662944-6db2-4af4-aa69-9a3d48c85d86"
+}

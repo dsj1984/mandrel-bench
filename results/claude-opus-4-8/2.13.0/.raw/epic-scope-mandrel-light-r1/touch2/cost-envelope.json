@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 453471,
+  "num_turns": 55,
+  "stop_reason": "end_turn",
+  "session_id": "ff36b3de-b051-4bcb-94ac-316b9ff66108",
+  "total_cost_usd": 3.7124535,
+  "usage": {
+    "input_tokens": 82,
+    "cache_creation_input_tokens": 100787,
+    "cache_read_input_tokens": 3877157,
+    "output_tokens": 30584,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 100787,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1082,
+        "cache_read_input_tokens": 117105,
+        "cache_creation_input_tokens": 3069,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 3069
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 905,
+      "outputTokens": 18,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000995,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 82,
+      "outputTokens": 30584,
+      "cacheReadInputTokens": 3877157,
+      "cacheCreationInputTokens": 100787,
+      "webSearchRequests": 0,
+      "costUSD": 3.7114585000000004,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Delivered. The Story landed — PR #4 merged to `main`, Story #3 `agent::done`.\n\n## Summary\n\nThe task was epic-scope: `/deliver-light`'s suitability gate judged the predicted footprint (4 changed files) over its lite ceiling (2) and, under `--yes`, failed closed to recommending `/plan`. Following that recommendation, I planned it as one cohesive Story (#3) and delivered it through the same single-story engine.\n\n**Terminal envelope: `status: landed`** (PR [#4](https://github.com/dsj1984/bench-sbx-2026-07-24-epic-scope-mandrel-light-cdd9fd96/pull/4), squash-merged, checks green). Gates: validation ✅, base-sync ✅, code-review ✅ (critical 0 / high 0 / medium 0 / 1 suggestion). Acceptance self-eval: `proceed` (6/6 met). The one degraded item — base fast-forward of the main checkout skipped because the working tree is dirty (untracked `temp/`) — is report-only; the merge stands on `origin/main`.\n\n**What shipped** (confined to the API unit + store schema; worker and admin CLI untouched):\n\n- **`POST /projects/:id/shares`** — owner-only, body `{userId, role: \"viewer\"|\"editor\"}`, returns `201 {projectId, userId, role}`; re-sharing upserts the role.\n- **Migration `0002-project-shares`** — new `project_shares` table (PK `(project_id, user_id)`, `role` CHECK-constrained, both FKs `ON DELETE CASCADE`), added as a forward migration.\n- **Uniform access model** via a single store resolver `getProjectForUser` → `owner`/`editor`/`viewer`/none, enforced by `requireProjectAccess`:\n  - viewer: reads the project and its tasks; every mutation → `403`.\n  - editor: reads + create/update/delete tasks; whole-project delete stays owner-only (`403`).\n  - no relationship: `404` everywhere including the shares endpoint — **existence never leaks**; a shared non-owner attempting to share gets `403`.\n- **Bad requests → `400`, persisting nothing**: missing/non-integer `userId`, unknown user, unrecognised role, or sharing with the owner.\n- **5 new tests** (19/19 pass), typecheck/lint clean. The dead `getOwnedProject` store function was removed as part of the refactor.",
+  "ttft_ms": 3442,
+  "ttft_stream_ms": 1857,
+  "time_to_request_ms": 171,
+  "type": "result",
+  "duration_ms": 494050,
+  "uuid": "3235455d-c311-4d73-87b4-e3b0c0982961"
+}

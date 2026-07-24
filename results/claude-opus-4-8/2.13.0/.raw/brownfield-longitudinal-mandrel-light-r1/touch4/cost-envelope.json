@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 782601,
+  "num_turns": 66,
+  "stop_reason": "end_turn",
+  "session_id": "03b01eef-396e-4d7e-a093-a970018bf18a",
+  "total_cost_usd": 6.1298705,
+  "usage": {
+    "input_tokens": 116,
+    "cache_creation_input_tokens": 137469,
+    "cache_read_input_tokens": 6758983,
+    "output_tokens": 54965,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 137469,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1123,
+        "cache_read_input_tokens": 153452,
+        "cache_creation_input_tokens": 3404,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 3404
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 909,
+      "outputTokens": 15,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000984,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 116,
+      "outputTokens": 54965,
+      "cacheReadInputTokens": 6758983,
+      "cacheCreationInputTokens": 137469,
+      "webSearchRequests": 0,
+      "costUSD": 6.128886499999999,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Story #7 landed. Terminal envelope status is `landed` — relaying it verbatim below.\n\n---\n\n## Delivery complete — Story #7 landed ✅\n\n```\n--- STORY DELIVER TERMINAL ---\n{\"kind\":\"story-deliver-terminal\",\"storyId\":7,\"status\":\"landed\",\"phase\":\"post-land\",\n \"storyBranch\":\"story-7\",\"baseBranch\":\"main\",\n \"pr\":{\"number\":8,\"url\":\"https://github.com/dsj1984/bench-sbx-2026-07-24-brownfield-longitudinal-mandrel-light-8b88a59a/pull/8\",\n       \"autoMergeEnabled\":true,\"state\":\"MERGED\",\"checksStatus\":\"success\"},\n \"gates\":{\"validation\":\"passed\",\"baseSync\":\"passed\",\"codeReview\":\"passed\"},\n \"tail\":{\"followUps\":true,\"statusResync\":true,\"refCleanup\":true,\"baseFastForward\":false,\n         \"details\":{\"baseFastForward\":\"fast-forward skipped: dirty-tree\"}},\n \"blocked\":null,\"failure\":null,\"nextCommand\":null,\"elapsedSeconds\":23}\n--- END TERMINAL ---\n```\n\n### Path taken\n`/deliver-light`'s suitability gate judged the footprint over-scope (9 changes > lite ceiling of 2) and, under `--yes`, failed closed to `escalate-plan`. Per the delivery contract I followed that recommendation rather than forcing light: `/plan` (one cohesive Story #7) → `/deliver 7` (single-Story inline engine) → PR #8 squash-merged to `main`, `agent::done`.\n\n### What shipped\n- **`firstName` / `lastName` are now first-class** on the client (customers/clients) resource; the full `name` is their space-joined derivation.\n- **Writes** accept the structured pair directly, or a legacy single `name` — split before validation (everything before the last space → firstName, last word → lastName, single word → lastName only), so the deprecated shape and the error-envelope contract are untouched.\n- **Reads** return `firstName`, `lastName`, and the derived `name`.\n- **Startup migration**: `backfillClientNames()` runs after `openDb()` in `src/server.js`, deriving parts for any pre-split row (idempotent — only rows with NULL parts).\n- **Receivables report** now joins `customers` to show each client's *current* full name, not the order-time snapshot.\n- Split/join logic lives in one shared lib (`src/lib/client-name.js`) reused by routes, services, and repositories — SQL stays in the repository layer per `docs/CONVENTIONS.md`.\n\n### Verification\n- **148/148 tests pass** (137 pre-existing unchanged + 11 new in `tests/client-names.test.js`, covering the split helpers, structured/legacy create, partial PATCH re-derivation, receivables current-name-after-rename, and startup backfill).\n- `npm run lint` clean; close-validation, base-sync, and code-review gates all passed (0 critical/high/medium; 1 suggestion).\n\nOne benign degradation: the post-land `main` fast-forward was skipped because the main checkout has an unrelated dirty file (the pre-existing `M package.json` from before this session) — the merge itself stands, and `main` on `origin` already contains the squash-merged commit.",
+  "ttft_ms": 3943,
+  "ttft_stream_ms": 2841,
+  "time_to_request_ms": 330,
+  "type": "result",
+  "duration_ms": 832549,
+  "uuid": "ac673a2c-3292-4534-a90a-e1dcfd676193"
+}

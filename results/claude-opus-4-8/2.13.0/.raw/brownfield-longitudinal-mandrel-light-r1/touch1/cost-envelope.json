@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 434762,
+  "num_turns": 73,
+  "stop_reason": "end_turn",
+  "session_id": "62d5f43c-c7ac-4ace-84f9-55a587640a35",
+  "total_cost_usd": 4.307406,
+  "usage": {
+    "input_tokens": 96,
+    "cache_creation_input_tokens": 118377,
+    "cache_read_input_tokens": 4698834,
+    "output_tokens": 30911,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 118377,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 1,
+        "output_tokens": 947,
+        "cache_read_input_tokens": 134261,
+        "cache_creation_input_tokens": 3503,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 3503
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 889,
+      "outputTokens": 15,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000964,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 96,
+      "outputTokens": 30911,
+      "cacheReadInputTokens": 4698834,
+      "cacheCreationInputTokens": 118377,
+      "webSearchRequests": 0,
+      "costUSD": 4.3064420000000005,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "`landed`. PR #2 merged, Story #1 → `agent::done`. All close gates passed, code review found 0 findings. Relaying the terminal envelope.\n\n---\n\n## Delivery complete — Story #1 landed\n\n**Terminal status:** `landed` · PR [#2](https://github.com/dsj1984/bench-sbx-2026-07-24-brownfield-longitudinal-mandrel-light-8b88a59a/pull/2) merged to `main` (squash) · `agent::done`\n\n| Gate | Result |\n| --- | --- |\n| close-validation (typecheck / lint / format) | passed |\n| base-sync | passed |\n| code-review (clean-code, data-model, performance @ light) | passed — 0 findings |\n| acceptance self-eval | proceed — 6/6 criteria `met` |\n| test suite | 115/115 pass (13 new) |\n\n### What shipped (credit notes)\n- `POST /orders/:orderId/credit-notes` `{amountCents, reason}` → 201 with the created note (`cn_`-prefixed id, `orderId`, `amountCents`, `reason`, `issuedAt`).\n- `GET /orders/:orderId/credit-notes` → 200 JSON array, insertion order.\n- Only `issued` orders creditable (else `409 E_INVALID_STATUS`); unknown order → `404 E_NOT_FOUND`.\n- Never credited beyond outstanding = `total − payments − existing credit notes` (else `422 E_OVER_CREDIT`; exact-remainder accepted).\n- Receivables report now subtracts credit notes as well as payments from each customer's outstanding.\n\nBuilt as a vertical slice mirroring the payments feature: `migration → schema → repository → service → route`, integer cents throughout, errors via the standard `E_`-prefixed envelope.\n\n### Two things worth flagging\n1. **Routing:** `/deliver-light` was the entry point per the driver, but its suitability gate judged the footprint over-scope (8 changes vs the light ceiling of 2) and, under `--yes`, failed closed by recommending `/plan`. I followed that recommendation — `/plan` (single cohesive Story) → `/deliver 1` — rather than pre-empting it. Same single-story engine and close gates either way.\n2. **Extra commit:** the branch's committed `package.json` had only `start`/`test`, but the close-validation gates require `typecheck`/`lint`. Those scripts existed only in a pre-existing *uncommitted* `M package.json` in the main checkout. I brought the intended four-script version onto the branch (commit `90d667c`) so the gates could run; it's now committed and merged. The unrelated main-checkout working-tree dirt was left untouched (the close's wrong-tree guard confirmed it's disjoint from this Story's diff).",
+  "ttft_ms": 2979,
+  "ttft_stream_ms": 1802,
+  "time_to_request_ms": 167,
+  "type": "result",
+  "duration_ms": 495635,
+  "uuid": "0bb18453-aedd-41eb-92d1-d8ce9b87538d"
+}

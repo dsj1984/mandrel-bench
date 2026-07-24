@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 436425,
+  "num_turns": 64,
+  "stop_reason": "end_turn",
+  "session_id": "946f70be-910f-4b49-a389-490518831f0f",
+  "total_cost_usd": 3.8111355000000002,
+  "usage": {
+    "input_tokens": 85,
+    "cache_creation_input_tokens": 102029,
+    "cache_read_input_tokens": 4059601,
+    "output_tokens": 30385,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 102029,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 1,
+        "output_tokens": 1144,
+        "cache_read_input_tokens": 117868,
+        "cache_creation_input_tokens": 3548,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 3548
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 910,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000995,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 85,
+      "outputTokens": 30385,
+      "cacheReadInputTokens": 4059601,
+      "cacheCreationInputTokens": 102029,
+      "webSearchRequests": 0,
+      "costUSD": 3.8101404999999997,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Delivered. The terminal envelope reports **`landed`** (exit 0) — PR #10 merged to `main`, Story #9 at `agent::done`.\n\n## Summary\n\nThe receivables change request shipped as a single Story through the full pipeline. The `/deliver-light` suitability gate correctly judged the 7-file footprint over its lite ceiling (max 2) and failed closed to `/plan`, so I followed that recommendation: interrogate → author one cohesive Story → critics (skipped, ledgered) → persist (#9) → `/deliver 9` inline → close/land.\n\n**What changed:**\n- **Pagination** — `GET /reports/receivables` now takes `page`/`pageSize` via the shared `parsePagination` (same 422 validation and 100 cap as every list endpoint) and returns `{ items, total, page, pageSize, totalOutstandingCents }`. `total` is the count of customer groups; `totalOutstandingCents` stays the grand total across **all** pages.\n- **Fast at scale** — pagination, group count, and grand total are computed in the repository over the DB (`LIMIT/OFFSET` + `COUNT(DISTINCT customer_id)` + one aggregate), never by materializing every row. Layering (routes → services → repositories) preserved.\n- **Default page size 20 → 25** — one edit to `DEFAULT_PAGE_SIZE` in the shared `src/lib/pagination.js`, so every paginated endpoint inherits it.\n- **Index** — migration `007-receivables-indexes.sql` adds `idx_orders_status_customer_id` (covering the issued-filter + group-by-customer scan) and `idx_credit_notes_order_id`.\n\n**Verification:**\n- `npm test`: 151/151 pass (updated pagination tests for the new default; added receivables pagination coverage including the grand-total-across-pages invariant). `npm run lint`: clean.\n- Perf smoke test: 6,000 orders / 500 customers → report in **6.2 ms** (well under 2 s), `EXPLAIN QUERY PLAN` confirms the covering index is used.\n- Acceptance self-eval: **proceed**, 5/5 met. Close gates: validation, base-sync, code-review all passed.\n\n**Notes:**\n- Code review posted 1 non-blocking *suggestion* (0 critical/high/medium) — it did not gate the land.\n- The pre-existing uncommitted `package.json` whitespace reformat on `main` was untouched by this delivery (the worktree branched from clean `main`). It caused a cosmetic `baseFastForward` degrade in the post-land tail — the merge stands regardless.",
+  "ttft_ms": 3813,
+  "ttft_stream_ms": 3812,
+  "time_to_request_ms": 158,
+  "type": "result",
+  "duration_ms": 512262,
+  "uuid": "1e2101a7-b945-41c9-93e9-af5be1f39599"
+}

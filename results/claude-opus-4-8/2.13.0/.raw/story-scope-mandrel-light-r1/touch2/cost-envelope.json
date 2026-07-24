@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 352759,
+  "num_turns": 41,
+  "stop_reason": "end_turn",
+  "session_id": "9da60ed6-e180-4cc8-9fd0-a7d33bad1948",
+  "total_cost_usd": 2.961900500000001,
+  "usage": {
+    "input_tokens": 61,
+    "cache_creation_input_tokens": 96650,
+    "cache_read_input_tokens": 2821195,
+    "output_tokens": 23343,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 96650,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 951,
+        "cache_read_input_tokens": 113436,
+        "cache_creation_input_tokens": 2601,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2601
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 833,
+      "outputTokens": 18,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000923,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 61,
+      "outputTokens": 23343,
+      "cacheReadInputTokens": 2821195,
+      "cacheCreationInputTokens": 96650,
+      "webSearchRequests": 0,
+      "costUSD": 2.9609775000000007,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Delivered and landed. The terminal envelope reports `status: landed`.\n\n## Summary\n\n**Task:** Add `POST /password` for signed-in users to change their password, with security-sensitive semantics (prior sessions revoked, new password required to sign in, old password rejected).\n\n**Path taken:** `/deliver-light`'s suitability gate honestly judged this **over-scope** for the light path — it edits 3 existing files against a `maxNonCreateChanges` ceiling of 1 (the route table in `server.js`, password/session logic in `store.js`, plus contract tests are genuinely two production modules + tests). Per the task's own direction, I followed the gate's `escalate-plan` recommendation rather than gaming the footprint: `/plan` → `/deliver`, single session.\n\n**What shipped (Story #3, PR #4 — merged to `main`):**\n- `src/store.js` — new `changePassword(userId, newPassword)`: re-derives the scrypt hash against a fresh salt and **revokes every session bound to the user** (including the caller's current token), persisted via the existing write-temp-then-rename path so it survives a restart.\n- `src/server.js` — `POST /password` behind the same bearer-session guard as the other protected routes; `{newPassword}` validated (missing/blank/non-string → 400), malformed/oversized body → 400, no/invalid bearer → 401, success → 200.\n- `tests/contract/api.test.js` — 4 new tests covering credential rotation, prior-session revocation (acting + sibling), old-password rejection, all bad-request cases, restart durability, and cross-user isolation.\n\n**Verification:**\n- `npm test` → **13/13 pass**; `typecheck` and `lint` clean.\n- Acceptance self-eval: **5/5 criteria met → proceed**.\n- Close gates: validation / base-sync / code-review all **passed**; code review found 0 findings.\n- PR #4 **MERGED**, checks `success`, Story **`agent::done`**.\n\nOne non-blocking degradation: the post-land fast-forward of local `main` was skipped because the working tree is dirty (untracked `data/` and `temp/`) — the merge stands; only the local convenience fast-forward was skipped.",
+  "ttft_ms": 3131,
+  "ttft_stream_ms": 1986,
+  "time_to_request_ms": 176,
+  "type": "result",
+  "duration_ms": 390428,
+  "uuid": "86532462-cb5b-4aa2-aa17-0aa473180306"
+}
