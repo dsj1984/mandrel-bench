@@ -1,0 +1,76 @@
+{
+  "is_error": false,
+  "duration_api_ms": 285421,
+  "num_turns": 36,
+  "stop_reason": "end_turn",
+  "session_id": "d8002783-e7a0-4847-be31-93c87494ea7b",
+  "total_cost_usd": 1.9383985,
+  "usage": {
+    "input_tokens": 68,
+    "cache_creation_input_tokens": 53524,
+    "cache_read_input_tokens": 1859867,
+    "output_tokens": 18882,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 53524,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 685,
+        "cache_read_input_tokens": 72398,
+        "cache_creation_input_tokens": 420,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 420
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 740,
+      "outputTokens": 19,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000835,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 68,
+      "outputTokens": 18882,
+      "cacheReadInputTokens": 1859867,
+      "cacheCreationInputTokens": 53524,
+      "webSearchRequests": 0,
+      "costUSD": 1.9375635,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. All work is committed on `main` (commit `addcae2`).\n\n## Summary\n\n**Pagination for `GET /reports/receivables`** — the endpoint now parses the same `page`/`pageSize` query params via the shared `parsePagination` helper and returns the standard `items`/`total`/`page`/`pageSize` envelope, with `totalOutstandingCents` kept as the grand total across *all* pages (computed independently of the page window).\n\n- `src/repositories/orders.repo.js`: extracted the grouped receivables query into one shared SQL string, backing three functions — `listReceivables({ limit, offset })` (paginated rows), `countReceivables()` (group count for `total`), and `receivablesTotalCents()` (grand total).\n- `src/services/reports.service.js` / `reports.routes.js`: threaded pagination through, mirroring `orders`/`customers`.\n\n**Default page size 20 → 25** — changed the single source, `DEFAULT_PAGE_SIZE` in `src/lib/pagination.js` (plus the defensive repo fallback), so every paginated endpoint picks it up consistently.\n\n**Index for scale** — new migration `007-receivables-index.sql` adds `idx_orders_status_customer_id ON orders (status, customer_id)`. `EXPLAIN QUERY PLAN` confirms it seeks issued rows via the index, and a new test seeding 5,000 issued orders across 500 customers returns in ~34ms (assertion: < 2000ms).\n\n**Tests** — updated `pagination.test.js` for the new default of 25 and added four report tests (pagination shape + default, no-overlap paging with a stable grand total, 422 on out-of-range `pageSize`, and the performance test). Full suite: **142/142 passing**, typecheck and lint clean.\n\nOne deliberate behavior change worth flagging: I updated the existing `pagination.customers.01` test (and `CUSTOMER_COUNT`) since it asserted the old default of 20 — that assertion had to move to 25 to match the requested change.",
+  "ttft_ms": 2275,
+  "ttft_stream_ms": 1745,
+  "time_to_request_ms": 214,
+  "type": "result",
+  "duration_ms": 291022,
+  "uuid": "65e92806-6611-4ee7-8e0f-2c8dde169c6e"
+}

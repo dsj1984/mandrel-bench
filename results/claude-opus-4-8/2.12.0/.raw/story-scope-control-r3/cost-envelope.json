@@ -1,0 +1,76 @@
+{
+  "is_error": false,
+  "duration_api_ms": 142513,
+  "num_turns": 16,
+  "stop_reason": "end_turn",
+  "session_id": "ccedb34c-3638-44b3-b779-5f2510ad0c9b",
+  "total_cost_usd": 0.8150395,
+  "usage": {
+    "input_tokens": 30,
+    "cache_creation_input_tokens": 25174,
+    "cache_read_input_tokens": 579897,
+    "output_tokens": 10891,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 25174,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 1,
+        "output_tokens": 671,
+        "cache_read_input_tokens": 43918,
+        "cache_creation_input_tokens": 550,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 550
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 816,
+      "outputTokens": 22,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000926,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 30,
+      "outputTokens": 10891,
+      "cacheReadInputTokens": 579897,
+      "cacheCreationInputTokens": 25174,
+      "webSearchRequests": 0,
+      "costUSD": 0.8141135,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. The work is committed.\n\n## What I built\n\nA JSON REST API for user accounts and personal notes, Node.js ESM with **no external dependencies** — everything is Node's standard library:\n\n- **`server.js`** — the HTTP server on plain `node:http`. Routes: `POST /signup` → `{id, username}`, `POST /login` → `{session}`, `GET /me`, `POST /notes` → the created note, `GET /notes` → the caller's own notes. Listens on `PORT` (default 3000). It exports `createApp(db)` so tests can inject a database and only auto-starts when run directly.\n- **`db.js`** — persistent on-disk store using the built-in `node:sqlite` (`DatabaseSync`), writing to `data.sqlite` (override with `DB_PATH`). Tables for users, sessions, and notes with WAL mode and foreign keys.\n- **`auth.js`** — scrypt password hashing (salted, `timingSafeEqual` verification) and opaque random 256-bit session tokens.\n- **`server.test.js`** — covers the full signup→login→notes flow, per-user note isolation, bad-request handling, and a real **restart-persistence** check (reopens the same file in a second server instance and confirms the note is still there).\n\n## Key behaviors\n- Bearer-token auth via `Authorization: Bearer <session>`; notes are private per user.\n- Sensible errors: `400` bad body/JSON, `401` missing/invalid credentials, `404` unknown route, `409` duplicate username, `413` oversized body.\n- Added the `\"start\": \"node server.js\"` npm script and gitignored the SQLite files.\n\n## Verification\n- `npm test` — both tests pass, including persistence across restart.\n- `npm run typecheck` — passes.\n- Live smoke test against a running server confirmed signup, login, `/me`, note creation/listing, and the 400/401 paths all respond correctly.\n\nUsers and notes survive a restart because state lives in the on-disk SQLite file, not memory.",
+  "ttft_ms": 3415,
+  "ttft_stream_ms": 2743,
+  "time_to_request_ms": 63,
+  "type": "result",
+  "duration_ms": 145653,
+  "uuid": "efd19798-367e-40e7-b0d0-bb2943841ded"
+}

@@ -1,0 +1,5 @@
+{"touch":1,"headSha":"b0b61284db0de99d7cc7be639449324034f483e1","landed":null,"materialized":true,"advanced":true,"seededFromTouch":0,"baseSuite":{"passed":102,"total":102},"costUsd":1.4009015}
+{"touch":2,"headSha":"40a31eb2ddac900961db6394a1c36cad928dbd21","landed":null,"materialized":true,"advanced":true,"seededFromTouch":1,"baseSuite":{"passed":102,"total":102},"costUsd":1.164848}
+{"touch":3,"headSha":"872d3118ccd83a0e207f6e0518867937f4e07fd8","landed":null,"materialized":true,"advanced":true,"seededFromTouch":2,"baseSuite":{"passed":83,"total":83},"costUsd":1.0541775}
+{"touch":4,"headSha":"f75c2ad844377ba547ae5fd64e35de8114098701","landed":null,"materialized":true,"advanced":true,"seededFromTouch":3,"baseSuite":{"passed":82,"total":82},"costUsd":2.4506984999999997}
+{"touch":5,"headSha":"12f98f011711739d5c4a3daf60eb106664bf6965","landed":null,"materialized":true,"advanced":true,"seededFromTouch":4,"baseSuite":{"passed":82,"total":82},"costUsd":1.9383985}

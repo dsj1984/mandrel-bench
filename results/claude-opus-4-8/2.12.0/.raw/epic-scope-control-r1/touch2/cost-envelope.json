@@ -1,0 +1,76 @@
+{
+  "is_error": false,
+  "duration_api_ms": 172753,
+  "num_turns": 20,
+  "stop_reason": "end_turn",
+  "session_id": "50ae859c-4e32-4be6-b764-3899149022ac",
+  "total_cost_usd": 1.0889230000000003,
+  "usage": {
+    "input_tokens": 37,
+    "cache_creation_input_tokens": 34090,
+    "cache_read_input_tokens": 848398,
+    "output_tokens": 12914,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 34090,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 1,
+        "output_tokens": 558,
+        "cache_read_input_tokens": 52735,
+        "cache_creation_input_tokens": 649,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 649
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 704,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000789,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 37,
+      "outputTokens": 12914,
+      "cacheReadInputTokens": 848398,
+      "cacheCreationInputTokens": 34090,
+      "webSearchRequests": 0,
+      "costUSD": 1.0881340000000002,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. The project-sharing feature is implemented, tested, and committed.\n\n## What I built\n\n**`POST /projects/:id/shares`** — body `{\"userId\": ..., \"role\": \"viewer\"|\"editor\"}`. Only the project owner may call it; the response echoes the share.\n\n**Access model** (replaced the old owner-only checks in `src/server.js`):\n- `projectAccess()` resolves a user's role — `owner`, `editor`, or `viewer`.\n- `requireProjectRole()` enforces the minimum role, returning 403 when a real collaborator lacks the needed role.\n- **Owner**: everything, including delete-project and share. **Editor**: read + create/update/delete tasks. **Viewer**: read project and tasks only.\n\n**Privacy preserved**: a user with *no* relationship to a project gets **404** (not 403), so its very existence stays hidden. Previously non-owners got 403, which leaked existence — that's now closed. Shared projects also surface in `GET /projects`.\n\n**Bad-request handling**: non-integer `userId` → 400, unrecognised role → 400, unknown user → 400, sharing with the owner → 400, non-existent project → 404. Re-sharing an existing collaborator updates their role (upsert).\n\n**Schema** (`src/db.js`): new `project_shares` table keyed on `(projectId, userId)` with `ON DELETE CASCADE` for both project and user.\n\n**Tests** (`test/shares.test.js`): 3 suites covering role-appropriate access, role promotion via re-share, and all bad-request cases — all passing via `node --test`. Since there was no git repository despite the task framing, I initialized one and committed the work.",
+  "ttft_ms": 2806,
+  "ttft_stream_ms": 2313,
+  "time_to_request_ms": 298,
+  "type": "result",
+  "duration_ms": 174092,
+  "uuid": "ad4da72e-632f-44a2-8e2c-aa50139c2f74"
+}

@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nProvide a dependency-free Node.js JSON REST API where users can sign up, sign in, and manage their own private notes, with all data surviving a server restart.\n\n## Spec\nESM Node.js server built only on the standard library — no external web framework and no runtime npm dependencies. Use `node:http` for the HTTP layer and a persistent on-disk store: prefer the built-in `node:sqlite` (a database file on disk); if unavailable in the runtime, fall back to an equivalent on-disk store (e.g. an atomically-written JSON file). In-memory-only storage is not acceptable — users and notes MUST survive a process restart; the store's directory is created on startup if missing.\n\nServer binds to `process.env.PORT` (default 3000). All request and response bodies are JSON (`Content-Type: application/json`).\n\nEndpoints:\n- POST /signup {username, password} → 201 {id, username}. Username MUST be unique; duplicate → 409. Passwords are never stored in plaintext (hash + per-user salt) and never returned.\n- POST /login {username, password} → 200 {session}, where `session` is an opaque, unguessable token (crypto-random). Wrong credentials → 401.\n- GET /me → 200 {id, username} for the bearer-authenticated user.\n- POST /notes {title, body} → 201 with the created note (including its id and owner association).\n- GET /notes → 200 JSON array of ONLY the authenticated user's notes.\n\nAuth: protected endpoints (/me, POST /notes, GET /notes) require `Authorization: Bearer <session>`; missing/invalid/expired token → 401. A user can only ever read/write their own notes (no cross-user access).\n\nError handling: malformed JSON, missing/blank required fields, and wrong content shapes → 400; unknown routes/methods → 404/405. Errors return a JSON body; the server never crashes on bad input.\n\n## Changes\n- `src/server.js` — creates\n- `src/store.js` — creates\n- `src/auth.js` — creates\n- `test/api.test.js` — creates\n- `package.json` — refactors-existing\n- `.gitignore` — refactors-existing\n\n## Acceptance\n- [ ] AC-1: POST /signup with {username, password} creates a user and responds 201 with JSON {id, username}; the password is not present in the response.\n- [ ] AC-2: POST /signup with a username that already exists responds 409 and does not create a duplicate.\n- [ ] AC-3: POST /login with correct credentials responds 200 with JSON {session}; login with wrong credentials responds 401.\n- [ ] AC-4: GET /me with a valid `Authorization: Bearer <session>` responds 200 with {id, username} matching the signed-in user; with a missing or invalid token it responds 401.\n- [ ] AC-5: POST /notes with {title, body} and a valid bearer token responds 201 with the created note (id + fields), associated with the authenticated user.\n- [ ] AC-6: GET /notes with a valid bearer token responds 200 with a JSON array containing only the authenticated user's notes and none belonging to other users.\n- [ ] AC-7: Data persists across a restart: users created and notes added before stopping the server are still retrievable via /login, /me, and /notes after the process is restarted against the same on-disk store.\n- [ ] AC-8: The server listens on process.env.PORT and defaults to 3000 when PORT is unset.\n- [ ] AC-9: Malformed JSON or missing required fields on POST /signup, /login, and /notes respond 400 with a JSON error body and the server stays running.\n- [ ] AC-10: package.json defines an npm \"start\" script that launches the server.\n- [ ] AC-11: The implementation adds no external runtime dependencies (dependencies stay empty; server uses only Node built-in modules).\n\n## Verify\n- npm test (unit)\n- npm run typecheck (validate)\n- npm run lint (validate)\n\n## Non-Goals\n- No external web framework or runtime npm dependencies\n- No web/HTML UI — JSON API only\n- No user roles, note sharing, note update/delete, or pagination\n- No email verification or password reset flows\n\n<!-- meta: {\"reason_to_exist\":\"Deliver a minimal, self-contained multi-user notes service with durable on-disk persistence and bearer-token auth using only the Node standard library.\"} -->\n\n<!-- plan-story: 0d4680001c35d377 -->",
+  "labels": [
+    {
+      "id": "LA_kwDOTh0Tmc8AAAACtDZQEQ",
+      "name": "plan-run::a5b17720",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    },
+    {
+      "id": "LA_kwDOTh0Tmc8AAAACtDZQaw",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTh0Tmc8AAAACtDZRLQ",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 1,
+  "title": "JSON REST API for user accounts and personal notes with on-disk persistence"
+}
