@@ -1,0 +1,76 @@
+{
+  "is_error": false,
+  "duration_api_ms": 178081,
+  "num_turns": 24,
+  "stop_reason": "end_turn",
+  "session_id": "91e28f52-50a8-4daf-8ceb-011f0fbcb546",
+  "total_cost_usd": 1.4009015,
+  "usage": {
+    "input_tokens": 45,
+    "cache_creation_input_tokens": 47736,
+    "cache_read_input_tokens": 1201355,
+    "output_tokens": 12874,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 47736,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 1,
+        "output_tokens": 689,
+        "cache_read_input_tokens": 65605,
+        "cache_creation_input_tokens": 1425,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 1425
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 719,
+      "outputTokens": 14,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000789,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 45,
+      "outputTokens": 12874,
+      "cacheReadInputTokens": 1201355,
+      "cacheCreationInputTokens": 47736,
+      "webSearchRequests": 0,
+      "costUSD": 1.4001124999999999,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. Credit notes are implemented end to end and committed on branch `feat/credit-notes`.\n\n## What I built\n\nFollowing the existing `routes → services → repositories` layering and the four load-bearing conventions (error envelope, schema validation, layering, integer-cents money):\n\n- **`005-credit-notes.sql`** — `credit_notes` table (integer `amount_cents ≥ 1`, `reason`, `issued_at`) plus an order-id index, matching the payments migration.\n- **`credit-note.schema.js`** — validates `amountCents` (required integer ≥ 1) and `reason` (required non-empty string); unknown fields rejected.\n- **`credit-notes.repo.js`** — `insertCreditNote`, `listCreditNotesByOrder`, `creditedTotalCents` (only file touching the DB).\n- **`credit-notes.service.js`** — `issueCreditNote` enforces the rules; `listCreditNotes`.\n- **`credit-notes.routes.js`** — the two authenticated endpoints, registered in `app.js`.\n- **`orders.repo.js`** — receivables report now subtracts credited totals from each customer's outstanding balance.\n\n## Business rules enforced\n\n- Only an **issued** order can be credited → `409 E_INVALID_STATUS` otherwise.\n- A credit note can never exceed **outstanding = total − payments − existing credit notes** → `422 E_OVERCREDIT`.\n- Credit notes reduce the customer's outstanding amount in the receivables report.\n\n## Verification\n\n`typecheck`, `lint`, and the full test suite all pass — **115 tests, 0 failures**, including 13 new credit-note tests (issue/list, over-credit, status gating, validation, auth, 404, and the report-reduction case). Existing payments/reports tests are unaffected.\n\nOne note: I dropped the `package-lock.json` that `npm install` generated (the repo tracks no dependencies) to keep the commit focused; the pre-existing `package.json` change from the sandbox seed was carried into the commit as-is.",
+  "ttft_ms": 2360,
+  "ttft_stream_ms": 1747,
+  "time_to_request_ms": 102,
+  "type": "result",
+  "duration_ms": 182419,
+  "uuid": "d1030aa7-9976-4381-8455-9ed1467e547c"
+}

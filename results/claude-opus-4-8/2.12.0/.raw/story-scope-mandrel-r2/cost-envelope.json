@@ -1,0 +1,157 @@
+{
+  "aggregatedFromPhases": true,
+  "phases": [
+    {
+      "is_error": false,
+      "duration_api_ms": 98912,
+      "num_turns": 13,
+      "stop_reason": "end_turn",
+      "session_id": "9df6a797-a0e7-4480-b1f2-b7d5cdc6bb5a",
+      "total_cost_usd": 0.711089,
+      "usage": {
+        "input_tokens": 21,
+        "cache_creation_input_tokens": 32547,
+        "cache_read_input_tokens": 470460,
+        "output_tokens": 5970,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 32547,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 562,
+            "cache_read_input_tokens": 50848,
+            "cache_creation_input_tokens": 993,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 993
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "modelUsage": {
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 934,
+          "outputTokens": 20,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.001034,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000,
+          "canonicalModel": "claude-haiku-4-5",
+          "provider": "firstParty"
+        },
+        "claude-opus-4-8": {
+          "inputTokens": 21,
+          "outputTokens": 5970,
+          "cacheReadInputTokens": 470460,
+          "cacheCreationInputTokens": 32547,
+          "webSearchRequests": 0,
+          "costUSD": 0.710055,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
+          "canonicalModel": "claude-opus-4-8",
+          "provider": "firstParty"
+        }
+      },
+      "permission_denials": [],
+      "terminal_reason": "completed",
+      "fast_mode_state": "off",
+      "subtype": "success",
+      "api_error_status": null,
+      "result": "Planning pipeline complete. The plan is authored, validated, and persisted — delivery was not run, per instructions.\n\n## Summary\n\n**Story #1 — JSON REST API for user accounts and personal notes with on-disk persistence**\n🔗 https://github.com/dsj1984/bench-sbx-2026-07-24-story-scope-mandrel-17870226/issues/1\nStatus: `agent::ready` · cohort `plan-run::a5b17720`\n\n**Pipeline run:**\n- **Interrogate** — envelope built; no duplicate Stories, no source tickets, no risk-heuristic hits. Gate #1 auto-proceeded (`--yes`).\n- **Author** — single cohesive Story (auth + notes are coupled on one server, so default-single applies rather than fragmenting into siblings).\n- **Critics** — consolidation and pre-mortem both skipped (ledgered) for a 1-Story draft; text-hygiene clean (0 findings).\n- **Persist** — dry-run passed; spec trimmed under the soft word budget; Gate #2 auto-proceeded and the real persist created the issue.\n\n**Scope captured:** dependency-free ESM server on `node:http`, on-disk store (prefer built-in `node:sqlite`, JSON-file fallback — never in-memory), `PORT`/default 3000, the six endpoints with their status codes, bearer-token session auth, per-user note isolation, sensible 400/401/409 handling, restart durability, and an npm `start` script. 11 testable acceptance criteria; verify via `npm test`, `npm run typecheck`, `npm run lint`.\n\nDeliver when ready with `/deliver 1`.",
+      "ttft_ms": 3203,
+      "ttft_stream_ms": 1734,
+      "time_to_request_ms": 143,
+      "type": "result",
+      "duration_ms": 105673,
+      "uuid": "487e7fcf-557b-4a3d-bbf2-b2355f3cf68c"
+    },
+    {
+      "is_error": false,
+      "duration_api_ms": 310624,
+      "num_turns": 32,
+      "stop_reason": "end_turn",
+      "session_id": "cfd551f8-00aa-4b53-ac4c-babbb4a60827",
+      "total_cost_usd": 2.1603275,
+      "usage": {
+        "input_tokens": 58,
+        "cache_creation_input_tokens": 64446,
+        "cache_read_input_tokens": 1915957,
+        "output_tokens": 22262,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 64446,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 850,
+            "cache_read_input_tokens": 80577,
+            "cache_creation_input_tokens": 3163,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 3163
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "modelUsage": {
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 949,
+          "outputTokens": 20,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.001049,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000,
+          "canonicalModel": "claude-haiku-4-5",
+          "provider": "firstParty"
+        },
+        "claude-opus-4-8": {
+          "inputTokens": 58,
+          "outputTokens": 22262,
+          "cacheReadInputTokens": 1915957,
+          "cacheCreationInputTokens": 64446,
+          "webSearchRequests": 0,
+          "costUSD": 2.1592785,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
+          "canonicalModel": "claude-opus-4-8",
+          "provider": "firstParty"
+        }
+      },
+      "permission_denials": [],
+      "terminal_reason": "completed",
+      "fast_mode_state": "off",
+      "subtype": "success",
+      "api_error_status": null,
+      "result": "Story #1 is delivered and landed. Relaying the terminal envelope:\n\n```json\n{\"kind\":\"story-deliver-terminal\",\"storyId\":1,\"status\":\"landed\",\"phase\":\"post-land\",\"storyBranch\":\"story-1\",\"baseBranch\":\"main\",\"pr\":{\"number\":2,\"url\":\"https://github.com/dsj1984/bench-sbx-2026-07-24-story-scope-mandrel-17870226/pull/2\",\"autoMergeEnabled\":true,\"state\":\"MERGED\",\"checksStatus\":\"success\"},\"gates\":{\"validation\":\"passed\",\"baseSync\":\"passed\",\"codeReview\":\"passed\"},\"tail\":{\"followUps\":true,\"statusResync\":true,\"refCleanup\":true,\"baseFastForward\":false},\"blocked\":null,\"failure\":null,\"nextCommand\":null,\"elapsedSeconds\":16}\n```\n\n## Outcome — `landed`\n\n**Story #1: JSON REST API for user accounts and personal notes** merged to `main` via [PR #2](https://github.com/dsj1984/bench-sbx-2026-07-24-story-scope-mandrel-17870226/pull/2) (squash), `agent::done`.\n\n**What shipped** — a dependency-free ESM server on Node built-ins only:\n- `src/server.js` — `node:http` routing: `POST /signup`, `POST /login`, `GET /me`, `POST /notes`, `GET /notes`; JSON body parsing with 400/401/404/405 handling and a top-level catch so bad input never crashes the process.\n- `src/store.js` — persistent `node:sqlite` store (on-disk DB file, directory auto-created), unique-username → 409, notes scoped by owner.\n- `src/auth.js` — scrypt password hashing with per-user salt (plaintext never stored/returned) and crypto-random opaque session tokens.\n- `test/api.test.js` — 10-test acceptance suite including a real cross-restart persistence check; `package.json` gains `start`, `dependencies` stays empty.\n\n**Gates**: validation, base-sync, and code review all passed (review found 0 findings across clean-code + performance lenses). Acceptance self-eval scored **11/11 `met` → proceed**. `npm test` (10/10), `typecheck`, and `lint` green.\n\nOne non-blocking degradation: the post-land fast-forward of local `main` was skipped because the main checkout tree is dirty (pre-existing `temp/` artifacts) — the merge itself stands, this only affects the local ref which will fast-forward on the next clean sync.",
+      "ttft_ms": 3439,
+      "ttft_stream_ms": 2359,
+      "time_to_request_ms": 74,
+      "type": "result",
+      "duration_ms": 336983,
+      "uuid": "00c63d38-7ae4-4ab0-948e-55ae838411b5"
+    }
+  ]
+}

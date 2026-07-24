@@ -1,0 +1,76 @@
+{
+  "is_error": false,
+  "duration_api_ms": 158840,
+  "num_turns": 25,
+  "stop_reason": "end_turn",
+  "session_id": "56fad752-fc66-45ca-be47-e3af1c6c5498",
+  "total_cost_usd": 1.0541775,
+  "usage": {
+    "input_tokens": 31,
+    "cache_creation_input_tokens": 38713,
+    "cache_read_input_tokens": 757589,
+    "output_tokens": 11494,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 38713,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 584,
+        "cache_read_input_tokens": 57652,
+        "cache_creation_input_tokens": 355,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 355
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 663,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000748,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 31,
+      "outputTokens": 11494,
+      "cacheReadInputTokens": 757589,
+      "cacheCreationInputTokens": 38713,
+      "webSearchRequests": 0,
+      "costUSD": 1.0534295,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. The change is complete and committed.\n\n## What I did\n\n**Moved the customer endpoints to `/clients`** while keeping `/customers` as a deprecated alias backed by the same data:\n\n- **`src/routes/clients.routes.js`** (new) — registers the five canonical `/clients` routes (create, list, get, update, delete) and the five deprecated `/customers` aliases. Both families use handlers built from one `buildHandlers` factory and call the same `customers.service.js`, so a record created through either path is visible and mutable through the other. The alias routes additionally set `Deprecation: true` and a `Link: </clients>; rel=\"successor-version\"` header.\n- **`src/app.js`** — swapped `registerCustomerRoutes` for `registerClientRoutes`.\n- **`src/routes/customers.routes.js`** — deleted.\n- **`tests/clients.test.js`** (new) — covers the `/clients` CRUD + pagination, role enforcement on delete, the deprecation headers, and cross-path visibility in both directions.\n\n## Scope decision\n\nI deliberately left the data layer alone (service, repository, `customer.schema.js`, the `customers` table, and the `cus_` id prefix). The order→customer relationship (`customerId`, `customer_id` columns, `order.schema.js`) is a separate domain concern, and reusing the existing service is exactly what makes \"same data through both paths\" true for free.\n\n## Verification\n\n- `npm test` — **138/138 pass**, including the pre-existing `customers.test.js` suite (now exercising the deprecated alias) and the new `clients.test.js`.\n- `npm run typecheck` and `npm run lint` — clean (59 files).\n\nNo documentation referenced `/customers`, so nothing else needed updating.",
+  "ttft_ms": 2372,
+  "ttft_stream_ms": 1848,
+  "time_to_request_ms": 65,
+  "type": "result",
+  "duration_ms": 162557,
+  "uuid": "14de16a2-d3db-41fe-a5d5-10255f66bc91"
+}

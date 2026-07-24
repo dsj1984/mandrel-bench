@@ -1,0 +1,76 @@
+{
+  "is_error": false,
+  "duration_api_ms": 104958,
+  "num_turns": 17,
+  "stop_reason": "end_turn",
+  "session_id": "c1446000-8e2a-4374-9e3a-4274e6f4e55a",
+  "total_cost_usd": 0.75404,
+  "usage": {
+    "input_tokens": 32,
+    "cache_creation_input_tokens": 27393,
+    "cache_read_input_tokens": 656854,
+    "output_tokens": 6031,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 27393,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 592,
+        "cache_read_input_tokens": 46374,
+        "cache_creation_input_tokens": 313,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 313
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 663,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000748,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 32,
+      "outputTokens": 6031,
+      "cacheReadInputTokens": 656854,
+      "cacheCreationInputTokens": 27393,
+      "webSearchRequests": 0,
+      "costUSD": 0.7532920000000001,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. Committed as `c19f431`.\n\n## What I built\n\nAdded `POST /password` — a signed-in user sends `{\"newPassword\": ...}` with their bearer token and their password is updated.\n\n**Security semantics** (the crux of the task):\n- `updatePassword` in `src/db.js` updates the scrypt hash **and deletes all of that user's sessions in a single transaction**. So:\n  - Sessions issued before the change — including the one that authorized the request — stop working (verified: `GET /me` with the old token returns 401 afterward).\n  - Signing in requires the new password.\n  - The old password no longer authenticates.\n  - The transaction ensures a new hash is never left with stale sessions still valid.\n\n**Bad-request handling** follows the existing endpoints' conventions:\n- Missing auth → 401 (via the shared `requireUser`).\n- Malformed/non-object JSON → 400 (via the shared `readJsonBody`).\n- Missing, blank, or non-string `newPassword` → 400.\n\n**Changes:**\n- `src/db.js` — `updatePassword(userId, newPassword)` helper.\n- `src/server.js` — `handleChangePassword` handler + route registration; reused all existing auth/validation helpers.\n- `test/api.test.js` — 3 new tests (auth required; bad-input 400s; the full old-session-dies / new-password-works / old-password-fails flow).\n- `README.md` — documented the endpoint and its session-revocation behavior.\n\nAll 14 tests pass; `npm run lint` and `node --check` are clean. `data.db*` runtime files stayed untracked per `.gitignore`.\n\nNote: the checkout wasn't actually a git repo when I arrived (`git status` reported \"not a git repository\"), so I ran `git init` before committing.",
+  "ttft_ms": 2461,
+  "ttft_stream_ms": 1917,
+  "time_to_request_ms": 218,
+  "type": "result",
+  "duration_ms": 113882,
+  "uuid": "c9c1fe6f-9299-4223-ae6b-5a5d60070a2a"
+}

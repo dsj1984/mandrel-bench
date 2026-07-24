@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nProvide a minimal, dependency-free Node.js HTTP server that serves a Hello World page so the project has a runnable entry point.\n\n## Spec\nUse the Node.js built-in `http` module only — no external web framework or other runtime dependencies. Source is ESM (package.json `\"type\": \"module\"`). The server listens on `process.env.PORT`, defaulting to `3000` when unset. A `GET /` request returns HTTP status 200, header `Content-Type: text/html`, and a body containing the exact text `Hello, World!`. The npm `start` script launches the server via `node <source-file>`. Implementation is confined to a single source file plus package.json. Request routing/method handling beyond `GET /` is left to the deliverer's discretion (a sensible default is 404 for other paths).\n\n## Changes\n- `server.js` — creates\n- `package.json` — refactors-existing\n\n## Acceptance\n- [ ] AC-1: package.json declares \"type\": \"module\" and a \"start\" script that runs the single source file with node, with no runtime dependencies listed\n- [ ] AC-2: Starting the server with PORT unset listens on port 3000; when PORT is set the server listens on that port\n- [ ] AC-3: A GET request to \"/\" returns HTTP 200 with a Content-Type header of text/html and a response body containing the exact text \"Hello, World!\"\n- [ ] AC-4: The implementation consists of exactly one source file plus package.json and imports no external web framework\n\n## Verify\n- PORT=3100 node server.js & pid=$!; sleep 1; curl -si http://localhost:3100/ | tee /tmp/resp.txt; kill $pid; grep -q '^HTTP/1.1 200' /tmp/resp.txt && grep -qi '^Content-Type: text/html' /tmp/resp.txt && grep -q 'Hello, World!' /tmp/resp.txt (e2e)\n- node --check server.js (validate)\n\n## Non-Goals\n- No external web framework (Express, Fastify, etc.) or other runtime dependencies\n- No HTTPS/TLS, logging framework, or configuration system beyond the PORT env var\n- No additional routes or static-asset serving beyond GET /\n\n<!-- meta: {\"reason_to_exist\":\"The project needs a minimal, runnable HTTP entry point that returns a Hello World response.\"} -->\n\n<!-- plan-story: e7064cc3bcfc75cf -->",
+  "labels": [
+    {
+      "id": "LA_kwDOThyMGs8AAAACtDFnSQ",
+      "name": "plan-run::6bb3f3bd",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    },
+    {
+      "id": "LA_kwDOThyMGs8AAAACtDFnog",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOThyMGs8AAAACtDFoVw",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 1,
+  "title": "Minimal Node.js ESM Hello World HTTP server"
+}

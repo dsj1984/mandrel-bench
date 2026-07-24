@@ -1,0 +1,76 @@
+{
+  "is_error": false,
+  "duration_api_ms": 91045,
+  "num_turns": 18,
+  "stop_reason": "end_turn",
+  "session_id": "a13136dc-c985-4cca-a9dd-d2240cf971db",
+  "total_cost_usd": 0.6872455,
+  "usage": {
+    "input_tokens": 28,
+    "cache_creation_input_tokens": 25941,
+    "cache_read_input_tokens": 576895,
+    "output_tokens": 5540,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 25941,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 493,
+        "cache_read_input_tokens": 44827,
+        "cache_creation_input_tokens": 408,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 408
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 663,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000748,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 28,
+      "outputTokens": 5540,
+      "cacheReadInputTokens": 576895,
+      "cacheCreationInputTokens": 25941,
+      "webSearchRequests": 0,
+      "costUSD": 0.6864975,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. I added `POST /password` end to end and committed it.\n\n## What changed\n\n**`db.js`** — new `updatePassword(userId, newPassword)`. It hashes the new password (reusing the existing salted-scrypt `hashPassword`) and, in a single transaction, swaps the stored hash *and* deletes every session for that user. The atomic transaction ensures the credential swap and session purge can't diverge.\n\n**`server.js`** — new `handleChangePassword` handler, wired as `'POST /password'`. It authenticates via the same `authenticate()` bearer-token path as the other protected endpoints, reads the JSON body, and requires `newPassword` to be a non-empty string via the existing `requireString` helper.\n\n**`README.md`** — documented the endpoint in the table and added a design note about session revocation.\n\n**`test/api.test.js`** — three new tests covering the security behavior the task called out.\n\n## Behavior\n\n- **Signed-in only** — no/invalid bearer → `401`.\n- **Bad requests** — missing/empty/non-string `newPassword` → `400` (reusing existing validation).\n- **Old sessions die** — every prior token, *including the one that made the request*, returns `401` afterward.\n- **Old password stops working**, **new password logs in** and yields a working session.\n- Success returns `200 {\"ok\": true}`.\n\nAll 11 tests pass (8 pre-existing + 3 new), and the SQLite runtime files stayed gitignored, so the commit contains only source.",
+  "ttft_ms": 3141,
+  "ttft_stream_ms": 2210,
+  "time_to_request_ms": 110,
+  "type": "result",
+  "duration_ms": 92333,
+  "uuid": "b1b225cd-a202-47b2-9788-dc55d58798fe"
+}

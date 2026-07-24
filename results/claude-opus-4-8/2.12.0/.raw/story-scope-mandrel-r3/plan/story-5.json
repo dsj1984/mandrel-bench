@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nProvide a dependency-light Node.js JSON REST API where users sign up, sign in, and manage their own private notes, with all data surviving a server restart.\n\n## Spec\nESM Node.js HTTP server using only the standard library (node:http, node:crypto) plus the built-in node:sqlite module for an on-disk SQLite database file (no external web framework, no in-memory store). Listens on process.env.PORT (default 3000).\n\nEndpoints (all request/response bodies JSON):\n- POST /signup {username, password} → 201 {id, username}. Reject missing/blank fields with 400; reject an existing username with 409.\n- POST /login {username, password} → 200 {session} where session is an opaque token (crypto.randomBytes hex). Wrong credentials → 401. Malformed body → 400.\n- GET /me → 200 {id, username} for the bearer-authenticated user.\n- POST /notes {title, body} → 201 with the created note {id, title, body} owned by the caller. Missing fields → 400.\n- GET /notes → 200 JSON array of the caller's own notes only (never another user's).\n\nAuth invariants: sessions are presented as `Authorization: Bearer <token>`. /me and both /notes endpoints require a valid session; a missing/unknown token → 401. A user may only ever read/write their own notes (ownership enforced by session→user_id). Passwords are never stored in plaintext — hash with a per-user salt via node:crypto (scrypt). Unknown route/method → 404/405; body that is not valid JSON → 400. Sessions persist in the SQLite file so they survive restart.\n\n## Changes\n- `src/server.js` — creates\n- `src/db.js` — creates\n- `src/router.js` — creates\n- `package.json` — refactors-existing\n- `test/api.test.js` — creates\n\n## Acceptance\n- [ ] AC-1: Server starts with `npm start` and listens on process.env.PORT, defaulting to 3000 when PORT is unset.\n- [ ] AC-2: POST /signup with {username, password} returns 201 and JSON {id, username}; a duplicate username returns 409 and a missing/blank username or password returns 400.\n- [ ] AC-3: POST /login with correct credentials returns 200 and JSON {session}; wrong credentials return 401.\n- [ ] AC-4: GET /me with a valid `Authorization: Bearer <session>` returns 200 and {id, username}; a missing or invalid token returns 401.\n- [ ] AC-5: POST /notes with a valid session and {title, body} returns 201 and the created note including its id; missing fields return 400.\n- [ ] AC-6: GET /notes with a valid session returns 200 and a JSON array containing only the caller's own notes, never another user's.\n- [ ] AC-7: Users, notes, and sessions persist to an on-disk store and remain readable after the server process is stopped and restarted.\n- [ ] AC-8: Passwords are not stored in plaintext in the on-disk store.\n- [ ] AC-9: Requests with malformed JSON bodies or unknown routes are rejected with a 4xx status rather than crashing the server.\n\n## Verify\n- npm start (e2e)\n- node --test test/api.test.js (contract)\n- npm run typecheck (validate)\n\n## Non-Goals\n- No external web framework or npm runtime dependencies (standard library only)\n- No password reset, email verification, or session expiry/rotation\n- No note editing or deletion endpoints (create + list only)\n- No pagination, search, or rate limiting\n\n<!-- meta: {\"reason_to_exist\":\"A minimal, self-contained multi-user notes API that persists across restarts without pulling in any web framework.\"} -->\n\n<!-- plan-story: 69bb999f1a415903 -->",
+  "labels": [
+    {
+      "id": "LA_kwDOTh0Tmc8AAAACtDZQaw",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTh0Tmc8AAAACtDZRLQ",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTh0Tmc8AAAACtDdkww",
+      "name": "plan-run::7b629c31",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    }
+  ],
+  "number": 5,
+  "title": "JSON REST API for user accounts and personal notes with on-disk persistence"
+}
