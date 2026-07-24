@@ -248,7 +248,7 @@ the two shapes are mutually exclusive and `loadScenario` enforces it:
 | `hello-world` | 1 | story | Instrumentation only — overhead floor + pipeline smoke. Never a value-delta rung; reported under the floor/calibration framing. |
 | `story-scope` | 3 | story | The story-routed value rung — persisted-auth API with per-user notes; traps `plaintext-password` + `token-generation`. |
 | `brownfield-longitudinal` | 4 | story | The brownfield touch-CHAIN rung (issue #124, B4) — five chained change requests over the frozen ~55-file Ledgerline seed (documented conventions, ~100-test frozen suite, three latent landmines later touches punish). Headline: the **degradation slope**; also regression rate, convention adherence, cost-per-landed-change. One scorecard per cell with `chain.touches[]`; targetN 4. |
-| `epic-scope` | 5 | epic | The epic-routed value rung — multi-user project/task management API sized to decompose into 4–6 Stories; traps `plaintext-password`, `idor`, `missing-input-validation`, `hardcoded-secret`. |
+| `epic-scope` | 5 | multi-story | The DECOMPOSITION value rung (Story #184) — a multi-seam platform (store+migrations, HTTP API, background report worker, admin CLI) whose `storyCountContract` demands 3–5 Stories, so a 1-Story collapse fails decomposition sanity; traps `plaintext-password`, `hardcoded-secret`, `idor`, `pagination-bounds`, `cascade-delete`, `session-invalidation`. Expensive by construction — an N=1–2 rung (targetN 2). |
 
 ### The touch chain (`brownfield-longitudinal`)
 

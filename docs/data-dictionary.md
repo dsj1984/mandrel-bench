@@ -370,7 +370,7 @@ of the mean):
 | --- | --- | --- |
 | `planQuality.score` | number `[0,1]` | Composite plan quality. Spine 0.7 + judge 0.3 (judge folds into spine when null). |
 | `planQuality.coverage` | number `[0,1]` \| `null` | Fraction of the scenario's FROZEN acceptance criteria (`seed.acceptance`) traceable to a Story AC in the plan snapshot. |
-| `planQuality.decompositionSanity` | number `[0,1]` \| `null` | Story count/sizing vs the scenario's machine-readable `storyCountContract` (epic-scope 4-6 Stories; the story-routed rungs a single standalone Story). `null` when no contract was supplied. |
+| `planQuality.decompositionSanity` | number `[0,1]` \| `null` | Story count/sizing vs the scenario's machine-readable `storyCountContract` (epic-scope 3-5 Stories, Story #184; the story-routed rungs a single standalone Story). `null` when no contract was supplied. |
 | `planQuality.constraintSurfacing` | number `[0,1]` \| `null` | Fraction of the security-baseline obligations the scenario's trap classes probe that are surfaced in the plan artifacts. `1` for a scenario with no trap obligations (e.g. hello-world). |
 | `planQuality.judgeScore` | number `[0,1]` \| `null` | LLM-judge cross-check score, or `null` when the judge did not run (the 0.3 weight then folds into the spine). |
 | `planQuality.plannedStoryCount` | integer `≥ 0` | Number of Stories the plan snapshot recorded. |
@@ -396,9 +396,11 @@ backstop** — a plan that games the deterministic spine cannot read as
 **Decomposition contract** — each `scenario.json` carries a machine-readable
 `storyCountContract` (`{ mode, minStories, maxStories }`), asserted in
 `tests/bench/scenarios/scenario-defs.test.js`: `epic-scope` →
-`{ mode: "epic", minStories: 4, maxStories: 6 }`; `story-scope` and
-`hello-world` → `{ mode: "standalone", minStories: 1, maxStories: 1 }`. This is
-the sole source for decomposition sanity — never prose.
+`{ mode: "multi-story", minStories: 3, maxStories: 5 }` (Story #184 — a
+1-Story collapse fails decomposition sanity instead of passing silently);
+`story-scope` and `hello-world` → `{ mode: "standalone", minStories: 1,
+maxStories: 1 }`. This is the sole source for decomposition sanity — never
+prose.
 
 ## `dimensions.autonomy.guardrail` (Epic #66, Story #77)
 

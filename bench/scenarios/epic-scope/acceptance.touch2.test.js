@@ -3,11 +3,15 @@
  * (Epic #86, Story #96).
  *
  * The frozen behavioural spine for the epic-scope CHANGE REQUEST (the "project
- * sharing with role-based access" second touch). Like the touch-1 frozen suite
- * (`./acceptance.test.js`) it is **frozen**: it drives only the delivered app's
- * user-visible HTTP contract and imports nothing from the delivered source — it
- * has no knowledge of the app's storage engine, token-signing mechanism, or
- * ownership-check implementation.
+ * sharing with role-based access" second touch). Under the Story #184
+ * multi-seam redesign the change request amends exactly ONE seam — the API
+ * unit and the store schema it reads — so this suite deliberately probes only
+ * the HTTP surface (the worker and admin-CLI seams keep their touch-1
+ * behaviour and stay covered by the touch-1 oracle). Like the touch-1 frozen
+ * suite (`./acceptance.test.js`) it is **frozen**: it drives only the
+ * delivered app's user-visible HTTP contract and imports nothing from the
+ * delivered source — it has no knowledge of the app's storage engine,
+ * token-signing mechanism, or ownership-check implementation.
  *
  * Role-based access is a BEHAVIOURAL property: whether a viewer is actually
  * denied a write and an editor actually allowed one is asserted HERE, over the
