@@ -48,6 +48,7 @@ import { fileURLToPath } from 'node:url';
 import { buildScorecard, parseNdjson } from './collect/normalize.js';
 import { withRunningApp as defaultWithRunningApp } from './driver/app-runner.js';
 import {
+  armDrivesDeliverLight,
   armSeedsStaticClaudeMd,
   isMandrelArm,
   parseBenchArms,
@@ -2091,6 +2092,13 @@ export async function runOneRun(opts, deps = {}) {
     // can still be read back from GitHub. Stays null for the control arm and
     // whenever the workspace ledger was found.
     let standalone = null;
+    // Light-vs-escalated signal for the `mandrel-light` arm (Story #190): a
+    // pure /deliver-light run never invokes /plan, so a plan-invocation ledger
+    // (`found.planMetricsPath`, written only by /plan) is present ONLY when the
+    // suitability gate escalated the over-scope prompt to /plan. Captured here
+    // and folded into the scorecard's `deliveryPath` block so an escalated cell
+    // is never miscounted as a light win. Stays false for every non-light arm.
+    let lightPlanInvoked = false;
     const rawDir = path.join(cohortDirPath, '.raw');
     // idStampForRaw was resolved before the session (the plan snapshot needs it).
     if (isMandrelArm(arm)) {
@@ -2099,6 +2107,9 @@ export async function runOneRun(opts, deps = {}) {
         deps.discoverDeps,
       );
       if (found) {
+        if (armDrivesDeliverLight(arm) && found.planMetricsPath) {
+          lightPlanInvoked = true;
+        }
         const dest = path.join(rawDir, idStampForRaw);
         mkdir(dest);
         const lifeOut = path.join(dest, 'lifecycle.ndjson');
@@ -2518,6 +2529,13 @@ export async function runOneRun(opts, deps = {}) {
       // an unlanded PR-head tree was scored; null = control / undetermined. Feeds
       // the autonomy dimension as unattended-landing.
       landed: isMandrelArm(arm) ? landed : null,
+      // Light-vs-escalated path (Story #190): present only for the
+      // `mandrel-light` arm. `planInvoked` is the escalation signal
+      // (a /plan invocation ledger found in the workspace); buildScorecard
+      // crosses it with the observed routing to stamp `deliveryPath`.
+      deliveryPath: armDrivesDeliverLight(arm)
+        ? { planInvoked: lightPlanInvoked }
+        : null,
     });
     return scorecard;
   } finally {

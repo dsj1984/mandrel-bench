@@ -31,6 +31,7 @@
 import { readFileSync } from 'node:fs';
 
 import {
+  armDrivesDeliverLight,
   baseArm,
   isControlArm,
   isMandrelArm,
@@ -858,6 +859,13 @@ function resolveTokenSplit({
  *   `bench/report/render.js` `groupCells`). Null/absent (no contract
  *   declared, or the observed verdict could not be determined) ⇒ `false` —
  *   an undetermined comparison is never treated as a divergence.
+ * @param {{ planInvoked?: boolean }|null} [args.deliveryPath]  Light-arm only
+ *   (Story #190): the escalation signal for the `mandrel-light` arm.
+ *   `planInvoked: true` (a /plan invocation ledger found in the workspace by
+ *   bench/run.js) marks that `/deliver-light` escalated the over-scope prompt
+ *   to `/plan`; crossed with a `multi-story` `routingVerdict` it stamps the
+ *   scorecard's `deliveryPath` block (`{ path: 'light'|'escalated', escalated
+ *   }`). Ignored for every non-light arm (no `deliveryPath` block is emitted).
  * @returns {object} A scorecard record conforming to scorecard.schema.json.
  */
 export function buildScorecard({
@@ -878,6 +886,7 @@ export function buildScorecard({
   scenarioRouting = null,
   deliveryNotMaterialized = false,
   landed = null,
+  deliveryPath = null,
 }) {
   if (!run || typeof run !== 'object') {
     throw new TypeError('buildScorecard: run identity is required');
@@ -1150,6 +1159,25 @@ export function buildScorecard({
           ? p.wallClockMs
           : 0,
     }));
+  }
+
+  // Light-vs-escalated delivery path (Story #190). Present ONLY for the
+  // `mandrel-light` arm: `/deliver-light` either delivered the task as a
+  // single light session (`'light'`) or its suitability gate escalated the
+  // over-scope prompt back to `/plan` (`'escalated'`). Recording the path a
+  // cell ACTUALLY took keeps an escalated cell from being silently counted as
+  // a light win. Escalation is signalled either by a /plan invocation in the
+  // workspace (`deliveryPath.planInvoked`, wired by bench/run.js) OR by an
+  // observed multi-story routing verdict (the escalated /plan decomposed the
+  // work). Absent for every other arm, so their records stay unchanged.
+  if (armDrivesDeliverLight(run.arm)) {
+    const escalated =
+      Boolean(deliveryPath && deliveryPath.planInvoked) ||
+      routingVerdict === 'multi-story';
+    scorecard.deliveryPath = {
+      path: escalated ? 'escalated' : 'light',
+      escalated,
+    };
   }
 
   // Second-touch continuity block (Epic #86, Story #96). Present only when the
