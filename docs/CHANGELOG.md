@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.16.0...mandrel-bench-v0.17.0) (2026-07-24)
+
+
+### Fixed
+
+* **bench:** score plan quality on escalated mandrel-light cells (refs [#196](https://github.com/dsj1984/mandrel-bench/issues/196)) ([#197](https://github.com/dsj1984/mandrel-bench/issues/197)) ([b78ed1a](https://github.com/dsj1984/mandrel-bench/commit/b78ed1a8327d9887d6474c4711d80de158ae9258))
+
 ## [0.16.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.15.0...mandrel-bench-v0.16.0) (2026-07-24)
 
 
