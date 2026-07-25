@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.18.0...mandrel-bench-v0.19.0) (2026-07-25)
+
+
+### Fixed
+
+* **bench:** route the light arm through the unified /deliver door (mandrel 2.15.0) ([#205](https://github.com/dsj1984/mandrel-bench/issues/205)) ([9fb2076](https://github.com/dsj1984/mandrel-bench/commit/9fb20765bdedd3a1460a0731ed4288a3b74fbad2))
+
 ## [0.18.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.17.0...mandrel-bench-v0.18.0) (2026-07-24)
 
 
