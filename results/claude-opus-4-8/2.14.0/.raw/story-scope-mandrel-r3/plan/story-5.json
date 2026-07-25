@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nProvide a small, dependency-light JSON REST API in Node.js so multiple users can sign up, sign in, and manage their own private notes, with all data surviving a server restart.\n\n## Spec\nNode.js ESM HTTP server using only the Node standard library (no external web framework such as Express/Fastify). Listens on `process.env.PORT` (default 3000). All request/response bodies are JSON.\n\nEndpoints:\n- `POST /signup` `{username, password}` → 201 `{id, username}`. Username must be unique; duplicate → 409. Missing/blank username or password → 400.\n- `POST /login` `{username, password}` → 200 `{session}` where `session` is an opaque bearer token. Bad credentials → 401; malformed body → 400.\n- `GET /me` → 200 `{id, username}` for the bearer's user.\n- `POST /notes` `{title, body}` → 201 with the created note (`{id, title, body, ...}`), owned by the bearer's user. Missing title/body → 400.\n- `GET /notes` → 200 JSON array of only the bearer's own notes.\n\nAuth invariant: `/me`, `POST /notes`, `GET /notes` require a valid `Authorization: Bearer <session>` header; missing/invalid/unknown token → 401. A user can only ever read/write their own notes — no cross-user access.\n\nPersistence invariant (load-bearing): users, notes, and active sessions are stored in an on-disk store (embedded SQLite DB file via `node:sqlite`, or an equivalent durable on-disk store — NOT in-memory) so all data survives a process restart. The DB file path is configurable and defaults to a repo-local file that is gitignored. Passwords MUST NOT be stored in plaintext — store a salted hash (Node `crypto`, e.g. scrypt). Unknown routes → 404; malformed JSON → 400. `npm start` boots the server.\n\n## Changes\n- `src/server.js` — creates\n- `src/store.js` — creates\n- `src/auth.js` — creates\n- `test/api.test.js` — creates\n- `package.json` — refactors-existing\n- `.gitignore` — refactors-existing\n\n## Acceptance\n- [ ] AC-1: `npm start` starts an HTTP server that listens on `process.env.PORT` and defaults to 3000 when PORT is unset.\n- [ ] AC-2: POST /signup with a unique {username, password} returns 201 with JSON {id, username}; a second signup with the same username returns 409; a request missing username or password returns 400.\n- [ ] AC-3: POST /login with correct credentials returns 200 with {session} as an opaque string; wrong credentials return 401; a malformed/non-JSON body returns 400.\n- [ ] AC-4: GET /me with a valid Authorization: Bearer <session> returns 200 {id, username} for that user; with a missing or invalid token it returns 401.\n- [ ] AC-5: POST /notes with a valid bearer token and {title, body} returns 201 with the created note (including its id); missing title or body returns 400; no/invalid token returns 401.\n- [ ] AC-6: GET /notes with a valid bearer token returns 200 with a JSON array containing only that user's notes and none belonging to any other user.\n- [ ] AC-7: After the server process is stopped and restarted, previously created users can still log in and previously created notes are still returned by GET /notes — data is read from an on-disk store, not in-memory state.\n- [ ] AC-8: Passwords are never persisted in plaintext (the on-disk store contains only a salted hash, not the raw password).\n\n## Verify\n- npm start & then curl the full signup→login→/me→POST /notes→GET /notes happy path plus 400/401/409 error cases (e2e)\n- node --test test/api.test.js (contract)\n- Restart the server against the same on-disk store and assert a pre-existing user can log in and prior notes are listed (e2e)\n- npm run lint (validate)\n\n## Non-Goals\n- No web UI / HTML frontend — JSON API only.\n- No note update/delete endpoints — only create and list.\n- No session expiry, refresh tokens, or rate limiting.\n- No external web framework or ORM.\n\n<!-- meta: {\"reason_to_exist\":\"Give multiple users durable, isolated storage for their own notes behind a simple token-authenticated JSON API.\"} -->\n\n<!-- plan-story: c82f615f989717ac -->",
+  "labels": [
+    {
+      "id": "LA_kwDOTjIRAM8AAAACtPd34g",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTjIRAM8AAAACtPd4lg",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTjIRAM8AAAACtPiDBA",
+      "name": "plan-run::9d51072f",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    }
+  ],
+  "number": 5,
+  "title": "JSON REST API for user accounts and personal notes (ESM, on-disk store)"
+}

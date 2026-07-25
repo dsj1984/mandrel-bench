@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 72878,
+  "num_turns": 11,
+  "stop_reason": "end_turn",
+  "session_id": "3e6b6a1e-0633-4d8e-88b1-cf43e8c9fc42",
+  "total_cost_usd": 0.527643,
+  "usage": {
+    "input_tokens": 11,
+    "cache_creation_input_tokens": 29392,
+    "cache_read_input_tokens": 232150,
+    "output_tokens": 4667,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 29392,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 2238,
+        "cache_read_input_tokens": 47232,
+        "cache_creation_input_tokens": 1547,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 1547
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 833,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000918,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 11,
+      "outputTokens": 4667,
+      "cacheReadInputTokens": 232150,
+      "cacheCreationInputTokens": 29392,
+      "webSearchRequests": 0,
+      "costUSD": 0.526725,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "The suitability gate escalated, and under `--yes` that escalation is **terminal** — the protocol is explicit that this session ends here and that invoking `/plan` in-session is forbidden. The gate's decision is also defensible on the merits: this is a greenfield repo with *no* existing auth server (despite the task's \"like the other endpoints\" framing), so delivering the described behavior requires building signin, session issuance/storage, a password store, and session-invalidation semantics — genuinely more than a trivial one-file change, and it carries a 5-behavior acceptance contract (new endpoint works, prior sessions invalidated, sign-in requires new password, old password rejected, bad requests handled).\n\nPer the escalation-is-terminal contract, I'm relaying the terminal envelope and stopping. No receipt Story, `story-<id>` branch, or worktree was created (`escalation.created` is all `false`).\n\n## Terminal result: `escalated`\n\n- **Phase:** `suitability-gate`\n- **Why:** predicted footprint carries **5 acceptance criteria (> maxAcceptance 3)** → full route; `--yes` on over-scope fails closed to `/plan` rather than silently proceeding light.\n- **Created:** nothing (`receiptStory: false`, `storyBranch: false`, `worktree: false`).\n\n**Next command (must run in a FRESH session — not this one):**\n\n```\n/plan \"Signed-in users need a way to change their password. Add POST /password: it takes a JSON body {\\\"newPassword\\\": ...} from a signed-in user (bearer credential in the Authorization header, like the other endpoints) and updates their password. Changing a password should behave the way users expect of a security-sensitive account action: sessions issued before the change must no longer work afterwards, signing in requires the new password, and the old password no longer works. Handle bad requests sensibly.\"\n```\n\nThe work should be planned and delivered via `/plan` → `/deliver` in a new session. I did not pre-empt the gate, and I did not walk past the escalation to plan or implement in-session — both of which the contract forbids.",
+  "ttft_ms": 3434,
+  "ttft_stream_ms": 1435,
+  "time_to_request_ms": 330,
+  "type": "result",
+  "duration_ms": 74452,
+  "uuid": "fe5a27b4-aed1-4465-9507-f3f5a994ec83"
+}

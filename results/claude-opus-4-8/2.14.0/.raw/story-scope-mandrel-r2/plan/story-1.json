@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nProvide a small, dependency-light JSON HTTP API where users sign up, sign in, and manage their own private notes, with all data surviving a server restart.\n\n## Spec\nBuilt on Node's built-in `http` module (ESM, `\"type\": \"module\"`); NO external web framework. Persistence uses an embedded on-disk store — prefer Node's built-in `node:sqlite` (DatabaseSync) against a file, or an equivalent durably-written on-disk store; NOT in-memory. The DB file path is configurable (env, default alongside the app) and gitignored.\n\nServer binds `process.env.PORT` (default 3000). All request/response bodies are JSON (`Content-Type: application/json`).\n\nEndpoints:\n- `POST /signup` `{username, password}` → 201 `{id, username}`. Username unique; duplicate → 409. Passwords stored hashed+salted (Node `crypto` scrypt/pbkdf2), never plaintext, never returned.\n- `POST /login` `{username, password}` → 200 `{session}` where `session` is an opaque, unguessable token (crypto random) persisted and mapped to the user. Wrong credentials → 401.\n- `GET /me` → 200 `{id, username}` for the bearer's user.\n- `POST /notes` `{title, body}` → 201 with the created note `{id, title, body, ...}` owned by the bearer's user.\n- `GET /notes` → 200 JSON array of ONLY the bearer's notes.\n\nAuth: protected routes read `Authorization: Bearer <session>`; missing/invalid/unknown token → 401. Notes are per-user isolated — a user can never read another user's notes.\n\nBad requests handled sensibly with proper status + JSON error body: malformed JSON / wrong Content-Type / missing or non-string fields → 400; unknown route → 404; unsupported method → 405. Server never crashes on bad input.\n\nExpose a factory that creates the server without auto-listening, so tests drive it on an ephemeral port with a temp DB file. `npm start` runs the server.\n\n## Changes\n- `src/server.js` — creates\n- `src/db.js` — creates\n- `src/app.js` — creates\n- `test/api.test.js` — creates\n- `package.json` — refactors-existing\n- `.gitignore` — refactors-existing\n\n## Acceptance\n- [ ] AC-1: npm start launches an HTTP server on process.env.PORT (default 3000) using only Node built-ins (built-in http; embedded on-disk store, not in-memory) with no external web framework in dependencies\n- [ ] AC-2: POST /signup with {username, password} returns 201 and JSON {id, username}; a duplicate username returns 409; a missing/non-string field or malformed JSON returns 400 and the password is never stored in plaintext nor echoed back\n- [ ] AC-3: POST /login with valid credentials returns 200 and {session} (an opaque bearer token); invalid credentials return 401\n- [ ] AC-4: GET /me with a valid Authorization: Bearer <session> returns 200 {id, username}; a missing or invalid token returns 401\n- [ ] AC-5: POST /notes with {title, body} and a valid session returns 201 with the created note owned by that user; GET /notes returns a JSON array of only that user's notes and never another user's notes\n- [ ] AC-6: After stopping and restarting the server against the same on-disk store, a previously created user can log in and previously created notes are still listed (data survives restart)\n- [ ] AC-7: Unknown routes return 404, unsupported methods return 405, and no malformed request crashes the server\n\n## Verify\n- node --test test/api.test.js (e2e)\n- npm run typecheck (validate)\n- npm run lint (validate)\n\n## Non-Goals\n- No external web framework or ORM (Express, Fastify, Koa, better-sqlite3, etc.)\n- No session expiry / refresh / logout flow\n- No password-strength policy, rate limiting, or account recovery\n- No note update or delete endpoints\n- No pagination or search on notes\n\n<!-- meta: {\"reason_to_exist\":\"A restart-durable, framework-free multi-user notes API is the whole deliverable.\"} -->\n\n<!-- plan-story: 5961bb43d0ae27c5 -->",
+  "labels": [
+    {
+      "id": "LA_kwDOTjIRAM8AAAACtPd3dg",
+      "name": "plan-run::220f1ee3",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    },
+    {
+      "id": "LA_kwDOTjIRAM8AAAACtPd34g",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTjIRAM8AAAACtPd4lg",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 1,
+  "title": "JSON REST API for user accounts and personal notes (ESM, no framework, on-disk store)"
+}
