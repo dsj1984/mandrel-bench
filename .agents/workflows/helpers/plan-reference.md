@@ -49,9 +49,9 @@ things make that safe, and both are worth understanding before changing it:
    suggestion that routed you.
 2. **The gate still runs.** The suggestion is read against seed-time ceilings
    (`DELIVER_LIGHT_SUGGESTION_CEILINGS` — artifacts, risk hits, sensitive-path
-   classes); the light gate is read against a predicted shape
-   (`STORY_SHAPE_CEILINGS` — `maxChanges`, `maxAcceptance`). Two different
-   checks on purpose, so a confirm is not a bypass.
+   classes); the light gate is read against the predicted work's effort and risk
+   (`STORY_SHAPE_CEILINGS` — change kinds, magnitude, uncertainty, deployable
+   span). Two different checks on purpose, so a confirm is not a bypass.
 
 **When the light gate answers `ask-operator`**, the two ceiling sets disagreed.
 Resume `/plan` at step 2 (Author) **in this same session** — the interrogation
@@ -62,6 +62,26 @@ Escalation in the *other* direction — an over-scope prompt on the light path �
 is terminal and requires a fresh session. The rule that separates the two, and
 why it must not be flattened into symmetry:
 [`deliver-light.md` § Why the two directions differ](deliver-light.md).
+
+## Gate #1 → the `/prototype` offer (`uiSurface`)
+
+`complexitySignals.uiSurface` is the second advisory Gate #1 offer, and the
+weaker of the two on purpose: it carries **no routing authority and adds no
+gate**. Both halves are derived from observables already in the checkout — the
+`hasWebSurface` applicability predicate the `target: "web"` audit lenses gate
+on, and whether any predicted path matches a web lens `filePattern` registered
+in `audit-rules.json`. There is no configuration key to set: a project with no
+rendered frontend resolves falsey and the offer never fires.
+
+When it does fire, **name [`/prototype`](../prototype.md) and stop there.**
+`/plan` must never invoke it — operator invocation is the entire design, because
+the value is a human looking at a layout before its UI acceptance criteria are
+frozen.
+
+**Under `--yes` the offer is recorded and planning proceeds** — no reroute, no
+prototype written, no gate raised. This is exactly how `deliverLightSuggestion`
+behaves unattended, and for the same reason: an unattended run has nobody to
+review an artifact, so recording the offer is the whole of the right behaviour.
 
 ## Shape-derived complexity routing (`complexitySignals`)
 
@@ -85,9 +105,10 @@ decision:
   (`full`) stands.
 - **Persist backstops the claim deterministically.** After authoring, the
   work has measurable shape, so persist validates the `lite` claim against
-  each Story's own shape — `changes[]` count, acceptance-criteria count,
-  creates-vs-refactors mix, glob-free footprint, and sensitive-path classes,
-  against the framework `STORY_SHAPE_CEILINGS` — and **fails closed to
+  each Story's own shape — distinct change kinds, declared magnitude,
+  uncertainty, deployable/migration span, glob-free footprint, and
+  sensitive-path classes, against the framework `STORY_SHAPE_CEILINGS` (effort
+  and risk, never artifact counts) — and **fails closed to
   `full`** when any Story exceeds them (the refusal is ledgered on the
   checkpoint too). The lite route is **not** licence to drop a
   non-negotiable — every decision's `preserves` field enumerates what still
