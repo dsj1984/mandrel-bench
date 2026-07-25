@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nExpose the platform over a JSON REST API — using only Node's built-in HTTP, no external web framework — so users can register, sign in, and manage owner-scoped projects and tasks, and request task reports that are produced asynchronously.\n\n## Spec\nListen on `process.env.PORT` (default 3000) using `node:http`; no Express/Fastify/etc. On boot, call the Unit 1 `runMigrations()` so a fresh checkout works with only `npm start`. Read/write ONLY through the Unit 1 store module. Endpoints (JSON bodies, JSON responses):\n- POST /auth/register {username,password} -> 201 {id, username}; reject duplicate usernames and missing fields.\n- POST /auth/login {username,password} -> 200 {token}; a bearer token the client sends as `Authorization: Bearer <token>`. Deactivated users cannot log in.\n- All project/task/export routes require a valid bearer token (401 otherwise) and are scoped to the caller: a user only sees/acts on their own projects (404/403 on others').\n- POST /projects {name} -> 201 {id,name,ownerId,createdAt}; GET /projects -> array of the caller's projects; GET /projects/:id -> one; DELETE /projects/:id -> removes it and its tasks.\n- POST /projects/:projectId/tasks {title} -> 201 {id,title,projectId,createdAt,done:false}; GET /projects/:projectId/tasks -> {items,total,page,pageSize} honoring ?page (default 1) & ?pageSize (default 20) and optional ?done=true|false; PATCH /projects/:projectId/tasks/:taskId {title?,done?} -> updated task; DELETE /projects/:projectId/tasks/:taskId.\n- POST /projects/:projectId/exports MUST respond immediately with {id,status} and MUST NOT produce the report inside the handler — it only enqueues a job in the store. GET /projects/:projectId/exports/:exportId returns the job; when the worker (Unit 3) has finished it reads status 'completed' with {report:{name,total,done}}.\nMalformed JSON, missing fields, bad tokens, and unknown routes MUST return a sensible 4xx and MUST NOT crash the server. Passwords MUST NOT be stored in plaintext (hash them).\n\n## Changes\n- `src/api/server.js` — creates\n- `src/api/router.js` — creates\n- `src/api/auth.js` — creates\n- `src/api/handlers/` — creates\n\n## Acceptance\n- [ ] AC-1: Server listens on PORT (default 3000) using only Node built-ins (no external web framework) and applies pending migrations on boot.\n- [ ] AC-2: POST /auth/register returns the new {id,username}; POST /auth/login returns {token}; the token authorizes subsequent requests via the Authorization header and unauthenticated project/task/export requests get 401.\n- [ ] AC-3: A user can create, list (own only), fetch, and delete projects; deleting a project also deletes its tasks.\n- [ ] AC-4: A user can add, list, update, and delete tasks within their project; GET tasks returns {items,total,page,pageSize} honoring ?page (default 1), ?pageSize (default 20), and ?done filter.\n- [ ] AC-5: POST /projects/:projectId/exports responds immediately with {id,status} and no report field, having only enqueued a job (no report produced in the request handler).\n- [ ] AC-6: GET /projects/:projectId/exports/:exportId returns the job record and its status.\n- [ ] AC-7: Malformed/oversized/unauthenticated requests and unknown routes return a 4xx without crashing the server; passwords are not stored in plaintext.\n\n## Verify\n- node --test test/api/auth.test.js (contract)\n- node --test test/api/projects.test.js (contract)\n- node --test test/api/tasks.test.js (contract)\n- node --test test/api/exports.test.js (contract)\n\n## Non-Goals\n- Owning any schema/DDL — it imports the Unit 1 store\n- Producing report contents — the handler only enqueues (Unit 3 produces)\n- The npm start process supervision that also launches the worker (Unit 3)\n\n<!-- meta: {\"reason_to_exist\":\"The platform needs a single HTTP surface that authenticates users and mediates all project/task/export access through the shared store.\"} -->\n\n---\nblocked by #1\n\n<!-- plan-story: 2306a9f49fbd02ae -->",
+  "labels": [
+    {
+      "id": "LA_kwDOTjTmWc8AAAACtRGjLQ",
+      "name": "plan-run::f6c489b4",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    },
+    {
+      "id": "LA_kwDOTjTmWc8AAAACtRGjhQ",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTjTmWc8AAAACtRGmfA",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 2,
+  "title": "Unit 2: JSON REST API server (auth, projects, tasks, export enqueue)"
+}

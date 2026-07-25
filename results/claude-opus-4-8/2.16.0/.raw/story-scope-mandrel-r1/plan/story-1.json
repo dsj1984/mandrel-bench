@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nProvide a dependency-free Node.js JSON REST API where users sign up, sign in for an opaque bearer session, and create and list their own personal notes, with users and notes durably persisted on disk across restarts.\n\n## Spec\nBuilt on the Node core `http` module only — no external web framework. Persistence uses the built-in `node:sqlite` (Node 24, available) to a file-backed database (path overridable via env, default a repo-local file); durability across restart is the load-bearing invariant, so the store must not be in-memory. Endpoints, all JSON in / JSON out:\n- `POST /signup` `{username, password}` → 201 `{id, username}`; usernames unique (409 on duplicate); password stored only as a salted hash (never plaintext, never returned).\n- `POST /login` `{username, password}` → 200 `{session}` where `session` is an opaque, unguessable, high-entropy token persisted server-side and mapped to the user; wrong credentials → 401.\n- `GET /me` → 200 `{id, username}` for the bearer-authenticated user.\n- `POST /notes` `{title, body}` → 201 with the created note (`{id, title, body}` and its owner association); note is owned by the authenticated user.\n- `GET /notes` → 200 JSON array of only the authenticated user's notes.\nAuth invariant: `/me`, `POST /notes`, `GET /notes` require a valid `Authorization: Bearer <session>`; missing/invalid/unknown token → 401 and a user may never read or create another user's notes (tenant isolation is load-bearing). Bad input (malformed JSON, missing/blank `username`/`password`/`title`/`body`, wrong content) → 400 with a JSON error body; unknown route/method → 404/405. Server binds `PORT` env (default 3000). No secrets hardcoded.\n\n## Changes\n- `package.json` — refactors-existing\n- `src/server.js` — creates\n- `src/store.js` — creates\n- `src/auth.js` — creates\n- `test/api.test.js` — creates\n- `.gitignore` — refactors-existing\n\n## Acceptance\n- [ ] AC-1: `POST /signup` with `{username, password}` returns 201 and a JSON body `{id, username}`; the password is never echoed and a duplicate username returns 409.\n- [ ] AC-2: `POST /login` with correct credentials returns 200 and `{session}` with an opaque token; wrong credentials return 401.\n- [ ] AC-3: `GET /me` with `Authorization: Bearer <session>` returns 200 `{id, username}` for the signed-in user; missing or invalid token returns 401.\n- [ ] AC-4: `POST /notes` with `{title, body}` and a valid bearer token returns 201 with the created note owned by that user; without a valid token returns 401.\n- [ ] AC-5: `GET /notes` with a valid bearer token returns 200 with a JSON array containing only the caller's own notes, never another user's.\n- [ ] AC-6: Malformed JSON or missing required fields on any endpoint returns a 4xx (400) JSON error rather than crashing the server; unknown routes return 404.\n- [ ] AC-7: Users and notes created before a full process restart are still retrievable (login + GET /notes) after the server is stopped and started again, proving on-disk (non-in-memory) persistence.\n- [ ] AC-8: The server listens on the port from `PORT` (default 3000), and `npm start` launches it.\n\n## Verify\n- npm start (validate)\n- node --test test/api.test.js (e2e)\n- npm run typecheck (validate)\n\n## Non-Goals\n- No web UI / HTML — JSON API only.\n- No password reset, email verification, roles, or session expiry/refresh beyond issuing and validating a bearer token.\n- No note editing, deletion, or sharing between users.\n- No external web framework or ORM; core Node modules only.\n\n<!-- meta: {\"reason_to_exist\":\"There is no application code yet; this Story stands up the entire persisted multi-user accounts-and-notes API as one cohesive deliverable.\"} -->\n\n<!-- plan-story: cb889c0fc2bf73f4 -->",
+  "labels": [
+    {
+      "id": "LA_kwDOTjSrzs8AAAACtQ9N8Q",
+      "name": "plan-run::18683dbb",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    },
+    {
+      "id": "LA_kwDOTjSrzs8AAAACtQ9OWg",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTjSrzs8AAAACtQ9PaA",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 1,
+  "title": "JSON REST API for user accounts and personal notes with on-disk persistence"
+}

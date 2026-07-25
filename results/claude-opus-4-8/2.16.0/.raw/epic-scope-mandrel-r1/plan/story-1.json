@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nGive the platform one persistent on-disk store whose schema is owned in a single place, applied by a migration runner that is safe to run repeatedly, so the API, worker, and admin CLI all read and write the same durable data.\n\n## Spec\nUse the built-in `node:sqlite` DatabaseSync against an on-disk file (path from a `DB_PATH`/`DATABASE_PATH` env var, default a repo-relative `data/app.db`); never in-memory. This Story is the ONLY place schema (DDL) lives — expose a store module the other units import (a `getDb()`/connection accessor plus the migration runner); consumers MUST NOT declare their own DDL. Migrations are ordered, forward-only steps tracked in a `schema_migrations` (or equivalent) bookkeeping table so re-running applies only pending steps and is a no-op when current. The schema MUST cover every downstream need: users (id, unique username, password credential, an active/deactivated flag), projects (id, name, ownerId, createdAt), tasks (id, title, projectId, createdAt, done) with a project-delete cascade to its tasks, and export/report jobs (id, projectId, status, and a place to hold the produced report). Provide a single `runMigrations()` entry the API boot path can also call. Wire `npm run migrate` to invoke it. Store errors must surface as thrown errors, not process crashes in callers.\n\n## Changes\n- `src/store/db.js` — creates\n- `src/store/migrate.js` — creates\n- `src/store/migrations/` — creates\n- `package.json` — refactors-existing\n\n## Acceptance\n- [ ] AC-1: A store module exposes a database connection accessor and a `runMigrations()` function; all DDL lives under this Story's files and nowhere else.\n- [ ] AC-2: `npm run migrate` applies pending migrations against an on-disk database file (not in-memory) and creates it if absent.\n- [ ] AC-3: Running `npm run migrate` a second time with no new migrations makes no schema changes and exits 0 (idempotent).\n- [ ] AC-4: After migrating, the store contains tables covering users (with an active/deactivated flag), projects, tasks, and export/report jobs, with the schema recorded in a migration-bookkeeping table.\n- [ ] AC-5: Deleting a project removes its tasks (cascade is enforced at the schema level).\n- [ ] AC-6: Data written to the store is present after the process exits and a new process opens the same file (survives restart).\n\n## Verify\n- npm run migrate (validate)\n- node --test test/store/migrate.test.js (unit)\n- node --test test/store/schema.test.js (unit)\n\n## Non-Goals\n- HTTP endpoints, request handling, or auth logic (Unit 2)\n- Report generation or the background worker loop (Unit 3)\n- Admin CLI commands (Unit 4)\n\n<!-- meta: {\"reason_to_exist\":\"One unit must own the schema and its migrations so the other three units share a single durable store instead of diverging on-disk shapes.\"} -->\n\n<!-- plan-story: e568e2b70b05d700 -->",
+  "labels": [
+    {
+      "id": "LA_kwDOTjTmWc8AAAACtRGjLQ",
+      "name": "plan-run::f6c489b4",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    },
+    {
+      "id": "LA_kwDOTjTmWc8AAAACtRGjhQ",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTjTmWc8AAAACtRGmfA",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 1,
+  "title": "Unit 1: shared on-disk store and idempotent migration runner"
+}

@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 53620,
+  "num_turns": 8,
+  "stop_reason": "end_turn",
+  "session_id": "d6a5de6e-0688-4206-a111-e986b5048750",
+  "total_cost_usd": 0.522942,
+  "usage": {
+    "input_tokens": 10,
+    "cache_creation_input_tokens": 34155,
+    "cache_read_input_tokens": 197056,
+    "output_tokens": 3269,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 34155,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1163,
+        "cache_read_input_tokens": 51928,
+        "cache_creation_input_tokens": 1614,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 1614
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 994,
+      "outputTokens": 19,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.0010890000000000001,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 10,
+      "outputTokens": 3269,
+      "cacheReadInputTokens": 197056,
+      "cacheCreationInputTokens": 34155,
+      "webSearchRequests": 0,
+      "costUSD": 0.521853,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "The suitability gate escalated. Per the protocol (`deliver-light.md` § Escalation is terminal) and the benchmark's explicit instruction to respect an over-scope escalation without working around it, **this session ends here**. I will not re-run the gate with adjusted declarations, and I will not invoke `/plan` in this session — that must run fresh.\n\n## Terminal outcome: `escalated`\n\nThe unplanned single-session path judged this task **over-scope for the light ceilings** and, under the runner-set `--yes`, failed closed to a terminal envelope rather than proceeding light.\n\n**Why it escalated:**\n- **Shape:** 4 distinct change kinds (`http-router`, `on-disk-persistence`, `session-auth`, `notes-crud`) exceeds the light ceiling of `maxChangeKinds 2` — the task is an explicit multi-capability enumeration (user accounts + session auth + personal notes), not one cohesive capability slice. The mechanical `deriveStoryShape` check routes it `full`.\n- **Verdict disagreement:** my ledgered model verdict of `lite` and the mechanical shape check did not agree — and both must agree on `lite` to proceed. The mechanical check wins.\n- **`--yes` on over-scope fails closed** to `/plan`; it never silently proceeds light.\n\n**Nothing was created** — no receipt Story, no `story-<id>` branch, no worktree (`escalation.created` is all `false`), so there is no half-started state to clean up.\n\n**To deliver this work, run in a FRESH session:**\n\n```\n/plan \"Build a small JSON REST API in Node.js (ESM, no external web framework) for user accounts and personal notes, backed by a persistent on-disk store. Endpoints: POST /signup, POST /login (returns opaque session bearer token), GET /me, POST /notes, GET /notes. Multi-user, data survives restart, PORT env (default 3000), npm start script.\"\n```\n\n`/plan` will decompose it (a fresh planning session on this seed is expected to author multiple Stories against the multi-capability shape), then `/deliver` lands each Story through the same engine. Invoking `/plan` here is forbidden — the frame of a session already scoped as \"small work\" under-decomposes, which is the exact failure the escalation guard exists to prevent.",
+  "ttft_ms": 2836,
+  "ttft_stream_ms": 1671,
+  "time_to_request_ms": 248,
+  "type": "result",
+  "duration_ms": 55976,
+  "uuid": "9b8b7c45-c38e-4085-9535-de3891276044"
+}

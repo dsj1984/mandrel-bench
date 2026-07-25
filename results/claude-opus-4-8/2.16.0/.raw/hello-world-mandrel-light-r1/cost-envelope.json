@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 195236,
+  "num_turns": 35,
+  "stop_reason": "end_turn",
+  "session_id": "4e573eee-9823-4dc7-85b0-020efa93c929",
+  "total_cost_usd": 1.8365050000000005,
+  "usage": {
+    "input_tokens": 52,
+    "cache_creation_input_tokens": 65844,
+    "cache_read_input_tokens": 1781914,
+    "output_tokens": 11437,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 65844,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 663,
+        "cache_read_input_tokens": 84521,
+        "cache_creation_input_tokens": 710,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 710
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 833,
+      "outputTokens": 18,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000923,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 52,
+      "outputTokens": 11437,
+      "cacheReadInputTokens": 1781914,
+      "cacheCreationInputTokens": 65844,
+      "webSearchRequests": 0,
+      "costUSD": 1.8355820000000003,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Delivered and landed via a single `/deliver` session on the unplanned prompt path.\n\n## Terminal envelope\n`status: landed` · phase `post-land` · PR **#2 MERGED** · gates `validation: passed`, `baseSync: passed`, `codeReview: passed` (0 findings) · Story **#1 → `agent::done`** (CLOSED).\n\n## What shipped (on `origin/main`, commit `2f64061`)\n- **`server.mjs`** — ESM HTTP server using only the built-in `node:http`. `GET /` → **200**, `Content-Type: text/html`, body contains **`Hello, World!`**; any other route → 404. Listens on `process.env.PORT || 3000`. The listener starts only when run directly, so it's importable by tests.\n- **`package.json`** — added `\"start\": \"node server.mjs\"`.\n- **`server.test.mjs`** — the Verify step (`npm test` via `node --test`); 2 passing tests asserting status/content-type/body and the 404 fallback.\n\n## Path taken through the gate sequence\n1. **Suitability gate** → `proceed-light` (predicted + ledgered verdict both `lite`); receipt Story #1 authored.\n2. **Init** → worktree/branch `story-1`, `remoteVerified: true`.\n3. **Implement + self-eval** → `npm test` green; acceptance verdict scored `proceed` (AC-1 `met`).\n4. **Diff backstop** → passed (3 files, no sensitive paths).\n5. **Close** → first attempt **failed** the Biome `format` gate (repo enforces tabs/double-quotes). I applied `biome format --write`, re-ran tests, committed, and re-closed → **landed**.\n\nOne degradation worth noting, non-blocking: the post-land `baseFastForward` was skipped (\"dirty-tree\" in the main checkout from session temp files) — the merge stands regardless, and `origin/main` already contains the code. No further action needed.",
+  "ttft_ms": 3073,
+  "ttft_stream_ms": 2052,
+  "time_to_request_ms": 428,
+  "type": "result",
+  "duration_ms": 227998,
+  "uuid": "fd1b6c5b-cc66-45ba-93f5-0157e7e0d989"
+}
