@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 125873,
+  "num_turns": 13,
+  "stop_reason": "end_turn",
+  "session_id": "2b9fb222-373a-4e9f-8fe4-a3c2bab07768",
+  "total_cost_usd": 0.8445100000000001,
+  "usage": {
+    "input_tokens": 21,
+    "cache_creation_input_tokens": 39445,
+    "cache_read_input_tokens": 513688,
+    "output_tokens": 7688,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 39445,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1651,
+        "cache_read_input_tokens": 56002,
+        "cache_creation_input_tokens": 2830,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2830
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 841,
+      "outputTokens": 14,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.0009109999999999999,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 21,
+      "outputTokens": 7688,
+      "cacheReadInputTokens": 513688,
+      "cacheCreationInputTokens": 39445,
+      "webSearchRequests": 0,
+      "costUSD": 0.843599,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "The suitability gate **escalated** — and per the driver instructions I respect that outcome and end the session here. I do not re-run the gate with softened inputs to force `lite`, and I do not invoke `/plan` in this session (the escalation path forbids it).\n\n## Outcome: `escalated` (terminal)\n\nThe `/deliver` unplanned-prompt path ran its suitability gate and failed closed to `/plan`. Verbatim terminal envelope:\n\n```json\n{\n  \"kind\": \"story-deliver-terminal\",\n  \"storyId\": null,\n  \"status\": \"escalated\",\n  \"phase\": \"suitability-gate\",\n  \"escalation\": {\n    \"reasons\": [\n      \"shape: 3 distinct change kinds (http-server, auth-sessions, password-endpoint) > maxChangeKinds 2 — an explicit multi-capability enumeration, not one capability; full route\",\n      \"verdict: model verdict: lite (recorded reason): One cohesive capability slice: a small in-memory HTTP auth server (signup/login) plus the requested POST /password with pre-change session invalidation. No existing code to refactor, single deployable, shape fully determined by the request.\",\n      \"--yes on over-scope fails closed to /plan (never silently proceeds light)\"\n    ],\n    \"created\": { \"receiptStory\": false, \"storyBranch\": false, \"worktree\": false }\n  },\n  \"nextCommand\": \"/plan \\\"Signed-in users need a way to change their password. Add POST /password: ...\\\"\"\n}\n```\n\n### Why it escalated\nThe repository is a bare template — only `package.json` and `.agentrc.json`, no application code and **no existing endpoints**. So satisfying the task's own security semantics (pre-change sessions stop working, sign-in requires the new password, old password fails) requires building the supporting auth surface — HTTP server scaffolding, session/credential handling, and the password endpoint. Judged honestly that is **3 distinct change kinds**, over the light path's `maxChangeKinds` of 2, and it sits squarely in the auth sensitivity class the light path routes `full` regardless of size.\n\n### State\nNothing was created or mutated — no receipt Story, no `story-<id>` branch, no worktree (`created` all `false`). The working tree is unchanged.\n\n### Next step (fresh session — not this one)\n```\n/plan \"Signed-in users need a way to change their password. Add POST /password: it takes a JSON body {\"newPassword\": ...} from a signed-in user (bearer credential in the Authorization header, like the other endpoints) and updates their password. Sessions issued before the change must stop working, signing in requires the new password, and the old password no longer works. Handle bad requests sensibly.\"\n```\n\nSession ends here per the escalation contract.",
+  "ttft_ms": 3009,
+  "ttft_stream_ms": 1969,
+  "time_to_request_ms": 420,
+  "type": "result",
+  "duration_ms": 128677,
+  "uuid": "e28f785f-1b48-4c23-9c1c-5ec2a9bbf65c"
+}

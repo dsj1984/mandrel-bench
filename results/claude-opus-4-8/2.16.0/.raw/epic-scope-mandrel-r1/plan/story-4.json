@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nGive operators a command-line tool over the shared store to see platform totals and to deactivate an account, run from the repo as `npm run admin -- <command>`.\n\n## Spec\nA CLI entry wired to `npm run admin -- <command>` that reads/writes ONLY through the Unit 1 store module.\n- `npm run admin -- stats` prints exactly one JSON object {\"users\":N,\"projects\":N,\"tasks\":N} counting rows currently in the store (and nothing else on stdout).\n- `npm run admin -- deactivate-user <username>` flips the named account's active flag so it can no longer log in via the API; report a clear message/nonzero exit when the username does not exist. Deactivation persists in the store and takes effect for subsequent logins. Unknown commands print usage and exit nonzero without a stack-trace crash.\n\n## Changes\n- `src/admin/cli.js` — creates\n- `package.json` — refactors-existing\n\n## Acceptance\n- [ ] AC-1: `npm run admin -- stats` prints a single JSON object {users,projects,tasks} whose counts reflect the current store contents.\n- [ ] AC-2: `npm run admin -- deactivate-user <username>` deactivates that account in the store, after which that user can no longer log in via the API.\n- [ ] AC-3: Deactivating a non-existent user and unknown commands fail gracefully (clear message, nonzero exit) without an uncaught crash.\n\n## Verify\n- node --test test/admin/stats.test.js (unit)\n- node --test test/admin/deactivate.test.js (unit)\n- node --test test/e2e/deactivate-login.test.js (e2e)\n\n## Non-Goals\n- Defining user schema — that lives in Unit 1\n- HTTP login enforcement — Unit 2 already rejects deactivated users; this Story only sets the flag\n\n<!-- meta: {\"reason_to_exist\":\"Operators need out-of-band visibility and account control over the running platform without going through the authenticated API.\"} -->\n\n---\nblocked by #1\nblocked by #2\nblocked by #3\n\n<!-- plan-story: c574de5a969f0457 -->",
+  "labels": [
+    {
+      "id": "LA_kwDOTjTmWc8AAAACtRGjLQ",
+      "name": "plan-run::f6c489b4",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    },
+    {
+      "id": "LA_kwDOTjTmWc8AAAACtRGjhQ",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTjTmWc8AAAACtRGmfA",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 4,
+  "title": "Unit 4: operator admin CLI (stats, deactivate-user)"
+}

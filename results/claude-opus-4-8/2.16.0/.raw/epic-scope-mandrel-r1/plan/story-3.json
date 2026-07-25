@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nProduce the task reports asynchronously — a background worker drains queued export jobs from the shared store and completes them — and make `npm start` bring up the whole platform (API server + worker) so queued jobs finish with no extra command.\n\n## Spec\nThe worker polls/claims queued export jobs from the Unit 1 store, computes each report ({name: project name, total: task count, done: count of done tasks}), stores it on the job, and flips the job's status to 'completed'. Job claiming MUST be safe so a job is not double-completed. The worker reads/writes ONLY through the Unit 1 store module and produces reports OUTSIDE any HTTP request path. `npm start` MUST launch both the Unit 2 API server and this worker together (a single supervisor entry, e.g. `src/main.js`, that starts both in-process or as child processes and applies migrations first) so that after `npm start`, a job enqueued via POST exports reaches status 'completed' with its report without any additional command. A worker crash on one bad job MUST NOT tear down the platform.\n\n## Changes\n- `src/worker/worker.js` — creates\n- `src/main.js` — creates\n- `package.json` — refactors-existing\n\n## Acceptance\n- [ ] AC-1: A background worker claims queued export jobs from the shared store, computes {name,total,done} for the project, stores the report on the job, and sets status to 'completed'.\n- [ ] AC-2: `npm start` brings up both the API server and the worker together and applies pending migrations first.\n- [ ] AC-3: End to end after `npm start`: enqueueing an export via the API and polling GET exports yields status 'completed' with {report:{name,total,done}} matching the project's name, task count, and done count — with no extra command run.\n- [ ] AC-4: Report contents are produced by the worker, never inside the HTTP request handler.\n- [ ] AC-5: A single bad job does not crash the worker or the platform; job claiming does not double-complete a job.\n\n## Verify\n- node --test test/worker/worker.test.js (unit)\n- node --test test/e2e/export-flow.test.js (e2e)\n\n## Non-Goals\n- Defining export-job schema — that lives in Unit 1\n- The HTTP enqueue endpoint — that lives in Unit 2\n- Admin CLI commands (Unit 4)\n\n<!-- meta: {\"reason_to_exist\":\"Report production must happen off the request path, and starting the platform must bring the worker up automatically so enqueued jobs actually complete.\"} -->\n\n---\nblocked by #1\nblocked by #2\n\n<!-- plan-story: a2662a643b3742f1 -->",
+  "labels": [
+    {
+      "id": "LA_kwDOTjTmWc8AAAACtRGjLQ",
+      "name": "plan-run::f6c489b4",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    },
+    {
+      "id": "LA_kwDOTjTmWc8AAAACtRGjhQ",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTjTmWc8AAAACtRGmfA",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 3,
+  "title": "Unit 3: background report worker and unified npm start"
+}

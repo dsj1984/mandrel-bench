@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 259162,
+  "num_turns": 32,
+  "stop_reason": "end_turn",
+  "session_id": "e6cacd3e-b088-4226-bd21-1178aaac5caf",
+  "total_cost_usd": 1.7305105,
+  "usage": {
+    "input_tokens": 60,
+    "cache_creation_input_tokens": 46813,
+    "cache_read_input_tokens": 1653411,
+    "output_tokens": 17382,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 46813,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 785,
+        "cache_read_input_tokens": 65586,
+        "cache_creation_input_tokens": 614,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 614
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 735,
+      "outputTokens": 18,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000825,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 60,
+      "outputTokens": 17382,
+      "cacheReadInputTokens": 1653411,
+      "cacheCreationInputTokens": 46813,
+      "webSearchRequests": 0,
+      "costUSD": 1.7296855000000002,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. Here's what I implemented end to end.\n\n## Summary\n\nAdded project sharing to the REST API with `viewer`/`editor` roles, confined to the API unit and the store schema it reads. The worker and admin CLI are untouched.\n\n**Store schema** (`src/store/migrations/index.js`) — new `0002_project_shares` migration: a `project_shares(project_id, user_id, role, created_at)` table with a `CHECK (role IN ('viewer','editor'))`, `PRIMARY KEY (project_id, user_id)` (so re-sharing upserts), and cascading FKs so deleting a project or user cleans up its shares.\n\n**Data access** (`src/store/repo.js`) — `getShare`, `upsertShare` (ON CONFLICT → update role), `getUser`, a `toShare` serializer, and `listProjects` now returns owned **plus** shared projects.\n\n**API** (`src/api/server.js`):\n- `POST /projects/:id/shares` taking `{userId, role}` — owner-only. Rejects unknown users and unrecognised roles with `400`, and rejects sharing with the owner themselves.\n- A role-aware `accessibleProject(user, id, minRole)` replaces the old owner-only check on every project/task/export route, with a ranking `viewer < editor < owner`:\n  - Read routes (GET project/tasks, exports) require `viewer`.\n  - Task mutations (POST/PATCH/DELETE tasks) require `editor`.\n  - Deleting the project and sharing require `owner`.\n\n**Privacy model** — a user with *no* relationship to a project always gets `404` (existence is never leaked, per the requirement). A shared user whose role is too low for a mutation gets `403`, since they can already see the project.\n\n**Verification:**\n- `npm test` passes — I extended the end-to-end test to cover: strangers can't share (404), viewers can read/list but get 403 on mutations/delete/re-share, re-sharing upgrades viewer→editor and unlocks task mutations, editors still can't delete the project, and an unrelated user remains fully locked out (404). Bad-request cases (unknown user, bad role) assert 400.\n- `npm run typecheck` passes (11 files).\n- Migrations apply cleanly on a fresh DB and are idempotent on re-run.\n\nWork is committed (`b33235a`).",
+  "ttft_ms": 4011,
+  "ttft_stream_ms": 3538,
+  "time_to_request_ms": 179,
+  "type": "result",
+  "duration_ms": 261340,
+  "uuid": "97eafe94-8dc8-4db3-af1f-4df32dabfd67"
+}
