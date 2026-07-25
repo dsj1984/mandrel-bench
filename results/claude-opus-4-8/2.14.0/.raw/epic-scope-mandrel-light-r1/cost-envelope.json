@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 41164,
+  "num_turns": 4,
+  "stop_reason": "end_turn",
+  "session_id": "883b6aaf-789e-4020-bdee-f232bead3b67",
+  "total_cost_usd": 0.35533499999999996,
+  "usage": {
+    "input_tokens": 6,
+    "cache_creation_input_tokens": 24892,
+    "cache_read_input_tokens": 97286,
+    "output_tokens": 2242,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 24892,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 558,
+        "cache_read_input_tokens": 41064,
+        "cache_creation_input_tokens": 3215,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 3215
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 1597,
+      "outputTokens": 19,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.001692,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 6,
+      "outputTokens": 2242,
+      "cacheReadInputTokens": 97286,
+      "cacheCreationInputTokens": 24892,
+      "webSearchRequests": 0,
+      "costUSD": 0.35364300000000004,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "The suitability gate ran and **escalated to `/plan`**. This session ends here — per the `/deliver-light` protocol, escalation is terminal and invoking `/plan` in this same session is forbidden (it would under-decompose work already framed as small).\n\n## Outcome: `escalated`\n\nThe gate judged the task over-scope for the light path and failed closed under `--yes`:\n\n- **Shape check:** predicted footprint declares 9 change entries (> `maxChanges` 2) — a full multi-unit platform, not a trivial footprint.\n- **`--yes` on over-scope fails closed** to `/plan` rather than silently proceeding light.\n- **Nothing was half-started:** no receipt Story, no `story-<id>` branch, no worktree were created (`escalation.created` all `false`).\n\nThis is the correct result for an epic-scope, four-unit platform — it exceeds what single-session delivery is designed to land.\n\n## Next step (fresh session)\n\nRun this in a **new** session:\n\n```\n/plan \"Build a multi-user project and task management platform in Node.js (ESM, no external web framework): shared on-disk SQLite store + migrations, JSON REST API server (auth, projects, tasks with pagination/filter, async report export jobs), background worker producing reports, and an admin CLI (stats, deactivate-user). npm start runs API+worker; npm run migrate; npm run admin.\"\n```\n\n`/plan` will decompose the epic into properly-sized Stories, which then land through `/deliver`. I'm stopping here as the protocol requires.",
+  "ttft_ms": 7568,
+  "ttft_stream_ms": 6424,
+  "time_to_request_ms": 122,
+  "type": "result",
+  "duration_ms": 40766,
+  "uuid": "57945f6b-5f7f-4902-aaf9-368bfd48c985"
+}

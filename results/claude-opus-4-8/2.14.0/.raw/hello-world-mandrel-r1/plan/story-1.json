@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nProvide a dependency-free Node.js HTTP server that answers GET / with an HTML \"Hello, World!\" page, so the project has a runnable baseline entry point.\n\n## Spec\nBuilt on Node's built-in `node:http` (ESM `import`, no Express/Fastify/etc.). Server binds to `process.env.PORT` when set, else 3000. A `GET /` request returns HTTP status 200, header `Content-Type: text/html`, and a body containing the exact substring `Hello, World!`. The `PORT` default and the status/Content-Type/body contract on `GET /` are load-bearing (the acceptance criteria assert them); other request methods/paths are unconstrained by this Story. `package.json` declares `\"type\": \"module\"` and a `\"start\"` script that launches the single source file via `node`. Implementation footprint is exactly one source file plus `package.json`.\n\n## Changes\n- `server.js` — creates\n- `package.json` — refactors-existing\n\n## Acceptance\n- [ ] AC-1: `server.js` exists as an ESM module that uses only Node built-ins (no non-builtin import specifiers) and starts an HTTP server.\n- [ ] AC-2: The server listens on `process.env.PORT` when set and on port 3000 when it is unset.\n- [ ] AC-3: A `GET /` request receives HTTP 200 with a `Content-Type` header of `text/html` and a response body containing the exact text `Hello, World!`.\n- [ ] AC-4: `package.json` sets `\"type\": \"module\"` and defines a `\"start\"` script that launches `server.js` with `node`.\n- [ ] AC-5: The implementation footprint is exactly one source file (`server.js`) plus `package.json` — no additional source files and no runtime dependencies.\n\n## Verify\n- PORT=3100 node server.js & SVR=$!; sleep 1; curl -sD - http://localhost:3100/ -o /tmp/hw-body.txt | grep -i '^HTTP/1.1 200' && curl -sD - http://localhost:3100/ -o /dev/null | grep -i '^Content-Type: text/html' && grep -q 'Hello, World!' /tmp/hw-body.txt; kill $SVR (e2e)\n- node -e \"import('node:child_process'); const {execSync}=require('node:child_process')\" 2>/dev/null; node --check server.js (validate)\n- node -e \"const p=require('./package.json'); if(p.type!=='module'||!p.scripts||!p.scripts.start){process.exit(1)}\" (validate)\n\n## Non-Goals\n- Routing framework or middleware layer\n- Handling of paths/methods other than GET /\n- TLS/HTTPS, logging infrastructure, or graceful-shutdown handling\n- Test framework dependencies beyond what ships with Node\n\n<!-- meta: {\"reason_to_exist\":\"The repository needs a minimal, framework-free HTTP entry point that satisfies the Hello-World contract and is launchable via npm start.\"} -->\n\n<!-- plan-story: 794e7f2eb7ff1d79 -->",
+  "labels": [
+    {
+      "id": "LA_kwDOTipQdc8AAAACtLBSMw",
+      "name": "plan-run::db52a99a",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    },
+    {
+      "id": "LA_kwDOTipQdc8AAAACtLBSlg",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTipQdc8AAAACtLBTpw",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 1,
+  "title": "Minimal ESM Node HTTP server returning \"Hello, World!\" on GET /"
+}

@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nProvide a dependency-free Node.js HTTP JSON API where users sign up, sign in, and manage their own private notes, with all data surviving a server restart.\n\n## Spec\nNo external web framework: use node:http for the server and routing. Persistence is an on-disk embedded store (node:sqlite database file preferred — node:crypto and node:sqlite are both available on the repo's Node 24; a JSON/append-only file store is an acceptable equivalent) — never in-memory-only; users and notes MUST survive a full process restart. Listen on process.env.PORT, default 3000.\n\nEndpoints (all bodies application/json):\n- POST /signup {username, password} -> 201 {id, username}. Username unique -> 409 on collision.\n- POST /login {username, password} -> 200 {session}. session is an opaque, unguessable token (e.g. crypto.randomUUID / random bytes) accepted later as `Authorization: Bearer <session>`.\n- GET /me -> 200 {id, username} for the bearer's owner.\n- POST /notes {title, body} -> 201 with the created note (includes its id and owner association).\n- GET /notes -> 200 JSON array of ONLY the caller's own notes.\n\nSecurity invariants (security-baseline, inviolable): passwords are never stored in plaintext and never returned in any response — store a salted hash (node:crypto scrypt or pbkdf2). Sessions are server-side credentials, not derivable from the username. Note reads/writes are scoped to the authenticated owner — one user can never see or address another user's notes.\n\nBad-request handling: malformed/oversized JSON or missing/blank required fields -> 400; missing or invalid bearer on protected routes -> 401; unknown route/method -> 404/405. Errors return a JSON body, not an HTML/stack dump. Implementation structure (file split, store choice) is the deliverer's call within these constraints.\n\n## Changes\n- `server.js` — creates\n- `package.json` — refactors-existing\n- `test/api.test.js` — creates\n\n## Acceptance\n- [ ] AC-1: npm start launches the server; with PORT set it binds that port, and with PORT unset it binds 3000.\n- [ ] AC-2: POST /signup with {username,password} returns 201 and a JSON body containing the new user's id and username and no password material; a second signup with the same username returns 409.\n- [ ] AC-3: POST /login with correct credentials returns 200 {session}; wrong password or unknown user returns 401 and no session.\n- [ ] AC-4: GET /me with a valid Authorization: Bearer <session> returns 200 with that user's id and username; missing or invalid bearer returns 401.\n- [ ] AC-5: POST /notes with a valid session and {title,body} returns 201 with the created note; GET /notes returns a JSON array containing only the authenticated user's notes and never another user's.\n- [ ] AC-6: Requests with malformed JSON or missing required fields return 400 with a JSON error body; unknown routes/methods return 404/405; no response ever leaks a stack trace or the stored password/hash.\n- [ ] AC-7: After the server process is stopped and started again, a previously signed-up user can log in and GET /notes still returns their previously created notes (data is on disk, not in-memory).\n\n## Verify\n- npm test (e2e)\n- node --test test/api.test.js (e2e)\n- npm run typecheck (validate)\n- npm run lint (validate)\n\n## Non-Goals\n- No password reset, email verification, roles, or refresh-token rotation.\n- No note update/delete, sharing, pagination, or search beyond list-own.\n- No external web framework, ORM, or third-party auth/session library.\n- No HTTPS/TLS termination, rate limiting, or CORS config.\n\n<!-- meta: {\"reason_to_exist\":\"Deliver a minimal but correct multi-user accounts-and-notes REST service that persists across restarts using only the Node standard library.\"} -->\n\n<!-- plan-story: 3f6b567665f51d8f -->",
+  "labels": [
+    {
+      "id": "LA_kwDOTipmDc8AAAACtLElog",
+      "name": "plan-run::7e84b240",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    },
+    {
+      "id": "LA_kwDOTipmDc8AAAACtLEl5A",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTipmDc8AAAACtLEm_g",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 1,
+  "title": "JSON REST API for user accounts and personal notes with on-disk persistence"
+}

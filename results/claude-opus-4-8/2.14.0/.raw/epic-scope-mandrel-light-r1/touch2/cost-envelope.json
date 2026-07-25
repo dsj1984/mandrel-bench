@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 108175,
+  "num_turns": 13,
+  "stop_reason": "end_turn",
+  "session_id": "5ca89670-9e32-4dcf-b7de-9f398ebe6c02",
+  "total_cost_usd": 0.6985159999999999,
+  "usage": {
+    "input_tokens": 15,
+    "cache_creation_input_tokens": 34793,
+    "cache_read_input_tokens": 335492,
+    "output_tokens": 7271,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 34793,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 862,
+        "cache_read_input_tokens": 52379,
+        "cache_creation_input_tokens": 1801,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 1801
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 905,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.00099,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 15,
+      "outputTokens": 7271,
+      "cacheReadInputTokens": 335492,
+      "cacheCreationInputTokens": 34793,
+      "webSearchRequests": 0,
+      "costUSD": 0.697526,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "The suitability gate escalated. Per the `/deliver-light` protocol, this `escalated` terminal envelope **is** the session's terminal output — I relay it and stop. Invoking `/plan` in this same session is forbidden; it must run in a fresh session.\n\n## Delivery outcome: **ESCALATED** — not delivered under `/deliver-light`\n\nThe `/deliver-light` suitability gate judged this task over-scope and failed closed to `/plan`, exactly as the protocol prescribes for `--yes` on an over-ceiling prompt.\n\n**Gate verdict** (`status: \"escalated\"`, phase `suitability-gate`):\n- **Shape:** predicted footprint declares 8 file changes (> the lite ceiling of `maxChanges: 2`) — not a trivial footprint.\n- **Model verdict:** not `lite` — standard `/plan` route. This is genuinely epic-scope: sharing isn't one endpoint but cross-cutting role/authorization enforcement (owner vs. viewer vs. editor vs. stranger) that must hold across *every* project- and task-touching endpoint, plus a new share endpoint, a store-schema change, and ~7 acceptance criteria.\n- **`--yes` on over-scope fails closed to `/plan`** — never silently proceeds light.\n\n**Nothing was created** — the escalation path returns before any mutation: `receiptStory: false`, `storyBranch: false`, `worktree: false`. No branch, worktree, or receipt Story to clean up.\n\n**Next step (must run in a FRESH session — forbidden here):**\n```\n/plan \"Project owners need to share projects with other users. Add POST /projects/:id/shares to the API server, taking a JSON body {userId, role: viewer|editor}. Only a project's owner can share it. A viewer can view the project and its tasks but cannot change anything; an editor can also create, update, and delete its tasks. A user with no relationship to a project still must not see or touch it. Handle bad requests (unknown user, unrecognised role). Confined to the API unit and the store schema it reads; worker and admin CLI keep existing behaviour.\"\n```\n\nOne additional observation worth flagging to the operator, independent of the scope verdict: the working tree currently contains **no application source** — only `.gitignore`, `README.md`, `package.json`, and the Mandrel harness. The task assumes an existing API server, worker, admin CLI, and store schema. Whichever session picks this up via `/plan` should confirm the per-scenario seed layer materialized as expected, since the described \"existing\" units are not present in this checkout.",
+  "ttft_ms": 3049,
+  "ttft_stream_ms": 1897,
+  "time_to_request_ms": 159,
+  "type": "result",
+  "duration_ms": 112120,
+  "uuid": "b4f5e22a-c8d7-4033-bb64-c5af17c14ea0"
+}

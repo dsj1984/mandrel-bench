@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 115650,
+  "num_turns": 19,
+  "stop_reason": "end_turn",
+  "session_id": "a93ed0b5-b80e-44d5-a8fb-773d23753f7c",
+  "total_cost_usd": 1.0098360000000002,
+  "usage": {
+    "input_tokens": 34,
+    "cache_creation_input_tokens": 42255,
+    "cache_read_input_tokens": 885592,
+    "output_tokens": 5736,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 42255,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 587,
+        "cache_read_input_tokens": 58677,
+        "cache_creation_input_tokens": 2965,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2965
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 825,
+      "outputTokens": 19,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.00092,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 34,
+      "outputTokens": 5736,
+      "cacheReadInputTokens": 885592,
+      "cacheCreationInputTokens": 42255,
+      "webSearchRequests": 0,
+      "costUSD": 1.0089160000000001,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Delivered and landed. Terminal envelope: **`status: landed`**, exit 0.\n\n## Summary\n\nTask delivered via a single `/deliver-light` session (Story #1), landed through the unchanged single-story-close path.\n\n**What was built** (single source file + package.json, no external framework):\n- `server.js` — ESM HTTP server using the built-in `node:http`. Reads `PORT` env (defaults to `3000`); `GET /` returns **200** with `Content-Type: text/html` and a body containing the exact text `Hello, World!`; other paths return 404. Exports a `createServer()` factory and only calls `.listen()` when run directly, so it stays importable for tests.\n- `package.json` — added `\"start\": \"node server.js\"`.\n- `server.test.js` — verification (node's built-in test runner) covering the status/content-type/body contract and the 404 path.\n\n**Gate trail** (every gate ran byte-identical to the full path):\n- Suitability gate → `proceed-light` (predicted shape + model verdict both `lite`)\n- `npm test` → 2/2 passing\n- Acceptance self-eval → `proceed` (AC-1 met)\n- Diff backstop → clean (3 files ≤ 4, no sensitive paths)\n- Close-validation gates → all passed; scoped biome format auto-applied\n- Code review → 0 findings\n- **PR [#2](https://github.com/dsj1984/bench-sbx-2026-07-24-hello-world-mandrel-light-c66ef1d9/pull/2) merged (squash) → `main`; Story #1 → `agent::done`**\n\nOne non-blocking degradation reported by the tail: the post-land fast-forward of local `main` was skipped (dirty tree) — the merge stands regardless.",
+  "ttft_ms": 3313,
+  "ttft_stream_ms": 2185,
+  "time_to_request_ms": 263,
+  "type": "result",
+  "duration_ms": 145178,
+  "uuid": "b8958e2d-e465-42ea-a352-aedf64be6c2a"
+}

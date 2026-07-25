@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 231438,
+  "num_turns": 31,
+  "stop_reason": "end_turn",
+  "session_id": "1a413b67-b2e6-4bb2-8d93-1906ca905fde",
+  "total_cost_usd": 1.6540755,
+  "usage": {
+    "input_tokens": 46,
+    "cache_creation_input_tokens": 51320,
+    "cache_read_input_tokens": 1405211,
+    "output_tokens": 17489,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 51320,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 634,
+        "cache_read_input_tokens": 70309,
+        "cache_creation_input_tokens": 398,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 398
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 735,
+      "outputTokens": 16,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000815,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 46,
+      "outputTokens": 17489,
+      "cacheReadInputTokens": 1405211,
+      "cacheCreationInputTokens": 51320,
+      "webSearchRequests": 0,
+      "costUSD": 1.6532605,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. The work is complete and committed.\n\n## What I built\n\n**POST `/projects/:id/shares`** taking `{\"userId\": ..., \"role\": \"viewer\"|\"editor\"}`, plus a role-aware authorization model across the API.\n\n### Store schema (`src/store/`)\n- New migration `003_project_shares` — a `project_shares(project_id, user_id, role, created_at)` table with a `(project_id, user_id)` primary key (one share per user per project) and cascading foreign keys.\n- New repo functions: `getShare`, `upsertShare` (re-sharing updates the role via `ON CONFLICT`), and `listProjectsForUser` (owned ∪ shared).\n\n### API (`src/api/server.js`)\n- Replaced the owner-only `requireOwnedProject` gate with `requireProjectAccess(db, user, id, minRole)` over a role rank `viewer < editor < owner`. The owner outranks any share.\n- Per-route minimum roles: view project / list tasks → **viewer**; create/update/delete tasks → **editor**; delete project, share, exports → **owner**.\n- The share handler is owner-only and validates the body: unknown user → 400, unrecognised role → 400, non-integer `userId` → 400.\n- `GET /projects` now lists shared projects too.\n\n### Privacy semantics\n- A user with **no relationship** to a project gets **404** everywhere — sharing never reveals a project's existence to strangers.\n- A user *with* access but insufficient role (e.g. a viewer trying to write) gets **403**, since hiding a project they can already see buys no privacy.\n\n### Scope respected\nWorker and admin CLI are untouched (exports stay owner-only, so worker behaviour is unchanged).\n\nTwo new e2e tests cover the full viewer/editor/stranger matrix, bad-request handling, and role promotion. All 10 tests pass and `node --check` is clean.",
+  "ttft_ms": 2338,
+  "ttft_stream_ms": 1797,
+  "time_to_request_ms": 57,
+  "type": "result",
+  "duration_ms": 233751,
+  "uuid": "2d4d0839-16ef-4805-9ef9-3ac4f449b965"
+}

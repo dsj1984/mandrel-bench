@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 126506,
+  "num_turns": 11,
+  "stop_reason": "end_turn",
+  "session_id": "fc5a4961-53a3-48ac-b5ca-3986634fd629",
+  "total_cost_usd": 0.646765,
+  "usage": {
+    "input_tokens": 13,
+    "cache_creation_input_tokens": 31235,
+    "cache_read_input_tokens": 278464,
+    "output_tokens": 7768,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 31235,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 3195,
+        "cache_read_input_tokens": 47162,
+        "cache_creation_input_tokens": 3460,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 3460
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 833,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000918,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 13,
+      "outputTokens": 7768,
+      "cacheReadInputTokens": 278464,
+      "cacheCreationInputTokens": 31235,
+      "webSearchRequests": 0,
+      "costUSD": 0.6458470000000001,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "The suitability gate escalated. Per the `/deliver-light` contract, an over-scope escalation under `--yes` is **terminal** — this session ends here, and invoking `/plan` in-session is explicitly forbidden (it would under-decompose work already framed as \"small\"). I'm relaying the gate's decision and stopping.\n\n## Result: escalated to `/plan`\n\n`/deliver-light` did **not** deliver this story. Its suitability gate judged the task over-scope and failed closed to an `escalated` terminal envelope. Nothing was created — no receipt Story, no `story-<id>` branch, no worktree (`created: {receiptStory: false, storyBranch: false, worktree: false}`).\n\n**Why it escalated** (from the terminal envelope, `phase: suitability-gate`):\n- **Shape:** 5 acceptance criteria > `maxAcceptance` 3 — more contract than a trivial scope carries → full route.\n- On `--yes`, an over-scope prompt fails closed to `/plan` rather than silently proceeding light.\n\nThis is the correct call on the merits, not just an artifact of the acceptance count. The repo currently contains **no application code** (only `package.json`, `README.md`, `.gitignore`) — despite the task referencing \"the other endpoints,\" none exist. Delivering this story means standing up a minimal HTTP service, a user store, session issuance, and a signin path *before* the password-change feature and its session-invalidation semantics are even testable. That is materially more than the \"one-file fix / small addition\" `/deliver-light` is scoped for, so building it as a single lite receipt Story would under-decompose it — exactly the failure mode this gate guards against.\n\n**Next step (run in a FRESH session — not this one):**\n\n```\n/plan \"Signed-in users need a way to change their password. Add POST /password: JSON body {newPassword} from a signed-in user (bearer credential in Authorization header, like the other endpoints), updates their password. Sessions issued before the change must stop working; signing in requires the new password; the old password no longer works. Handle bad requests sensibly.\"\n```\n\n`/plan` will decompose this into properly-sized Stories (e.g. minimal service + signin/session store, then the password-change endpoint with pre-change session invalidation) and deliver them through the same engine.",
+  "ttft_ms": 3781,
+  "ttft_stream_ms": 2704,
+  "time_to_request_ms": 262,
+  "type": "result",
+  "duration_ms": 128772,
+  "uuid": "9179dbc0-53af-4605-a01a-7eeb581cfa5a"
+}
