@@ -272,19 +272,25 @@ export function buildMandrelDeliverPrompt(input) {
 }
 
 /**
- * Mandrel-arm LIGHT prompt (arm 5, `mandrel-light`, Story #190). Drives
- * `/deliver-light` as ONE session straight from the scenario task prompt —
- * the single-session path mandrel 2.13.0 added for genuinely small work,
- * replacing the two-session `/plan` + `/deliver` pair. This is the whole point
- * of the arm: to measure that single-session lever, which no other arm invokes.
+ * Mandrel-arm LIGHT prompt (arm 5, `mandrel-light`, Story #190). Drives the
+ * unplanned single-session path straight from the scenario task prompt — the
+ * lever mandrel 2.13.0 added for genuinely small work, replacing the
+ * two-session `/plan` + `/deliver` pair. Measuring it is the whole point of
+ * this arm; no other arm invokes it.
  *
- * `/deliver-light` runs its own suitability gate and, on an over-scope prompt,
- * ESCALATES back to `/plan` (under `--yes` it fails closed to recommending
- * `/plan`); the harness records which path the cell actually took so an
- * escalation is never counted as a light win (see bench/run.js's `deliveryPath`
- * classification). The prompt itself just invokes `/deliver-light "<task>"
- * --yes`; the unattended preamble auto-proceeds its HITL stop gates, and the
- * escalation decision is `/deliver-light`'s own, not the prompt's.
+ * **Invocation moved in mandrel 2.15.0 (#4760).** `/deliver-light` is no
+ * longer a slash command — it is `helpers/deliver-light.md`, reached through
+ * the ONE delivery door. `/deliver` now classifies what it was handed: every
+ * positional argument matching `^#?\\d+$` means Story ids, anything else means
+ * a prompt, and a prompt routes to the unplanned path. So the light arm hands
+ * `/deliver` PROSE where the mandrel arm hands it ids — the same door, and the
+ * argument shape is the discriminator.
+ *
+ * The gate is unchanged and still the helper's own: on an over-scope prompt it
+ * escalates, and under `--yes` (runner-set for headless dispatch, which is
+ * exactly what the bench is) that escalation is terminal. The harness records
+ * which path the cell actually took, so an escalation is never counted as a
+ * light win — see `bench/run.js`'s `deliveryPath` classification.
  *
  * @param {object} input
  * @param {{ id: string, taskPrompt: string }} input.scenario
@@ -294,13 +300,14 @@ export function buildMandrelLightPrompt(input) {
   const { scenario } = input ?? {};
   assertScenario(scenario, 'buildMandrelLightPrompt');
   const drive =
-    `Deliver the task below with a SINGLE \`/deliver-light "<the task ` +
-    `described below>" --yes\` session (the --yes flag drives /deliver-light ` +
-    `headlessly through its HITL stop gates). Do NOT run /plan first and do ` +
-    `NOT split the work into multiple sessions — /deliver-light is the ` +
-    `single-session delivery path. If /deliver-light's own suitability gate ` +
-    `judges the task over-scope it will escalate to /plan; follow its ` +
-    `recommendation, but do not pre-empt that decision yourself.`;
+    `Deliver the task below with a SINGLE \`/deliver "<the task described ` +
+    `below>" --yes\` session — pass the task as PROSE, never as a Story id, ` +
+    `which is what routes /deliver to its unplanned single-session path ` +
+    `(the --yes flag drives it headlessly through its HITL stop gates). Do ` +
+    `NOT run /plan first and do NOT split the work into multiple sessions. ` +
+    `If the suitability gate judges the task over-scope it will escalate and ` +
+    `end the session; respect that outcome and do not pre-empt or work ` +
+    `around it.`;
   return `${MANDREL_UNATTENDED_PREAMBLE}${drive}\n\nTask (${scenario.id}):\n${scenario.taskPrompt}`;
 }
 

@@ -199,17 +199,21 @@ test('buildArmPrompt: control arm is bare — no Mandrel pipeline', () => {
   assert.match(prompt, /hello-world/);
 });
 
-test('buildArmPrompt: mandrel-light drives a SINGLE /deliver-light session — no /plan, no /deliver pair', () => {
+test('buildArmPrompt: mandrel-light drives a SINGLE unplanned /deliver session — prose, never ids, and no /plan pair', () => {
   const prompt = buildArmPrompt({ arm: 'mandrel-light', scenario: SCENARIO });
-  assert.match(prompt, /\/deliver-light[\s\S]*--yes/);
-  // It must NOT DRIVE the two-session /plan + /deliver pipeline (the prompt may
-  // still NAME /plan in the escalation caveat, but never invokes it).
+  // mandrel 2.15.0 (#4760): ONE delivery door. /deliver-light is no longer a
+  // slash command; prose handed to /deliver is what routes to the unplanned
+  // single-session path, and the argument shape IS the discriminator.
+  assert.match(prompt, /\/deliver "[\s\S]*--yes/);
+  assert.doesNotMatch(prompt, /\/deliver-light/);
+  // It must never drive the two-session /plan + /deliver pipeline, nor hand
+  // /deliver a Story id (which would route to the planned path instead).
   assert.doesNotMatch(prompt, /\/plan (--idea|--yes|\d)/);
-  assert.doesNotMatch(prompt, /\/deliver [^-]/);
+  assert.doesNotMatch(prompt, /\/deliver #?\d/);
   // Carries the unattended auto-proceed directive and the task.
   assert.match(prompt, /implicit approval|never block/i);
   assert.match(prompt, /hello-world/);
-  // A phase selector is ignored — /deliver-light has no /plan phase to split.
+  // A phase selector is ignored — the unplanned path has no /plan phase.
   const withPhase = buildArmPrompt({
     arm: 'mandrel-light',
     scenario: SCENARIO,
@@ -218,9 +222,13 @@ test('buildArmPrompt: mandrel-light drives a SINGLE /deliver-light session — n
   assert.equal(withPhase, prompt);
 });
 
-test('buildMandrelLightPrompt: single /deliver-light drive with the escalation note', () => {
+test('buildMandrelLightPrompt: single unplanned /deliver drive, prose-not-ids, with the escalation note', () => {
   const prompt = buildMandrelLightPrompt({ scenario: SCENARIO });
-  assert.match(prompt, /\/deliver-light[\s\S]*--yes/);
+  assert.match(prompt, /\/deliver "[\s\S]*--yes/);
+  assert.doesNotMatch(prompt, /\/deliver-light/);
+  // The prose-vs-ids discriminator is the routing contract — say so explicitly,
+  // since handing an id would silently take the PLANNED path instead.
+  assert.match(prompt, /prose/i);
   assert.match(prompt, /escalate/i);
   assert.throws(() => buildMandrelLightPrompt({ scenario: {} }), /string id/);
 });
@@ -420,7 +428,7 @@ test('runSession (mandrel-light): drives a SINGLE /deliver-light session with no
   );
   assert.equal(invoke.calls.length, 1);
   assert.equal(hookCalls.length, 0);
-  assert.match(invoke.calls[0].prompt, /\/deliver-light[\s\S]*--yes/);
+  assert.match(invoke.calls[0].prompt, /\/deliver "[\s\S]*--yes/);
   assert.doesNotMatch(invoke.calls[0].prompt, /\/plan (--idea|--yes|\d)/);
   assert.equal(out.arm, 'mandrel-light');
   assert.equal(out.phases, null);
@@ -1246,7 +1254,7 @@ test('runSession (mandrel-light): amendsStoryId is inert — the single /deliver
   );
   assert.equal(invoke.calls.length, 1);
   assert.doesNotMatch(invoke.calls[0].prompt, /--amends/);
-  assert.match(invoke.calls[0].prompt, /\/deliver-light/);
+  assert.match(invoke.calls[0].prompt, /\/deliver "/);
 });
 
 test('buildArmPrompt (control-claudemd): byte-identical to the control prompt — arm 3 differs only by the seeded CLAUDE.md', () => {
