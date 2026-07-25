@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 36450,
+  "num_turns": 7,
+  "stop_reason": "end_turn",
+  "session_id": "b3991d23-faba-4ebb-b715-1794280922ed",
+  "total_cost_usd": 0.2668675,
+  "usage": {
+    "input_tokens": 11,
+    "cache_creation_input_tokens": 13836,
+    "cache_read_input_tokens": 175545,
+    "output_tokens": 1598,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 13836,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 1,
+        "output_tokens": 244,
+        "cache_read_input_tokens": 32876,
+        "cache_creation_input_tokens": 347,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 347
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-opus-4-8": {
+      "inputTokens": 11,
+      "outputTokens": 1598,
+      "cacheReadInputTokens": 175545,
+      "cacheCreationInputTokens": 13836,
+      "webSearchRequests": 0,
+      "costUSD": 0.26613749999999997,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    },
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 655,
+      "outputTokens": 15,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.00073,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. The task is complete and committed.\n\n**What I built:**\n- `server.js` — a single-file ESM HTTP server using Node's built-in `node:http` (no external framework). It listens on `process.env.PORT || 3000`, and `GET /` returns HTTP 200 with `Content-Type: text/html` and a body containing exactly `Hello, World!`.\n- `package.json` — added a `\"start\": \"node server.js\"` script (merged into the existing sandbox package.json, preserving its `type: \"module\"` and other scripts).\n\n**Verified:** started the server and curled `/` — got `HTTP/1.1 200 OK`, `Content-Type: text/html`, and the \"Hello, World!\" body. Committed as `990aed4`.",
+  "ttft_ms": 2149,
+  "ttft_stream_ms": 1571,
+  "time_to_request_ms": 314,
+  "type": "result",
+  "duration_ms": 29477,
+  "uuid": "2ef6a643-68d2-4460-94de-09b289f3e0fd"
+}

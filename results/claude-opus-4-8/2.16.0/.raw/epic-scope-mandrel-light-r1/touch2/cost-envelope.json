@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 95111,
+  "num_turns": 12,
+  "stop_reason": "end_turn",
+  "session_id": "906bff0a-13eb-4ed6-b509-9676b2cf3272",
+  "total_cost_usd": 0.7504905,
+  "usage": {
+    "input_tokens": 19,
+    "cache_creation_input_tokens": 37784,
+    "cache_read_input_tokens": 457865,
+    "output_tokens": 5705,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 37784,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 900,
+        "cache_read_input_tokens": 55354,
+        "cache_creation_input_tokens": 1817,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 1817
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 913,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000998,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 19,
+      "outputTokens": 5705,
+      "cacheReadInputTokens": 457865,
+      "cacheCreationInputTokens": 37784,
+      "webSearchRequests": 0,
+      "costUSD": 0.7494925,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "The suitability gate **escalated** — this session ends here, exactly as the driver's instructions anticipated (\"If the suitability gate judges the task over-scope it will escalate and end the session; respect that outcome\").\n\n## Outcome: `escalated` (terminal)\n\nThe unplanned prompt path judged this task **over-scope** and failed closed to `/plan`. Nothing was created — `receiptStory: false`, `storyBranch: false`, `worktree: false`.\n\n**Why it escalated** (from the gate's ledgered verdict):\n- **Shape:** 6 distinct change kinds — `store-schema-change`, `new-share-endpoint`, `viewer-read-authz`, `editor-write-authz`, `cross-endpoint-privacy-enforcement`, `bad-request-handling` — exceeding `maxChangeKinds` (2). This is an explicit multi-capability enumeration, not a single capability.\n- **Verdict:** The model verdict was `full`, not `lite` — the standard `/plan` route. The change also touches an **authorization** sensitive class (absolute route to `full`), and its shape still needs design (the shares schema, the role/authorization model). The bare repo — no API server, worker, admin CLI, or store schema present — reinforces that the footprint is being built, not amended.\n- **`--yes` on over-scope fails closed to `/plan`** — it never silently proceeds light.\n\nPer the protocol, **escalation is terminal**: invoking `/plan` in this same session is forbidden (a session already framed as small work under-decomposes). The work is handed off via this `nextCommand`, to be run in a **fresh** session:\n\n```\n/plan \"Project owners need to share projects with other users. Add POST /projects/:id/shares to the API server, taking a JSON body {userId, role: viewer|editor}. Only a project's owner can share it. A shared viewer can view the project and its tasks but not change anything; a shared editor can also create, update, and delete its tasks. Sharing must not weaken privacy: a user with no relationship to a project still must not be able to see or touch it. Handle bad requests (unknown user, unrecognised role). Confined to the API unit and the store schema it reads; worker and admin CLI keep existing behaviour.\"\n```\n\nI'm respecting the gate's outcome and stopping here — no receipt Story, branch, or worktree was left behind.",
+  "ttft_ms": 2675,
+  "ttft_stream_ms": 1653,
+  "time_to_request_ms": 402,
+  "type": "result",
+  "duration_ms": 97433,
+  "uuid": "5e3b8f4b-d83d-480c-ae1a-ac21af3fc97f"
+}

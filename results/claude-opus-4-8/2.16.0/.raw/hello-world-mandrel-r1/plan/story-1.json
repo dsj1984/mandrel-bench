@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nProvide a dependency-free Node.js HTTP server that answers GET / with an HTML Hello, World! response so the project has a runnable entry point.\n\n## Spec\nImplement the server with Node's built-in `node:http` module only — no Express or other web framework, no npm runtime dependencies. Server binds to `process.env.PORT` parsed as an integer, defaulting to 3000 when PORT is unset or empty. A GET request to path `/` MUST respond `200` with header `Content-Type: text/html` (charset suffix permitted) and a body containing the exact substring `Hello, World!`. package.json already declares `\"type\": \"module\"`; add a `\"start\"` script that launches the server via `node <entry>`. Keep the runtime surface to one source file plus the existing package.json; other paths/methods MAY return 404 but that is not required by acceptance.\n\n## Changes\n- `server.js` — creates\n- `package.json` — refactors-existing\n\n## Acceptance\n- [ ] AC-1: package.json defines a \"start\" script that runs the single server source file with node (the existing \"type\": \"module\" declaration is preserved)\n- [ ] AC-2: The server source file imports only Node built-in modules (node:http) and declares no external web framework dependency\n- [ ] AC-3: With PORT unset the server listens on port 3000; when PORT is set the server listens on that port\n- [ ] AC-4: A GET request to / returns HTTP status 200 with a Content-Type header of text/html and a body containing the exact text \"Hello, World!\"\n\n## Verify\n- PORT=3100 node server.js & pid=$!; sleep 1; curl -si http://localhost:3100/ | tee /tmp/hw.txt; kill $pid; grep -q '^HTTP/1.1 200' /tmp/hw.txt && grep -qi '^Content-Type: text/html' /tmp/hw.txt && grep -q 'Hello, World!' /tmp/hw.txt (e2e)\n- node --check server.js (validate)\n\n## Non-Goals\n- Routing framework or middleware layer\n- TLS/HTTPS termination\n- Static file serving or templating beyond the single Hello, World! response\n- Persistence, logging infrastructure, or configuration beyond PORT\n\n<!-- meta: {\"reason_to_exist\":\"The repository needs a minimal, framework-free HTTP entry point that serves Hello, World! over the configured port.\"} -->\n\n<!-- plan-story: 3c62417092f3e29e -->",
+  "labels": [
+    {
+      "id": "LA_kwDOTjSTls8AAAACtQ5sog",
+      "name": "plan-run::c523f9e0",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    },
+    {
+      "id": "LA_kwDOTjSTls8AAAACtQ5tDw",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTjSTls8AAAACtQ5uOg",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 1,
+  "title": "Minimal ESM HTTP server returning Hello, World!"
+}
