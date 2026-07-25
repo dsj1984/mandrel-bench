@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 246691,
+  "num_turns": 22,
+  "stop_reason": "end_turn",
+  "session_id": "003ce165-3a2e-4d71-8444-1cd7b89c2baa",
+  "total_cost_usd": 1.658087,
+  "usage": {
+    "input_tokens": 35,
+    "cache_creation_input_tokens": 65328,
+    "cache_read_input_tokens": 1189828,
+    "output_tokens": 16352,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 65328,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 1,
+        "output_tokens": 683,
+        "cache_read_input_tokens": 81605,
+        "cache_creation_input_tokens": 3110,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 3110
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 833,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000918,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 35,
+      "outputTokens": 16352,
+      "cacheReadInputTokens": 1189828,
+      "cacheCreationInputTokens": 65328,
+      "webSearchRequests": 0,
+      "costUSD": 1.6571690000000001,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Delivered and landed. Terminal envelope: **`status: \"landed\"`**.\n\n## Summary\n\n`POST /password` shipped through a single `/deliver-light` session — Story #1, PR #2 merged to `main`, `agent::done`.\n\n**What was built.** The sandbox had no application source (only `package.json`/`README`), and the task referenced \"the other endpoints\" that didn't exist. So the cohesive slice was a minimal self-contained `node:http` account server plus the new endpoint, in two files:\n\n- **`server.js`** — in-memory account server: `POST /signup`, `POST /signin` (issues a bearer credential), and the protected **`POST /password`** `{newPassword}` reading the bearer token from the `Authorization` header, like the other routes.\n- **`test/app.test.js`** — 10 tests covering every required behavior.\n\n**Security-sensitive semantics** (all verified by tests):\n- **Prior sessions die** — each account carries a session *epoch*; changing the password bumps it, invalidating every credential issued before the change, including the one that authorized the call.\n- **Sign-in requires the new password**; **the old password no longer works** — the stored secret is replaced.\n- **Bad requests handled** — missing/invalid bearer → 401; missing or non-string `newPassword` → 400; malformed JSON → 400.\n- Passwords are scrypt-hashed (never plaintext), hashes never returned or logged, and the auth endpoints are rate-limited.\n\n**Gates:** validation, base-sync, and code review all passed (0 findings); typecheck + lint clean; 10/10 tests green. The diff backstop confirmed light scope (2 files). The one degraded tail item (`baseFastForward` skipped due to a dirty main tree) does not affect the merge — the land stands.\n\nNote: the first gate run escalated because my predicted footprint over-declared an unneeded `package.json` edit (3 > 2 changes); re-running with the accurate 2-file footprint passed both the shape and `lite` verdict checks — no `/plan` needed.",
+  "ttft_ms": 2447,
+  "ttft_stream_ms": 1943,
+  "time_to_request_ms": 300,
+  "type": "result",
+  "duration_ms": 274451,
+  "uuid": "1a9b8194-6bc7-416c-b750-5029bf71765a"
+}
