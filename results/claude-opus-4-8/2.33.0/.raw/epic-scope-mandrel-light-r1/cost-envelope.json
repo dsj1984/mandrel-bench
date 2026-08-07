@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 56573,
+  "num_turns": 7,
+  "stop_reason": "end_turn",
+  "session_id": "dcc220c3-97f1-4fe3-8f23-37a2c1365fe7",
+  "total_cost_usd": 0.58791,
+  "usage": {
+    "input_tokens": 10,
+    "cache_creation_input_tokens": 38278,
+    "cache_read_input_tokens": 215650,
+    "output_tokens": 3818,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 38278,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 789,
+        "cache_read_input_tokens": 56691,
+        "cache_creation_input_tokens": 1808,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 1808
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 1710,
+      "outputTokens": 19,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.001805,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 10,
+      "outputTokens": 3818,
+      "cacheReadInputTokens": 215650,
+      "cacheCreationInputTokens": 38278,
+      "webSearchRequests": 0,
+      "costUSD": 0.586105,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "The suitability gate judged the task over-scope and, under the runner-set `--yes`, failed closed to an **`escalated`** terminal envelope. Per the unplanned-delivery contract, escalation is terminal: I relay it and stop here — no receipt Story, branch, or worktree was created, and I do not invoke `/plan` in this session.\n\n## Delivery outcome: escalated\n\nThe `/deliver \"<prompt>\"` session ended at the **suitability gate** without landing work, which is the correct and expected outcome for an epic-scope task on the single-session unplanned path.\n\n**Why it escalated** (from the terminal envelope):\n- **Shape** — 8 distinct change kinds (store+migrations, auth, projects CRUD, tasks CRUD+pagination, export jobs, background worker, admin CLI, platform bootstrap) far exceeds the light ceiling of 2. This is an explicit multi-capability enumeration — four cooperating deployables — not one capability.\n- **Un-waivable risk** — the footprint intersects the `public-api` sensitive-path class. That's risk, not size, so no re-slicing, shrinking, or operator override could satisfy it, and the diff backstop would refuse the same footprint anyway.\n- **Verdict** — the ledgered model verdict was `full`, the standard `/plan` route.\n- **`--yes` on over-scope fails closed to `/plan`** — it never silently proceeds light.\n\n**Clean state:** `escalation.created` reports `receiptStory: false`, `storyBranch: false`, `worktree: false` — nothing was half-started, so nothing needs unwinding.\n\n**Next command** (must run in a **fresh** session — invoking `/plan` in this one is forbidden by the escalation-is-terminal contract):\n\n```\n/plan \"Build a multi-user project and task management platform in Node.js (ESM, no external web framework) … [the full task]\"\n```\n\n`/plan` will interrogate and decompose the epic into properly-sized, self-verifiable Stories, which can then be delivered via `/deliver`.",
+  "ttft_ms": 2719,
+  "ttft_stream_ms": 1803,
+  "time_to_request_ms": 57,
+  "type": "result",
+  "duration_ms": 57174,
+  "uuid": "bffc33c0-7ece-49ab-bb2e-33f20317233a"
+}

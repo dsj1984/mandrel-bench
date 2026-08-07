@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 257905,
+  "num_turns": 24,
+  "stop_reason": "end_turn",
+  "session_id": "73f82a2f-6de7-4bf4-9e6a-33601c85f3db",
+  "total_cost_usd": 1.4924025,
+  "usage": {
+    "input_tokens": 45,
+    "cache_creation_input_tokens": 38070,
+    "cache_read_input_tokens": 1092601,
+    "output_tokens": 22542,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 38070,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 813,
+        "cache_read_input_tokens": 57844,
+        "cache_creation_input_tokens": 447,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 447
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 1532,
+      "outputTokens": 19,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.001627,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 45,
+      "outputTokens": 22542,
+      "cacheReadInputTokens": 1092601,
+      "cacheCreationInputTokens": 38070,
+      "webSearchRequests": 0,
+      "costUSD": 1.4907755,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. The platform is built, tested, and committed.\n\n## What was delivered\n\nA single Node.js repo (ESM, **zero external dependencies** — built on Node 24's built-in `node:sqlite` and `node:http`) with four cooperating units sharing one persistent on-disk store at `data/app.db`:\n\n**Unit 1 — Store & migrations** (`src/store/`) — The sole owner of the schema. `migrations.js` holds an ordered, transactional, idempotent migration list tracked in a `schema_migrations` table; `index.js` is the shared data-access layer every other unit calls. `npm run migrate` applies pending migrations safely on repeat.\n\n**Unit 2 — REST API server** (`src/api/`) — JSON API on `node:http` with a tiny param-route table, listening on `PORT` (default 3000), applying migrations on boot. Covers register/login (scrypt-hashed passwords, bearer tokens), owner-scoped project CRUD with task cascade, tasks with pagination + `done` filter, and async export jobs that respond `202` immediately without the report. Malformed/unauthorized requests get clean 4xx responses — the server never crashes.\n\n**Unit 3 — Background worker** (`src/worker/`) — Atomically claims queued report jobs (`BEGIN IMMEDIATE`), builds each report (`{name, total, done}`), and marks it `completed`.\n\n**Unit 4 — Admin CLI** (`src/admin/`) — `npm run admin -- stats` and `npm run admin -- deactivate-user <username>` (which also revokes the user's tokens).\n\n`npm start` brings up **both** the API server and worker in one process, so queued jobs complete with no extra command.\n\n## Verification\n- `npm run migrate` — applies then reports \"up to date\" on rerun ✓\n- `npm run lint` (node --check on all 10 files) ✓\n- `npm test` — 7/7 end-to-end tests pass, exercising all four units against a real temp DB, including the async export round-trip, ownership isolation, cascade deletes, and deactivated-login rejection ✓\n- `npm start` smoke test — served a live registration on `PORT=3999` ✓\n\nAll committed to `main` (`data/` is gitignored so the store stays out of version control).\n\nOne note on the org branding guideline (use \"Beestera\" over \"Beestera Soccer Training\"): it didn't come up — this task involved no company name or marketing copy.",
+  "ttft_ms": 2955,
+  "ttft_stream_ms": 2551,
+  "time_to_request_ms": 31,
+  "type": "result",
+  "duration_ms": 263207,
+  "uuid": "591bc31d-4573-45f8-b35d-cdc685f6af7e"
+}

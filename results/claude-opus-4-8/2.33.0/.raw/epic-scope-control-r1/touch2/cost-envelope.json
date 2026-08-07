@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 215532,
+  "num_turns": 26,
+  "stop_reason": "end_turn",
+  "session_id": "0de530a4-674f-436c-ae3d-c836fe1eae3b",
+  "total_cost_usd": 1.4860790000000001,
+  "usage": {
+    "input_tokens": 43,
+    "cache_creation_input_tokens": 46907,
+    "cache_read_input_tokens": 1203538,
+    "output_tokens": 16564,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 46907,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 678,
+        "cache_read_input_tokens": 66779,
+        "cache_creation_input_tokens": 349,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 349
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 840,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.000925,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 43,
+      "outputTokens": 16564,
+      "cacheReadInputTokens": 1203538,
+      "cacheCreationInputTokens": 46907,
+      "webSearchRequests": 0,
+      "costUSD": 1.4851540000000003,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. The work is complete and committed.\n\n## What I built\n\n**Store schema (`src/store/`)** — the only unit that touches the schema:\n- New migration `id: 2` adding a `project_shares` table `(project_id, user_id, role)` with a `CHECK (role IN ('viewer','editor'))`, `PRIMARY KEY (project_id, user_id)`, and `ON DELETE CASCADE` foreign keys so shares vanish when a project or user is deleted.\n- New store functions: `getUserById`, `getProjectRole` (returns `'owner'`/`'editor'`/`'viewer'`/`null`), `shareProject` (upsert — re-sharing updates the role), and `listAccessibleProjects` (owned ∪ shared).\n\n**API server (`src/api/server.js`)**:\n- New `POST /projects/:id/shares` — owner-only, body `{userId, role}`. Rejects unknown users and unrecognised roles with `400`, and refuses sharing a project with its own owner.\n- Replaced owner-only scoping with a role-aware `requireProjectAccess(projectId, user, minRole)` helper:\n  - `GET /projects/:id` and `GET .../tasks` → **viewer**\n  - `POST/PATCH/DELETE .../tasks` → **editor**\n  - `DELETE /projects/:id`, exports → **owner**\n  - `GET /projects` now lists owned + shared projects.\n\n**Privacy is preserved**: a user with no relationship gets `404` (indistinguishable from a non-existent project — never a `403` that would leak existence); a shared user who lacks the role for a write gets `403`.\n\n**Worker and admin CLI are untouched.**\n\nI added an e2e test covering owner/viewer/editor/bystander behaviour, bad requests, role promotion, and owner-only exports. All 8 tests pass and `typecheck` is clean. Since the checkout wasn't actually a git repo, I initialized one and committed (`data/` is gitignored, so no DB file was committed).",
+  "ttft_ms": 3082,
+  "ttft_stream_ms": 2109,
+  "time_to_request_ms": 27,
+  "type": "result",
+  "duration_ms": 218598,
+  "uuid": "a119893a-d6e3-42ed-b7cb-ce082bafaf6c"
+}

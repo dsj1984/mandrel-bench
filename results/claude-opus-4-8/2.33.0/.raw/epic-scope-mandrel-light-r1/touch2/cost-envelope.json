@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 76615,
+  "num_turns": 10,
+  "stop_reason": "end_turn",
+  "session_id": "81b34585-d388-4736-8331-d9e92fff8239",
+  "total_cost_usd": 0.6872455,
+  "usage": {
+    "input_tokens": 15,
+    "cache_creation_input_tokens": 39035,
+    "cache_read_input_tokens": 374735,
+    "output_tokens": 4334,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 39035,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 731,
+        "cache_read_input_tokens": 57559,
+        "cache_creation_input_tokens": 1697,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 1697
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 1018,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.001103,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 15,
+      "outputTokens": 4334,
+      "cacheReadInputTokens": 374735,
+      "cacheCreationInputTokens": 39035,
+      "webSearchRequests": 0,
+      "costUSD": 0.6861425000000001,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "The suitability gate judged the task over-scope and, under `--yes`, failed closed to an **`escalated`** terminal — the sanctioned unattended outcome. Per the unplanned-delivery contract, escalation is terminal: I relay the envelope and stop; invoking `/plan` in this session is forbidden.\n\n## Terminal outcome: `escalated`\n\n```\n--- STORY DELIVER TERMINAL ---\nkind:      story-deliver-terminal\nstoryId:   null\nstatus:    escalated\nphase:     suitability-gate\ncreated:   { receiptStory: false, storyBranch: false, worktree: false }\n--- END TERMINAL ---\n```\n\n**Why it escalated** (gate reasons, verbatim):\n1. **shape** — no `changes[]` footprint could be declared, so the work can't be judged trivial → conservative `full` route.\n2. **verdict** — the ledgered model verdict was `full`, not `lite` → standard `/plan` route.\n3. **`--yes` on over-scope fails closed to `/plan`** — it never silently proceeds light.\n\nThis matches an honest reading of the task: it's an epic-scope, authorization-sensitive change (a new share endpoint **plus** a viewer/editor access-control model rewoven across existing project/task read and write paths, a store-schema change, and privacy invariants) — exactly the multi-capability work `/plan` exists to decompose, not the single trivial edit the light path lands.\n\n**Nothing was half-started** — `escalation.created` confirms no receipt Story, no `story-*` branch, and no worktree were created. The working tree is clean.\n\n**Next step (a fresh session, not this one):**\n\n```\n/plan \"Project owners need to share projects with other users. Add POST /projects/:id/shares to the API server, taking a JSON body {\\\"userId\\\": ..., \\\"role\\\": \\\"viewer\\\"|\\\"editor\\\"}. …\"\n```\n\nPer the driver's own instruction, I respect this escalation and do not pre-empt or work around it. Session ends here.",
+  "ttft_ms": 3187,
+  "ttft_stream_ms": 1506,
+  "time_to_request_ms": 82,
+  "type": "result",
+  "duration_ms": 78103,
+  "uuid": "f94e6cf5-f794-4191-a453-875dc3745d0d"
+}
