@@ -35,8 +35,15 @@ thresholds, sourced from
 | CC range | Action |
 | --- | --- |
 | ≤ 8 | Pass — no annotation required. |
-| > 8 (default `cyclomaticFlag`) | **Flag** in review: explain why, or split. The function is allowed to land but the audit report names it. |
-| > 12 (default `cyclomaticMustFix`) | **Must-fix**: refactor before the Story commits. `quality:preview` reports it as a violation; the close-validation chain refuses the merge. |
+| > 8 (default `cyclomaticFlag`) | **Flag** — `quality:preview` counts the function in its `new-method count over c=<flag>` column. The function is allowed to land but the report names it. |
+| > 12 (default `cyclomaticMustFix`) | **Must-fix**: `check-cyclomatic.js` fails when a file gains a function above the ceiling, or when its worst function gets worse than the recorded baseline. |
+
+`check-cyclomatic.js` is a **ratchet**, not a cliff: `baselines/cyclomatic.json`
+records the over-ceiling functions a repository already carries, so adopting
+the gate never demands a mass refactor. Burning a recorded breach down is
+always allowed and re-records itself on the next `--update`; adding one is
+what fails. It runs in the same required-check slot as `check-arch-cycles.js`
+and `check-dead-exports.js`.
 
 A common refactor that pulls a 13-CC function under 8 is extracting the early-
 return guard chain into a named predicate, then collapsing the remaining
@@ -88,17 +95,18 @@ suppress the noise.
 
 ## When a number changes
 
-Update three places **in the same commit**:
+Update two places **in the same commit**:
 
-1. `delivery.quality.codingGuardrails.<key>` in
-   [`agentrc-reference.json`](../../docs/agentrc-reference.json).
-2. The matching schema bound in
-   [`schemas/agentrc.schema.json`](../../schemas/agentrc.schema.json) and the
-   AJV mirror in
-   [`scripts/lib/config-settings-schema.js`](../../scripts/lib/config-settings-schema.js).
-3. The threshold cell or sentence in this helper.
+1. `CODING_GUARDRAILS_DEFAULTS` in
+   [`scripts/lib/config/quality.js`](../../scripts/lib/config/quality.js).
+   The schema literal in
+   [`config-settings-schema-quality.js`](../../scripts/lib/config-settings-schema-quality.js)
+   imports it, and `npm run docs:gen` propagates the number into
+   [`agentrc-reference.json`](../../docs/agentrc-reference.json), the shipped
+   JSON-Schema mirror, and the `configuration.md` key table.
+2. The threshold cell or sentence in this helper.
 
-The drift test (`tests/config-schema-mirror-drift.test.js`) catches schema
-divergence between the JSON mirror and the AJV runtime; the helper-prose
-drift is caught by `audit-clean-code` and `agent-protocol` linking back here
-rather than restating the numbers.
+The generator-fidelity test (`tests/config-schema-mirror-drift.test.js`)
+catches a stale generated artifact; the helper-prose drift is caught by
+`audit-clean-code` and `agent-protocol` linking back here rather than
+restating the numbers.

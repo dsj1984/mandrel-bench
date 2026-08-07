@@ -11,8 +11,11 @@
  * What it resolves, per Story:
  *   - the issue itself, fetched with **state=all** so an already-landed
  *     sibling is present rather than silently dropped;
- *   - its dependency edges: the union of body-parsed `blocked by #N` /
- *     `depends on #N` and native GitHub `blocked_by` edges;
+ *   - its dependency edges: the union of the body's `---` footer
+ *     (`blocked by #N`, footer-scoped and strict — prose mentioning a blocker
+ *     elsewhere in the body declares nothing) and native GitHub `blocked_by`
+ *     edges, read to exhaustion and failing loud rather than degrading to
+ *     "no edges";
  *   - its declared file footprint, as plain path strings, so the scheduler's
  *     co-dispatch overlap guard has something to work with.
  *
@@ -24,6 +27,7 @@
  *
  * Usage:
  *   node .agents/scripts/resolve-stories.js --ids 101,102
+ *   node .agents/scripts/resolve-stories.js --ids 101-104        # inclusive range
  *   node .agents/scripts/resolve-stories.js --ids 101,102 --pretty
  *   node .agents/scripts/resolve-stories.js --ids 101 --no-native   # skip the dependencies API
  *
@@ -44,7 +48,7 @@ import {
 } from './lib/orchestration/resolve-stories.js';
 import { createProvider } from './lib/provider-factory.js';
 import { concurrentMap } from './lib/util/concurrent-map.js';
-import { parseApiJson } from './providers/github/request-helpers.js';
+import { paginateRest } from './providers/github/request-helpers.js';
 
 export { buildStoriesEnvelope, parseIds, readNativeBlockedBy, toStoryRecord };
 
@@ -65,7 +69,9 @@ blocked_by edges, with every blocker (in-set or foreign) resolved against its
 real issue state.
 
 Options:
-  --ids <csv>    Comma-separated Story issue numbers. Required.
+  --ids <csv>    Comma-separated Story issue numbers. Required. A token may be
+                 a single id (4922) or an inclusive dash range (4922-4926);
+                 ranges expand in place and dedupe against the rest.
   --pretty       Pretty-print the JSON envelope.
   --no-native    Skip the native blocked_by read (body edges only).
   --help         Show this help.
@@ -108,9 +114,21 @@ export async function fetchStories(provider, ids) {
 /**
  * Read native blocked_by edges for every Story in the set.
  *
+ * `paginate` is injected rather than imported inside the lib layer so
+ * `readNativeBlockedBy` stays provider-agnostic and unit-testable; production
+ * passes `paginateRest`, which walks every page (the read used to stop at the
+ * first, silently truncating a Story's gates — Story #5046).
+ *
  * @returns {Promise<Map<number, number[]>>}
  */
-export async function readNativeEdges({ provider, stories, owner, repo }) {
+export async function readNativeEdges({
+  provider,
+  stories,
+  owner,
+  repo,
+  paginate = paginateRest,
+  warn = (m) => Logger.warn(m),
+}) {
   const entries = await concurrentMap(
     stories,
     async (story) => [
@@ -120,7 +138,8 @@ export async function readNativeEdges({ provider, stories, owner, repo }) {
         owner,
         repo,
         issueNumber: story.id,
-        parseJson: parseApiJson,
+        paginate,
+        warn,
       }),
     ],
     { concurrency: FETCH_CONCURRENCY },
@@ -166,6 +185,55 @@ export async function resolveForeignDone({ provider, dag, inSetIds }) {
   return resolved.filter((id) => id !== null);
 }
 
+/**
+ * Resolve the requested ids into the `{ stories, dag, done }` envelope and
+ * write it to `stdout`. The flow core behind `main` — provider, config, and
+ * stdout are injected so the whole path is unit-testable without a live
+ * GitHub round-trip. Exported for testing.
+ *
+ * @param {{ ids: string, native?: boolean, pretty?: boolean }} args
+ * @param {{ provider: object, config: object, stdout?: { write(s: string): void } }} deps
+ * @returns {Promise<number>}
+ */
+export async function runResolveStories(
+  { ids: rawIds, native = true, pretty = false },
+  { provider, config, stdout = process.stdout },
+) {
+  const ids = parseIds(rawIds);
+  const owner = config.github?.owner;
+  const repo = config.github?.repo;
+
+  const stories = await fetchStories(provider, ids);
+  const nativeEdges = native
+    ? await readNativeEdges({ provider, stories, owner, repo })
+    : new Map();
+
+  const inSetIds = new Set(stories.map((s) => s.id));
+  const provisional = buildStoriesEnvelope({
+    stories,
+    nativeEdges,
+    warn: (m) => Logger.warn(m),
+  });
+  const foreignDone = await resolveForeignDone({
+    provider,
+    dag: provisional.dag,
+    inSetIds,
+  });
+  const envelope = buildStoriesEnvelope({
+    stories,
+    nativeEdges,
+    foreignDone,
+    warn: () => {},
+  });
+
+  stdout.write(
+    pretty
+      ? `${JSON.stringify(envelope, null, 2)}\n`
+      : `${JSON.stringify(envelope)}\n`,
+  );
+  return 0;
+}
+
 async function main() {
   const { values } = parseArgs({
     options: {
@@ -194,42 +262,10 @@ async function main() {
   // headless caller can pipe this straight into stories-wave-tick.js.
   routeAllOutputToStderr();
 
-  const ids = parseIds(values.ids);
-  const { provider, config } = resolveStoriesProvider();
-  const owner = config.github?.owner;
-  const repo = config.github?.repo;
-
-  const stories = await fetchStories(provider, ids);
-  const nativeEdges = values.native
-    ? await readNativeEdges({ provider, stories, owner, repo })
-    : new Map();
-
-  const inSetIds = new Set(stories.map((s) => s.id));
-  const provisional = buildStoriesEnvelope({
-    stories,
-    nativeEdges,
-    warn: (m) => Logger.warn(m),
-    config,
-  });
-  const foreignDone = await resolveForeignDone({
-    provider,
-    dag: provisional.dag,
-    inSetIds,
-  });
-  const envelope = buildStoriesEnvelope({
-    stories,
-    nativeEdges,
-    foreignDone,
-    warn: () => {},
-    config,
-  });
-
-  process.stdout.write(
-    values.pretty
-      ? `${JSON.stringify(envelope, null, 2)}\n`
-      : `${JSON.stringify(envelope)}\n`,
+  return runResolveStories(
+    { ids: values.ids, native: values.native, pretty: values.pretty },
+    resolveStoriesProvider(),
   );
-  return 0;
 }
 
 runAsCli(import.meta.url, main, {

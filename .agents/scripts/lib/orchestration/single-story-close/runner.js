@@ -12,6 +12,7 @@ import { createProvider } from '../../provider-factory.js';
 import { flipLabelAndNotify } from '../../single-story/story-merged-notify.js';
 import { WorktreeManager } from '../../worktree-manager.js';
 import { runCodeReview as runCodeReviewDefault } from '../code-review.js';
+import { resolveRunScopedConfig } from '../run-scoped-config.js';
 import { releaseStoryLease } from '../single-story-lease-guard.js';
 import {
   buildTerminalEnvelope,
@@ -28,6 +29,7 @@ import { parseCloseOptions, resolveWaitForMerge } from './phases/options.js';
 import { ensurePullRequestWith } from './phases/pull-request.js';
 import { pushStoryBranch } from './phases/push.js';
 import { handleCriticalReviewBlock } from './phases/review-block.js';
+import { handleOverriddenReviewBlock } from './phases/review-override.js';
 import { reapWorktreePhase } from './phases/worktree-reap.js';
 import { runWrongTreeGuardPhase } from './phases/wrong-tree-guard.js';
 
@@ -71,7 +73,7 @@ async function emitTerminal({ terminal, result, config }) {
       },
     });
   }
-  emitTerminalEnvelope(terminal);
+  emitTerminalEnvelope(terminal, { config });
   await emitTerminalFriction({ envelope: terminal, config });
 }
 
@@ -144,6 +146,7 @@ async function runPrePushPhases({
   worktreePath,
   config,
   baseBranch,
+  baseConfirmed,
   storyBranch,
   storyId,
   provider,
@@ -185,6 +188,7 @@ async function runPrePushPhases({
       cwd,
       worktreePath,
       baseBranch,
+      baseConfirmed,
       storyBranch,
       storyId,
       provider,
@@ -198,28 +202,44 @@ async function runPrePushPhases({
 
 async function openAndReviewPr({
   cwd,
+  worktreePath,
   story,
   storyId,
   storyBranch,
   baseBranch,
   provider,
+  config,
+  overrideReviewBlock,
   injectedGh,
   injectedRunCodeReview,
   setPhase = () => {},
 }) {
   setPhase('push');
-  pushStoryBranch({ cwd, storyBranch, gitSync, progress });
+  // Issue #4990 — push from the Story worktree so `pre-push` measures the
+  // tree being sent. `gh` and the review's ref-based diffs below keep the
+  // caller's `cwd`: they read the shared `.git`, so they resolve identically
+  // from either tree.
+  pushStoryBranch({ cwd, worktreePath, storyBranch, gitSync, progress });
   setPhase('pull-request');
-  const prUrl = await ensurePullRequestWith({
+  const { url: prUrl, alreadyMerged } = await ensurePullRequestWith({
     cwd,
     storyId,
     storyTitle: story.title,
+    // Scanned for a declared `BREAKING CHANGE:` footer — see pull-request.js.
+    storyBody: story.body,
     storyBranch,
     baseBranch,
     gh: injectedGh,
     progress,
   });
   const prNumber = parsePrNumber(prUrl);
+  // Story #4873 — the head's PR already merged (an armed PR that landed while
+  // a previous close invocation was between phases). There is nothing left to
+  // review and nothing left to arm; the confirm phase probes the PR, observes
+  // MERGED, and lands the Story on the merge that actually happened.
+  if (alreadyMerged) {
+    return { prUrl, prNumber, alreadyMerged: true };
+  }
   setPhase('code-review');
   const reviewOutcome = await runStoryScopeReview({
     cwd,
@@ -234,6 +254,27 @@ async function openAndReviewPr({
   });
   if (reviewOutcome.halted) {
     const criticalCount = reviewOutcome.severity?.critical ?? 0;
+    // The sanctioned override. Checked BEFORE the blocked
+    // transition so an overridden run never touches `agent::blocked`: the
+    // Story is proceeding, and parking it would make the label lie for the
+    // rest of the close.
+    if (overrideReviewBlock) {
+      const override = await handleOverriddenReviewBlock({
+        provider,
+        storyId,
+        prUrl,
+        prNumber,
+        criticalCount,
+        reason: overrideReviewBlock,
+        config,
+      });
+      return {
+        prUrl,
+        prNumber,
+        alreadyMerged: false,
+        reviewOverride: override,
+      };
+    }
     await handleCriticalReviewBlock({
       provider,
       storyId,
@@ -242,10 +283,12 @@ async function openAndReviewPr({
     });
     throw new Error(
       `[single-story-close] Story-scope review reported ${criticalCount} critical blocker(s) on PR ${prUrl}. ` +
-        'Auto-merge was not enabled. Remediate the findings posted to the PR and re-run `/deliver`.',
+        'Auto-merge was not enabled. Remediate the findings posted to the PR and re-run `/deliver`. ' +
+        'If you have reviewed a finding and judged it wrong, re-run with ' +
+        '`--override-review-block "<reason>"` rather than merging by hand.',
     );
   }
-  return { prUrl, prNumber };
+  return { prUrl, prNumber, alreadyMerged: false, reviewOverride: null };
 }
 
 async function releaseLease({
@@ -281,11 +324,9 @@ async function releaseLease({
  * `runBaseSyncPhase`, and a critical-blocker review halt in
  * `openAndReviewPr`) throw before the clean-close lease release at the
  * tail of `runSingleStoryClose`, stranding the operator's lease
- * indefinitely. The standalone lease does **not** expire by TTL: it is
- * fail-closed by design (`lease-guard-shared.js` anchors `heartbeatAt` to
- * now, so `isClaimLive` is true for any foreign assignee regardless of the
- * configured TTL), so a stranded claim is cleared only by `--steal` or
- * de-assignment. That fail-closed-refuses a different operator who picks up
+ * indefinitely. The standalone lease has **no** TTL to expire by (Story
+ * #5006 deleted it): `acquireLease` refuses any foreign assignee outright,
+ * so a stranded claim is cleared only by `--steal` or de-assignment. That fail-closed-refuses a different operator who picks up
  * the blocked Story — exactly the hand-off case. Releasing here closes
  * that gap.
  *
@@ -353,8 +394,8 @@ function closeResult({
     note: waitedForMerge
       ? 'Close-and-land: PR merge confirmed. Story flipped agent::closing → agent::done, the issue closed (confirmStoryMerged), and the post-land tail ran.'
       : autoMergeEnabled
-        ? 'PR open against baseBranch with auto-merge enabled. Story rests at agent::closing (issue stays OPEN). GitHub will squash-merge when required checks pass; run single-story-confirm-merge.js after the merge confirms to flip agent::done and close the issue (the Closes #<id> footer also auto-closes it).'
-        : 'PR open against baseBranch. Story rests at agent::closing (issue stays OPEN). Operator merges via GitHub UI; run single-story-confirm-merge.js after the merge confirms to flip agent::done (the Closes #<id> footer also auto-closes the issue).',
+        ? 'PR open against baseBranch with auto-merge enabled. Story rests at agent::closing (issue stays OPEN and assigned to the operator). GitHub will squash-merge when required checks pass; run single-story-confirm-merge.js after the merge confirms to flip agent::done, release the lease, and close the issue (the Closes #<id> footer also auto-closes it).'
+        : 'PR open against baseBranch. Story rests at agent::closing (issue stays OPEN and assigned to the operator). Operator merges via GitHub UI; run single-story-confirm-merge.js after the merge confirms to flip agent::done and release the lease (the Closes #<id> footer also auto-closes the issue).',
   };
 }
 
@@ -367,6 +408,8 @@ export async function runSingleStoryClose({
   waitForMerge: waitForMergeParam,
   noWaitForMerge: noWaitForMergeParam,
   maxWaitSeconds: maxWaitSecondsParam,
+  mergeWatchMode: mergeWatchModeParam,
+  overrideReviewBlock: overrideReviewBlockParam,
   injectedProvider,
   injectedConfig,
   injectedNotify,
@@ -385,10 +428,12 @@ export async function runSingleStoryClose({
     waitForMergeParam,
     noWaitForMergeParam,
     maxWaitSecondsParam,
+    mergeWatchModeParam,
+    overrideReviewBlockParam,
   });
   if (!options.storyId) {
     throw new Error(
-      'Usage: node single-story-close.js --story <STORY_ID> [--cwd <main-repo>] [--skip-validation] [--skip-sync] [--no-auto-merge] [--wait-merge|--no-wait-merge] [--max-wait-seconds <n>]',
+      'Usage: node single-story-close.js --story <STORY_ID> [--cwd <main-repo>] [--skip-validation] [--skip-sync] [--no-auto-merge] [--wait-merge|--no-wait-merge] [--max-wait-seconds <n>] [--merge-watch-mode <sync|async>] [--override-review-block <reason>]',
     );
   }
 
@@ -424,6 +469,210 @@ export async function runSingleStoryClose({
 }
 
 /**
+ * Resolve the arm outcome. An already-merged head PR (Story #4873) has nothing
+ * to arm — `gh pr merge` against it fails, which would report the arm as a
+ * fault and block a Story whose work is already on the base branch. Skip the
+ * arm and let the confirm phase observe the merge that happened.
+ *
+ * @param {object} args
+ * @returns {Promise<{ autoMergeEnabled: boolean, autoMergeReason: string|null,
+ *   localCleanupDeferred: boolean, directMerged: boolean }>}
+ */
+async function resolveAutoMergeOutcome({ alreadyMerged, ...phaseArgs }) {
+  if (alreadyMerged) {
+    return {
+      autoMergeEnabled: true,
+      autoMergeReason: null,
+      localCleanupDeferred: false,
+      directMerged: false,
+    };
+  }
+  return await runAutoMergePhase(phaseArgs);
+}
+
+/**
+ * Report the merge-wait terminal on the progress channel. Three endings, each
+ * with its own operator-facing shape — `landed` is done, `pending` is
+ * resumable and NOT a failure, anything else is a block naming its class.
+ *
+ * @param {{ status: string, nextCommand: string, blocked?: {blockClass?: string} }} terminal
+ * @param {{ storyId: number, prUrl: string|null }} ctx
+ * @returns {void}
+ */
+function reportWaitTerminal(terminal, { storyId, prUrl }) {
+  if (terminal.status === 'landed') {
+    progress('DONE', `✅ Story #${storyId}: PR merged → ${prUrl}`);
+    return;
+  }
+  if (terminal.status === 'pending') {
+    // NOT a failure and NOT a block — the wait reached the edge of its
+    // host slot with the PR healthy and in flight. The CLI maps this to
+    // its own exit code so a caller can resume without classifying.
+    progress(
+      'PENDING',
+      `⏸  Story #${storyId}: PR ${prUrl} still in flight — resume with: ${terminal.nextCommand}`,
+    );
+    return;
+  }
+  progress(
+    'BLOCKED',
+    `🛑 Story #${storyId}: PR ${prUrl} did not land ` +
+      `(blockClass=${terminal.blocked?.blockClass}). Story is at agent::blocked. ` +
+      `Next: ${terminal.nextCommand}`,
+  );
+}
+
+/**
+ * The close-and-land ending (Story #4428): poll the just-armed PR to merge
+ * confirmation and emit the terminal the outcome names.
+ *
+ * @param {object} prCtx  The shared PR/gate context built by the pipeline.
+ * @param {object} deps   Runtime seams the confirm phase needs.
+ * @returns {Promise<{ success: boolean, result: object, terminal: object }>}
+ */
+async function finishWithMergeWait(prCtx, deps) {
+  deps.setPhase('confirm-merge');
+  const waitOutcome = await runConfirmMergePhase({
+    cwd: deps.cwd,
+    storyId: prCtx.storyId,
+    storyBranch: prCtx.storyBranch,
+    baseBranch: prCtx.baseBranch,
+    prNumber: prCtx.prNumber,
+    prUrl: prCtx.prUrl,
+    autoMergeEnabled: prCtx.autoMergeEnabled,
+    autoMergeReason: prCtx.autoMergeReason,
+    provider: deps.provider,
+    config: prCtx.config,
+    maxWaitSeconds: deps.maxWaitSeconds,
+    mergeWatchMode: deps.mergeWatchMode,
+    progress,
+    injectedGh: deps.injectedGh,
+    injectedNotify: deps.injectedNotify,
+  });
+  const terminal = terminalFromWaitOutcome({
+    waitOutcome,
+    storyId: prCtx.storyId,
+    storyBranch: prCtx.storyBranch,
+    baseBranch: prCtx.baseBranch,
+    prNumber: prCtx.prNumber,
+    prUrl: prCtx.prUrl,
+    autoMergeEnabled: prCtx.autoMergeEnabled,
+    gates: prCtx.gates,
+    elapsedSeconds: elapsedSecondsSince(prCtx.startedAtMs),
+  });
+  const result = closeResult({
+    storyId: prCtx.storyId,
+    storyBranch: prCtx.storyBranch,
+    baseBranch: prCtx.baseBranch,
+    prUrl: prCtx.prUrl,
+    prNumber: prCtx.prNumber,
+    autoMergeEnabled: prCtx.autoMergeEnabled,
+    autoMergeReason: prCtx.autoMergeReason,
+    worktreeReaped: prCtx.worktreeReaped,
+    // Story #4860 — the release is a post-land tail step now, so the tail's
+    // own per-step boolean IS the answer. A wait that ended anything other
+    // than landed never ran the tail, and correctly reports `false`: the
+    // claim is still held, by design.
+    leaseReleased: waitOutcome.tail?.leaseRelease === true,
+    localCleanupDeferred: prCtx.localCleanupDeferred,
+    directMerged: prCtx.directMerged,
+    waitedForMerge: true,
+    merged: waitOutcome.confirmed === true,
+  });
+  await emitTerminal({ terminal, result, config: prCtx.config });
+  reportWaitTerminal(terminal, { storyId: prCtx.storyId, prUrl: prCtx.prUrl });
+  return { success: terminal.status === 'landed', result, terminal };
+}
+
+/**
+ * The no-wait ending — `--no-wait-merge` / operator-merge. The PR is open and
+ * a human owns the land. That is a `pending` terminal by definition: the work
+ * is not done, nothing is broken, and one named command finishes it — rather
+ * than a fourth status invented for this one case.
+ *
+ * @param {object} prCtx
+ * @param {string} waitForMergeReason
+ * @returns {Promise<{ success: boolean, result: object, terminal: object }>}
+ */
+async function finishWithoutMergeWait(prCtx, waitForMergeReason) {
+  const result = closeResult({
+    storyId: prCtx.storyId,
+    storyBranch: prCtx.storyBranch,
+    baseBranch: prCtx.baseBranch,
+    prUrl: prCtx.prUrl,
+    prNumber: prCtx.prNumber,
+    autoMergeEnabled: prCtx.autoMergeEnabled,
+    autoMergeReason: prCtx.autoMergeReason,
+    worktreeReaped: prCtx.worktreeReaped,
+    // Story #4860 — this is the no-wait ending: the PR is open and a human
+    // owns the merge, so the Story stays assigned until the confirm-merge
+    // surface lands it and runs the tail.
+    leaseReleased: false,
+    localCleanupDeferred: prCtx.localCleanupDeferred,
+    directMerged: prCtx.directMerged,
+  });
+  const terminal = buildTerminalEnvelope({
+    storyId: prCtx.storyId,
+    status: 'pending',
+    phase: 'auto-merge',
+    storyBranch: prCtx.storyBranch,
+    baseBranch: prCtx.baseBranch,
+    pr: {
+      number: prCtx.prNumber,
+      url: prCtx.prUrl ?? null,
+      state: 'OPEN',
+      autoMergeEnabled: Boolean(prCtx.autoMergeEnabled),
+    },
+    gates: prCtx.gates,
+    nextCommand: NEXT_COMMANDS.confirmMerge(prCtx.storyId),
+    elapsedSeconds: elapsedSecondsSince(prCtx.startedAtMs),
+  });
+  await emitTerminal({ terminal, result, config: prCtx.config });
+  progress(
+    'DONE',
+    `✅ Story #${prCtx.storyId}: PR ready → ${prCtx.prUrl} (${waitForMergeReason})`,
+  );
+  return { success: true, result, terminal };
+}
+
+/**
+ * Wall-clock seconds since the close started, rounded — the terminal
+ * envelope's `elapsedSeconds`.
+ *
+ * @param {number} startedAtMs
+ * @returns {number}
+ */
+function elapsedSecondsSince(startedAtMs) {
+  return Math.round((Date.now() - startedAtMs) / 1000);
+}
+
+/**
+ * Announce the operator-merge skip: the PR was deliberately left un-armed, so
+ * nothing here can land it and the Story rests at `agent::closing`. No-op on
+ * every other wait reason.
+ *
+ * @param {{ waitForMergeReason: string, autoMergeReason: string|null,
+ *   storyId: number, waitForMergeExplicit?: boolean }} args
+ * @returns {void}
+ */
+function reportOperatorMergeSkip({
+  waitForMergeReason,
+  autoMergeReason,
+  storyId,
+  waitForMergeExplicit,
+}) {
+  if (waitForMergeReason !== 'operator-merge') return;
+  progress(
+    'MERGE',
+    `⏭  Not waiting for merge (${autoMergeReason}) — the operator owns this merge; ` +
+      `Story #${storyId} rests at agent::closing.` +
+      (waitForMergeExplicit === true
+        ? ' --wait-merge cannot land a PR that was deliberately left un-armed.'
+        : ''),
+  );
+}
+
+/**
  * The close pipeline proper. Split out of `runSingleStoryClose` so the
  * phase-tagging wrapper above stays a thin, obviously-correct boundary rather
  * than a try block wrapped around a hundred lines of pipeline.
@@ -443,7 +692,6 @@ async function runClosePipeline({
   const startedAtMs = Date.now();
   const config = injectedConfig || resolveConfig({ cwd: options.cwd });
   const provider = injectedProvider || createProvider(config);
-  const baseBranch = config.project?.baseBranch ?? 'main';
   const storyBranch = getStoryBranch(options.storyId);
 
   progress('INIT', `Closing standalone Story #${options.storyId}...`);
@@ -461,6 +709,22 @@ async function runClosePipeline({
       config,
     );
   }
+
+  // Story #4891 — the base branch this run was SEEDED from, read back off the
+  // run's `story-init` receipt rather than re-resolved from a config file that
+  // may have changed during the whole implementation window. Throws (fail
+  // closed, naming both values) when the pin and current config disagree —
+  // deliberately here, before the gate chain, format-autofix and base-sync,
+  // so a wrong base is never merged into the Story branch. `baseConfirmed`
+  // gates the base-merge remediation advice further down.
+  const { values: runScoped, confirmed: baseConfirmed } =
+    await resolveRunScopedConfig({
+      provider,
+      storyId: options.storyId,
+      config,
+      progress,
+    });
+  const baseBranch = runScoped.baseBranch;
 
   const worktreePath = resolveWorktreePath({
     cwd: options.cwd,
@@ -483,6 +747,7 @@ async function runClosePipeline({
         ...options,
         config,
         baseBranch,
+        baseConfirmed,
         storyBranch,
         provider,
         worktreePath,
@@ -493,21 +758,25 @@ async function runClosePipeline({
     leaseArgs,
   );
 
-  const { prUrl, prNumber } = await releaseLeaseOnBlock(
-    () =>
-      openAndReviewPr({
-        cwd: options.cwd,
-        story,
-        storyId: options.storyId,
-        storyBranch,
-        baseBranch,
-        provider,
-        injectedGh,
-        injectedRunCodeReview,
-        setPhase,
-      }),
-    leaseArgs,
-  );
+  const { prUrl, prNumber, alreadyMerged, reviewOverride } =
+    await releaseLeaseOnBlock(
+      () =>
+        openAndReviewPr({
+          cwd: options.cwd,
+          worktreePath,
+          story,
+          storyId: options.storyId,
+          storyBranch,
+          baseBranch,
+          provider,
+          config,
+          overrideReviewBlock: options.overrideReviewBlock,
+          injectedGh,
+          injectedRunCodeReview,
+          setPhase,
+        }),
+      leaseArgs,
+    );
   // Reap the per-Story worktree BEFORE the arm (Story #4681). Arming runs
   // `gh pr merge --auto --squash --delete-branch`, which — against an
   // already-mergeable PR — merges immediately and then shells out to local
@@ -532,7 +801,8 @@ async function runClosePipeline({
     autoMergeReason,
     localCleanupDeferred,
     directMerged,
-  } = await runAutoMergePhase({
+  } = await resolveAutoMergeOutcome({
+    alreadyMerged,
     cwd: options.cwd,
     prNumber,
     prUrl,
@@ -552,7 +822,18 @@ async function runClosePipeline({
     config,
     progress,
   });
-  const leaseReleased = await releaseLease(leaseArgs);
+  // Story #4860 — the clean-path lease release USED to sit here, immediately
+  // after the arm and the `agent::closing` flip. That dropped the operator's
+  // claim the moment the PR opened, so a ticket read unassigned for the whole
+  // time its PR was in flight — and forever on the operator-merge path, where
+  // nothing downstream ever re-claimed it. The release now belongs to the
+  // post-land tail, which runs only on a CONFIRMED merge and which both
+  // landing surfaces reach. Every non-merged ending below — the
+  // `merge.unlanded` block, an exhausted wait budget, `--no-wait-merge`,
+  // `--no-auto-merge` — deliberately RETAINS the claim: the PR is open and the
+  // work still has an owner. The only releases that survive here are
+  // `releaseLeaseOnBlock`'s two throwing exits above, which fire before the PR
+  // is ever armed (Story #4257's hand-off property).
 
   // Close-and-land (Story #4428; default since `delivery.routing.closeAndLand`
   // — Story #4539): poll the just-armed PR to merge confirmation, or block
@@ -571,126 +852,45 @@ async function runClosePipeline({
     config,
     autoMergeReason,
   });
-  if (waitForMergeReason === 'operator-merge') {
-    progress(
-      'MERGE',
-      `⏭  Not waiting for merge (${autoMergeReason}) — the operator owns this merge; ` +
-        `Story #${options.storyId} rests at agent::closing.` +
-        (options.waitForMergeExplicit === true
-          ? ' --wait-merge cannot land a PR that was deliberately left un-armed.'
-          : ''),
-    );
-  }
-  const gates = {
-    validation: options.skipValidation ? 'skipped' : 'passed',
-    baseSync: options.skipSync ? 'skipped' : 'passed',
-    codeReview: 'passed',
-  };
-
-  if (waitForMerge) {
-    setPhase('confirm-merge');
-    const waitOutcome = await runConfirmMergePhase({
-      cwd: options.cwd,
-      storyId: options.storyId,
-      storyBranch,
-      baseBranch,
-      prNumber,
-      prUrl,
-      autoMergeEnabled,
-      autoMergeReason,
-      provider,
-      config,
-      maxWaitSeconds: options.maxWaitSeconds,
-      progress,
-      injectedGh,
-      injectedNotify,
-    });
-    const terminal = terminalFromWaitOutcome({
-      waitOutcome,
-      storyId: options.storyId,
-      storyBranch,
-      baseBranch,
-      prNumber,
-      prUrl,
-      autoMergeEnabled,
-      gates,
-      elapsedSeconds: Math.round((Date.now() - startedAtMs) / 1000),
-    });
-    const result = closeResult({
-      storyId: options.storyId,
-      storyBranch,
-      baseBranch,
-      prUrl,
-      prNumber,
-      autoMergeEnabled,
-      autoMergeReason,
-      worktreeReaped,
-      leaseReleased,
-      localCleanupDeferred,
-      directMerged,
-      waitedForMerge: true,
-      merged: waitOutcome.confirmed === true,
-    });
-    await emitTerminal({ terminal, result, config });
-
-    if (terminal.status === 'landed') {
-      progress('DONE', `✅ Story #${options.storyId}: PR merged → ${prUrl}`);
-    } else if (terminal.status === 'pending') {
-      // NOT a failure and NOT a block — the wait reached the edge of its
-      // host slot with the PR healthy and in flight. The CLI maps this to
-      // its own exit code so a caller can resume without classifying.
-      progress(
-        'PENDING',
-        `⏸  Story #${options.storyId}: PR ${prUrl} still in flight — resume with: ${terminal.nextCommand}`,
-      );
-    } else {
-      progress(
-        'BLOCKED',
-        `🛑 Story #${options.storyId}: PR ${prUrl} did not land ` +
-          `(blockClass=${terminal.blocked?.blockClass}). Story is at agent::blocked. ` +
-          `Next: ${terminal.nextCommand}`,
-      );
-    }
-    return { success: terminal.status === 'landed', result, terminal };
-  }
-
-  const result = closeResult({
+  reportOperatorMergeSkip({
+    waitForMergeReason,
+    autoMergeReason,
+    storyId: options.storyId,
+    waitForMergeExplicit: options.waitForMergeExplicit,
+  });
+  const prCtx = {
     storyId: options.storyId,
     storyBranch,
     baseBranch,
-    prUrl,
     prNumber,
+    prUrl,
     autoMergeEnabled,
     autoMergeReason,
     worktreeReaped,
-    leaseReleased,
     localCleanupDeferred,
     directMerged,
-  });
-  // `--no-wait-merge` / operator-merge: the PR is open and the human owns
-  // the land. That is a `pending` terminal by definition — the work is not
-  // done, nothing is broken, and one named command finishes it — rather
-  // than a fourth status invented for this one case.
-  const terminal = buildTerminalEnvelope({
-    storyId: options.storyId,
-    status: 'pending',
-    phase: 'auto-merge',
-    storyBranch,
-    baseBranch,
-    pr: {
-      number: prNumber,
-      url: prUrl ?? null,
-      state: 'OPEN',
-      autoMergeEnabled: Boolean(autoMergeEnabled),
+    config,
+    startedAtMs,
+    gates: {
+      validation: options.skipValidation ? 'skipped' : 'passed',
+      baseSync: options.skipSync ? 'skipped' : 'passed',
+      // An overridden blocker reports `overridden`, never
+      // `passed`. The review DID fail; a human authorized shipping anyway, and
+      // the envelope is the machine-readable trail that says so.
+      codeReview: reviewOverride ? 'overridden' : 'passed',
     },
-    gates,
-    nextCommand: NEXT_COMMANDS.confirmMerge(options.storyId),
-    elapsedSeconds: Math.round((Date.now() - startedAtMs) / 1000),
-  });
-  await emitTerminal({ terminal, result, config });
-  progress(
-    'DONE',
-    `✅ Story #${options.storyId}: PR ready → ${prUrl} (${waitForMergeReason})`,
-  );
-  return { success: true, result, terminal };
+  };
+
+  if (waitForMerge) {
+    return await finishWithMergeWait(prCtx, {
+      cwd: options.cwd,
+      provider,
+      maxWaitSeconds: options.maxWaitSeconds,
+      mergeWatchMode: options.mergeWatchMode,
+      setPhase,
+      injectedGh,
+      injectedNotify,
+    });
+  }
+  return await finishWithoutMergeWait(prCtx, waitForMergeReason);
 }

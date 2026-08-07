@@ -36,14 +36,70 @@ whole surface exists to remove.
 Mixed ids and prose in one invocation is a **hard error**: refuse and ask which
 was meant, rather than guessing a mode and doing the wrong work.
 
+## Default-single split policy — what the seam means
+
+The spine's two escape hatches from N=1 are narrow on purpose:
+
+- **Near-zero overlap** — the pieces touch disjoint files and neither's
+  acceptance criteria can be scored without the other having landed.
+- **Architectural seam** — different deployables, or a migration and its
+  consumer: work that cannot share one branch and one PR without one half
+  sitting unverifiable behind the other.
+
+Everything else is one Story with `## Slicing` checkpoints. When N>1 does
+apply, **every acceptance criterion belongs to exactly one Story** —
+`assertAcceptancePartition` refuses a split whose criteria repeat across
+siblings, because a verbatim-shared criterion is the signature of coupled work
+cut in half rather than genuinely separable work.
+
+## Unknown triage — AFK vs HITL
+
+Every open question interrogation surfaces is triaged by **who can resolve
+it**, not parked in one bucket (a shape borrowed from the Wayfinder skill's
+HITL/AFK ticket typing):
+
+- **AFK** (away from keyboard — the agent resolves it alone): the answer is a
+  fact something already records — third-party docs, a dependency's API
+  surface, observable behavior of this repo. Research it during interrogation
+  (per `.agents/instructions.md` § 1.C) and fold the answer into the plan as a
+  verified claim. An AFK unknown never becomes a Key Assumption — an
+  assumption standing in for a checkable fact is just an unchecked fact.
+- **HITL** (human in the loop — only the operator can resolve it): a genuine
+  product or architecture call — what to support, what to drop, which
+  trade-off to prefer. Nothing the agent reads can answer it; presenting a
+  researched recommendation is fine, deciding is not.
+
+Boundary examples: *"does library X support streaming?"* is AFK (read its
+docs); *"should we drop Node 18 support?"* is HITL (a support-policy call);
+*"does our CLI already validate this flag?"* is AFK (read the code);
+*"which of two valid schema shapes should the new field use?"* is HITL when
+both fit — but first verify it is not settled by an existing convention,
+which would make it AFK.
+
+**Attended runs** present the HITL list at Gate #1 as "needs your decision",
+one line each, alongside the sharpened intent. **Under `--yes`** nobody is at
+the keyboard: AFK unknowns are researched exactly as in an attended run, and
+each HITL unknown degrades to a declarative Key Assumption that names the
+default chosen and marks it a decision-made-by-default, e.g.:
+
+> **Key Assumption (decision-made-by-default):** new-style envelopes only;
+> re-emitting legacy envelopes was ruled out by default, not by the operator.
+
+(Keep the assumption itself declarative — "flag if wrong" phrasing trips the
+open-question hygiene lint, and the deliverer cannot answer it anyway.)
+
+The marker keeps the operator's undelegated decisions findable after the
+fact: reviewing a `--yes` plan means scanning its decisions-made-by-default,
+not re-deriving which assumptions were really the agent's to make.
+
 ## Gate #1 → the light path (in-session handoff)
 
 On a confirmed `deliverLightSuggestion`, `/plan` routes into
 [`deliver-light.md`](deliver-light.md) **without ending the session**. Two
 things make that safe, and both are worth understanding before changing it:
 
-1. **The handoff carries the envelope, not the seed.** Gate #1 already holds a
-   codebase snapshot and `complexitySignals`; fill the light gate's `--creates`
+1. **The handoff carries the envelope, not the seed.** Gate #1 already holds
+   the interrogated `complexitySignals`; fill the light gate's `--creates`
    / `--refactors` / `--acceptance` / `--reason` from those. Re-deriving from
    raw seed text throws away the better signal and can disagree with the
    suggestion that routed you.
@@ -57,6 +113,14 @@ things make that safe, and both are worth understanding before changing it:
 Resume `/plan` at step 2 (Author) **in this same session** — the interrogation
 is still valid and re-paying for it buys nothing. This bounce-back is not an
 escalation.
+
+**Under `--yes` the offer is recorded and planning proceeds** — it is *never*
+auto-downgraded to light. An unattended run has nobody to confirm the reroute,
+and a suggestion is not a confirmation. The same rule governs unknown triage
+unattended: AFK unknowns are still researched, but no free-form operator
+question is asked — each HITL unknown lands in Key Assumptions marked a
+decision-made-by-default, so the record shows what was decided for the operator
+rather than pretending it was decided with them.
 
 Escalation in the *other* direction — an over-scope prompt on the light path —
 is terminal and requires a fresh session. The rule that separates the two, and
@@ -120,10 +184,11 @@ decision:
 lite cohort's Stories with **`route::lite`** as a *human-visible hint only* —
 `/deliver` computes the route from each fetched Story body via the same shape
 function at dispatch, so neither a lost label nor an unread marker can
-misroute delivery: a lite-shaped Story executes **inline** (no story-worker
-or acceptance-critic sub-agent boots) even with the label absent, and a
-sensitive-footprint Story routes `full` and keeps its fresh critic even with
-the label present. The `route::*` axis stays runtime-derived: hand-authored
+misroute delivery: a lite-shaped Story derives `lite` even with the label
+absent, and a sensitive-footprint Story routes `full` and keeps its fresh
+critic even with the label present. The derived route sets ceremony, not
+where the engine runs — sub-agent boots are collapsed by a **single-Story
+run**, never by a trivial shape. The `route::*` axis stays runtime-derived: hand-authored
 `route::*` entries in `labels[]` are dropped by persist.
 
 The knobs (`planning.complexityGate.{enabled, maxArtifacts}`) are documented
@@ -135,8 +200,8 @@ ceilings on `STORY_SHAPE_CEILINGS` in
 ## Correct-by-construction authoring template
 
 `plan-context.js --out` writes `stories.template.json` as a
-**correct-by-construction** skeleton, built from the same repo snapshot the
-`complexitySignals` probed:
+**correct-by-construction** skeleton, built from the same repo probe the
+`complexitySignals` ran:
 
 - **`verify[]` placeholders already end with a valid `(tier)` tag.** Keep
   every filled entry's trailing tag one of `(unit)` / `(contract)` /
@@ -150,16 +215,109 @@ ceilings on `STORY_SHAPE_CEILINGS` in
   against the repo before overriding one (authoring `creates` for a file
   that exists at base is a validator rejection). The persist gates stay
   authoritative: they probe the base branch ref, not the working tree.
-- **Keep `## Spec` near contract-level prose.** Persist emits an
-  **advisory** warning past ~250 words (`SPEC_SOFT_WORD_BUDGET`) — it never
-  fails the persist, but it is the nudge toward a contract-level
+- **Keep `## Spec` near contract-level prose.** **Aim for ~250 words; an
+  advisory warning fires past 350** (`SPEC_SOFT_WORD_BUDGET`). Two numbers,
+  two jobs: ~250 is the authoring target — the nudge toward a contract-level
   Spec (interfaces, invariants, load-bearing constraints; no per-file
-  behavior narration). The hard fail-closed ceiling (~1500 tokens,
-  `spec-spill.js`) is unchanged.
+  behavior narration) — while 350 is the slacker threshold at which persist
+  actually warns, so the warning marks a real outlier instead of ordinary
+  variance. Neither fails the persist. The hard fail-closed ceiling
+  (~1500 tokens, `spec-spill.js`) is unchanged.
 
 A faithfully-filled skeleton — placeholders replaced, pre-resolved entries
 kept, tags valid — passes the persist ticket validators with no
 round-trip.
+
+### Authored entry shape
+
+Each `stories.json` entry: `slug` (`^[a-z0-9][a-z0-9-]*$`), `type: "story"`,
+`title`, `body` (`goal`, optional `spec`, `changes[{path, assumption}]` —
+`creates|refactors-existing|deletes`, `non_goals`, `reason_to_exist`),
+top-level `acceptance[]`, `verify[]` (`… (unit|contract|e2e|validate)`), and
+`depends_on[]` (N>1 only).
+
+Nothing in that shape inventories the repo for the author. `changes[]` arrives
+pre-resolved against the working tree, and Phase 8's
+`validateStoryFileAssumptions` re-probes every `{path, assumption}` at persist
+as a hard error — so the grounding contract is the author's own targeted reads
+plus that gate. There is no pre-computed codebase snapshot to fall back on,
+and no manifest-derived replacement to build.
+
+### Per-Story audit provenance (`provenance`)
+
+An audit-seeded plan carries dedup identities forward so the next sweep
+recognises what it already planned. The optional top-level `provenance` field
+says **which of them this Story owns**:
+
+```jsonc
+{
+  "slug": "own-the-seam",
+  "provenance": {
+    "fingerprints": ["<40-char sha1, one per finding this Story tracks>"],
+    "semanticKeys": ["architecture␟lib/owned.js"]
+  }
+}
+```
+
+Both arrays are optional; a malformed entry is a validator rejection, never a
+silent drop — a dropped identity is invisible until the next sweep re-files
+work this plan already tracked.
+
+| `provenance` | What persist stamps |
+| --- | --- |
+| Present | **Exactly** the identities listed — siblings' groups never leak in. |
+| Present but empty (`{}`) | Nothing. "Owns no findings" is a real answer. |
+| **Absent** | The **whole seed's** footers (the union) — the recall-safe default. |
+
+**The union fallback is load-bearing, not legacy.** Leaving the authoring agent
+to hand-carry provenance out of the seed's HTML comments was measured to fail —
+a remembered step is no step at all — and the mechanical union carry is what
+closed it. Attribution is additive: it sharpens a plan that opts in and changes
+nothing for one that does not. Never remove the fallback to "finish the
+migration".
+
+Attribution is what makes the next sweep's dedup answerable rather than
+arbitrary. Under the union every sibling carried every key, so a finding
+confirming against several open Stories could only pick one at random, and a
+key whose owning Story had since **closed** was masked by any open neighbour —
+a genuine regression filed as a routine update. With ownership stamped, the
+issue carrying a finding's own fingerprint decides both the match and its
+state (`lib/findings/route-finding.js`).
+
+The audit path authors this mechanically from the per-group footers the seed
+already carries — see [`audit-to-stories`](../audit-to-stories.md). A `--seed`
+or `--tickets` plan has nothing to attribute and omits the field.
+
+## Cross-Story conflict analysis at persist
+
+The conflict passes run **twice**: once over the raw `stories.json` payload
+(alongside the freshness, file-assumption and sizing gates), and again over the
+**assembled, footer-stamped bodies** — the artifact persist actually posts.
+The second pass is not belt-and-braces. The canonical authoring shape carries
+`acceptance[]` / `verify[]` at the ticket's top level and assembly folds them
+into the body, so the passes that scan `body.acceptance` / `body.verify`
+(`implicit-cross-story-dep`, `missing-bdd-scaffold`) saw two empty arrays on
+the real payload and emitted nothing. Both passes complete before the first
+`createIssue`, so a refusal still costs no writes.
+
+`shared-editor` findings are rendered into the posted `plan-summary` comment,
+directly beneath the wave table: the table promises which Stories can run
+together, and a path two same-wave Stories both write is exactly where that
+promise breaks. Promise and caveat belong on one durable surface — previously
+the caveat was a stderr warning nobody kept.
+
+Two `planning.*` knobs upgrade a conflict class from advisory to a hard
+refusal. **Both default to `false` and are documented, not recommended:**
+
+| Knob | Upgrades | Why it is off |
+| --- | --- | --- |
+| `planning.failOnSharedEditors` | `shared-editor` → `hard` | Co-editing one file is routine and often correct; the delivery scheduler already serializes file-overlapping Stories. |
+| `planning.requireExplicitCrossStoryDeps` | `implicit-cross-story-dep` → `hard` | Path references are matched by substring, so a legitimate mention in prose can read as a dependency. |
+
+Turn one on for a repo where the class is genuinely fatal; expect a refusal to
+name the Stories and the fix (a `depends_on` edge, or folding the shared edit
+into one Story). The sibling knobs `failOnRegistryConflicts`,
+`failOnMissingBddScaffold` and `failOnLargeFanOut` behave the same way.
 
 ## Tickets mode — authoring `supersedes[]`
 
@@ -233,10 +391,28 @@ output shape standalone. When the kill-switch is off
 (`roleScopedAgents: false`) or the host cannot spawn at this depth, fall back
 to a generic sub-agent and hand it the same charter (the `consolidation` /
 `pre-mortem` definitions in [`plan-critic.md`](../../agents/plan-critic.md)).
+**When both critics fire, dispatch them in a single turn.** Consolidation and
+pre-mortem read the same immutable draft, share no write path, and neither
+consumes the other's verdict — the textbook independent fan-out of
+[`parallel-tooling.md`](parallel-tooling.md) Rule 3. Issue both `Agent` calls
+together in one assistant turn rather than awaiting the first verdict before
+spawning the second; serialized critics double the round's wall clock and buy
+nothing, because you fold both verdicts into the same re-author round anyway.
+
 Either way the critic is **maker-blind**: hand it the draft artifacts
 (`stories.json`, and `techspec.md` when present) — never the authoring
 transcript or the reasons the planner believed its own draft is sound. A
 critic that reads the maker's case grades the case, not the draft.
+
+## What `--dry-run` actually gates
+
+`plan-persist.js --dry-run` is the same command with GitHub writes suppressed,
+and every gate runs before the first `createIssue` would fire — the validator,
+the body parse, the DAG, the capacity and Spec-budget ceilings, the
+reachability check, the split and supersede partitions, and the Tech Spec fold.
+That is the whole point of running it first: a dry run that comes back clean
+has already paid for every deterministic refusal, so the real persist has
+nothing left to discover except network failure.
 
 ## Ready means fully persisted
 

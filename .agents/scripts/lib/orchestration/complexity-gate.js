@@ -29,17 +29,17 @@
  *      against {@link STORY_SHAPE_CEILINGS}. A `lite` claim whose work exceeds
  *      them **fails closed to `full`** (`run-plan-persist.js`). Artifact
  *      cardinality is deliberately not an axis (Story #4764).
- *   4. **Deliver re-derives.** `/deliver` computes the route from the fetched
- *      Story body via the **same** shape function at dispatch
- *      ({@link resolveStoryDispatchMode}) and honors it: a lite-shaped Story
- *      executes inline — no story-worker sub-agent boot, no fresh
- *      acceptance-critic dispatch — while every `single-story-close.js` gate
- *      runs unchanged. The `route::lite` label is a **human-visible hint
- *      only**, never the control signal: a lost label or an unread marker can
- *      no longer misroute delivery. Ahead of the shape read sits one
- *      shape-independent rule (Story #4736): a **single-Story run** is inline
- *      whatever its shape, because sub-agent isolation buys nothing when
- *      there is no concurrent sibling to isolate from.
+ *   4. **Deliver dispatches on topology alone.** The dispatch *mode*
+ *      ({@link resolveStoryDispatchMode}) answers a different question from
+ *      the route: may the engine run in the router's own session? Only a
+ *      **single-Story run** may (Story #4736) — sub-agent isolation buys
+ *      nothing when there is no concurrent sibling to isolate from. Shape
+ *      cannot grant that session (Story #4829): a lite body makes work cheap,
+ *      it does not conjure a second session for a sibling to run in. Story
+ *      #5006 removed the shape derivation that survived there for reporting,
+ *      since no consumer read it. The `route::lite` label is a
+ *      **human-visible hint only**, never the control signal. Either way every
+ *      `single-story-close.js` gate runs unchanged.
  *
  * The shape taxonomy is deliberately the one `review-depth.js` already
  * applies to the landed diff at close (`deriveChangeLevel` over the
@@ -76,10 +76,7 @@
 
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import {
-  extractChangePaths,
-  parse as parseStoryBody,
-} from '../story-body/story-body.js';
+import { extractChangePaths } from '../story-body/story-body.js';
 import { deriveChangeLevel } from './review-depth.js';
 
 /**
@@ -96,11 +93,10 @@ const DEFAULT_COMPLEXITY_GATE = Object.freeze({
  * The persisted route marker for a lite-routed Story.
  *
  * **A human-visible hint only (Story #4722)** — never the control signal.
- * Persist still applies it so a lite cohort is filterable in the GitHub UI,
- * but `/deliver` derives the route from the Story body's own shape
- * ({@link resolveStoryDispatchMode}); a Story with the label whose shape
- * derives `full` dispatches as a sub-agent, and a lite-shaped Story with the
- * label absent (or its write failed) still executes inline.
+ * Persist applies it so a lite cohort is filterable in the GitHub UI, and
+ * `deliver-light` reads the Story's own shape ({@link deriveStoryShape}) when
+ * it needs one. Nothing routes on the label: a lost label or an unread marker
+ * cannot misroute delivery.
  */
 export const LITE_ROUTE_LABEL = 'route::lite';
 
@@ -260,22 +256,63 @@ function spansMigrationAndConsumers(paths) {
 }
 
 /**
+ * Stable machine-readable identifiers for every reason a shape routes `full` —
+ * the `code` field on a {@link deriveStoryShape} decision (Story #4815).
+ *
+ * The prose in `reasons[]` is written for a human reading a gate envelope and
+ * is free to be re-worded; a caller that must **branch** on *which* rule
+ * objected reads this code instead. That distinction is load-bearing for the
+ * light path's operator override
+ * ({@link module:lib/orchestration/light-suitability.OVERRIDABLE_SHAPE_CODES}),
+ * which may waive a size *prediction* but never a risk rule: keying that
+ * decision off reason text would make a copy-edit a security change.
+ *
+ * Split three ways, and the grouping is the contract:
+ *
+ *   - **Ceiling rules** — `change-kinds`, `magnitude`, `uncertainty`,
+ *     `deployable-span`. Coarse predictions about size, enforced for real
+ *     against ground truth by the diff backstop.
+ *   - **Absolute rules** — `migration-span`, `sensitive-path`. Risk, not size.
+ *   - **Unknown-footprint rejections** — `no-changes`, `unreadable-changes`,
+ *     `glob-footprint`, `no-acceptance`, `classification-unavailable`.
+ *     Nothing was judged, so there is nothing to waive.
+ *
+ * A `lite` route carries `code: null`.
+ */
+export const SHAPE_CODES = Object.freeze({
+  CHANGE_KINDS: 'change-kinds',
+  MAGNITUDE: 'magnitude',
+  UNCERTAINTY: 'uncertainty',
+  DEPLOYABLE_SPAN: 'deployable-span',
+  MIGRATION_SPAN: 'migration-span',
+  SENSITIVE_PATH: 'sensitive-path',
+  NO_CHANGES: 'no-changes',
+  UNREADABLE_CHANGES: 'unreadable-changes',
+  GLOB_FOOTPRINT: 'glob-footprint',
+  NO_ACCEPTANCE: 'no-acceptance',
+  CLASSIFICATION_UNAVAILABLE: 'classification-unavailable',
+});
+
+/**
  * Ordered effort/risk rules, evaluated in order; the first hit is the recorded
  * reason for a `full` route. Every rule names an effort, risk, or uncertainty
  * property of the work — none counts artifacts.
  *
  * @type {ReadonlyArray<{
+ *   code: string,
  *   when: (shape: object, ceilings: typeof STORY_SHAPE_CEILINGS) => boolean,
  *   reason: (shape: object, ceilings: typeof STORY_SHAPE_CEILINGS) => string,
  * }>}
  */
 const EFFORT_RULES = Object.freeze([
   {
+    code: SHAPE_CODES.CHANGE_KINDS,
     when: (s, c) => s.kindCount > c.maxChangeKinds,
     reason: (s, c) =>
       `${s.kindCount} distinct change kinds (${s.changeKinds.join(', ')}) > maxChangeKinds ${c.maxChangeKinds} — an explicit multi-capability enumeration, not one capability; full route`,
   },
   {
+    code: SHAPE_CODES.MAGNITUDE,
     when: (s, c) =>
       MAGNITUDE_SCALE.indexOf(s.magnitude) >
       MAGNITUDE_SCALE.indexOf(c.maxMagnitude),
@@ -283,6 +320,7 @@ const EFFORT_RULES = Object.freeze([
       `declared magnitude "${s.magnitude}" > maxMagnitude "${c.maxMagnitude}" — a substantial rewrite is effort a single inline pass should not absorb, however few files it touches; full route`,
   },
   {
+    code: SHAPE_CODES.UNCERTAINTY,
     when: (s, c) =>
       UNCERTAINTY_SCALE.indexOf(s.uncertainty) >
       UNCERTAINTY_SCALE.indexOf(c.maxUncertainty),
@@ -290,16 +328,19 @@ const EFFORT_RULES = Object.freeze([
       `the shape is not determined by the request (uncertainty "${s.uncertainty}") — the design decisions /plan exists to resolve are still open; full route`,
   },
   {
+    code: SHAPE_CODES.DEPLOYABLE_SPAN,
     when: (s, c) => s.deployables.length > c.maxDeployables,
     reason: (s, c) =>
       `footprint spans ${s.deployables.length} deployables (${s.deployables.join(', ')}) > maxDeployables ${c.maxDeployables} — clearly-epic scope; full route`,
   },
   {
+    code: SHAPE_CODES.MIGRATION_SPAN,
     when: (s) => s.migrationSpan,
     reason: () =>
       'footprint pairs a migration with its consumers — clearly-epic scope; full route',
   },
   {
+    code: SHAPE_CODES.SENSITIVE_PATH,
     when: (s) => s.sensitiveClasses.length > 0,
     reason: (s) =>
       `footprint intersects sensitive-path class(es) ${s.sensitiveClasses.join(', ')} — sensitivity wins over a small shape; full route (fresh acceptance critic retained)`,
@@ -307,15 +348,18 @@ const EFFORT_RULES = Object.freeze([
 ]);
 
 /**
- * First effort/risk rule the shape violates, or `null` when it clears them all.
+ * First effort/risk rule the shape violates as a `{ code, reason }` pair, or
+ * `null` when it clears them all.
  *
  * @param {object} shape
  * @param {typeof STORY_SHAPE_CEILINGS} ceilings
- * @returns {string|null}
+ * @returns {{ code: string, reason: string }|null}
  */
 function firstEffortViolation(shape, ceilings) {
   for (const rule of EFFORT_RULES) {
-    if (rule.when(shape, ceilings)) return rule.reason(shape, ceilings);
+    if (rule.when(shape, ceilings)) {
+      return { code: rule.code, reason: rule.reason(shape, ceilings) };
+    }
   }
   return null;
 }
@@ -359,9 +403,9 @@ function normalizeCeiling(value, fallback) {
  *
  * Exported for persist (`run-plan-persist.js#resolveEffectiveRoute`), which
  * consults `enabled` to refuse a planner lite claim when the gate is off —
- * the schema's documented contract, and the same switch dispatch reads in
- * {@link resolveStoryDispatchMode}, so the two read points cannot disagree
- * about whether lite routing is live.
+ * the schema's documented contract. It is the only read point: Story #5006
+ * removed the second one in {@link resolveStoryDispatchMode}, where the switch
+ * gated a shape derivation whose result no consumer read.
  *
  * @param {object | null | undefined} config
  * @returns {{ enabled: boolean, maxArtifacts: number }}
@@ -654,10 +698,13 @@ function buildEffortShape({
  * @returns {{
  *   route: ComplexityRoute,
  *   reasons: string[],
+ *   code: string|null,
  *   shape: ReturnType<typeof buildEffortShape>|null,
  *   ceilings: typeof STORY_SHAPE_CEILINGS,
  *   preserves: typeof LITE_PATH_INVARIANTS,
- * }}
+ * }} `code` is the stable {@link SHAPE_CODES} identifier for the rule that
+ *   rejected the shape (`null` on `lite`) — the field a caller branches on,
+ *   since `reasons[]` is human prose and free to be re-worded.
  */
 export function deriveStoryShape({
   changes,
@@ -670,9 +717,10 @@ export function deriveStoryShape({
 } = {}) {
   const ceilings = STORY_SHAPE_CEILINGS;
   const preserves = LITE_PATH_INVARIANTS;
-  const decide = (route, reason, shape = null) => ({
+  const decide = (route, code, reason, shape = null) => ({
     route,
     reasons: [reason],
+    code,
     shape,
     ceilings,
     preserves,
@@ -681,6 +729,7 @@ export function deriveStoryShape({
   if (!Array.isArray(changes) || changes.length === 0) {
     return decide(
       'full',
+      SHAPE_CODES.NO_CHANGES,
       'no changes[] declared — the footprint is unknown, so the work cannot be judged trivial; conservative full route',
     );
   }
@@ -691,6 +740,7 @@ export function deriveStoryShape({
   } catch (err) {
     return decide(
       'full',
+      SHAPE_CODES.UNREADABLE_CHANGES,
       `changes[] could not be read (${err?.message ?? err}) — unknown footprint; conservative full route`,
     );
   }
@@ -714,6 +764,7 @@ export function deriveStoryShape({
   if (entries.some((e) => e.isGlob)) {
     return decide(
       'full',
+      SHAPE_CODES.GLOB_FOOTPRINT,
       'changes[] contains a glob path — unknown footprint width; conservative full route',
       shape,
     );
@@ -721,13 +772,16 @@ export function deriveStoryShape({
   if (shape.acceptanceCount === 0) {
     return decide(
       'full',
+      SHAPE_CODES.NO_ACCEPTANCE,
       'no acceptance criteria — the contract cannot be judged trivial; conservative full route',
       shape,
     );
   }
 
   const violation = firstEffortViolation(shape, ceilings);
-  if (violation !== null) return decide('full', violation, shape);
+  if (violation !== null) {
+    return decide('full', violation.code, violation.reason, shape);
+  }
 
   if (level !== 'low') {
     // `deriveChangeLevel` degraded to its null fail-safe (unreadable
@@ -735,6 +789,7 @@ export function deriveStoryShape({
     // non-sensitive, and a classification failure must never buy lite.
     return decide(
       'full',
+      SHAPE_CODES.CLASSIFICATION_UNAVAILABLE,
       'sensitive-path classification unavailable — cannot verify the footprint is non-sensitive; conservative full route',
       shape,
     );
@@ -742,87 +797,40 @@ export function deriveStoryShape({
 
   return decide(
     'lite',
+    null,
     `trivial shape: ${shape.kindCount} change kind(s) (${shape.changeKinds.join(', ')}) ≤ ${ceilings.maxChangeKinds} across ${shape.siteCount} site(s), magnitude ${shape.magnitude} ≤ ${ceilings.maxMagnitude}, shape ${shape.uncertainty}, no epic-scope span, no sensitive-path class — inline-eligible; non-negotiables preserved`,
     shape,
   );
 }
 
 /**
- * Derive the complexity route from a Story's **serialized body markdown** —
- * the deliver-side entry to {@link deriveStoryShape} (`/deliver` already
- * fetches the body; the route is computed from it, never from a label). An
- * unparseable body degrades to `full`: unknown shape is not trivial shape.
+ * Decide how `/deliver` executes a Story: **run topology, and nothing else.**
  *
- * Module-private, reachable end to end through
- * {@link resolveStoryDispatchMode} (which returns the derived route) — so
- * there is no test-only export to leave production-dead.
+ * **`inline` names one indivisible resource: the router's own session.** Two
+ * Stories cannot both own it, so exactly one premise can grant it —
+ * **run topology (Story #4736)**: a run resolving a *single* Story executes
+ * inline whatever its shape, because sub-agent isolation is load-bearing only
+ * for CONCURRENT dispatch (two workers sharing a checkout race on worktrees and
+ * branch refs) and a one-Story run has no sibling to race. It therefore pays
+ * the spawn premium (a boot is a cache WRITE at full rate, where an inline
+ * continuation is a cache read at ~10%; ~$1.43/M vs ~$1.07/M on comparable
+ * bench work) for nothing.
  *
- * @param {string} body Serialized Story-body markdown.
- * @param {{ injectedRules?: object, selectSensitivePathClassesFn?: Function }} [opts]
- * @returns {ReturnType<typeof deriveStoryShape>}
- */
-function deriveStoryRouteFromBody(body, opts = {}) {
-  let parsed;
-  try {
-    parsed = parseStoryBody(String(body ?? '')).body;
-  } catch (err) {
-    return {
-      route: 'full',
-      reasons: [
-        `Story body is unparseable (${err?.message ?? err}) — shape unknown; conservative full route`,
-      ],
-      shape: null,
-      ceilings: STORY_SHAPE_CEILINGS,
-      preserves: LITE_PATH_INVARIANTS,
-    };
-  }
-  return deriveStoryShape({
-    changes: parsed?.changes,
-    acceptance: parsed?.acceptance,
-    injectedRules: opts.injectedRules,
-    selectSensitivePathClassesFn: opts.selectSensitivePathClassesFn,
-  });
-}
-
-/**
- * Best-effort route derivation for reporting, when the *mode* is already
- * pinned by run topology and only `route` remains to be filled in. A body
- * that will not parse yields `null` rather than throwing — the caller is not
- * asking the shape to decide anything.
+ * **Shape cannot grant it (Story #4829).** The shape read used to return
+ * `inline` for any lite-shaped body in a multi-Story run, inheriting no
+ * topology guard. Measured twice on 2026-07-29: a two-Story and a three-Story
+ * run came back `inline` for *every* Story while `stories-wave-tick.js`
+ * reported the whole set ready under a concurrency cap of five — a router
+ * following both signals literally runs several engines over one session and
+ * one checkout, the precise hazard the sub-agent path exists to prevent.
  *
- * @param {unknown} body
- * @param {{ injectedRules?: object, selectSensitivePathClassesFn?: Function }} opts
- * @returns {ReturnType<typeof deriveStoryShape>|null}
- */
-function routeForReporting(body, opts) {
-  if (typeof body !== 'string' || body.trim() === '') return null;
-  return deriveStoryRouteFromBody(body, opts);
-}
-
-/**
- * Decide how `/deliver` executes a Story.
- *
- * Two independent premises, checked in this order:
- *
- * 1. **Run topology (Story #4736).** A run delivering a *single* Story
- *    executes **inline**, whatever its shape. Sub-agent isolation is
- *    load-bearing only for CONCURRENT dispatch — two workers sharing a
- *    checkout would race on worktrees and branch refs — and a one-Story run
- *    has no sibling to race. It therefore pays the spawn premium (a boot is
- *    a cache WRITE at full rate, where an inline continuation is a cache read
- *    at ~10%; ~$1.43/M vs ~$1.07/M on comparable bench work) for nothing.
- *    This is a fact about the run, not about the work, so the shape gate's
- *    `enabled` switch — which governs *shape derivation* — does not reach it.
- * 2. **Shape (Story #4722 AC-4/AC-5).** For a multi-Story run, the decision
- *    comes **from the Story body's own shape**, never from the `route::lite`
- *    label: a lite-shaped Story executes inline; everything else — a
- *    full-shaped body, a missing/unparseable body, or the gate disabled via
- *    `planning.complexityGate.enabled=false` — dispatches as a sub-agent,
- *    the conservative default.
- *
- * The label is read only to report hint consistency in `reasons`: with the
- * label absent (or its write failed) a lite-shaped Story still runs inline,
- * and with the label present on a full-shaped Story the shape wins.
+ * **So this function reads only `storyCount` (Story #5006).** #4829 left the
+ * body parse, the shape derivation, the `route::lite` hint note and the
+ * `planning.complexityGate.enabled` branch in place to populate a `route`
+ * field for reporting — but the sole consumer, `resolve-stories.js`, reads
+ * `.mode` and discards the rest, so every one of those inputs was a parse
+ * whose result nothing could act on. A caller that wants the shape calls
+ * {@link deriveStoryShape} directly, as the light path and plan-persist do.
  *
  * Inline execution removes model-side fan-out only — it changes **where** the
  * engine runs, never **what** runs. Every deterministic
@@ -830,87 +838,28 @@ function routeForReporting(body, opts) {
  * `story-deliver-terminal` envelope are identical in both modes; see the
  * module header's non-negotiables.
  *
- * @param {{
- *   body?: unknown,
- *   labels?: unknown,
- *   config?: object,
- *   storyCount?: unknown,
- *   injectedRules?: object,
- *   selectSensitivePathClassesFn?: Function,
- * }} [args] `storyCount` is the number of Stories the invoking `/deliver` run
- *   resolved. Omitted (or not a positive integer) means "unknown run size",
- *   which falls through to the shape decision — never to an assumed 1.
- * @returns {{ mode: 'inline'|'subagent', reasons: string[], route: ReturnType<typeof deriveStoryShape>|null }}
+ * @param {{ storyCount?: unknown }} [args] `storyCount` is the number of
+ *   Stories the invoking `/deliver` run resolved. Omitted (or not exactly 1)
+ *   means the run cannot be shown sibling-free and therefore dispatches as a
+ *   sub-agent — never an assumed 1.
+ * @returns {{ mode: 'inline'|'subagent', reasons: string[] }}
  */
-export function resolveStoryDispatchMode({
-  body,
-  labels,
-  config,
-  storyCount,
-  injectedRules,
-  selectSensitivePathClassesFn,
-} = {}) {
-  const labelList = Array.isArray(labels)
-    ? labels.filter((l) => typeof l === 'string')
-    : [];
-  const hasHint = labelList.includes(LITE_ROUTE_LABEL);
-  const hintNote = hasHint
-    ? `the ${LITE_ROUTE_LABEL} label is present (hint only — the derived shape is the control signal)`
-    : `the ${LITE_ROUTE_LABEL} label is absent (hint only — the derived shape is the control signal)`;
-
+export function resolveStoryDispatchMode({ storyCount } = {}) {
+  // The ONLY `inline` exit in this function, and the guard is the whole
+  // contract: an inline verdict must mean the engine can actually run inline.
   if (storyCount === 1) {
     return {
       mode: 'inline',
       reasons: [
         'single-Story run — execute deliver-story inline; sub-agent isolation is load-bearing only for concurrent dispatch, and a one-Story run has no sibling to race (close gates, PR, and terminal envelope unchanged)',
-        hintNote,
       ],
-      route: routeForReporting(body, {
-        injectedRules,
-        selectSensitivePathClassesFn,
-      }),
     };
   }
 
-  const gate = resolveComplexityGate(config);
-  if (!gate.enabled) {
-    return {
-      mode: 'subagent',
-      reasons: [
-        'complexity routing disabled (planning.complexityGate.enabled=false) — standard sub-agent dispatch',
-      ],
-      route: null,
-    };
-  }
-
-  if (typeof body !== 'string' || body.trim() === '') {
-    return {
-      mode: 'subagent',
-      reasons: [
-        'no Story body to derive shape from — conservative sub-agent dispatch',
-        hintNote,
-      ],
-      route: null,
-    };
-  }
-
-  const route = deriveStoryRouteFromBody(body, {
-    injectedRules,
-    selectSensitivePathClassesFn,
-  });
-  if (route.route === 'lite') {
-    return {
-      mode: 'inline',
-      reasons: [
-        `lite-shaped Story — execute deliver-story inline; no story-worker or acceptance-critic sub-agent dispatch (close gates unchanged): ${route.reasons[0]}`,
-        hintNote,
-      ],
-      route,
-    };
-  }
   return {
     mode: 'subagent',
-    reasons: [`full-shaped Story — ${route.reasons[0]}`, hintNote],
-    route,
+    reasons: [
+      "multi-Story (or unknown-size) run — a concurrent sibling would have to share the router's session, racing worktrees and branch refs; sub-agent dispatch",
+    ],
   };
 }

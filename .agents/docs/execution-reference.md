@@ -11,11 +11,11 @@ links here from the sections that used to inline this content.
 
 ## Friction telemetry
 
-Reference mechanics behind the friction-telemetry MUST in
-[`instructions.md` § 1.H](../instructions.md). The always-loaded core keeps the
-MUST, the command, and the when-to-fire triggers; the detail below is consulted
-only when reasoning about **where** a friction record lands and **how** it is
-validated.
+Reference mechanics behind the optional friction-telemetry tool pointed at
+from [`instructions.md` § 1.H](../instructions.md). Capture is a **tool, not a
+mandate** — reach for `diagnose-friction.js` when a wrapped command's failure
+shape is worth attributing; the detail below is consulted only when reasoning
+about **where** a friction record lands and **how** it is validated.
 
 - **Canonical record + schema validation**: `diagnose-friction.js` appends one
   `kind: friction` record, validated write-time against
@@ -62,10 +62,10 @@ Unrecognized `AGENT_LOG_LEVEL` values fall back to `info`. There is no
 `debug` level alias.
 
 This is a diagnostic knob: set it when you need quieter script embedding
-(`silent`) or a deeper trace (`verbose`). The friction-telemetry MUST it sits
-under — capture friction as a local NDJSON signal via `diagnose-friction.js` —
-stays in [`instructions.md` § 1.H](../instructions.md); its record-landing and
-schema mechanics are in [§ Friction telemetry](#friction-telemetry) above.
+(`silent`) or a deeper trace (`verbose`). This table is the SSOT for the
+levels; the optional friction-capture tool it sits beside is pointed at from
+[`instructions.md` § 1.H](../instructions.md), and that tool's record-landing
+and schema mechanics are in [§ Friction telemetry](#friction-telemetry) above.
 
 ---
 
@@ -85,26 +85,38 @@ over-ceiling envelope or an over-budget Story count.
 > before shipping the raw seed anyway. The schema now **rejects**
 > `planning.context`, so a config carrying it fails loudly rather than silently
 > capping nothing. The ceiling below is the replacement and the only live bound
-> on planner-context size. Separately, `elideEnvelope` in
-> `lib/orchestration/context-envelope.js` — which this section used to credit
-> with limiting hydrated prompt size — has no production caller either (it is
-> carried in `baselines/dead-exports-production.json`). Only `estimateTokens`
-> from that module is live.
+> on planner-context size. Separately, the `ContextEnvelope` SDK this section
+> used to credit with limiting hydrated prompt size had no production caller
+> and was deleted in Story #5005; only its `estimateTokens` helper survived,
+> re-homed in `lib/orchestration/spec-spill.js`.
 
 ### Planner-context envelope (`/plan`)
 
 - **`PLAN_CONTEXT_ENVELOPE_BYTE_CEILING`** (`lib/orchestration/plan-context.js`):
   256 KB (≈64K tokens at the ≈4-chars/token estimate) on the serialized
   envelope `buildPlanContext` assembles, checked at the single choke point
-  every mode returns through. Measured envelopes on this repo land at ~42 KB,
-  so the ceiling is >2× headroom over a worst-case seed plus a medium-tier
-  codebase snapshot.
-- **On refusal**, the error names the envelope's largest fields. Trim the seed,
-  plan fewer `--tickets` source issues in one run, or narrow
-  `planning.codebaseSnapshot`. The seed is carried **verbatim** by design — it
-  is the operator's request, and summarizing it silently would degrade planning
-  quality precisely when the input is richest — so there is no elision path to
-  fall back on. Raising the ceiling needs a measured justification.
+  every mode returns through. A measured seed-mode envelope on this repo's
+  thin `.feature` corpus is ~120 KB — `docsContext` (~63 KB) and
+  `systemPrompts` (~54 KB) are the bulk of the fixed floor, every other field
+  under 1 KB. That is **not** representative of every consumer: Story #4977
+  measured `bddScenarios` at 118 KB on a consumer with a mature Gherkin
+  corpus — larger than `docsContext` and `systemPrompts` combined, leaving
+  ~5.5% headroom instead of ~2×. `bddScenarios` is now truncated to
+  `BDD_SCENARIOS_BYTE_BUDGET` (`lib/bdd-scenario-budget.js`, ≤24 KB,
+  reported via `truncated` / `totalScenarios` / `includedScenarios` rather
+  than silently dropped) before it reaches the envelope, deliberately a fixed
+  framework constant rather than an `.agentrc.json` knob — the same reasoning
+  Story #4811 applied when it retired the codebase snapshot. The
+  operator-supplied seed remains the one field with no cap and no elision
+  path.
+- **On refusal**, the error names the envelope's largest fields and the
+  remedy that follows the single largest one (`OVERSIZE_FIELD_REMEDIES` in
+  `plan-context.js`) — trim the seed, plan fewer `--tickets` source issues in
+  one run, or trim `docsContextFiles`, depending on which field actually blew
+  the budget. The seed itself is carried **verbatim** by design — it is the
+  operator's request, and summarizing it silently would degrade planning
+  quality precisely when the input is richest — so it alone has no elision
+  path to fall back on. Raising the ceiling needs a measured justification.
 
 ### Session-mass capacity (plan-time sizing)
 

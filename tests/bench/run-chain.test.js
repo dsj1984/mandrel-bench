@@ -772,7 +772,7 @@ test('runTouchChain (mandrel): both touches advance — force-pushed baseline, p
 
 // ---------------------------------------------------------------------------
 // Amendment threading (Story #191): touch 1 plans plainly; each later touch
-// plans as `/plan --amends #<priorStoryId>` so the delta envelope engages.
+// plans as `/plan <priorStoryId>` (amends mode) so the delta envelope engages.
 // ---------------------------------------------------------------------------
 
 test('runTouchChain (mandrel): touch 1 plans plainly; touch 2 amends the Story touch 1 landed (AC-1)', async () => {

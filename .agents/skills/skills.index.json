@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-21T13:53:23.232Z",
+  "generatedAt": "2026-08-06T10:26:18.702Z",
   "generator": "generate-skills-index.js@1",
   "skills": [
     {
@@ -40,16 +40,6 @@
       "description": "Guides systematic root-cause debugging. Use when tests fail, builds break, behavior doesn't match expectations, or you encounter any unexpected error. Use when you need a systematic approach to finding and fixing the root cause rather than guessing.",
       "policyCapsuleBullets": 9,
       "allowedTools": null,
-      "vendor": null
-    },
-    {
-      "name": "diagnose-friction",
-      "tier": "core",
-      "category": "core",
-      "path": ".agents/skills/core/diagnose-friction/SKILL.md",
-      "description": "Wrap a shell command with diagnostic capture. On failure, print static suggestions and append a structured `friction` record to the per-Story signals.ndjson stream. Use whenever a script in the orchestration loop invokes a tool whose failure shape we want the analyzer to attribute.",
-      "policyCapsuleBullets": 8,
-      "allowedTools": ["Bash", "Read"],
       "vendor": null
     },
     {
@@ -148,7 +138,7 @@
       "category": "qa",
       "path": ".agents/skills/stack/qa/playwright/SKILL.md",
       "description": "Robust E2E browser testing with Playwright. Use when writing browser-driven tests — leverage auto-waiting (no `waitForTimeout`), prefer user-visible locators (`getByRole`, `getByText`, `getByLabel`) over CSS/XPath, reuse `storageState` for auth, and enable trace-on-first-retry for CI debugging.",
-      "policyCapsuleBullets": 7,
+      "policyCapsuleBullets": 8,
       "allowedTools": null,
       "vendor": "playwright"
     },

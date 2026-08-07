@@ -37,7 +37,7 @@
  */
 
 import { parseArgs } from 'node:util';
-import { parseSprintArgs } from './lib/cli-args.js';
+import { parseSprintArgsTolerant } from './lib/cli-args.js';
 import { runAsCli } from './lib/cli-utils.js';
 import { resolveConfig } from './lib/config-resolver.js';
 import { formatCliError } from './lib/error-redactor.js';
@@ -65,6 +65,15 @@ import { confirmStoryMerged } from './lib/single-story/confirm-merge.js';
 const progress = Logger.createProgress('single-story-confirm-merge', {
   stderr: true,
 });
+
+/**
+ * This CLI's own surface name — the `runAsCli` source, and the `emitter.tool`
+ * every friction record it emits carries. Single-homed so the two cannot
+ * drift: `emitTerminalFriction` defaults to the CLOSE CLI's name, so a record
+ * emitted from here without it is attributed to a CLI that never ran, and the
+ * retro roll-up sends the follow-up to the wrong surface.
+ */
+const CLI_SOURCE = 'single-story-confirm-merge';
 
 /**
  * Default `gh` facade for this CLI, bound to the merge wait's spawn-level
@@ -158,14 +167,13 @@ function readMaxWaitSecondsFlag() {
  * Resolve the PR number for the Story branch when one was not passed on
  * the CLI. Probes `gh pr list --head <branch> --state all` (the merged PR
  * is no longer `open`, so `--state all` is required). Returns `null` when
- * no PR is found.
+ * no PR is found. Exported for testing.
  *
- * @param {{ cwd: string, storyBranch: string, gh: object }} args
+ * @param {{ storyBranch: string, gh: object }} args
  * @returns {Promise<number|null>}
  */
-async function resolvePrNumber({ cwd, storyBranch, gh }) {
+export async function resolvePrNumber({ storyBranch, gh }) {
   try {
-    void cwd;
     const rows = await gh.pr.list(
       ['--head', storyBranch, '--state', 'all'],
       ['number', 'url'],
@@ -204,8 +212,8 @@ async function logConfirmResult(result, terminal, config) {
       status: terminal?.status,
     },
   });
-  emitTerminalEnvelope(terminal);
-  await emitTerminalFriction({ envelope: terminal, config });
+  emitTerminalEnvelope(terminal, { config });
+  await emitTerminalFriction({ envelope: terminal, tool: CLI_SOURCE, config });
   return { success: terminal.status !== 'failed', result, terminal };
 }
 
@@ -293,11 +301,11 @@ function buildConfirmTerminal({
   });
 }
 
-async function resolveConfirmPrNumber({ prParam, cwd, storyBranch, gh }) {
+async function resolveConfirmPrNumber({ prParam, storyBranch, gh }) {
   const rawPr = prParam ?? readPrFlag();
   let prNumber = Number.parseInt(String(rawPr ?? ''), 10);
   if (!Number.isInteger(prNumber) || prNumber <= 0) {
-    prNumber = await resolvePrNumber({ cwd, storyBranch, gh });
+    prNumber = await resolvePrNumber({ storyBranch, gh });
   }
   return Number.isInteger(prNumber) && prNumber > 0 ? prNumber : null;
 }
@@ -340,7 +348,6 @@ export async function runConfirmMerge({
 
   const prNumber = await resolveConfirmPrNumber({
     prParam,
-    cwd,
     storyBranch,
     gh,
   });
@@ -514,14 +521,21 @@ async function main() {
     const outcome = await runConfirmMerge();
     return exitCodeForTerminal(outcome?.terminal ?? { status: 'failed' });
   } catch (err) {
-    const storyId = Number(parseSprintArgs().storyId);
+    // Non-throwing by construction (Story #4959): this used to call
+    // `parseSprintArgs()`, so a rejected `--merge-watch-mode` threw a second
+    // time here and escaped the handler — no envelope, no friction. Close
+    // carries the identical shape; both landing surfaces behave the same.
+    const { args, error: argvError } = parseSprintArgsTolerant();
+    const storyId = Number(args.storyId);
     // No story id → a usage error; there is nothing to report an envelope
     // about, so let runAsCli surface it as a plain fatal.
     if (!Number.isInteger(storyId) || storyId <= 0) throw err;
     const terminal = buildTerminalEnvelope({
       storyId,
       status: 'failed',
-      phase: 'confirm-merge',
+      // An argv rejection happens before any phase runs, so it reports at
+      // `init` rather than claiming a confirm-merge attempt that never began.
+      phase: argvError ? 'init' : 'confirm-merge',
       failure: { reason: String(err?.message ?? err) },
       nextCommand: NEXT_COMMANDS.recover(storyId),
       elapsedSeconds: 0,
@@ -530,13 +544,13 @@ async function main() {
       `[single-story-confirm-merge] Fatal error: ${formatCliError(err)}`,
     );
     emitTerminalEnvelope(terminal);
-    await emitTerminalFriction({ envelope: terminal });
+    await emitTerminalFriction({ envelope: terminal, tool: CLI_SOURCE });
     return exitCodeForTerminal(terminal);
   }
 }
 
 runAsCli(import.meta.url, main, {
-  source: 'single-story-confirm-merge',
+  source: CLI_SOURCE,
   propagateExitCode: true,
   usage: {
     invocation:

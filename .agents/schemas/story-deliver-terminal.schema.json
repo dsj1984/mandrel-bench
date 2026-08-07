@@ -73,10 +73,10 @@
     },
     "gates": {
       "type": "object",
-      "description": "Outcome of each close gate this invocation was responsible for. A gate the run skipped (--skip-validation, or a phase it never reached) reports \"skipped\" rather than being omitted, so a missing gate is never mistaken for a passing one.",
+      "description": "Outcome of each close gate this invocation was responsible for. A gate the run skipped (--skip-validation, or a phase it never reached) reports \"skipped\" rather than being omitted, so a missing gate is never mistaken for a passing one. \"overridden\" is distinct from both: the gate ran, it FAILED, and an operator authorized delivery anyway via --override-review-block with a recorded reason. Reporting that as \"passed\" would erase the one fact a reader of this envelope most needs, and reporting it as \"skipped\" would claim the gate never ran.",
       "additionalProperties": {
         "type": "string",
-        "enum": ["passed", "failed", "skipped"]
+        "enum": ["passed", "failed", "skipped", "overridden"]
       }
     },
     "tail": {
@@ -86,13 +86,23 @@
         "followUps",
         "statusResync",
         "refCleanup",
-        "baseFastForward"
+        "baseFastForward",
+        "tempPurge",
+        "leaseRelease"
       ],
       "properties": {
         "followUps": { "type": "boolean" },
         "statusResync": { "type": "boolean" },
         "refCleanup": { "type": "boolean" },
         "baseFastForward": { "type": "boolean" },
+        "tempPurge": {
+          "type": "boolean",
+          "description": "Story #4794 — the merged Story's spent temp artifacts (gate transcripts, validation evidence) were purged under delivery.tempRetention. A disabled policy reports true: the operator turned the purge off, so doing nothing IS the correct outcome. Only a real failure — an unreadable temp root, an undeletable artifact — reports false, and like every tail step that degrades the report, never the land."
+        },
+        "leaseRelease": {
+          "type": "boolean",
+          "description": "Story #4860 — the operator's assignee-lease on the Story was released now that the merge is confirmed. The close deliberately no longer releases it at PR creation, so the ticket stays assigned for the whole time its PR is open; every non-merged ending (merge.unlanded block, exhausted wait budget, --no-wait-merge, --no-auto-merge) retains the claim and never reaches this step. A no-op release — the operator is no longer the recorded owner, as on a re-run or a belated manual confirm — reports true: an already-unassigned ticket is the desired end state. Only a throw reports false, and like every tail step that degrades the report, never the land."
+        },
         "details": {
           "type": "object",
           "description": "Per-step diagnostic detail — the reason a false step reported false.",

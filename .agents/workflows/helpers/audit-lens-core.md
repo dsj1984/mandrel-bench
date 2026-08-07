@@ -76,7 +76,7 @@ the primary file the finding lives in:]
 ### `path/to/primary-file.ext` — [Short title of the issue]
 
 - **Dimension:** [the lens-specific dimension — see the lens's own list]
-- **Severity:** [Critical | High | Medium | Low]
+- **Severity:** [Critical | High | Medium | Low | Info]
 - **Location:** `path/to/primary-file.ext:line`
 - **Current State:** [the specific file/line/module and why it is problematic]
 - **Recommendation & Rationale:** [how to remediate and why it matters]
@@ -89,10 +89,17 @@ the primary file the finding lives in:]
 
 ## Severity scale {#severity-scale}
 
-Every finding grades its severity (labelled `Severity` or `Impact`) on this
-ordered scale. `parse-audit-md.js` recognizes every level, and a surviving
-**Critical** finding halts the delivery gate
+Every finding grades its severity (labelled `Severity` or `Impact`) on the
+ordered scale below. **The code owns this vocabulary**: it is defined in
+[`lib/findings/severity.js`](../../scripts/lib/findings/severity.js)
+(`SEVERITIES`), and every level here — including its accepted spellings — comes
+from that module. A surviving **Critical** finding halts the delivery gate
 (`lib/audit-suite/findings.js#hasSurvivingCritical`).
+
+Grade on **exactly** these five levels. A level of your own invention does not
+parse: it resolves to no severity, tallies as `unknown`, and the finding is
+dropped by every severity-filtered run — including the most permissive one. A
+dropped finding is indistinguishable from a finding you never wrote.
 
 - **Critical** — an active, exploitable, or data-losing defect that must be
   fixed before the change can ship (e.g. a leaked secret, an auth bypass, a
@@ -102,6 +109,11 @@ ordered scale. `parse-audit-md.js` recognizes every level, and a surviving
 - **Medium** — a real problem worth scheduling; contained blast radius, or a
   reasonable workaround exists.
 - **Low** — minor or cosmetic; fix opportunistically.
+- **Info** — the canonical floor: a real, grounded observation worth recording
+  that asks for no scheduled work (a documented deviation worth noting, a
+  measurement that is fine today and worth watching). Accepts `Informational`.
+  Use it instead of inventing a below-`Low` word of your own; a finding that
+  cannot clear the evidence bar below is **dropped**, not filed as `Info`.
 
 ## Self-cross-check (mandatory — filter false positives before you finalize) {#self-cross-check}
 
@@ -148,6 +160,15 @@ that rests on one of them:
   or config explicitly sanctions. Cite it and drop the finding.
 - **Style-only nits already enforced by a formatter/linter** — do not
   re-litigate what the committed tooling already governs.
+
+> **Boundary with the dead-wiring mandate.** The architecture and quality lenses
+> are required to report shipped seams with no live production caller (their own
+> bodies carry the mandate). The exclusions above **bound** that mandate rather
+> than cancelling it: a test seam, a CLI entry point, a declared `exports`
+> surface, or a dynamically-reached symbol is still never a finding. What the
+> mandate targets is the case none of those cover — an **internal** seam that a
+> delivery shipped and nothing in production ever calls. When a candidate is
+> genuinely one of the exclusions, cite the exclusion and drop it.
 
 ### Final re-open-and-drop pass (mandatory)
 
@@ -208,18 +229,17 @@ which path produced it.
 > stage before synthesising the report. It derives its per-dimension prompts
 > from the *lens* markdown at run time — the lens stays the single source of
 > truth. This is a performance optimization over path 1, **not** a separate
-> contract: strategy selection lives in
-> [`../../scripts/lib/dynamic-workflow/capability.js`](../../scripts/lib/dynamic-workflow/capability.js)
-> (`selectAuditStrategy`), and it is not covered by the No-Shim / hard-cutover
-> rule in [`../../rules/git-conventions.md`](../../rules/git-conventions.md)
-> because there is one report contract and only the execution strategy varies —
-> the same capability-degradation pattern the protocol endorses for live-docs
-> fallback. Force a path for testing with `MANDREL_AUDIT_STRATEGY=sequential`
-> or `MANDREL_AUDIT_STRATEGY=orchestrated`; exercise the real disable signals
-> with `CLAUDE_CODE_DISABLE_WORKFLOWS=1` or `disableWorkflows: true` in
-> `.claude/settings.json`. On the orchestrated path the analysis subagents are
-> granted only read/search tools (`Read`, `Grep`, `Glob`) — the single write is
-> the final report artifact.
+> contract, and it is not covered by the No-Shim / hard-cutover rule in
+> [`../../rules/git-conventions.md`](../../rules/git-conventions.md) because
+> there is one report contract and only the execution strategy varies — the
+> same capability-degradation pattern the protocol endorses for live-docs
+> fallback. **The host owns the choice.** Mandrel ships no in-repo strategy
+> selector and no force-override env var: Claude Code launches the saved
+> workflow when it can, and you get path 1 or 2 above when it cannot.
+> Suppress the orchestrated path with `CLAUDE_CODE_DISABLE_WORKFLOWS=1`
+> or `disableWorkflows: true` in `.claude/settings.json`. On the orchestrated
+> path the analysis subagents are granted only read/search tools (`Read`,
+> `Grep`, `Glob`) — the single write is the final report artifact.
 
 ## Parallel tooling {#parallel-tooling}
 
