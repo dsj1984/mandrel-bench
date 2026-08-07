@@ -1279,7 +1279,7 @@ export function materializeTouch2Delivery({ gitFn, cwd, baselineSha }, logger) {
  * @param {{ node: string, os: string, host?: string }} opts.env
  * @param {number} opts.timeoutMs
  * @param {number|null} [opts.priorStoryId]  The Story id touch 1 landed
- *   (Story #191). Threaded into the touch-2 plan phase as `--amends #<id>` for
+ *   (Story #191). Threaded into the touch-2 plan phase as `/plan <id>` (amends mode) for
  *   the two-session mandrel family; null ⇒ plain `/plan`.
  * @param {object} [deps]
  * @returns {Promise<object|null>} the `touch2` scorecard block, or null.
@@ -1301,7 +1301,7 @@ export async function runTouch2(opts, deps = {}) {
     // sandbox teardown (Ticket #121, item 4). Null ⇒ skip the persistence.
     touch2RawDir = null,
     // The Story id touch 1 landed (Story #191): threaded into the touch-2 plan
-    // phase as `--amends #<id>` so the amendment envelope engages instead of a
+    // phase as `/plan <id>` so the amendment envelope engages instead of a
     // from-scratch re-plan. Null (control arm, discovery failed) ⇒ plain /plan.
     priorStoryId = null,
   } = opts;
@@ -1443,7 +1443,7 @@ export async function runTouch2(opts, deps = {}) {
       taskPrompt: scenario.changeRequest.prompt,
     };
     // Amendment seam (Story #191): a change-request touch on the two-session
-    // mandrel family plans as `/plan --amends #<priorStoryId>` so the delta
+    // mandrel family plans as `/plan <priorStoryId>` so the delta
     // envelope engages. Guarded to that family — control edits its working copy
     // directly (no Story to amend), and the mandrel-light single-session path is
     // out of scope — and to a resolvable id, so an unknown prior Story falls
@@ -1855,7 +1855,7 @@ export async function runOneRun(opts, deps = {}) {
     taskPrompt: scenario.seed.prompt,
     // Seed Epic ids drive the plain mandrel arm ONLY: the story-routed
     // variant (arm 4, Ticket #123) authors its own standalone Story via the
-    // --idea drive (entering at a seed Epic would contradict its routing
+    // seed-prose drive (entering at a seed ticket would contradict its routing
     // override), and control-base arms never touch the pipeline.
     ...(arm === 'mandrel' && scenario.epicId != null
       ? { epicId: scenario.epicId }
@@ -2523,7 +2523,7 @@ export async function runOneRun(opts, deps = {}) {
             touch2RawDir: path.join(rawDir, idStampForRaw, 'touch2'),
             // The Story touch 1 landed (Story #191): resolved from the routing
             // target the plan phase discovered, so the change-request touch
-            // plans as `/plan --amends #<id>`. Null for the control arm and on
+            // plans as `/plan <id>` in amends mode. Null for the control arm and on
             // any discovery failure ⇒ plain /plan fallback.
             priorStoryId: resolvePriorStoryId(deliveredTarget),
           },

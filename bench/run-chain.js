@@ -605,7 +605,8 @@ export async function runTouchChain(opts, deps = {}) {
   let chainBaselineSha = seedBaselineSha;
   let lastGoodTouch = 0;
   // The Story the IMMEDIATELY-PRIOR touch landed (Story #191): each chain touch
-  // after the first plans as `/plan --amends #<priorStoryId>` so the amendment
+  // after the first plans as `/plan <priorStoryId>` (amends mode, derived from the shipped
+  // Story's `agent::done` state) so the amendment
   // envelope engages. Null until the first mandrel touch discovers a Story id,
   // so touch 1 (and any touch after a discovery failure, and every control
   // touch) plans plainly.
@@ -671,7 +672,7 @@ export async function runTouchChain(opts, deps = {}) {
 
         const runStartedAt = nowIso();
         // Amendment seam (Story #191): touches after the first plan as
-        // `/plan --amends #<priorStoryId>` on the two-session mandrel family, so
+        // `/plan <priorStoryId>` on the two-session mandrel family, so
         // the delta envelope engages instead of a from-scratch re-plan. Guarded
         // to that family (control commits directly; the light single-session
         // path is out of scope) and to a resolvable id — touch 1's null

@@ -173,21 +173,28 @@ test('buildClaudeArgs: rejects empty prompt / model / non-array extraArgs', () =
 
 test('buildArmPrompt: mandrel arm drives /plan then /deliver with auto-proceed', () => {
   const prompt = buildArmPrompt({ arm: 'mandrel', scenario: SCENARIO });
-  // No seed Epic → the --idea drive, with /plan's headless --yes flag.
-  assert.match(prompt, /\/plan --idea[\s\S]*--yes/);
+  // No seed ticket → /plan's seed (ideation) mode: QUOTED PROSE, never a flag.
+  // There is no --idea entry form (SDLC.md § Phase 1 / plan-context.js --help).
+  assert.match(prompt, /\/plan "[\s\S]*--yes/);
+  assert.doesNotMatch(prompt, /--idea/);
   assert.match(prompt, /\/deliver[\s\S]*--yes/);
   assert.match(prompt, /headless/i);
   assert.match(prompt, /implicit approval|never block/i);
   assert.match(prompt, /hello-world/);
 });
 
-test('buildArmPrompt: mandrel arm drives an existing Epic id when one is supplied', () => {
+test('buildArmPrompt: mandrel arm drives an existing seed ticket id when one is supplied', () => {
   const prompt = buildArmPrompt({
     arm: 'mandrel',
     scenario: { ...SCENARIO, epicId: 42 },
   });
+  // A bare id is /plan's tickets mode — fetch the issue, analyze it into
+  // proper Stories.
   assert.match(prompt, /\/plan 42 --yes/);
-  assert.match(prompt, /\/deliver 42 --yes/);
+  // The seed id is NOT the deliver target: tickets mode authors NEW Stories,
+  // and /deliver hard-errors on a ticket that is not `type::story`.
+  assert.doesNotMatch(prompt, /\/deliver 42/);
+  assert.match(prompt, /\/deliver <storyIds> --yes/);
   // Still carries the auto-proceed directive.
   assert.match(prompt, /implicit approval|never block/i);
 });
@@ -208,7 +215,7 @@ test('buildArmPrompt: mandrel-light drives a SINGLE unplanned /deliver session �
   assert.doesNotMatch(prompt, /\/deliver-light/);
   // It must never drive the two-session /plan + /deliver pipeline, nor hand
   // /deliver a Story id (which would route to the planned path instead).
-  assert.doesNotMatch(prompt, /\/plan (--idea|--yes|\d)/);
+  assert.doesNotMatch(prompt, /\/plan ("|--yes|\d)/);
   assert.doesNotMatch(prompt, /\/deliver #?\d/);
   // Carries the unattended auto-proceed directive and the task.
   assert.match(prompt, /implicit approval|never block/i);
@@ -429,7 +436,7 @@ test('runSession (mandrel-light): drives a SINGLE /deliver-light session with no
   assert.equal(invoke.calls.length, 1);
   assert.equal(hookCalls.length, 0);
   assert.match(invoke.calls[0].prompt, /\/deliver "[\s\S]*--yes/);
-  assert.doesNotMatch(invoke.calls[0].prompt, /\/plan (--idea|--yes|\d)/);
+  assert.doesNotMatch(invoke.calls[0].prompt, /\/plan ("|--yes|\d)/);
   assert.equal(out.arm, 'mandrel-light');
   assert.equal(out.phases, null);
   assert.equal(out.envelope.cost.totalUsd, 0.346588);
@@ -639,7 +646,8 @@ test('runSession: clean exit + is_error envelope warns but still returns the rec
 
 test('buildMandrelPlanPrompt: drives ONLY /plan (never /deliver)', () => {
   const idea = buildMandrelPlanPrompt({ scenario: SCENARIO });
-  assert.match(idea, /\/plan --idea[\s\S]*--yes/);
+  assert.match(idea, /\/plan "[\s\S]*--yes/);
+  assert.doesNotMatch(idea, /--idea/);
   assert.doesNotMatch(idea, /\/deliver/);
   assert.match(idea, /never block|implicit approval/i);
 
@@ -1117,43 +1125,55 @@ test('rethrowIfTransientClaudeError — throws on transient, no-op on genuine', 
 // mandrel machinery, not a fork of it.
 // ---------------------------------------------------------------------------
 
-test('buildMandrelPlanPrompt (storyRouted): carries the single-Story routing override on the --idea drive', () => {
+test('buildMandrelPlanPrompt (storyRouted): carries the single-Story routing override on the seed-prose drive', () => {
   const prompt = buildMandrelPlanPrompt({
     scenario: SCENARIO,
     storyRouted: true,
   });
   assert.match(prompt, /ROUTING OVERRIDE/);
   assert.match(prompt, /ONE standalone Story/);
-  assert.match(prompt, /do NOT decompose it into an Epic/);
+  // The Epic tier is retired — the override is against the default-single
+  // split policy (N>1 siblings), not against an Epic/child-Story decomposition.
+  assert.match(prompt, /do NOT split the task into N>1 sibling Stories/);
+  assert.doesNotMatch(prompt, /Epic/);
   assert.match(prompt, /one spec, one close-validate, one review, one PR/);
-  assert.match(prompt, /\/plan --idea/);
+  assert.match(prompt, /\/plan "/);
+  assert.doesNotMatch(prompt, /--idea/);
   assert.match(prompt, /do NOT deliver/);
   assert.match(prompt, /hello-world/);
 });
 
-test('buildMandrelPlanPrompt (storyRouted): ignores a seed Epic id — entering at an Epic would contradict the override', () => {
+test('buildMandrelPlanPrompt (storyRouted): ignores a seed ticket id — entering at an existing ticket would contradict the override', () => {
   const prompt = buildMandrelPlanPrompt({
     scenario: { ...SCENARIO, epicId: 42 },
     storyRouted: true,
   });
-  assert.match(prompt, /\/plan --idea/);
+  assert.match(prompt, /\/plan "/);
   assert.doesNotMatch(prompt, /\/plan 42/);
   assert.doesNotMatch(prompt, /#42/);
 });
 
 // ---------------------------------------------------------------------------
 // Amendment threading (Story #191): a change-request touch drives
-// `/plan --amends #<priorStoryId>` so mandrel 2.13.0's delta envelope engages.
+// `/plan <priorStoryId>` so the delta envelope engages. There is no `--amends`
+// operator flag — /plan resolves a bare id from live state, and a Story already
+// at `agent::done` can only be amended, so the shipped prior Story forces
+// AMENDS mode. The invocation is therefore shape-identical to tickets mode;
+// what distinguishes the two here is the surrounding intent prose.
 // ---------------------------------------------------------------------------
 
-test('buildMandrelPlanPrompt (amends): drives /plan --amends #<id>, never the --idea drive', () => {
+test('buildMandrelPlanPrompt (amends): drives /plan <id>, never a flag and never the seed-prose drive', () => {
   const prompt = buildMandrelPlanPrompt({
     scenario: SCENARIO,
     amendsStoryId: 108,
   });
-  assert.match(prompt, /\/plan --amends #108 --yes/);
-  assert.doesNotMatch(prompt, /\/plan --idea/);
+  assert.match(prompt, /\/plan 108 --yes/);
+  assert.doesNotMatch(prompt, /--amends/);
+  assert.doesNotMatch(prompt, /\/plan "/);
   assert.doesNotMatch(prompt, /\/deliver/);
+  // The intent prose is what makes the derivation legible to the model.
+  assert.match(prompt, /AMENDS/);
+  assert.match(prompt, /agent::done/);
   assert.match(prompt, /DELTA envelope/);
   assert.match(prompt, /do NOT deliver/);
   assert.match(prompt, /hello-world/);
@@ -1162,43 +1182,43 @@ test('buildMandrelPlanPrompt (amends): drives /plan --amends #<id>, never the --
 test('buildMandrelPlanPrompt (amends): tolerates a #-prefixed or string id', () => {
   assert.match(
     buildMandrelPlanPrompt({ scenario: SCENARIO, amendsStoryId: '#77' }),
-    /\/plan --amends #77 --yes/,
+    /\/plan 77 --yes/,
   );
   assert.match(
     buildMandrelPlanPrompt({ scenario: SCENARIO, amendsStoryId: '77' }),
-    /\/plan --amends #77 --yes/,
+    /\/plan 77 --yes/,
   );
 });
 
-test('buildMandrelPlanPrompt (amends): takes precedence over the story-routing override and a seed Epic id', () => {
+test('buildMandrelPlanPrompt (amends): takes precedence over the story-routing override and a seed ticket id', () => {
   const overRouted = buildMandrelPlanPrompt({
     scenario: SCENARIO,
     storyRouted: true,
     amendsStoryId: 5,
   });
-  assert.match(overRouted, /\/plan --amends #5 --yes/);
+  assert.match(overRouted, /\/plan 5 --yes/);
   assert.doesNotMatch(overRouted, /ROUTING OVERRIDE/);
 
-  const overEpic = buildMandrelPlanPrompt({
+  const overSeed = buildMandrelPlanPrompt({
     scenario: { ...SCENARIO, epicId: 42 },
     amendsStoryId: 5,
   });
-  assert.match(overEpic, /\/plan --amends #5 --yes/);
-  assert.doesNotMatch(overEpic, /\/plan 42/);
+  assert.match(overSeed, /\/plan 5 --yes/);
+  assert.doesNotMatch(overSeed, /\/plan 42/);
 });
 
-test('buildMandrelPlanPrompt (amends): an unresolvable id falls back to plain /plan without erroring', () => {
+test('buildMandrelPlanPrompt (amends): an unresolvable id falls back to the seed-prose drive without erroring', () => {
   for (const bad of [null, undefined, 0, -3, 1.5, 'abc', '', '#', Number.NaN]) {
     const prompt = buildMandrelPlanPrompt({
       scenario: SCENARIO,
       amendsStoryId: bad,
     });
-    assert.doesNotMatch(prompt, /--amends/);
-    assert.match(prompt, /\/plan --idea/);
+    assert.doesNotMatch(prompt, /AMENDS|DELTA envelope/);
+    assert.match(prompt, /\/plan "/);
   }
 });
 
-test('buildArmPrompt (plan phase): threads amendsStoryId into the plan builder; the deliver phase never carries --amends', () => {
+test('buildArmPrompt (plan phase): threads amendsStoryId into the plan builder; the deliver phase never carries the amendment intent', () => {
   assert.equal(
     buildArmPrompt({
       arm: 'mandrel',
@@ -1215,19 +1235,20 @@ test('buildArmPrompt (plan phase): threads amendsStoryId into the plan builder; 
       phase: 'deliver',
       amendsStoryId: 9,
     }),
-    /--amends/,
+    /AMENDS|DELTA envelope/,
   );
 });
 
-test('runSession (mandrel): amendsStoryId lands as /plan --amends on the PLAN phase only', () => {
+test('runSession (mandrel): amendsStoryId lands as /plan <id> on the PLAN phase only', () => {
   const invoke = fakeInvoke();
   runSession(
     { arm: 'mandrel', scenario: SCENARIO, cwd: '/tmp/s', amendsStoryId: 321 },
     { invokeFn: invoke, betweenPhases: () => ({ deliverTarget: 55 }) },
   );
   // calls[0] = plan phase, calls[1] = deliver phase.
-  assert.match(invoke.calls[0].prompt, /\/plan --amends #321 --yes/);
-  assert.doesNotMatch(invoke.calls[1].prompt, /--amends/);
+  assert.match(invoke.calls[0].prompt, /\/plan 321 --yes/);
+  assert.doesNotMatch(invoke.calls[0].prompt, /--amends/);
+  assert.doesNotMatch(invoke.calls[1].prompt, /AMENDS|DELTA envelope/);
   assert.match(invoke.calls[1].prompt, /\/deliver 55 --yes/);
 });
 

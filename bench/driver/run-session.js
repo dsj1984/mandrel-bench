@@ -123,7 +123,7 @@ export function buildControlPrompt(input) {
 }
 
 /**
- * Normalize an `--amends` prior-Story id into the positive integer the drive
+ * Normalize an amends-mode prior-Story id into the positive integer the drive
  * interpolates, or `null` when it is unresolvable (Story #191). Tolerates a
  * numeric value or a numeric string with an optional leading `#` (`123`,
  * `#123`, `"123"`), mirroring `plan-context.js`'s own `--amends` parse. Any
@@ -157,18 +157,27 @@ function normalizeAmendsStoryId(raw) {
  * tickets-are-state design.
  *
  * Both drive paths pass `--yes` (v1.72.0+ headless flag, mandrel#4223): it
- * deterministically auto-proceeds /plan's HITL stop gates (the ideation
- * one-pager / scope-triage confirm and the Phase-7 review gate).
- *   - With a seed Epic id: `/plan <id> --yes` (enters at the existing Epic).
- *   - Without one (the default for N>1 cohorts, since each Epic-id run consumes
- *     and closes its Epic): the `--idea` drive — the run self-authors a fresh
- *     Epic from the task and runs the full /plan pipeline. The id it creates is
- *     unknown to the harness until the between-session id-discovery seam recovers
- *     it (see bench/run.js), so this prompt does not reference an id.
+ * deterministically auto-proceeds /plan's HITL stop gates.
+ *
+ * **Entry forms track `/plan`'s Inputs table (mandrel 2.33.0).** `/plan` has no
+ * entry flags — the mode is derived from the shape of what was typed, and the
+ * workflow fills in the `plan-context.js` CLI flag itself:
+ *   - With a seed ticket id: `/plan <id> --yes` — a bare id is **tickets** mode
+ *     (fetch the issue, analyze it into proper Stories).
+ *   - Without one (the default for N>1 cohorts, since each seeded run consumes
+ *     its ticket): `/plan "<task>" --yes` — quoted prose is **seed** (ideation)
+ *     mode. The prose is quoted so the trailing `--yes` is read as the runner
+ *     flag rather than swallowed into the seed text. The Story id this creates
+ *     is unknown to the harness until the between-session id-discovery seam
+ *     recovers it (see bench/run.js), so this prompt references no id.
+ *
+ * There is no `--idea` flag and no Epic tier: `.agents/docs/SDLC.md` § Phase 1
+ * pins entry to seed / seed-file / tickets, and `plan-context.js --help`
+ * accepts only `--seed`, `--seed-file`, `--tickets`, `--amends`.
  *
  * **Story-routing override (arm 4, Ticket #123).** When `storyRouted` is true
- * the prompt drives the `--idea` path (a seed Epic id is deliberately ignored —
- * entering at an existing Epic would contradict the override) and instructs
+ * the prompt drives the seed-prose path (a seed ticket id is deliberately
+ * ignored — entering at an existing ticket would contradict the override) and instructs
  * the scope-triage step to route the task as ONE standalone Story regardless
  * of apparent scope — one guarded session: spec once, close-validate once,
  * review once, one PR. The override is the arm-4 treatment; the harness's
@@ -177,12 +186,15 @@ function normalizeAmendsStoryId(raw) {
  *
  * **Amendment override (change-request touches, Story #191).** When
  * `amendsStoryId` resolves to a positive Story id the prompt drives
- * `/plan --amends #<id> --yes` — mandrel 2.13.0's delta-envelope mode (prior
- * Story body + acceptance + delivered file map) instead of a from-scratch
- * re-interrogation. This is what the change-request second-touch and each
- * chain touch after the first pass so the amendment envelope actually engages;
- * it takes precedence over the story-routing override and any seed Epic id
- * (amending a shipped Story neither re-routes nor enters at an Epic). An
+ * `/plan <id> --yes` — the delta-envelope mode (prior Story body + acceptance +
+ * delivered file map) instead of a from-scratch re-interrogation. There is no
+ * `--amends` operator flag on the slash surface: /plan resolves a bare id from
+ * live state, and a Story already at `agent::done` can only be amended, so the
+ * bench's shipped prior Story forces AMENDS mode deterministically. This is what
+ * the change-request second-touch and each chain touch after the first pass so
+ * the amendment envelope actually engages; it takes precedence over the
+ * story-routing override and any seed ticket id (amending a shipped Story
+ * neither re-routes nor enters at a fresh ticket). An
  * absent / unresolvable id (null, non-positive, non-numeric) falls back to the
  * current plain-`/plan` behaviour without erroring — the guarantee greenfield
  * touch-1 and the control arm rely on.
@@ -205,20 +217,23 @@ export function buildMandrelPlanPrompt(input) {
     const drive =
       `A prior Story (#${amendsId}) has already shipped in this repository for ` +
       `the work below, and the change described in the task AMENDS it. Author ` +
-      `the amendment with \`/plan --amends #${amendsId} --yes\` (the --yes flag ` +
-      `drives /plan headlessly through its HITL stop gates) — this plans from a ` +
-      `DELTA envelope (the prior Story body, its acceptance, and the delivered ` +
-      `file map) rather than re-interrogating the whole repository from scratch. ` +
-      `Run ONLY the planning pipeline in this session — do NOT deliver, and do ` +
-      `not pre-stage any planning artifact.`;
+      `the amendment with \`/plan ${amendsId} --yes\` (the --yes flag drives ` +
+      `/plan headlessly through its HITL stop gates). Because #${amendsId} is ` +
+      `already \`agent::done\`, /plan derives AMENDS mode from that live state ` +
+      `and plans from a DELTA envelope (the prior Story body, its acceptance, ` +
+      `and the delivered file map) rather than re-interrogating the whole ` +
+      `repository from scratch. Run ONLY the planning pipeline in this session — ` +
+      `do NOT deliver, and do not pre-stage any planning artifact.`;
     return `${MANDREL_UNATTENDED_PREAMBLE}${drive}\n\nTask (${scenario.id}):\n${scenario.taskPrompt}`;
   }
   if (storyRouted) {
     const drive =
-      `Author the plan with \`/plan --idea "<the task described below>" --yes\` ` +
-      `(the --yes flag drives /plan headlessly through its HITL stop gates). ` +
-      `ROUTING OVERRIDE: at the scope-triage decision, route this task as ONE ` +
-      `standalone Story — do NOT decompose it into an Epic with child Stories, ` +
+      `Author the plan with \`/plan "<the task described below>" --yes\` — pass ` +
+      `the task as QUOTED PROSE, which is what selects /plan's seed (ideation) ` +
+      `mode (the --yes flag drives /plan headlessly through its HITL stop ` +
+      `gates). ` +
+      `ROUTING OVERRIDE: author exactly ONE standalone Story — do NOT split the ` +
+      `task into N>1 sibling Stories under the default-single split policy, ` +
       `regardless of how large the task appears. The entire task must be ` +
       `specified, delivered, and reviewed as a single Story: one spec, one ` +
       `close-validate, one review, one PR. Run ONLY the planning pipeline in ` +
@@ -227,14 +242,17 @@ export function buildMandrelPlanPrompt(input) {
   }
   const drive =
     scenario.epicId !== undefined && scenario.epicId !== null
-      ? `An Epic issue (#${scenario.epicId}) capturing the task below has already ` +
-        `been opened in this repository. Plan it with \`/plan ${scenario.epicId} --yes\`. ` +
-        `Run ONLY the planning pipeline in this session — do NOT deliver; do not ` +
-        `re-author the Epic from an idea and do not pre-stage any planning artifact.`
-      : `Author the plan with \`/plan --idea "<the task described below>" --yes\` ` +
-        `(the --yes flag drives /plan headlessly through its HITL stop gates). ` +
-        `Run ONLY the planning pipeline in this session — do NOT deliver, and do ` +
-        `not pre-stage any planning artifact.`;
+      ? `An issue (#${scenario.epicId}) capturing the task below has already ` +
+        `been opened in this repository. Plan it with \`/plan ${scenario.epicId} --yes\` ` +
+        `— a bare id selects /plan's tickets mode, which fetches the issue and ` +
+        `analyzes it into proper Stories. Run ONLY the planning pipeline in this ` +
+        `session — do NOT deliver; do not re-author the issue from prose and do ` +
+        `not pre-stage any planning artifact.`
+      : `Author the plan with \`/plan "<the task described below>" --yes\` — pass ` +
+        `the task as QUOTED PROSE, which is what selects /plan's seed (ideation) ` +
+        `mode (the --yes flag drives /plan headlessly through its HITL stop ` +
+        `gates). Run ONLY the planning pipeline in this session — do NOT deliver, ` +
+        `and do not pre-stage any planning artifact.`;
   return `${MANDREL_UNATTENDED_PREAMBLE}${drive}\n\nTask (${scenario.id}):\n${scenario.taskPrompt}`;
 }
 
@@ -242,16 +260,17 @@ export function buildMandrelPlanPrompt(input) {
  * Mandrel-arm DELIVER-phase prompt (D-019). Session 2 of the ordered
  * two-session mandrel run delivers the plan session 1 authored, in a FRESH
  * session (state lives in the tickets, not the transcript). `deliverTarget` is
- * the id the between-session id-discovery seam recovered from the ephemeral
- * repo (the Epic id for epic-routed scenarios; the standalone Story id for
- * story-routed ones); it is threaded in so `/deliver` enters at the artifact
- * the plan session created.
+ * the Story id the between-session id-discovery seam recovered from the
+ * ephemeral repo (`discoverStandaloneStory` / `discoverStories` in
+ * bench/run.js); it is threaded in so `/deliver` enters at the artifact the plan
+ * session created. A bare id is `/deliver`'s **ids** shape — the lexical
+ * discriminator `^#?\d+$` — which is why the target is never quoted here.
  *
  * @param {object} input
  * @param {{ id: string, taskPrompt: string }} input.scenario
- * @param {number|string|null} [input.deliverTarget]  The Epic/Story id to
- *   deliver, discovered between the sessions. When null the prompt falls back to
- *   instructing delivery of the Epic the plan session just produced.
+ * @param {number|string|null} [input.deliverTarget]  The Story id to deliver,
+ *   discovered between the sessions. When null the prompt falls back to
+ *   instructing in-session discovery of the Story(s) the plan session produced.
  * @returns {string}
  */
 export function buildMandrelDeliverPrompt(input) {
@@ -265,9 +284,10 @@ export function buildMandrelDeliverPrompt(input) {
         `headlessly through its HITL stop gates). Do NOT re-plan or re-author any ` +
         `planning artifact — deliver the existing plan.`
       : `The planning pipeline has already run in a previous session and opened ` +
-        `the ticket(s) for the task below in this repository. Discover the Epic it ` +
-        `created and deliver it with \`/deliver <epicId> --yes\`. Do NOT re-plan or ` +
-        `re-author any planning artifact — deliver the existing plan.`;
+        `the ticket(s) for the task below in this repository. Discover the ` +
+        `Story(s) it created and deliver them with \`/deliver <storyIds> --yes\`. ` +
+        `Do NOT re-plan or re-author any planning artifact — deliver the existing ` +
+        `plan.`;
   return `${MANDREL_UNATTENDED_PREAMBLE}${drive}\n\nTask (${scenario.id}):\n${scenario.taskPrompt}`;
 }
 
@@ -367,14 +387,16 @@ export function buildArmPrompt(input) {
     assertScenario(scenario, 'buildArmPrompt');
     const drive =
       scenario.epicId !== undefined && scenario.epicId !== null
-        ? `An Epic issue (#${scenario.epicId}) capturing the task below has already ` +
+        ? `An issue (#${scenario.epicId}) capturing the task below has already ` +
           `been opened in this repository. Plan it with \`/plan ${scenario.epicId} --yes\` ` +
-          `and then deliver it with \`/deliver ${scenario.epicId} --yes\`; do not ` +
-          `re-author the Epic from an idea and do not pre-stage any planning artifact.`
-        : `Author the plan with \`/plan --idea "<the task described below>" --yes\` and ` +
-          `then deliver the resulting Epic with \`/deliver <epicId> --yes\` (the --yes ` +
-          `flags drive /plan and /deliver headlessly through their HITL stop gates); do ` +
-          `not pre-stage any planning artifact.`;
+          `(a bare id selects /plan's tickets mode) and then deliver the Stories it ` +
+          `authored with \`/deliver <storyIds> --yes\`; do not re-author the issue ` +
+          `from prose and do not pre-stage any planning artifact.`
+        : `Author the plan with \`/plan "<the task described below>" --yes\` — pass ` +
+          `the task as QUOTED PROSE, which selects /plan's seed (ideation) mode — ` +
+          `and then deliver the resulting Story(s) with \`/deliver <storyIds> --yes\` ` +
+          `(the --yes flags drive /plan and /deliver headlessly through their HITL ` +
+          `stop gates); do not pre-stage any planning artifact.`;
     return `${MANDREL_UNATTENDED_PREAMBLE}${drive}\n\nTask (${scenario.id}):\n${scenario.taskPrompt}`;
   }
 
@@ -1261,7 +1283,7 @@ export function runSession(opts = {}, deps = {}) {
     // Prior Story id to amend on the plan phase (Story #191). Consumed ONLY by
     // the two-session mandrel plan/deliver path below; the control and light
     // paths run no /plan phase, so a value threaded for them is inert (the
-    // "only the mandrel family passes --amends" guard is structural).
+    // "only the mandrel family amends" guard is structural).
     amendsStoryId = null,
   } = opts;
 
@@ -1401,21 +1423,18 @@ export function runSession(opts = {}, deps = {}) {
 
   // Between-session seam: id-discovery + plan snapshot (bench/run.js wires the
   // real gh-backed hook; the default no-op leaves deliverTarget null so the
-  // deliver prompt falls back to in-session Epic discovery).
+  // deliver prompt falls back to in-session Story discovery).
+  //
+  // A seed ticket id is NEVER the fallback target. Under /plan's tickets mode a
+  // bare id is *analyzed into* proper Stories — the seed issue is not itself
+  // `type::story`, and /deliver hard-errors on a non-Story ticket. Only the
+  // discovery hook can name the authored Story ids, so without it the deliver
+  // prompt discovers them in-session.
   let deliverTarget = null;
   if (typeof deps.betweenPhases === 'function') {
     const between =
       deps.betweenPhases({ scenario, planEnvelope: plan.envelope, cwd }) ?? {};
     deliverTarget = between.deliverTarget ?? null;
-  } else if (
-    !storyRouted &&
-    scenario.epicId !== undefined &&
-    scenario.epicId !== null
-  ) {
-    // No hook, but a seed Epic id is known up front — deliver it directly.
-    // (Not for the story-routed variant: its plan session ignored the seed
-    // Epic and authored a standalone Story, so the Epic id is not the target.)
-    deliverTarget = scenario.epicId;
   }
 
   const deliverPrompt = buildMandrelDeliverPrompt({ scenario, deliverTarget });

@@ -3473,7 +3473,7 @@ test('prepareTouch2Workspace (control): reduces to DELIVERED CODE ONLY — fresh
 
 // ---------------------------------------------------------------------------
 // Amendment threading (Story #191): resolvePriorStoryId + runTouch2 passing
-// `--amends #<priorStoryId>` on the change-request touch.
+// `/plan <priorStoryId>` (amends mode) on the change-request touch.
 // ---------------------------------------------------------------------------
 
 test('resolvePriorStoryId: story routing → the standalone storyNumber', () => {
@@ -3509,7 +3509,7 @@ test('resolvePriorStoryId: unresolvable targets → null (control arm / discover
   }
 });
 
-test('runTouch2 (mandrel): threads --amends #<priorStoryId> into the touch-2 plan session (AC-1)', async () => {
+test('runTouch2 (mandrel): threads the amends-mode prior-Story id into the touch-2 plan session (AC-1)', async () => {
   const record = freshRecord();
   const deps = benchDeps(record);
   const seen = [];
@@ -4067,7 +4067,7 @@ test('runOneRun: attaches a touch2 block when the scenario declares a changeRequ
   assert.equal(scorecard.touch2.regression.cleanRate, 1);
 });
 
-test('runOneRun (mandrel): the Story touch 1 landed flows into touch 2 as --amends #<id> (Story #191, AC-1 end-to-end)', async () => {
+test('runOneRun (mandrel): the Story touch 1 landed flows into touch 2 as /plan <id> amends mode (Story #191, AC-1 end-to-end)', async () => {
   const record = freshRecord();
   const deps = benchDeps(record);
   deps.runTrapOraclesFn = async () => ({
@@ -4123,7 +4123,7 @@ test('runOneRun (mandrel): the Story touch 1 landed flows into touch 2 as --amen
     deps,
   );
 
-  // Touch 1 (the two-phase plan/deliver session) gets no --amends; touch 2
+  // Touch 1 (the two-phase plan/deliver session) does not amend; touch 2
   // amends the Story #108 the discovery surfaced.
   const touch1 = sessions.find((s) => s.hasBetween);
   const touch2 = sessions.find((s) => !s.hasBetween);
@@ -4432,7 +4432,7 @@ test('runOneRun (arm 4): mandrel-story-routed drives story discovery and is EXEM
   const scorecard = await runOneRun(
     {
       // An epic-contract scenario WITH a seed Epic id: arm 4 must ignore both
-      // (its --idea plan session authors its own standalone Story).
+      // (its seed-prose plan session authors its own standalone Story).
       scenario: { ...FAKE_SCENARIO, routing: 'epic' },
       evaluate,
       arm: 'mandrel-story-routed',
@@ -4452,7 +4452,7 @@ test('runOneRun (arm 4): mandrel-story-routed drives story discovery and is EXEM
   assert.deepEqual(record.overlays, ['mandrel-story-routed']);
   assert.deepEqual(record.overlayScenarioIds, ['hello-world']);
   // … but the seed Epic id was NOT threaded into the session (the routing
-  // override authors its own Story via the --idea drive).
+  // override authors its own Story via the seed-prose drive).
   assert.equal(record.sessions[0].epicId, undefined);
   // Observed story routing on the epic-contract scenario: for arm 4 the
   // mismatch IS the treatment — the record stays in the pool.
