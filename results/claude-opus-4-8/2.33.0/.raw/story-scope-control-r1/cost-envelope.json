@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 107249,
+  "num_turns": 13,
+  "stop_reason": "end_turn",
+  "session_id": "96cda95a-bd2f-4afd-af58-1a05e92af428",
+  "total_cost_usd": 0.6725245000000001,
+  "usage": {
+    "input_tokens": 25,
+    "cache_creation_input_tokens": 22598,
+    "cache_read_input_tokens": 470007,
+    "output_tokens": 8416,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 22598,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 469,
+        "cache_read_input_tokens": 42438,
+        "cache_creation_input_tokens": 381,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 381
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 921,
+      "outputTokens": 19,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.001016,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 25,
+      "outputTokens": 8416,
+      "cacheReadInputTokens": 470007,
+      "cacheCreationInputTokens": 22598,
+      "webSearchRequests": 0,
+      "costUSD": 0.6715085000000001,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. Built and committed a persistent JSON REST API.\n\n**What's there:**\n- `server.js` — Node's built-in `http` server (no web framework), routing signup/login/me/notes.\n- `db.js` — persistent on-disk SQLite via `node:sqlite` (`data.sqlite`, gitignored; `DB_PATH`-overridable).\n- `test/api.test.js` — `node:test` suite covering the full flow, per-user note isolation, and **survival across a real server restart**.\n- `API.md` — endpoint docs; `package.json` gains `\"start\": \"node server.js\"`.\n\n**Endpoints** (bearer token from `/login` in `Authorization` for protected routes):\n- `POST /signup` `{username,password}` → `201 {id, username}`\n- `POST /login` → `200 {session}`\n- `GET /me` → `{id, username}`\n- `POST /notes` `{title,body}` → `201` note; `GET /notes` → array of the caller's own notes\n\n**Details:** passwords stored as salted scrypt hashes, session tokens are random 256-bit opaque credentials, notes are scoped per user, and bad requests return sensible codes (400 malformed/missing fields, 401 auth, 409 duplicate username, 404 unknown route, 413 oversized body).\n\nAll 3 tests pass and `npm run typecheck` is clean. Listens on `PORT` (default 3000).",
+  "ttft_ms": 3324,
+  "ttft_stream_ms": 2583,
+  "time_to_request_ms": 22,
+  "type": "result",
+  "duration_ms": 110217,
+  "uuid": "78e09161-9def-4ce5-bcde-ea21653aa1bc"
+}
