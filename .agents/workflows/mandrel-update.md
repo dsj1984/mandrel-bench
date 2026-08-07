@@ -13,7 +13,7 @@ description: >-
 # /mandrel-update
 
 > **Upgrade owner.** The mechanical upgrade is owned end to end by the
-> [`mandrel update`](../../lib/cli/update.js) CLI under the npm distribution
+> [`mandrel update`](https://github.com/dsj1984/mandrel/blob/main/lib/cli/update.js) CLI under the npm distribution
 > model. This workflow wraps that CLI: it runs
 > `npx mandrel update`, then walks the operator through the
 > **distribution-agnostic judgment steps** the CLI deliberately does **not**
@@ -66,7 +66,7 @@ envelope (`{ ok, blocked, findings[] }`) plus a human-readable report:
   the version probe.
 
 The preflight is a workflow-layer guard; it deliberately lives outside
-[`lib/cli/update.js`](../../lib/cli/update.js), which stays git-free.
+[`lib/cli/update.js`](https://github.com/dsj1984/mandrel/blob/main/lib/cli/update.js), which stays git-free.
 
 ## Step 1 — Run the updater
 
@@ -102,9 +102,9 @@ recovered and a clean re-run reports success.**
 
 Identify the failed phase (the CLI's stderr names it) and run the matching
 remedy. These commands match the hint strings
-[`lib/cli/update.js`](../../lib/cli/update.js) emits verbatim — it is the
+[`lib/cli/update.js`](https://github.com/dsj1984/mandrel/blob/main/lib/cli/update.js) emits verbatim — it is the
 single source of truth, kept in lockstep with this table by
-[`tests/bootstrap/mandrel-update-recovery-drift.test.js`](../../tests/bootstrap/mandrel-update-recovery-drift.test.js):
+[`tests/bootstrap/mandrel-update-recovery-drift.test.js`](https://github.com/dsj1984/mandrel/blob/main/tests/bootstrap/mandrel-update-recovery-drift.test.js):
 
 | Failed phase      | Manual remedy                                            |
 | ----------------- | ------------------------------------------------------- |
@@ -150,22 +150,22 @@ in Step 5). Full procedure:
 node .agents/scripts/apply-quality-bootstrap.js
 ```
 
-Runs the same idempotent installs the quality-gates phase of
-[`bootstrap.js`](../scripts/bootstrap.js) uses — `applyQualityBootstrap`
-then `migrateBaselinesLayout` — and prints a `{ quality, baselines }` JSON
-envelope. The four quality-bootstrap outcomes: **helper** (materialize
+Runs the same idempotent install the quality-gates phase of
+[`bootstrap.js`](../scripts/bootstrap.js) uses — `applyQualityBootstrap` —
+and prints a `{ quality }` JSON envelope. The five quality-bootstrap
+outcomes: **helper** (materialize
 [`code-quality-guardrails.md`](helpers/code-quality-guardrails.md)),
 **hook** (install the `.husky/pre-commit` diff-scoped `quality:preview`
 invocation — a pre-existing **custom hook is never overwritten silently**;
 the action is `custom-hook-skip` and the helper returns the snippet to
 append by hand), **scripts** (backfill `quality:preview` /
 `quality:watch` only when absent), **config** (seed missing
-`delivery.quality.*` defaults — operator overrides survive). The baselines
-step migrates legacy per-Epic snapshot layouts into the ephemeral
-`temp/epic/<id>/baselines/` namespace when upgrading from pre-v2 shapes; the
-main-tracked root baselines are never touched. A second run reports
-`no-change` on every path — the idempotence contract this workflow
-requires.
+`delivery.quality.*` defaults — operator overrides survive), and
+**legacyBaselines** (`git rm` a committed pre-v2 `baselines/epic/` tree —
+the Story-only v2 model retired every reader of those per-Epic snapshots;
+the main-tracked root baselines are never touched). A second run reports
+`no-change` / `already-present` / `absent` on every path — the idempotence
+contract this workflow requires.
 
 ## Step 3.6 — Refresh the harness permission allowlist
 

@@ -12,7 +12,49 @@ Reference-only detail split out of [`deliver.md`](../deliver.md) so the
 always-resident spine stays lean. Nothing here is a new MUST —
 it is the mechanics an operator consults when the matching lever is engaged.
 
+## Ranges (`4922 - 4926`) {#ranges}
+
+A contiguous span is how an operator reads a plan run, so the dash range is a
+first-class id shape rather than prose to interpret — `/deliver 4922 - 4926`
+means exactly the five ids in it.
+
+**Pass the span through; never expand it by hand.** Every id-list flag on the
+delivery path takes range tokens — `resolve-stories.js --ids`,
+`stories-wave-tick.js --stories` and `--dispatched`, and
+`plan-run-epilogue.js --stories`. Normalize the operator's spacing away and hand
+the scripts one unspaced token (`--ids 4922-4926`), mixed freely with singles
+and commas (`--ids 4901,4922-4926`); overlaps dedupe. A hand-typed enumeration
+is where an id gets dropped or invented, and the drop is silent.
+
+The shared expander (`lib/util/parse-id-list.js`) refuses rather than guesses,
+so a typo fails where it was typed instead of resolving the wrong set:
+
+| Input | Outcome |
+| --- | --- |
+| `4922-4926`, `4922 - 4926` | Expands to the inclusive span. En and em dashes, and a `#` on either endpoint, are accepted too. |
+| `4926-4922` | Refused — write it low-to-high. |
+| `1-4926` | Refused — above the 50-id span cap (`MAX_RANGE_SPAN`). |
+| `4922-`, `-4926`, `4922-4923-4924` | Refused as a malformed token. |
+
+The cap is per range token, not per run: a genuine 60-Story delivery is still
+expressible as two ranges, but a slipped digit cannot fan out into a live
+resolution sweep of thousands of issues.
+
 ## Sequencing edge cases (`stories-wave-tick.js`)
+
+**What "discovered, not declared" means concretely.** `resolve-stories.js` reads
+the graph from live state as the union of the Story bodies' `depends_on` edges
+and GitHub's native `blocked_by` edges, resolving each blocker against its real
+issue state rather than against anything you hand it. That is why there is no
+batch label to pass and why a blocker that landed in an unrelated run is simply
+seen as done.
+
+**Resuming an exit-4 `blocked`.** Read the friction comment with
+`gh issue view <id> --comments`, and resume only once the operator has
+unblocked it:
+`node .agents/scripts/update-ticket-state.js --ticket <id> --state agent::ready`.
+Do not poll the label yourself while waiting — the HITL pause is the operator's
+turn, not a slow beat.
 
 Each beat re-probes live state: it re-resolves the graph, classifies **done**
 (`agent::done` or a closed issue — including foreign blockers that landed in
@@ -49,6 +91,45 @@ different operator holds, unless you pass `--steal`. Assignee-based withholding
 needs `github.operatorHandle` set (in `.agentrc.local.json`); without it the
 probe logs a warning and leans on init's lease refusal alone.
 
+**Overlapping footprints are reserved across beats, not just within one.** A
+Story sharing a **concrete** path with a still-implementing Story is withheld
+and named in `inFlightReservation: { available, withheld: [{ id, blockedBy,
+reason, source, paths }], note }`, where `reason` is `in-flight-earlier-beat` or
+`foreign-lease`. Like `foreignHeld` this is neither a failure nor a wedge — the
+Story re-admits automatically once its blocker leaves the in-flight set — and
+it exists so an unfilled slot is explained rather than mysterious. A **glob**
+footprint (or the UNKNOWN sentinel for an unparseable body) reserves nothing
+across beats; it still serializes its own beat. Reservation needs the in-flight
+Stories' footprints, so it is a `--probe-live` capability: under `--dag` the
+report is `available: false` and selection de-conflicts within the beat only.
+
+**Beat-local skips are reported too**, in `footprintGuard: { mode, withheld,
+advisory, note }`. They used to be an unreported skip, so a Story simply
+vanished from `ready[]` and an unfilled slot read exactly like a cap that was
+never reached. Every entry in **either** report carries the colliding `paths`
+and a `source` tag:
+
+- `declared-overlap` — both Stories' `changes[]` named the path (or a declared
+  glob). Intended serialization; two Stories rewriting the same generated
+  baseline must not co-dispatch.
+- `scraped-overlap` — only the text evidence produced it. Real signal — a
+  declaration is only a lower bound — but the class where a false positive is
+  possible.
+
+**The evidence scrape excludes exactly three token sources**, each structurally
+incapable of naming an edit target: `audit-fingerprints` /
+`audit-semantic-keys` provenance footers, paths under `project.paths.tempRoot`,
+and markdown-link URL interiors. Nothing else is stripped — a
+`<!-- DECOMPOSITION -->` block's paths are genuine intent
+([`instructions.md` § 7](../../instructions.md)) and still count.
+
+**`delivery.deliverRunner.footprintGuard`** selects what a collision does:
+
+| Mode | Effect |
+| --- | --- |
+| `enforce` (default) | A collision withholds the Story. Keep this unless you have a reason — the guard encodes delivery-time-only knowledge (open implementation windows, foreign leases, ground moved since planning) no `depends_on` edge can carry. |
+| `advisory` | Collisions are still **detected** and listed in `footprintGuard.advisory`, but never withhold; dispatch follows the declared `depends_on` edges alone. A throughput trade for a run whose ordering is fully declared. |
+
 ## Dispatch mechanics (role-scoped by default)
 
 **A single-Story run executes inline.** Sub-agent isolation is
@@ -61,23 +142,39 @@ a cache write at full rate; an inline continuation is a cache read at ~10%).
 retained in full for multi-Story waves, and the rule changes **where** the
 engine runs, never what runs — gates, PR, and terminal envelope are identical.
 
-**Lite-shaped Stories execute inline.** Before spawning anything,
-read the Story's `dispatchMode` from the resolver envelope
-(`stories[].dispatchMode`, derived by `resolveStoryDispatchMode` in
-`lib/orchestration/complexity-gate.js` **from the fetched Story body's own
-shape** — `changes[]` count, acceptance count, creates-vs-refactors mix, and
-sensitive-path classes; the `route::lite` label is a human-visible hint only,
-never the control signal, so a lost or never-written label cannot misroute
-delivery): a Story with `dispatchMode: "inline"` executes
-[`deliver-story.md`](deliver-story.md) **inline in this session** — no
+**Read the mode; never infer it from shape.** Before spawning
+anything, read the Story's `dispatchMode` from the resolver envelope
+(`stories[].dispatchMode`, produced by `resolveStoryDispatchMode` in
+`lib/orchestration/complexity-gate.js`, which decides on the resolved set size
+alone — it does not read the Story body). A Story with `dispatchMode: "inline"`
+executes [`deliver-story.md`](deliver-story.md) **inline in this session** — no
 `story-worker` sub-agent boot and no fresh acceptance-critic sub-agents
 (sub-agent boots are the dominant deliver-phase token cost at trivial scope) —
 threading the same `docsDigestPath` / `checklistPath` / change-set discipline
 as a spawned worker. Inline removes model-side fan-out only: every
 `single-story-close.js` gate, the PR to `main`, and the terminal envelope are
-identical. Everything else — a full-shaped body, a missing/unparseable body,
-or a footprint intersecting a sensitive-path class (sensitivity wins and
-keeps the fresh acceptance critic) — takes the standard sub-agent path.
+identical.
+
+**A trivial shape does not buy that session.** Only the
+one-Story rule above yields `inline`; every Story of a multi-Story run comes
+back `subagent` however lite its body, because the ready set below may offer
+several Stories on one beat and a session cannot be split between them. The
+Story's derived shape is still reported (it sets ceremony, and a sensitive
+footprint keeps the fresh acceptance critic), and the `route::lite` label
+remains a human-visible hint only, never the control signal — a lost or
+never-written label cannot misroute delivery.
+
+**Issue a beat's spawns in one turn.** A wave tick hands you a ready set, not a
+queue: those Stories have no dependency edge between them (the resolver already
+withheld any that do) and no shared write paths (each owns its own worktree and
+branch). Dispatch them the way
+[`parallel-tooling.md`](parallel-tooling.md) Rule 3 prescribes — **N `Agent`
+calls issued together in a single assistant turn**, one per ready Story, not
+`Agent` → wait → `Agent`. Serial dispatch is compliant with every other rule on
+this page and costs the run a full Story's implementation time per sibling for
+nothing; the wave aggregator is built for the parallel shape. Respect
+`delivery.deliverRunner.concurrencyCap`: when the ready set exceeds it, slice
+into batches of `cap` and dispatch each batch in its own turn.
 
 **Dispatch each `ready` Story (role-scoped by default).** When
 `delivery.routing.roleScopedAgents` is enabled (the **default**) and the host
@@ -85,9 +182,10 @@ exposes agent dispatch, spawn each ready Story as its own
 `subagent_type: story-worker` sub-agent — it boots on the role-scoped
 [`story-worker`](../../agents/story-worker.md) context (its own system prompt, no
 `CLAUDE.md` @-closure) carrying the load-bearing delivery MUSTs standalone. The
-sub-agent executes [`deliver-story.md`](deliver-story.md) end to end
-(init → implement → acceptance self-eval → close-and-land). Thread into its
-prompt: `storyId`; `docsDigestPath` (the per-run docs digest, null when
+sub-agent executes [`deliver-story.md`](deliver-story.md) Steps 0–2.5
+(init → implement → acceptance self-eval → **push**) and stops there; **you**
+own Step 3, serialized — see `/deliver` § Closing what the workers hand back.
+Thread into its prompt: `storyId`; `docsDigestPath` (the per-run docs digest, null when
 `project.docsContextFiles` is unset); `checklistPath` (the footprint-matched
 write-time audit checklist, produced at dispatch, below); and the
 **change-set discipline** — the worker computes the change set once with
@@ -217,8 +315,32 @@ A slow-CI consumer can opt the close into `"async"` mode so the merge wait
 probes once for ~60s (catching an instant merge or an instantly-red required
 check) and then returns `pending` instead of burning ~5 minutes of the host
 tool slot polling a merge that lands after the wait would have expired anyway.
-When a worker returns that `pending` envelope, launch its `nextCommand` as a
+When a close returns that `pending` envelope, launch its `nextCommand` as a
 **background** invocation (host background Bash — its completion re-invokes the
 agent) and move on to the next Story; `single-story-confirm-merge.js` is
 idempotent and owns the whole tail. Do not foreground-poll the merge. The
 default `"sync"` behaviour is unchanged.
+
+**On a multi-Story run, pass `--merge-watch-mode async` on every close.** Close
+sees one Story and cannot see run topology, so it cannot make this call for
+itself — you can. Implementation runs in parallel but the close tail is
+serialized one at a time, and under `sync` each of those closes holds the
+foreground for its full merge wait before the next Story's close may start.
+That is the run's dominant serialized cost, and it is paid per sibling:
+
+```bash
+node <main-repo>/.agents/scripts/single-story-close.js \
+  --story <storyId> --cwd <main-repo> --merge-watch-mode async
+```
+
+The flag overrides `delivery.mergeWatch.mode` for that invocation only — the
+config default stays `"sync"`, which is right for the solo delivery that has no
+sibling waiting behind it. It composes with `--max-wait-seconds`: pass both and
+the explicit bound still wins over the async probe cap. An unrecognized value
+exits non-zero before any phase runs, so a typo cannot silently drop the run
+back onto synchronous waiting. Expect a `pending` envelope from each async
+close — that is the designed ending here, not a failure; background its
+`nextCommand` and move to the next Story's close immediately.
+
+A one-Story run should keep the `sync` default: there is no sibling to unblock,
+and the foreground wait is the cheapest path to `landed`.

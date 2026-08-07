@@ -146,14 +146,14 @@ export const STRUCTURED_COMMENT_TYPES = Object.freeze([
   // `--steal`, not by TTL expiry. One entry per ticket; re-acquires upsert
   // in place.
   'plan-lease',
-  // Story #4415 (Epic #4406) — the feedback-loop graduators
-  // (`audit-results-graduator.js` / `retro-proposals-graduator.js`) upsert a
-  // `cross-repo-deferred` comment on the Epic listing findings that route
+  // Story #4415 (Epic #4406) — the feedback-loop graduator
+  // (`retro-proposals-graduator.js`) upserts a
+  // `cross-repo-deferred` comment listing findings that route
   // to a different repository and were therefore not filed here. Replaces
   // the prior log-line-only trace so the deferral survives the finalize
   // run as a durable, operator-visible record. Discriminated by a
-  // `graduator="audit-results|code-review"` attr so the two graduators
-  // upsert independent comments; re-runs upsert in place.
+  // `graduator="<name>"` attr so independent graduators do not clobber each
+  // other's comment; re-runs upsert in place.
   'cross-repo-deferred',
   // Epic #4474 (PR3) / v2 Stage 3 — `plan-persist.js` upserts a single
   // `plan-summary` comment on the primary Story at terminal persist
@@ -180,7 +180,7 @@ export const WAVE_TYPE_PATTERN = WAVE_MARKER_RE;
  * authoritative entry — the label set is the actual race-detection signal).
  * Bounded to 1-9 digits to mirror the wave-marker safety margin.
  */
-export const CLAIM_TYPE_PATTERN = /^claim-([0-9]{1,9})$/;
+const CLAIM_TYPE_PATTERN = /^claim-([0-9]{1,9})$/;
 
 /**
  * Lifecycle-listener marker pattern (Story #2239 / #2241 / #2242). The
@@ -189,7 +189,7 @@ export const CLAIM_TYPE_PATTERN = /^claim-([0-9]{1,9})$/;
  * `lifecycle-epic-unblocked`). Treated as a generic prefix so future
  * listener-owned events can mint new markers without touching this enum.
  */
-export const LIFECYCLE_TYPE_PATTERN = /^lifecycle-[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const LIFECYCLE_TYPE_PATTERN = /^lifecycle-[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /**
  * @param {string} type
@@ -273,7 +273,7 @@ export function structuredCommentMarker(type, attrs = null) {
  * cannot leak across boundaries. Tests reset via the exported
  * `_resetStructuredCommentCache()` seam.
  */
-export const _structuredCommentCache = new WeakMap();
+const _structuredCommentCache = new WeakMap();
 
 /**
  * Build a well-formed ticket snapshot for a Story that has zero child
@@ -359,7 +359,7 @@ export function structuredCommentCacheKey(ticketId, type, attrs) {
  *   - Scoped per-provider via WeakMap so test fakes never share state
  *     with the real GitHubProvider.
  */
-export const _rawCommentsCache = new WeakMap();
+const _rawCommentsCache = new WeakMap();
 
 /**
  * Lookup (or lazily create) the per-provider raw-comments cache.

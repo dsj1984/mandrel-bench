@@ -102,13 +102,18 @@ npm run coverage:update # writes baselines/coverage.json from the run
 runners that orchestrate coverage capture separately).
 
 The files-out-of-scope list is declared in [`.c8rc.cjs`](../../.c8rc.cjs) —
-thin CLI shells (e.g. `agents-bootstrap-github.js`, `plan-context.js`,
-`plan-persist.js`) plus the larger Story #1702 carve-out of
-top-level/orchestration/git CLIs and `lib/*` glue, each with a per-entry
-rationale in the `.c8rc.cjs` header comment (the authoritative list). Every
-excluded file also carries `/* node:coverage ignore file */` at the top of its
-source as a second line of defence; the header comment MUST be updated when the
-list changes.
+thin CLI shells plus the larger Story #1702 carve-out of
+top-level/orchestration/git CLIs and `lib/*` glue. The `exclude[]` array is
+the **single** declaration: each entry carries its rationale as an inline
+comment on the line above it. Story #4922 removed the prose inventory the
+header used to duplicate — two copies of one list in one file, 27 files
+apart by the time it was measured. Do not reintroduce one. Every excluded
+file also carries `/* node:coverage ignore file */` at the top of its source
+as a second line of defence.
+
+`.c8rc.cjs`'s `include` globs and `delivery.quality.gates.coverage.targetDirs`
+in [`.agentrc.json`](../../.agentrc.json) MUST name the same roots — the gate
+scores what c8 measures. `tests/c8rc-scope.test.js` asserts both invariants.
 
 ---
 
@@ -123,11 +128,30 @@ touched it:
 
 | Metric | Floor | Scope |
 | --- | --- | --- |
-| Coverage — lines | ≥ 90 % | per file |
-| Coverage — branches | ≥ 85 % | per file |
-| Coverage — functions | ≥ 90 % | per file |
-| Maintainability Index | ≥ 70 | per file |
-| CRAP | ≤ 20 | per method |
+| Coverage — lines | ≥ 94 % | repo rollup |
+| Coverage — branches | ≥ 85 % | repo rollup |
+| Coverage — functions | ≥ 87 % | repo rollup |
+| Maintainability Index | ≥ 70 | repo rollup |
+| CRAP — methods above 20 | ≤ 13 | repo rollup |
+
+Floors are enforced against the baseline's `rollup` components — the
+`applyFloors` phase compares `rollup["*"]` (and any named component), never
+individual rows. Story #4922 corrected this table, which previously read
+"per file" and quoted 90/85/90 for coverage; those numbers came from the
+example in `.agents/docs/agentrc-reference.json`, which is validated only
+against itself, and the coverage gate was not configured at all.
+
+The live coverage floors are derived from the measurement in
+[`baselines/coverage.json`](../../baselines/coverage.json) — a full-tier run
+scored 95.65 / 86.16 / 88.52, and each floor sits ~1–1.7 points under its
+axis. Re-derive them, do not invent them, whenever the baseline is
+regenerated wholesale.
+
+The coverage gate deliberately declares **no `tolerance`**, so its
+head-vs-base ratchet arm reports regressions without failing the build (the
+same shape the `crap` gate uses). Story #4922's scope was making the
+instrument honest; arming the ratchet belongs with the debt burn-down that
+the widened measurement newly exposes.
 
 The floors are declared in [`.agentrc.json`](../../.agentrc.json) under
 `delivery.quality.gates.<gate>.floors.*` (defaults baked into the helper
@@ -148,15 +172,20 @@ baseline still trips the gate.
   run on push; use `npm run verify` locally before a PR. CI enforces the
   authoritative full gate set on every PR.
 - **CI** (`.github/workflows/ci.yml`): the `validate` job runs
-  **Lint and Format** (`npm run lint`), a **Maintainability Check**
-  (`npm run maintainability:check` → `check-baselines.js --gate
-  maintainability`, diff-scoped on PRs via
-  `delivery.quality.gateScoping`, full scope on push-to-main via
-  `BASELINE_SCOPE=full`), and **Run Tests with Coverage**
+  **Lint and Format** (`npm run lint`) and **Run Tests with Coverage**
   (`npm run test:coverage`), uploading the `test-results` and
   `coverage-final` artifacts. A separate required **baselines** job runs
   the unified `node .agents/scripts/check-baselines.js --format text`,
-  which enforces floors across every configured gate.
+  which enforces floors across every configured gate and is the only
+  baseline gate on the per-change path. (Story #5004 removed a
+  `Maintainability Check` step from `validate` that re-ran
+  `check-baselines.js --gate maintainability` at the same scope; a later
+  correction pass revisited its record of what the step's
+  `BASELINE_SCOPE=full` branch did — see `docs/ci-contract.md`.)
+- **Nightly** (`.github/workflows/baseline-drift.yml`): the only
+  automated **full-scope re-score**. See
+  [`check-baseline-drift.js`](#check-baseline-driftjs--the-scheduled-full-scope-re-score)
+  below.
 
 ### Opt-out
 
@@ -173,11 +202,11 @@ The floor gate is only as strict as its scope, so the `exclude` list in
 [`.c8rc.cjs`](../../.c8rc.cjs) carries three hard requirements that are
 enforced by review (and partially by the audit suite):
 
-1. **One-line rationale per entry.** Every file in `exclude[]` MUST have
-   a bulleted justification in the `.c8rc.cjs` header comment naming
-   *why* it is excluded — typically "thin CLI shell, meaningful logic
-   lives in `lib/<X>` and is unit-tested there." A bare path with no
-   rationale is a review-block.
+1. **One-line rationale per entry.** Every file in `exclude[]` MUST carry
+   an inline comment on the line(s) directly above it naming *why* it is
+   excluded — typically "thin CLI shell, meaningful logic lives in
+   `lib/<X>` and is unit-tested there." A bare path with no rationale is a
+   review-block, and `tests/c8rc-scope.test.js` fails on one.
 2. **`/* node:coverage ignore file */` pragma at source.** Every
    excluded file MUST carry the Node coverage pragma at the top of its
    own source. This is the second line of defence: when `c8 report` and
@@ -224,16 +253,27 @@ the `delivery.acceptanceEval` field reference is in
 > Baseline envelope, axes, and component model: see the
 > [Baseline reference](#baseline-reference) section below.
 
-The lint baseline engine enforces zero-deterioration during Story
-delivery. Integrations fail if new lint warnings are introduced, and the
-baseline automatically tightens when the codebase improves.
+The `lint` baseline kind enforces zero-deterioration during Story
+delivery: `check-baselines.js --gate lint` fails if new lint warnings are
+introduced, and the baseline tightens when the codebase improves.
 
 The canonical baseline file lives at `baselines/lint.json` (override via
-`delivery.quality.gates.lint.baselinePath`). Refresh with:
+`delivery.quality.gates.lint.baselinePath`).
 
-```bash
-node .agents/scripts/lint-baseline.js capture
-```
+**There is no framework capture CLI.** Story #5004 retired the
+`lint-baseline.js` shell that used to write this file: it spawned a
+configured lint command and parsed the linter's JSON, a shape only
+ESLint-style output satisfies, and this repo's own `npm run lint`
+(Biome + markdownlint fan-out) never produced it, so the gate was
+configured-but-unfed. A consumer that wants the kind writes
+`baselines/lint.json` from its own linter in the envelope shape documented
+under [Baseline reference](#baseline-reference); a consumer that does not is
+unaffected, because an absent baseline leaves the gate unconfigured.
+
+> **Upgrading?** The `project.commands.lintBaseline` key that fed the retired
+> shell is gone from the config schema, which is `additionalProperties: false`
+> — a `.agentrc.json` still carrying it now **fails validation** rather than
+> being silently ignored. Delete the key.
 
 Refresh commits should use a `baseline-refresh:` subject + non-empty body so
 the operator can spot baseline edits in review — same convention as the CRAP
@@ -257,6 +297,94 @@ Refresh with `npm run maintainability:update`.
 `delivery.quality.gates.maintainability.targetDirs` controls the scanned
 directories (see [`configuration.md`](../docs/configuration.md) for the
 default and the deep-merge extender form).
+
+---
+
+## Cyclomatic ceiling ratchet
+
+`delivery.quality.codingGuardrails.cyclomaticMustFix` (default `12`) is the
+per-function complexity ceiling, enforced by `check-cyclomatic.js`. It is a
+**standalone ratchet** — the same slot as `check-arch-cycles.js`,
+`check-dead-exports.js`, and `check-context-budget.js` — not a
+`delivery.quality.gates` kind, so it needs no gate block and no floor.
+
+```bash
+node .agents/scripts/check-cyclomatic.js            # the gate
+node .agents/scripts/check-cyclomatic.js --update   # re-record the breaches
+```
+
+`baselines/cyclomatic.json` records, per file, how many functions currently
+sit above the ceiling and how bad the worst one is. The gate fails when a
+file's over-ceiling count rises (including `0 → 1`, a brand-new breach) or
+when its worst function gets worse than recorded. Shrinking and disappearing
+are the success signals and never fail.
+
+Recording existing breaches is what makes the ceiling adoptable: a repository
+with dozens of over-ceiling functions can turn the gate on today and burn them
+down on its own schedule, instead of disabling a gate that fails on the first
+commit. Re-run `--update` after a deliberate refactor; that is the only motion
+allowed to raise a recorded count, and it shows up in review as a baseline
+diff.
+
+The scan reuses `delivery.quality.gates.maintainability.targetDirs` /
+`ignoreGlobs` — both instruments read the same coverage-free escomplex
+surface, so a separate scope declaration could only ever restate it.
+
+`cyclomaticFlag` (default `8`) is the softer half of the pair: it is not
+gated, and names the ceiling `quality:preview` counts new methods against in
+its `new-method count over c=<flag>` column.
+
+---
+
+## Gherkin corpus gate (opt-in)
+
+`check-gherkin-corpus.js` is a static gate over a project's `.feature` corpus.
+It runs inside `npm run lint` — the same required check as the arch-cycle
+ratchet — and it enforces two things:
+
+- **must-compile.** Every in-scope `.feature` is parsed with the real
+  `@cucumber/gherkin` parser and a failure is reported at `file:line:column`.
+  Re-implementing acceptance is the defect the gate exists to prevent: a
+  hand-rolled reader skips what it does not recognise, so a corpus that cannot
+  generate reads clean.
+- **must-bind.** Every active scenario's steps are resolved against the step
+  definitions of **its own scope only**. A file that fails must-compile is
+  excluded from must-bind — a broken file parses as an arbitrary subset of
+  itself, and linting the remainder buries the one actionable finding.
+
+The gate is **opt-in**: with no `qa.gherkinLint` block in `.agentrc.json` it
+reports that it is not configured and exits 0, even when `.feature` files
+exist on disk. An upgrade must never redden the lint of a corpus the consumer
+never asked the framework to police. This repository does not configure it.
+
+```jsonc
+"qa": {
+  "gherkinLint": {
+    "scopes": {
+      "web": {
+        "featureRoots": ["apps/web/tests/features"],
+        "stepRoots": ["apps/web/tests/steps"]
+      }
+    },
+    "exemptionTags": ["@skip"],
+    "stepWaivers": []
+  }
+}
+```
+
+Inside the opt-in the gate fails **closed**. An unresolvable
+`@cucumber/gherkin`, or a scope resolving zero step definitions, exits 1
+naming the cause and the remedy — reporting every step as unbound would be the
+same blackout in a different costume. The parser is an optional peer
+dependency resolved from the consumer project's own module chain, so a
+consumer with no BDD tier gains nothing; install it with
+`npm install --save-dev @cucumber/gherkin` when enabling the gate.
+
+Two escapes exist because the step index is a source scan (heuristic) while
+the parser is exact: `exemptionTags` (default `["@skip"]`) drops a scenario
+from must-bind, and `stepWaivers` drops one exact step text. Neither is an
+escape from must-compile — a parse error in an exempt scenario's file still
+fails the run.
 
 ---
 
@@ -361,6 +489,246 @@ There is no CI guardrail rejecting unlabeled baseline edits; the convention is
 preserved so the operator can grep refresh commits in a PR diff, but
 self-policing is the operator's job during `/deliver`'s watch loop.
 
+### The per-method coverage join (Story #4775)
+
+CRAP is the only gate that joins two independently-produced artifacts: the
+per-method complexity escomplex derives from the source, and the per-function
+coverage istanbul derives from the test run. Everything below exists because
+that join is silent when it fails — an unresolved method is simply absent from
+the baseline, so a broken join looks exactly like a small repo.
+
+**One coordinate system.** For a TS/TSX source, escomplex parses the
+*transpiled* output and reports each method's `lineStart` in transpiled
+coordinates, while `coverage-final.json` is keyed against the *original*
+source. The scorer therefore asks `transpileIfNeeded` for a source map
+(`{ withLineMap: true }`, backed by Node's built-in `SourceMap` — no extra
+runtime dependency) and remaps each method start into original coordinates
+before the lookup. JavaScript is a passthrough: its coordinates already are
+original coordinates, so no map is computed and nothing changes. The
+maintainability path never requests a map, and the emitted code is
+byte-identical either way, so MI scores are unaffected.
+
+**Tolerant matching.** Remapping alone is insufficient: escomplex's method
+start and istanbul's `decl.start.line` disagree by a line when a decorator, a
+leading `export`, or a wrapped parameter list sits between them. The lookup is
+exact-line first (so every already-resolving row keeps its exact prior value),
+then innermost containment, then nearest declaration within ±1.
+
+**`requireCoverage: false` means score it.** A method with no coverage entry
+scores as 0% covered — `crap = c² + c`, the formula's own treatment of
+untested code — and lands in the baseline. It used to be dropped individually
+regardless of the flag, which made the flag a no-op for baseline population.
+`requireCoverage: true` still skips and counts it.
+
+**The updater fails closed on a thin result.** `update-crap-baseline.js`
+reports `resolved/joinable` over files that *have* coverage and refuses to
+persist below `delivery.quality.gates.crap.minMethodResolutionRate` (default
+`0.75`), naming the worst unresolved files. The floor is not enforced below 25
+joinable methods, where a diff-scoped run's rate is noise. A healthy repo
+resolves ~98%; the 4–6% signature of a coordinate-system mismatch is far below
+the floor.
+
+**Re-derive your floors after adopting this — but do not re-pin `max`.** A
+`crap.floors` `max` ceiling pinned before the fix was computed over the
+minority of methods the join could see, so it is not a real ceiling — it is an
+artefact. The honest scan sees far more (in this repository, 2215 → 4058
+visible methods), and the newly-visible methods include the worst ones.
+
+The tempting response — raise `*.max` until the gate is green again — produces a
+floor fitted to the tree's current high-water mark, which **can never fire**:
+nothing breaches it until something becomes worse than the worst method already
+present. Prefer a *count* budget over a max ceiling:
+
+```jsonc
+"crap": {
+  // Number of methods allowed to score above 20. Ratchet this down; it
+  // breaches the moment the count grows, which a `max` ceiling cannot do.
+  "floors": { "*": { "methodsAbove20": 40 } }
+}
+```
+
+`max` remains available and is the right instrument when you genuinely have a
+hard per-method ceiling to hold. It is the wrong instrument for absorbing
+pre-existing debt.
+
+Note that neither choice is what protects new code. `floors` is an absolute
+tree-wide comparison against the rollup; the forward pressure lives in
+`newMethodCeiling` (a *new* method scoring above it fails, default 30) and in
+`compareCrap`'s ratchet (an *existing* method fails when it regresses against
+its own baseline row). Both are unaffected by how much old debt the gate can
+now see, and neither consults `floors`.
+
+**Old baselines are invalidated explicitly.** Rows scored by the previous join
+are not comparable to rows scored by this one, and neither `kernelVersion` nor
+`escomplexVersion` moves (both track the same upstream package). The envelope
+therefore carries a `scoringSemantics` stamp; `check-baselines` fails closed on
+a mismatch with the exact re-baseline command rather than comparing across the
+boundary. Bump the stamp whenever the coverage join, the line coordinate
+system, the unresolved-method policy, or the method identity rule changes —
+Story #4969 bumped it for the last of these, replacing escomplex's positional
+`<anon method-N>` label with an enclosing-scope-path identity.
+
+---
+
+## Keeping a baseline fresh (Story #4776)
+
+Populating a baseline correctly is only half the loop. The other half is
+keeping it correct as the tree grows, and that half has two distinct holes —
+one at close time, one over the long run. Both are **advisory**:
+`check-baselines` already fails closed on a real regression, and duplicating
+that would double-gate the same defect.
+
+### Pre-merge projections — the refresh nudge at close time
+
+Close-validation projects, after its gates pass, which committed baseline rows
+the post-merge tree would breach, and names the exact remedy while the operator
+still has the branch in hand:
+
+- `lib/close-validation/projections/maintainability.js` — per-file MI.
+- `lib/close-validation/projections/crap.js` — per-method CRAP, against each
+  method's baseline row or, for methods with no row, `newMethodCeiling`.
+
+Both are wired through `projections/advisories.js`, which
+`close-validation/runner.js` calls once. Each self-skips — logging the reason,
+never erroring — when its gate is disabled, when no baseline exists, when the
+diff has no scorable files, or when the CRAP scorer finds no coverage
+artifact. A projected breach never changes the close verdict.
+
+> The maintainability projection shipped in v1 fully written and fully
+> unit-tested, and the v2 Epic-tier collapse removed its only caller. It sat
+> importable-but-unimported for the whole of v2, so its advisory never fired
+> once. `tests/lib/close-validation/runner-projections.test.js` now walks the
+> import graph and fails if **any** module under `projections/` is reachable
+> from nothing in production — the orphaning itself is the regression.
+
+### `check-baseline-drift.js` — the scheduled full-scope re-score
+
+Every per-PR enforcement site (close-validation, pre-push, CI) is
+**diff-scoped**: it compares the files a branch touched against their baseline
+rows. A file nobody touches after its row is written is therefore never
+re-scored, so drift introduced *indirectly* — a dependency getting more
+complex, coverage moving underneath a method — stays invisible indefinitely.
+Full-scope scoring on every push is far too expensive to be the answer.
+
+```bash
+node .agents/scripts/check-baseline-drift.js                     # both kinds
+node .agents/scripts/check-baseline-drift.js --gate crap         # one kind
+node .agents/scripts/check-baseline-drift.js --tolerance 1 --json
+```
+
+It re-scores full-scope through the *same* scorer that writes the baseline
+(`refresh-service.resolveDefaultScorer`) — scoring by a second implementation
+would report the two implementations' disagreement as drift — and prints a
+per-row before/after table for everything that moved beyond the gate's
+tolerance, **in either direction**. A row that silently improved is equally
+strong evidence the baseline no longer describes the tree.
+
+Exit codes: `0` no drift (or every kind skipped), `1` drift detected, `2` the
+check could not run.
+
+**`--require-scored`.** "Every kind skipped" mapping to `0` is a
+fail-open trap for the scheduled use this CLI was built for. Measured: with no
+`coverage/coverage-final.json` on disk, `check-baseline-drift.js --gate crap`
+prints `✅ No baseline drift detected` and exits `0` — a nightly job wired that
+way is green and inert. Pass `--require-scored` and any skipped kind exits `2`
+instead, naming the kind and the skip reason. Use it in every scheduled
+invocation.
+
+This repository schedules the maintainability kind in
+`.github/workflows/baseline-drift.yml` (framework repo only — that path is not
+part of the materialized `.agents/` payload) — nightly at 05:43 UTC plus
+`workflow_dispatch`; it files or updates one
+`meta::baseline-drift` issue with the report, closes it when the tree comes
+back clean, and fails the run. A consumer materializing `.agents/` still owns
+its own schedule.
+
+`crap` is deliberately **not** in that job. Its drift identity is
+`path::method@startLine`, so anything that shifts a method's line re-keys its
+row: measured on this tree with a real coverage artifact, 82 rows drifted but
+1438 were reported added and 898 removed — and 853 of those removals are the
+same `path::method` reappearing at a different line. The added/removed axis is
+re-keying churn, not drift, and the remedy the report prints
+(`npm run crap:update -- --full-scope`) additionally re-measures, pulling in
+near-empty coverage entries minted by CLI-spawning tests. Fixing the identity
+is a prerequisite to scheduling the kind.
+
+### `check-baseline-scope.js` — is this baseline still measuring the tree?
+
+Drift detection assumes the row set is right and asks whether its numbers
+moved. The prior question went unasked: **does this baseline still describe
+the tree at all?** A ratchet is perfectly capable of being green while
+measuring almost nothing — a row can point at a file deleted months ago, and
+an in-scope file can carry no row whatsoever, and every gate above stays
+green.
+
+The scope gate asserts the row set in **both directions**, recomputing each
+kind's in-scope file set from the gate's own configuration —
+`.c8rc.cjs` `include`/`exclude` for coverage,
+`delivery.quality.gates.<kind>.{targetDirs,ignoreGlobs}` for the rest —
+through the same helpers the refresh scorers use, so the gate and the
+producers cannot disagree about scope:
+
+```bash
+npm run baselines:scope                                  # every kind
+node .agents/scripts/check-baseline-scope.js --kind coverage --json
+node .agents/scripts/check-baseline-scope.js --strict     # skip attribution
+```
+
+Two design constraints are worth knowing before reading a report:
+
+- **Only dense kinds assert `missing`.** `coverage` and `maintainability`
+  emit one row per in-scope file, so a file with no row is a real hole. `crap`
+  (per-method, coverage-gated), `duplication` (rows only where clones exist),
+  `lint` and `mutation` are sparse by construction — asserting `missing`
+  against them yields hundreds of phantom findings on a healthy tree, so they
+  assert `extra` only. `lighthouse` (`route`) and `bundle-size` (`bundle`) are
+  not file-keyed and are excluded from both.
+- **A PR is blocked only for divergence it created.** Whole-tree equality
+  would red every open PR the moment anyone lands an in-scope file, so the
+  gate blocks on divergence attributable to `merge-base(base, HEAD)..HEAD` and
+  warns about the inherited remainder. It fails towards **strict** — every
+  finding fatal — when no base resolves, when HEAD is not ahead of it, or when
+  the change set edits a baseline or the config defining its scope.
+
+Exit codes: `0` no fatal divergence, `1` fatal divergence, `2` the check could
+not run. It runs in the required `baselines` CI job.
+
+### `prune-baseline-orphans.js` — the cheap remedy that makes the gate fair
+
+A hard gate is only defensible while clearing it costs a command. Re-deriving
+a whole baseline to express a *deletion* spends a coverage run or a full-tree
+MI pass, which is exactly why stale rows accumulate. The pruner is that
+deletion, done as arithmetic:
+
+```bash
+npm run baselines:prune                                   # write the prune
+node .agents/scripts/prune-baseline-orphans.js --check     # report only, exit 1
+```
+
+It removes exactly two provably-inert row classes across every file-keyed
+baseline — a row whose file is **absent** from disk, and a row for a file now
+**out-of-scope** under the gate's own `targetDirs`/`ignoreGlobs` — and it is
+**measurement-free by contract**: it never adds a row, never restamps
+`generatedAt` (a fresh stamp over rows nobody re-measured is the precise
+failure an age check exists to catch), and recomputes `rollup` through the
+kind's own arithmetic so the pruned envelope still validates against its
+schema. An unreadable scope config degrades to orphan-only pruning rather than
+reading unknown scope as empty scope, which would hand it the whole baseline.
+
+A **missing** row is the one thing the pruner will not fix: a file added
+without being measured needs its producer (`npm run coverage:update`,
+`npm run maintainability:update`), because inventing a row would be claiming a
+measurement nobody took.
+
+**CI does not run the pruner in either mode.** `--check` exits 1 on any stale
+row without asking which change set introduced it, so pairing it with
+`check-baseline-scope.js` in the required job cancelled that gate's merge-base
+attribution: a row inherited from `main` — say one PR deletes a file while a
+second, branched earlier, re-adds its row through a baseline refresh — reds
+every open PR on divergence its author did not create and cannot fix from
+their branch. The scope gate reports that row as an inherited warning; the
+pruner is the remedy an operator (or agent) runs with the branch in hand.
+
 ---
 
 ## Bundle-size ratchet — one-shot refresh/acknowledge (Story #151)
@@ -452,10 +820,13 @@ Cross-references:
   configuration surface that backs the gates.
 - [`.agents/README.md`](../README.md) — consumer onboarding.
 
-> The `mutation` gate ships **dormant** (built-but-unwired, intentionally
-> opt-in). The former `update-mutation-baseline.js` refresh CLI was retired
-> with the rest of the zero-consumer script surface (#4482); the
-> `lib/mutation/` snapshot machinery remains for a future activation.
+> `mutation` is a **registered baseline kind with no shipped runner**. The
+> envelope, schema, and floor config below describe a `baselines/mutation.json`
+> the framework can read and ratchet, but nothing in Mandrel invokes Stryker or
+> writes that file: the `update-mutation-baseline.js` refresh CLI was retired
+> in #4482 and the `lib/mutation/` snapshot machinery in #5008. Activating the
+> gate means shipping a runner first — treat the kind as a reserved slot, not a
+> dormant feature.
 
 ### Envelope
 
@@ -712,8 +1083,8 @@ Refresh paths:
   `baselines/crap.json`.
 - `node .agents/scripts/update-maintainability-baseline.js` — rewrites
   `baselines/maintainability.json`.
-- `node .agents/scripts/lint-baseline.js capture` — rewrites
-  `baselines/lint.json`.
+- `baselines/lint.json` has no framework refresh CLI — see
+  [Lint baseline ratchet](#lint-baseline-ratchet).
 
 After a kernel bump, regenerate every baseline whose `kernelVersion`
 drifted, then commit the refreshed files. The writer guarantees

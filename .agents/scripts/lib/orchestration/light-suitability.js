@@ -30,13 +30,19 @@
  *   2. **Over-scope stops, never silently proceeds ({@link
  *      resolveLightGateOutcome}).** An over-ceiling prompt does **not**
  *      hard-fail — it STOPS and asks the operator to escalate to `/plan` or
- *      proceed light. Under `--yes` (unattended) it fails closed to
- *      recommending `/plan`.
+ *      proceed light. Both answers are executable: `proceed-light` is recorded
+ *      through {@link resolveOperatorOverride}, which waives a *size
+ *      prediction* only, never a risk rule, and only with a human present.
+ *      Under `--yes` (unattended) it fails closed to recommending `/plan`.
  *   3. **Diff-derived backstop ({@link checkLightDiffBackstop}).** After
  *      implementation the **actual** change set is re-checked with
- *      {@link module:lib/orchestration/review-depth.deriveChangeLevel} plus a
- *      file-count ceiling — the diff is the real scope signal — and an
- *      over-ceiling diff is blocked rather than landed silently.
+ *      {@link module:lib/orchestration/review-depth.deriveChangeLevel} plus the
+ *      implementation-only magnitude ceilings of {@link LIGHT_DIFF_CEILINGS} —
+ *      the diff is the real scope signal — and an over-ceiling diff is blocked
+ *      rather than landed silently. Story #4856 moved this from a `maxFiles: 4`
+ *      cardinality ceiling to changed lines over implementation files, and made
+ *      a block **recycle** its receipt Story through `/plan` tickets mode
+ *      instead of orphaning it.
  *   4. **Minimal receipt Story ({@link buildReceiptStoryTicket}).** A
  *      `type::story` ticket is authored inline so `refs #`, history, telemetry,
  *      and the `agent::executing -> agent::done` state machine survive.
@@ -48,37 +54,162 @@
  * @module lib/orchestration/light-suitability
  */
 
-import { deriveStoryShape, STORY_SHAPE_CEILINGS } from './complexity-gate.js';
+import {
+  deriveStoryShape,
+  SHAPE_CODES,
+  STORY_SHAPE_CEILINGS,
+} from './complexity-gate.js';
 import { deriveChangeLevel } from './review-depth.js';
 
 /**
- * File-count ceiling for the **actual landed** change set the diff backstop
- * ({@link checkLightDiffBackstop}) enforces. This is the light path's **only**
- * cardinality ceiling, and deliberately so (Story #4764): the predicted
- * footprint is a declaration — a guess, and a gameable one — so the gate that
- * counts must be the one reading ground truth. A genuinely-light change stays
- * small; conservative by construction, since a ceiling an operator could widen
- * past what a single session safely absorbs is a ceiling that fails silently.
- * A framework constant, not a knob.
+ * The shape objections an attended operator may waive (Story #4815) — an
+ * **allowlist**, deliberately, so a rule added to
+ * {@link module:lib/orchestration/complexity-gate.SHAPE_CODES} later is
+ * non-negotiable until someone decides otherwise here. A denylist would make
+ * every new rule silently overridable.
+ *
+ * These four are the *size predictions*: coarse by design (§ Scope by effort),
+ * and already bounded for real by {@link checkLightDiffBackstop} against the
+ * landed diff. Everything absent is absent on purpose — `migration-span` and
+ * `sensitive-path` are **risk**, not size, and the unknown-footprint codes
+ * describe a shape that was never judged, so there is no false positive to
+ * appeal.
+ */
+export const OVERRIDABLE_SHAPE_CODES = Object.freeze([
+  SHAPE_CODES.CHANGE_KINDS,
+  SHAPE_CODES.MAGNITUDE,
+  SHAPE_CODES.UNCERTAINTY,
+  SHAPE_CODES.DEPLOYABLE_SPAN,
+]);
+
+/**
+ * Detect the **un-waivable** risk rules a predicted footprint trips —
+ * `sensitive-path` and `migration-span`, the complement of
+ * {@link OVERRIDABLE_SHAPE_CODES} — **independent of which rule the shape
+ * decision happened to record** (Story #4875).
+ *
+ * No re-slicing, shrinking, or operator answer satisfies one: a footprint
+ * intersecting a sensitive-path class routes `full` however small the change,
+ * and the diff backstop refuses the same footprint again at the end. But
+ * {@link deriveStoryShape} reports only the **first** rule a shape trips and
+ * evaluates the ceiling rules first, so a prompt tripping both `change-kinds`
+ * and `sensitive-path` is reported as a size objection — which reads as
+ * appealable, is waivable by an attended operator, and sends the work all the
+ * way to an implementation the backstop then refuses.
+ *
+ * The recovery is that the shape decision attaches the built effort shape to
+ * every footprint it can judge at all, and that shape carries the risk facts
+ * (`sensitiveClasses`, `migrationSpan`) whether or not a risk rule fired.
+ * Reading them here surfaces the objection first-hit reporting hides — the
+ * difference between a wasted session and a redirected one.
+ *
+ * Pure and total.
+ *
+ * @param {{ shape?: { sensitiveClasses?: unknown, migrationSpan?: unknown } }} [decision]
+ *   A {@link deriveStoryShape} return value.
+ * @returns {{
+ *   present: boolean,
+ *   code: string|null,
+ *   classes: string[],
+ *   reason: string|null,
+ * }}
+ */
+function deriveUnwaivableRisk(decision) {
+  const shape = decision?.shape ?? null;
+  const classes = Array.isArray(shape?.sensitiveClasses)
+    ? shape.sensitiveClasses.filter(
+        (c) => typeof c === 'string' && c.trim() !== '',
+      )
+    : [];
+  if (classes.length > 0) {
+    return {
+      present: true,
+      code: SHAPE_CODES.SENSITIVE_PATH,
+      classes,
+      reason:
+        `un-waivable: the predicted footprint intersects sensitive-path ` +
+        `class(es) ${classes.join(', ')} — this is risk, not size, so no ` +
+        `re-slicing, shrinking, or operator override satisfies it and the ` +
+        `diff backstop would refuse the same footprint after the work is ` +
+        `finished; take this to /plan now`,
+    };
+  }
+  if (shape?.migrationSpan === true) {
+    return {
+      present: true,
+      code: SHAPE_CODES.MIGRATION_SPAN,
+      classes: [],
+      reason:
+        `un-waivable: the predicted footprint pairs a migration with its ` +
+        `consumers — this is risk, not size, so no re-slicing or operator ` +
+        `override satisfies it; take this to /plan now`,
+    };
+  }
+  return { present: false, code: null, classes: [], reason: null };
+}
+
+/**
+ * Ceilings for the **actual landed** change set the diff backstop
+ * ({@link checkLightDiffBackstop}) enforces, measured on the change's
+ * implementation half (Story #4856 — see
+ * {@link module:lib/orchestration/diff-magnitude} for the measured case and the
+ * companion-class boundary).
+ *
+ * The backstop reads ground truth, so it is where size is genuinely enforced;
+ * the prediction gate above it is a declaration and stays coarse (Story #4764).
+ * What changed is the **axis**: this used to be `maxFiles: 4`, a cardinality
+ * ceiling that rejected 79% of this repository's real merged work while passing
+ * a three-file 323-line rewrite.
+ *
+ *   - `maxImplLines` — additions plus deletions across implementation files.
+ *                      Simulated over 41 merges, 1000 admits 83% of real work
+ *                      and rejects exactly the genuinely large changes.
+ *   - `maxImplFiles` — implementation files touched, a *sprawl* tripwire rather
+ *                      than a size gate. Set to `DEFAULT_DIFF_WIDTH.softFiles`
+ *                      so the light path and `review-depth.js` stop holding two
+ *                      different definitions of a narrow diff.
+ *
+ * Framework constants, not knobs: a ceiling an operator could widen past what a
+ * single session safely absorbs is a ceiling that fails silently.
  */
 export const LIGHT_DIFF_CEILINGS = Object.freeze({
-  maxFiles: 4,
+  maxImplLines: 1000,
+  maxImplFiles: 15,
 });
 
 /**
- * Coerce a candidate `maxFiles` ceiling into a positive integer, falling back
- * to the framework default for anything malformed — a stray `0`, `-1`, or `NaN`
- * must never widen (or zero out) the light diff ceiling.
+ * Coerce a candidate ceiling into a positive integer, falling back to the
+ * framework default for anything malformed — a stray `0`, `-1`, or `NaN` must
+ * never widen (or zero out) a light diff ceiling.
  *
  * @param {unknown} value
  * @param {number} fallback
  * @returns {number}
  */
-function normalizeMaxFiles(value, fallback) {
+function normalizeCeiling(value, fallback) {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 1) {
     return fallback;
   }
   return Math.floor(value);
+}
+
+/**
+ * Resolve the effective diff ceilings from a caller-supplied partial override.
+ *
+ * @param {{ maxImplLines?: unknown, maxImplFiles?: unknown }} [ceilings]
+ * @returns {{ maxImplLines: number, maxImplFiles: number }}
+ */
+function resolveDiffCeilings(ceilings) {
+  return {
+    maxImplLines: normalizeCeiling(
+      ceilings?.maxImplLines,
+      LIGHT_DIFF_CEILINGS.maxImplLines,
+    ),
+    maxImplFiles: normalizeCeiling(
+      ceilings?.maxImplFiles,
+      LIGHT_DIFF_CEILINGS.maxImplFiles,
+    ),
+  };
 }
 
 /**
@@ -157,9 +288,12 @@ export function resolveLedgeredVerdict({ route, reason } = {}) {
  *   route: 'lite'|'full',
  *   shape: ReturnType<typeof deriveStoryShape>,
  *   ledger: ReturnType<typeof resolveLedgeredVerdict>,
+ *   unwaivable: ReturnType<typeof deriveUnwaivableRisk>,
  *   ceilings: typeof STORY_SHAPE_CEILINGS,
  *   reasons: string[],
- * }}
+ * }} `unwaivable` names an absolute risk rule the predicted footprint trips
+ *   even when the recorded `shape.code` is a size prediction (Story #4875), so
+ *   the operator learns at prediction time that no override can help.
  */
 export function deriveLightSuitability({
   predictedChanges,
@@ -181,14 +315,125 @@ export function deriveLightSuitability({
     injectedRules,
     selectSensitivePathClassesFn,
   });
-  const suitable = shape.route === 'lite' && ledger.route === 'lite';
+  const unwaivable = deriveUnwaivableRisk(shape);
+  // A tripped risk rule is decisive on its own: the shape decision may have
+  // recorded an earlier ceiling rule, but a sensitive footprint can never be
+  // lite, so the conjunction must not be able to read `suitable` from a shape
+  // whose recorded code was waived downstream.
+  const suitable =
+    shape.route === 'lite' && ledger.route === 'lite' && !unwaivable.present;
+  const reasons = [`shape: ${shape.reasons[0]}`];
+  if (unwaivable.present) reasons.push(unwaivable.reason);
+  reasons.push(`verdict: ${ledger.note}`);
   return {
     suitable,
     route: suitable ? 'lite' : 'full',
     shape,
     ledger,
+    unwaivable,
     ceilings: STORY_SHAPE_CEILINGS,
-    reasons: [`shape: ${shape.reasons[0]}`, `verdict: ${ledger.note}`],
+    reasons,
+  };
+}
+
+/**
+ * Adjudicate an operator's recorded `proceed-light` answer to the gate's own
+ * question (Story #4815). The gate has always *offered* `proceed-light` as one
+ * of two options; before this there was no input that could carry the answer,
+ * so the only way past a coarse prediction was to re-shape the declaration
+ * until the gate stopped objecting — precisely the under-declaring the coarse
+ * design anticipates.
+ *
+ * Applying it takes **all** of:
+ *
+ *   1. **The gate actually objected.** An override cannot pre-authorize a
+ *      scope nothing rejected.
+ *   2. **The run is attended.** `--yes` means nobody is at the keyboard, so
+ *      there is no operator whose answer this could be (§ Escalation is
+ *      terminal). Checked here as well as at the CLI, so the pure core carries
+ *      the guarantee rather than the shell.
+ *   3. **The objection is a size prediction** — a code in
+ *      {@link OVERRIDABLE_SHAPE_CODES}, **and** the footprint trips no
+ *      un-waivable risk rule ({@link deriveUnwaivableRisk}, Story #4875).
+ *      Sensitivity and migration
+ *      span are risk and stay absolute however small the change — including
+ *      when an earlier ceiling rule is the one the shape recorded.
+ *   4. **The ledgered verdict is already `lite`.** The override substitutes for
+ *      the *shape* half of the conjunction only; an unaudited "trust me, it's
+ *      small" buys nothing it did not buy before.
+ *
+ * A refusal is reported, never silent — an operator who typed the flag must
+ * learn why it did not take. Pure and total.
+ *
+ * @param {{
+ *   suitability?: object,
+ *   yes?: boolean,
+ *   operatorOverride?: unknown,
+ * }} [args] `operatorOverride` is the operator's recorded reason; blank or
+ *   absent means no override was requested.
+ * @returns {{
+ *   applied: boolean,
+ *   record: { recordedReason: string, overriddenCode: string, overriddenReason: string }|null,
+ *   note: string|null,
+ * }}
+ */
+export function resolveOperatorOverride({
+  suitability,
+  yes = false,
+  operatorOverride,
+} = {}) {
+  const recordedReason =
+    typeof operatorOverride === 'string' ? operatorOverride.trim() : '';
+  const refuse = (note) => ({ applied: false, record: null, note });
+
+  if (recordedReason === '') return refuse(null);
+  if (suitability?.suitable === true) {
+    return refuse(
+      'operator override ignored — the gate raised no objection to override',
+    );
+  }
+  if (yes === true) {
+    return refuse(
+      'operator override refused — it is attended-only, and --yes means nobody is at the keyboard; over-scope still fails closed to /plan',
+    );
+  }
+
+  const code = suitability?.shape?.code ?? null;
+  // Checked BEFORE the overridable-code test on purpose (Story #4875): when a
+  // footprint trips both a ceiling rule and a risk rule, the shape records the
+  // ceiling rule, which IS overridable — so testing the recorded code alone
+  // would apply the override and send un-landable work to the backstop.
+  const unwaivable = suitability?.unwaivable;
+  if (unwaivable?.present === true) {
+    return refuse(
+      `operator override refused — the predicted footprint also trips the ` +
+        `un-waivable "${unwaivable.code}" rule${
+          unwaivable.classes.length > 0
+            ? ` (${unwaivable.classes.join(', ')})`
+            : ''
+        }; waiving the size prediction cannot make this land light, and the ` +
+        `diff backstop would refuse the finished work. Escalate to /plan.`,
+    );
+  }
+  if (!OVERRIDABLE_SHAPE_CODES.includes(code)) {
+    return refuse(
+      `operator override refused — "${code ?? 'unknown'}" is not an overridable size prediction (overridable: ${OVERRIDABLE_SHAPE_CODES.join(', ')}); risk rules and unknown footprints are non-negotiable`,
+    );
+  }
+  if (suitability?.ledger?.route !== 'lite') {
+    return refuse(
+      'operator override refused — it substitutes for the predicted shape only; the model verdict must still be a ledgered lite with a recorded reason',
+    );
+  }
+
+  return {
+    applied: true,
+    record: {
+      recordedReason,
+      overriddenCode: code,
+      overriddenReason: suitability?.shape?.reasons?.[0] ?? '',
+    },
+    note: `operator override applied — proceeding light despite "${code}"; recorded reason: ${recordedReason}. The diff backstop still bounds the actual change set.`,
   };
 }
 
@@ -200,17 +445,43 @@ export function deriveLightSuitability({
  *
  *   - suitable          → `proceed-light`
  *   - over-scope + attended (`yes:false`)  → `ask-operator` (escalate | proceed)
+ *   - over-scope + attended + an applied operator override (Story #4815)
+ *                                          → `proceed-light`, carrying the
+ *                                            decision in `override`
  *   - over-scope + unattended (`yes:true`) → `escalate-plan`
+ *
+ * The override is adjudicated by {@link resolveOperatorOverride} and cannot
+ * reach the unattended branch: `escalate-plan` is resolved first and the
+ * override refuses itself under `yes` anyway.
  *
  * Pure and total.
  *
- * @param {{ suitability?: { suitable?: boolean, reasons?: string[] }, yes?: boolean }} [args]
- * @returns {{ action: 'proceed-light'|'ask-operator'|'escalate-plan', options?: string[], reasons: string[] }}
+ * @param {{
+ *   suitability?: { suitable?: boolean, reasons?: string[] },
+ *   yes?: boolean,
+ *   operatorOverride?: unknown,
+ * }} [args]
+ * @returns {{
+ *   action: 'proceed-light'|'ask-operator'|'escalate-plan',
+ *   options?: string[],
+ *   override?: object,
+ *   reasons: string[],
+ * }}
  */
-export function resolveLightGateOutcome({ suitability, yes = false } = {}) {
+export function resolveLightGateOutcome({
+  suitability,
+  yes = false,
+  operatorOverride,
+} = {}) {
+  const override = resolveOperatorOverride({
+    suitability,
+    yes,
+    operatorOverride,
+  });
   const reasons = Array.isArray(suitability?.reasons)
     ? [...suitability.reasons]
     : [];
+  if (override.note !== null) reasons.push(override.note);
 
   if (suitability?.suitable === true) {
     return {
@@ -232,6 +503,17 @@ export function resolveLightGateOutcome({ suitability, yes = false } = {}) {
     };
   }
 
+  if (override.applied) {
+    return {
+      action: 'proceed-light',
+      override: override.record,
+      reasons: [
+        ...reasons,
+        'predicted scope exceeded a light ceiling and the operator answered proceed-light — proceeding on the recorded override',
+      ],
+    };
+  }
+
   return {
     action: 'ask-operator',
     options: ['escalate-plan', 'proceed-light'],
@@ -243,11 +525,23 @@ export function resolveLightGateOutcome({ suitability, yes = false } = {}) {
 }
 
 /**
- * Diff-derived backstop (Story #4740 AC-4): re-check the **actual** change set
- * after implementation, because the diff — not the prompt — is the real scope
- * signal. Blocks (rather than landing) when the diff intersects a sensitive-
- * path class, exceeds the file-count ceiling, or cannot be classified. A clean
- * result is the only path that lands light.
+ * Diff-derived backstop (Story #4740 AC-4, re-based on magnitude by Story
+ * #4856): re-check the **actual** change set after implementation, because the
+ * diff — not the prompt — is the real scope signal. Blocks (rather than landing)
+ * when the diff intersects a sensitive-path class, exceeds an implementation
+ * ceiling, or cannot be measured. A clean result is the only path that lands
+ * light.
+ *
+ * Two inputs, two different scopes, and the difference is load-bearing:
+ *
+ *   - `changedFiles` is the **full** change set, companions included, and is
+ *     what sensitive-path derivation reads. Exempting a companion from the
+ *     *count* must never exempt it from *risk* — a test file under a registered
+ *     sensitive class still blocks.
+ *   - `magnitude` is the implementation-only summary from
+ *     {@link module:lib/orchestration/diff-magnitude.summarizeDiffMagnitude}.
+ *     `null` means the magnitude could not be measured, which blocks: absence
+ *     of evidence is not evidence the diff is small.
  *
  * Reuses close's own {@link module:lib/orchestration/review-depth.deriveChangeLevel}
  * — one taxonomy, applied to the predicted shape at the gate and the actual
@@ -257,7 +551,8 @@ export function resolveLightGateOutcome({ suitability, yes = false } = {}) {
  *
  * @param {{
  *   changedFiles?: unknown,
- *   ceilings?: { maxFiles?: number },
+ *   magnitude?: { implFiles?: number, implLines?: number }|null,
+ *   ceilings?: { maxImplLines?: number, maxImplFiles?: number },
  *   injectedRules?: object,
  *   selectSensitivePathClassesFn?: Function,
  * }} [args]
@@ -266,20 +561,19 @@ export function resolveLightGateOutcome({ suitability, yes = false } = {}) {
  *   level: 'low'|'high'|null,
  *   classes: string[],
  *   fileCount: number|null,
- *   ceilings: { maxFiles: number },
+ *   magnitude: { implFiles: number, implLines: number }|null,
+ *   ceilings: { maxImplLines: number, maxImplFiles: number },
  *   reasons: string[],
  * }}
  */
 export function checkLightDiffBackstop({
   changedFiles,
+  magnitude,
   ceilings,
   injectedRules,
   selectSensitivePathClassesFn,
 } = {}) {
-  const maxFiles = normalizeMaxFiles(
-    ceilings?.maxFiles,
-    LIGHT_DIFF_CEILINGS.maxFiles,
-  );
+  const resolved = resolveDiffCeilings(ceilings);
   const files = Array.isArray(changedFiles)
     ? changedFiles.filter((f) => typeof f === 'string' && f.trim() !== '')
     : null;
@@ -290,7 +584,8 @@ export function checkLightDiffBackstop({
       level: null,
       classes: [],
       fileCount: files === null ? null : 0,
-      ceilings: { maxFiles },
+      magnitude: null,
+      ceilings: resolved,
       reasons: [
         'actual change set is unknown or empty — cannot verify the diff is light; escalate to /plan',
       ],
@@ -302,23 +597,12 @@ export function checkLightDiffBackstop({
     injectedRules,
     selectSensitivePathClassesFn,
   });
+  const measured = normalizeMagnitude(magnitude);
 
-  const reasons = [];
-  if (classes.length > 0) {
-    reasons.push(
-      `diff intersects sensitive-path class(es) ${classes.join(', ')} — escalate to /plan (do not land light)`,
-    );
-  }
-  if (files.length > maxFiles) {
-    reasons.push(
-      `diff touches ${files.length} file(s) (> maxFiles ${maxFiles}) — escalate to /plan (do not land light)`,
-    );
-  }
-  if (level !== 'low' && classes.length === 0) {
-    reasons.push(
-      'sensitive-path classification unavailable — cannot verify the diff is non-sensitive; escalate to /plan',
-    );
-  }
+  const reasons = [
+    ...describeSensitivity({ level, classes }),
+    ...describeMagnitude(measured, resolved),
+  ];
 
   const blocked = reasons.length > 0;
   return {
@@ -326,13 +610,78 @@ export function checkLightDiffBackstop({
     level,
     classes,
     fileCount: files.length,
-    ceilings: { maxFiles },
+    magnitude: measured,
+    ceilings: resolved,
     reasons: blocked
       ? reasons
       : [
-          `diff is light: ${files.length} file(s) ≤ ${maxFiles}, no sensitive-path class — safe to land`,
+          `diff is light: ${measured.implLines} implementation line(s) ≤ ${resolved.maxImplLines} ` +
+            `across ${measured.implFiles} implementation file(s) ≤ ${resolved.maxImplFiles} ` +
+            `(${files.length} file(s) total, companions exempt), no sensitive-path class — safe to land`,
         ],
   };
+}
+
+/**
+ * Coerce a magnitude summary into non-negative integer counts, or `null` when
+ * it was not measurable. Pure.
+ *
+ * @param {unknown} magnitude
+ * @returns {{ implFiles: number, implLines: number }|null}
+ */
+function normalizeMagnitude(magnitude) {
+  const implFiles = magnitude?.implFiles;
+  const implLines = magnitude?.implLines;
+  if (!Number.isFinite(implFiles) || !Number.isFinite(implLines)) return null;
+  if (implFiles < 0 || implLines < 0) return null;
+  return { implFiles: Math.floor(implFiles), implLines: Math.floor(implLines) };
+}
+
+/**
+ * Sensitivity objections, over the **full** change set. Pure.
+ *
+ * @param {{ level: 'low'|'high'|null, classes: string[] }} derived
+ * @returns {string[]}
+ */
+function describeSensitivity({ level, classes }) {
+  if (classes.length > 0) {
+    return [
+      `diff intersects sensitive-path class(es) ${classes.join(', ')} — escalate to /plan (do not land light)`,
+    ];
+  }
+  if (level !== 'low') {
+    return [
+      'sensitive-path classification unavailable — cannot verify the diff is non-sensitive; escalate to /plan',
+    ];
+  }
+  return [];
+}
+
+/**
+ * Magnitude objections, over the implementation half only. Pure.
+ *
+ * @param {{ implFiles: number, implLines: number }|null} measured
+ * @param {{ maxImplLines: number, maxImplFiles: number }} ceilings
+ * @returns {string[]}
+ */
+function describeMagnitude(measured, ceilings) {
+  if (measured === null) {
+    return [
+      'change magnitude could not be measured (unreadable or unparseable numstat) — cannot verify the diff is light; escalate to /plan',
+    ];
+  }
+  const reasons = [];
+  if (measured.implLines > ceilings.maxImplLines) {
+    reasons.push(
+      `diff changes ${measured.implLines} implementation line(s) (> maxImplLines ${ceilings.maxImplLines}) — escalate to /plan (do not land light)`,
+    );
+  }
+  if (measured.implFiles > ceilings.maxImplFiles) {
+    reasons.push(
+      `diff spans ${measured.implFiles} implementation file(s) (> maxImplFiles ${ceilings.maxImplFiles}) — escalate to /plan (do not land light)`,
+    );
+  }
+  return reasons;
 }
 
 /** Cap on a receipt slug's length — keep the branch/id readable. */
@@ -418,17 +767,52 @@ function toReceiptChanges(changedFiles) {
 }
 
 /**
+ * Render an applied operator override as an audit paragraph for the receipt
+ * body (Story #4815). An override that leaves no trace on the ticket is an
+ * invisible decision: the whole point of routing it through the receipt is
+ * that a later reader can see the gate objected, on what grounds, and who
+ * decided to proceed anyway.
+ *
+ * @param {unknown} override The `record` from {@link resolveOperatorOverride}.
+ * @returns {string} A leading-space-prefixed sentence, or `''` when absent.
+ */
+function renderOverrideNote(override) {
+  if (!override || typeof override !== 'object') return '';
+  const { overriddenCode, overriddenReason, recordedReason } = override;
+  if (typeof recordedReason !== 'string' || recordedReason.trim() === '') {
+    return '';
+  }
+  return (
+    ` OPERATOR SCOPE OVERRIDE: the suitability gate objected on ` +
+    `"${overriddenCode}" (${overriddenReason}) and the operator answered ` +
+    `proceed-light — recorded reason: ${recordedReason.trim()}. The ` +
+    `prediction was waived, not the diff backstop, which still bounds the ` +
+    `landed change set.`
+  );
+}
+
+/**
  * Build the minimal receipt `type::story` ticket for the light path
  * (Story #4740 AC-5) — the input `assemblePlanStories` / `createStoryIssues`
  * consume, so the light path reuses the plan-persist story-creation surface
  * rather than reimplementing issue authoring. The body carries the operator
- * prompt (goal + spec) and the diff-derived footprint (`changes[]`), so history
- * and `refs #<id>` on the commit survive.
+ * prompt (goal + spec), the diff-derived footprint (`changes[]`), and any
+ * operator scope override, so history and `refs #<id>` on the commit survive.
  *
- * @param {{ prompt?: unknown, changedFiles?: unknown, amends?: unknown }} [args]
+ * @param {{
+ *   prompt?: unknown,
+ *   changedFiles?: unknown,
+ *   amends?: unknown,
+ *   override?: unknown,
+ * }} [args]
  * @returns {{ slug: string, title: string, body: object, labels: string[] }}
  */
-export function buildReceiptStoryTicket({ prompt, changedFiles, amends } = {}) {
+export function buildReceiptStoryTicket({
+  prompt,
+  changedFiles,
+  amends,
+  override,
+} = {}) {
   const text = typeof prompt === 'string' ? prompt.trim() : '';
   if (text === '') {
     throw new Error(
@@ -438,6 +822,7 @@ export function buildReceiptStoryTicket({ prompt, changedFiles, amends } = {}) {
   const amendsId = normalizeAmends(amends);
   const amendNote = amendsId !== null ? ` Amends #${amendsId}.` : '';
   const changes = toReceiptChanges(changedFiles);
+  const overrideNote = renderOverrideNote(override);
 
   return {
     slug: slugifyPrompt(text),
@@ -448,7 +833,8 @@ export function buildReceiptStoryTicket({ prompt, changedFiles, amends } = {}) {
       spec:
         `Delivered via /deliver-light as a validated single-session change — ` +
         `the /plan session is removed for genuinely small work while every ` +
-        `single-story-close gate runs byte-identical.${amendNote} ` +
+        `single-story-close gate runs byte-identical.${amendNote}` +
+        `${overrideNote} ` +
         `Operator prompt: ${text}`,
       changes,
       acceptance: [

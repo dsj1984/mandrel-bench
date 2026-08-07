@@ -2,21 +2,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 import escomplex from 'typhonjs-escomplex';
 import { canonicalise as canonicalisePath } from './baselines/path-canon.js';
-import {
-  coverageForMethodInEntry,
-  findCoverageEntry,
-} from './coverage-utils.js';
+import { findCoverageEntry } from './coverage-utils.js';
 import { POOL_SERIAL_THRESHOLD, runOnPool } from './cpu-pool.js';
-import { crapFormula } from './crap-engine.js';
+import {
+  finalizeMethodRowsWithBaseline,
+  resolveIncrementalContext,
+  resolveQueueIncrementalFields,
+  shouldSkipFileForNoCoverage,
+} from './crap-baseline-join.js';
+import { COORDINATE_ORIGINAL, methodRowsFromReport } from './crap-engine.js';
 import { Logger } from './Logger.js';
 import { scanDirectory } from './maintainability-utils.js';
-import { resolveTsTranspilerVersion, transpileIfNeeded } from './transpile.js';
+import {
+  prepareSourceForScoring,
+  resolveTsTranspilerVersion,
+} from './transpile.js';
 
 const CRAP_WORKER_URL = new URL('./workers/crap-worker.js', import.meta.url);
-const COMBINED_MI_CRAP_WORKER_URL = new URL(
-  './workers/combined-mi-crap-worker.js',
-  import.meta.url,
-);
 
 // Pool-vs-serial cutover — single-sourced in cpu-pool.js (see the
 // POOL_SERIAL_THRESHOLD docstring for the tuning rationale).
@@ -67,98 +69,6 @@ export function resolveEscomplexVersion(cwd = process.cwd()) {
   return '0.0.0';
 }
 
-function resolveBaselinePath({ cwd = process.cwd(), baselinePath } = {}) {
-  if (typeof baselinePath !== 'string' || baselinePath.length === 0) {
-    throw new TypeError(
-      'crap-utils: opts.baselinePath is required (Epic #730 Story 5.5 — ' +
-        'callers resolve the path via getBaselines(config).crap.path).',
-    );
-  }
-  return path.isAbsolute(baselinePath)
-    ? baselinePath
-    : path.join(cwd, baselinePath);
-}
-
-/**
- * Load the CRAP baseline envelope from disk.
- *
- * Returns the parsed envelope on success, or `null` when the file is missing,
- * unreadable, or structurally unusable. Version-mismatch detection is a
- * caller concern — this loader never silently rescores or mutates the
- * envelope.
- *
- * @param {{cwd?: string, baselinePath?: string}} [opts]
- * @returns {{
- *   kernelVersion: string,
- *   escomplexVersion: string,
- *   rows: Array<{file: string, method: string, startLine: number, crap: number}>,
- * }|null}
- */
-/**
- * Story #1895: shipped baseline switched to the canonical envelope shape
- * (`$schema`, `kernelVersion`, `generatedAt`, `rollup`, `rows` keyed on
- * `path`). Backfill the legacy `escomplexVersion`/`tsTranspilerVersion`
- * version fields from the running scorer and re-key rows by `file` so
- * existing comparators keep working until Story #1912 lands the unified
- * gate. Detection probes the first row for the new `path` key — the
- * legacy envelope also carries `$schema` but keys rows by `file`.
- */
-function projectCrapEnvelopeToLegacy(parsed) {
-  if (
-    !Array.isArray(parsed.rows) ||
-    parsed.rows.length === 0 ||
-    typeof parsed.rows[0]?.path !== 'string'
-  ) {
-    return null;
-  }
-  return {
-    kernelVersion: parsed.kernelVersion,
-    escomplexVersion: resolveEscomplexVersion(),
-    tsTranspilerVersion: resolveTsTranspilerVersion(),
-    rows: parsed.rows.map((row) => ({
-      crap: row.crap,
-      file: row.path,
-      method: row.method,
-      startLine: row.startLine,
-    })),
-  };
-}
-
-export function getCrapBaseline(opts = {}) {
-  const filePath = resolveBaselinePath(opts);
-  if (!fs.existsSync(filePath)) return null;
-  let raw;
-  try {
-    raw = fs.readFileSync(filePath, 'utf-8');
-  } catch (err) {
-    Logger.warn(`[crap-utils] unable to read baseline: ${err.message}`);
-    return null;
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    Logger.warn(`[crap-utils] baseline is not valid JSON: ${err.message}`);
-    return null;
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return null;
-  }
-  const projected = projectCrapEnvelopeToLegacy(parsed);
-  if (projected) return projected;
-  if (typeof parsed.kernelVersion !== 'string') return null;
-  if (typeof parsed.escomplexVersion !== 'string') return null;
-  if (!Array.isArray(parsed.rows)) return null;
-  // tsTranspilerVersion landed in kernel 1.1.0. Older envelopes (1.0.0)
-  // do not carry it; we surface that as the sentinel '0.0.0' so the
-  // version-drift detector can warn on first 1.1.0 check without
-  // crashing on a missing field.
-  if (typeof parsed.tsTranspilerVersion !== 'string') {
-    parsed.tsTranspilerVersion = '0.0.0';
-  }
-  return parsed;
-}
-
 /**
  * Project rich scan rows onto the minimal baseline row shape and assemble an
  * envelope ready for the shared V2 writer.
@@ -196,18 +106,135 @@ export function buildBaselineEnvelope({
       file: r.file,
       method: r.method,
       startLine: r.startLine,
+      ...(r.anonymous === undefined ? {} : { anonymous: r.anonymous }),
     })),
     tsTranspilerVersion,
   };
 }
 
 /**
+ * True when a coverage artifact was actually loaded for this scan.
+ *
+ * Story #4871: "the tests ran and never reached this method" is a measurement
+ * and the CRAP formula's 0%-covered arm is the right answer for it. "No
+ * coverage run happened at all" — a freshly initialized story worktree with no
+ * `coverage/` directory — is an *absent* observation, and filling it with 0%
+ * drives every method to `c² + c`, failing the first commit on files the
+ * change never touched. Resolved once per scan and carried on each queue item
+ * so the pool workers, which only ever receive their own file's coverage
+ * entry, can still tell the two apart.
+ *
+ * @param {object|null|undefined} coverage Parsed `coverage-final.json` map.
+ * @returns {boolean}
+ */
+function isCoverageArtifactPresent(coverage) {
+  return coverage !== null && coverage !== undefined;
+}
+
+/**
+ * How many files to name when reporting the worst unresolved offenders. Long
+ * enough to point at a pattern, short enough to stay a readable CLI message.
+ */
+const WORST_OFFENDER_LIMIT = 5;
+
+/**
+ * Method-resolution telemetry (Story #4775, fix part 4).
+ *
+ * The updater used to persist a 100-row baseline built from 5023 dropped
+ * methods and log it as success — the rot that let a broken coverage join
+ * sit undetected for five weeks across three repos. These three helpers
+ * carry the counters that make a thin result *visible* and therefore
+ * refusable.
+ *
+ * The rate is deliberately measured over files that **do** have a coverage
+ * entry: a file the test run never touched has no join to fail, so counting
+ * it would dilute the signal the floor is meant to catch.
+ */
+function newResolutionAccumulator() {
+  return { resolved: 0, total: 0, byFile: [] };
+}
+
+function accumulateResolution(acc, relPath, result) {
+  if (result?.hasCoverageEntry !== true) return;
+  const total = result.totalMethods ?? 0;
+  if (total === 0) return;
+  const resolved = result.resolvedMethods ?? 0;
+  acc.resolved += resolved;
+  acc.total += total;
+  if (resolved < total) {
+    acc.byFile.push({ file: relPath, unresolved: total - resolved, total });
+  }
+}
+
+function summarizeResolution(acc) {
+  const worstFiles = [...acc.byFile]
+    .sort((a, b) => b.unresolved - a.unresolved || a.file.localeCompare(b.file))
+    .slice(0, WORST_OFFENDER_LIMIT);
+  return {
+    resolvedMethods: acc.resolved,
+    joinableMethods: acc.total,
+    rate: acc.total === 0 ? 1 : acc.resolved / acc.total,
+    worstFiles,
+  };
+}
+
+/**
+ * Minimum number of joinable methods before the resolution-rate floor is
+ * enforced. A diff-scoped run can legitimately touch a handful of methods,
+ * where one unresolved method is a 50% rate and says nothing about the health
+ * of the join. Below this sample the rate is reported, never enforced.
+ */
+const MIN_RESOLUTION_SAMPLE = 25;
+
+/**
+ * Fail-closed guard on the per-method coverage join (Story #4775, fix part 4).
+ *
+ * The updater used to persist a 100-row baseline distilled from 5023 dropped
+ * methods and log it as a success — which is exactly how a broken join stayed
+ * invisible for five weeks across three repositories. A thin result is now a
+ * refusal: the caller throws before anything is written, and the message names
+ * the rate, the counts, and the files carrying the most unresolved methods so
+ * the operator can tell "my tests do not cover that" apart from "the join is
+ * broken".
+ *
+ * Returns `null` when the run may proceed, or the operator-facing message when
+ * it must not.
+ *
+ * @param {{resolvedMethods: number, joinableMethods: number, rate: number,
+ *   worstFiles: Array<{file: string, unresolved: number, total: number}>}
+ *   | undefined} resolution
+ * @param {number} floor
+ * @returns {string|null}
+ */
+export function checkResolutionFloor(resolution, floor) {
+  if (!resolution) return null;
+  const { joinableMethods = 0, resolvedMethods = 0, rate = 1 } = resolution;
+  if (joinableMethods < MIN_RESOLUTION_SAMPLE) return null;
+  if (rate >= floor) return null;
+  const worst = (resolution.worstFiles ?? [])
+    .map((w) => `         - ${w.file} (${w.unresolved}/${w.total} unresolved)`)
+    .join('\n');
+  return (
+    `[CRAP] Refusing to persist: only ${resolvedMethods}/${joinableMethods} ` +
+    `method(s) (${(rate * 100).toFixed(1)}%) resolved a coverage entry in files ` +
+    `that HAVE coverage — below the ${(floor * 100).toFixed(1)}% floor ` +
+    '(delivery.quality.gates.crap.minMethodResolutionRate).\n' +
+    '       A baseline built from a broken join is not sparse, it is wrong: ' +
+    'unresolved methods are absent and coincidental line collisions are ' +
+    'mis-attributed.\n' +
+    (worst ? `       Worst unresolved files:\n${worst}\n` : '') +
+    "       Regenerate coverage ('npm run test:coverage') and re-run; if the " +
+    'rate stays low the coverage artifact and the scanned tree disagree.'
+  );
+}
+
+/**
  * Parse `source` exactly once with escomplex and derive both the
  * maintainability score and the raw CRAP method rows from that single report.
  *
- * Callers that need both scores for the same source string (e.g. a combined
- * CRAP + MI scan) MUST use this helper rather than calling `calculateCrapForSource`
- * and `calculateForSource` separately — doing so would parse the AST twice.
+ * Callers that need both scores for the same source string MUST use this
+ * helper rather than calling `calculateCrapForSource` and `calculateForSource`
+ * separately — doing so would parse the AST twice.
  *
  * Coverage-dependent CRAP values require a `coverageForFile` entry (the value
  * from `coverage-final.json` for this file). Pass `null` when no coverage is
@@ -216,6 +243,10 @@ export function buildBaselineEnvelope({
  *
  * @param {string} source Prepared (possibly transpiled) JavaScript source text.
  * @param {object|null} coverageForFile Istanbul coverage entry for this file.
+ * @param {((line: number) => number|null)|null} [mapLine] Transpiled →
+ *   original-source line resolver from `transpileIfNeeded(…, {withLineMap:
+ *   true})`; `null` for JavaScript, whose coordinates already match the
+ *   coverage entry's.
  * @returns {{
  *   report: object,
  *   miScore: number,
@@ -229,7 +260,7 @@ export function buildBaselineEnvelope({
  *   parseError: boolean,
  * }}
  */
-export function analyzeOnce(source, coverageForFile) {
+function analyzeOnce(source, coverageForFile, mapLine = null) {
   let report;
   try {
     report = escomplex.analyzeModule(source);
@@ -238,19 +269,71 @@ export function analyzeOnce(source, coverageForFile) {
   }
   const miScore =
     typeof report.maintainability === 'number' ? report.maintainability : 0;
-  const methods = report?.methods ?? [];
-  const crapRows = [];
-  for (const m of methods) {
-    const startLine = m?.lineStart;
-    if (typeof startLine !== 'number') continue;
-    const cyclomatic = m?.cyclomatic ?? 0;
-    const coverage = coverageForFile
-      ? coverageForMethodInEntry(coverageForFile, startLine)
-      : null;
-    const crap = coverage === null ? null : crapFormula(cyclomatic, coverage);
-    crapRows.push({ method: m.name, startLine, cyclomatic, coverage, crap });
-  }
+  const crapRows = methodRowsFromReport(report, coverageForFile, mapLine);
   return { report, miScore, crapRows, parseError: false };
+}
+
+/**
+ * Build `scanAndScore`'s per-file work queue: canonicalise each discovered
+ * absolute path, drop everything outside `scopeSet`, and merge the
+ * incremental-join fields onto the surviving items.
+ *
+ * Story #2079: every relPath goes through path-canon so a scan from inside
+ * `.worktrees/<workspace>/` (with `cwd` pointing at the main checkout) cannot
+ * leak the worktree prefix into the on-disk baseline's `file` / `path` keys.
+ *
+ * @param {string[]} files Absolute paths, already sorted.
+ * @param {{
+ *   cwd: string,
+ *   scopeSet: Set<string>|null,
+ *   requireCoverage: boolean,
+ *   coverageAvailable: boolean,
+ *   incrementalCtx: object,
+ * }} opts
+ * @returns {Array<object>}
+ */
+function buildScanQueue(
+  files,
+  { cwd, scopeSet, requireCoverage, coverageAvailable, incrementalCtx },
+) {
+  const queue = [];
+  for (const abs of files) {
+    const rawRel = path.relative(cwd, abs).replace(/\\/g, '/');
+    const relPath = canonicalisePath(rawRel);
+    if (scopeSet && !scopeSet.has(relPath)) continue;
+    queue.push(
+      resolveQueueIncrementalFields(
+        { abs, relPath, requireCoverage, coverageAvailable },
+        incrementalCtx,
+      ),
+    );
+  }
+  return queue;
+}
+
+/**
+ * Project one finalized method row onto the enriched scan-row shape
+ * `compareCrap` and the baseline writer consume.
+ *
+ * @param {string} relPath Canonical repo-relative path of the scanned file.
+ * @param {object} mr A row from `finalizeMethodRowsWithBaseline`.
+ * @returns {object}
+ */
+function projectScanRow(relPath, mr) {
+  return {
+    file: relPath,
+    method: mr.method,
+    // Story #4969: `method` may be a derived anonymous identity; the flag is
+    // what lets the persisted row say so.
+    anonymous: mr.anonymous === true,
+    startLine: mr.startLine,
+    cyclomatic: mr.cyclomatic,
+    coverage: mr.coverage,
+    crap: mr.crap,
+    coordinateSystem: mr.coordinateSystem ?? COORDINATE_ORIGINAL,
+    // Present only when true, so a full-scope scan's rows are unaffected.
+    ...(mr.resolvedFromBaseline === true ? { resolvedFromBaseline: true } : {}),
+  };
 }
 
 /**
@@ -274,6 +357,10 @@ export function analyzeOnce(source, coverageForFile) {
  * `regenerateMainFromTree`) SHOULD pass the MI scan's file list here so the
  * tree is walked only once per run.
  *
+ * `incremental` (Story #4981) resolves an untouched file's methods from
+ * `crap-baseline-join.js#finalizeMethodRowsWithBaseline` instead of
+ * requiring fresh coverage; omitted (the default), behaviour is unchanged.
+ *
  * @param {{
  *   targetDirs: string[],
  *   coverage: object|null,
@@ -281,6 +368,7 @@ export function analyzeOnce(source, coverageForFile) {
  *   cwd?: string,
  *   scopeFiles?: Set<string>|string[]|null,
  *   preScannedFiles?: string[]|null,
+ *   incremental?: { touchedFiles: Set<string>|string[], baselineRows: Array<object> } | null,
  * }} params
  * @returns {{
  *   rows: Array<{
@@ -304,6 +392,7 @@ export async function scanAndScore({
   scopeFiles = null,
   ignoreGlobs = [],
   preScannedFiles = null,
+  incremental = null,
 }) {
   if (!Array.isArray(targetDirs)) {
     throw new TypeError('scanAndScore: targetDirs must be an array');
@@ -325,29 +414,31 @@ export async function scanAndScore({
   }
   files.sort();
 
+  const incrementalCtx = resolveIncrementalContext(incremental);
+
   // Build the work-queue first so scopeFile filtering happens before
   // any I/O / IPC. `scannedFiles` is the in-scope count.
-  // Story #2079: route every relPath through path-canon so a scan from
-  // inside `.worktrees/<workspace>/` (with cwd pointing at the main
-  // checkout) cannot leak the worktree prefix into the on-disk baseline's
-  // `file` / `path` keys downstream.
-  const queue = [];
-  for (const abs of files) {
-    const rawRel = path.relative(cwd, abs).replace(/\\/g, '/');
-    const relPath = canonicalisePath(rawRel);
-    if (scopeSet && !scopeSet.has(relPath)) continue;
-    queue.push({ abs, relPath, requireCoverage });
-  }
+  const queue = buildScanQueue(files, {
+    cwd,
+    scopeSet,
+    requireCoverage,
+    coverageAvailable: isCoverageArtifactPresent(coverage),
+    incrementalCtx,
+  });
   const scannedFiles = queue.length;
 
-  const perFile =
-    queue.length < SERIAL_THRESHOLD
-      ? queue.map((item) => ({ item, result: scoreFileSerial(item, coverage) }))
-      : await scoreFilesViaPool(queue, coverage);
+  // Serial below the pool cutover, and ALWAYS in incremental mode: the
+  // per-file baseline lookup Maps the join needs do not cross the worker
+  // boundary (Story #4981).
+  const runSerial = queue.length < SERIAL_THRESHOLD || Boolean(incremental);
+  const perFile = runSerial
+    ? queue.map((item) => ({ item, result: scoreFileSerial(item, coverage) }))
+    : await scoreFilesViaPool(queue, coverage);
 
   const rows = [];
   let skippedFilesNoCoverage = 0;
   let skippedMethodsNoCoverage = 0;
+  const resolution = newResolutionAccumulator();
   for (const { item, result } of perFile) {
     if (!result) continue; // unrecoverable per-file failure: drop silently to match pre-pool semantics
     if (result.skippedFileNoCoverage) {
@@ -366,15 +457,9 @@ export async function scanAndScore({
       continue;
     }
     skippedMethodsNoCoverage += result.skippedMethodsNoCoverage ?? 0;
+    accumulateResolution(resolution, item.relPath, result);
     for (const mr of result.rows) {
-      rows.push({
-        file: item.relPath,
-        method: mr.method,
-        startLine: mr.startLine,
-        cyclomatic: mr.cyclomatic,
-        coverage: mr.coverage,
-        crap: mr.crap,
-      });
+      rows.push(projectScanRow(item.relPath, mr));
     }
   }
 
@@ -390,6 +475,7 @@ export async function scanAndScore({
     scannedFiles,
     skippedFilesNoCoverage,
     skippedMethodsNoCoverage,
+    resolution: summarizeResolution(resolution),
   };
 }
 
@@ -398,60 +484,59 @@ export async function scanAndScore({
  * reference implementation against which the worker output is asserted
  * byte-for-byte in the cpu-pool tests.
  *
- * Uses `analyzeOnce` so the source is parsed a single time and both the
- * CRAP rows and the MI score are derived from the same escomplex report.
+ * Uses `analyzeOnce` so the source is parsed a single time.
  */
-function scoreFileSerial({ abs, relPath, requireCoverage }, coverage) {
+function scoreFileSerial(
+  {
+    abs,
+    relPath,
+    requireCoverage,
+    coverageAvailable = true,
+    touched = true,
+    baselineByKey = null,
+  },
+  coverage,
+) {
   const entry = findCoverageEntry(coverage, relPath);
-  if (requireCoverage && entry === null) {
+  if (
+    shouldSkipFileForNoCoverage(requireCoverage, entry, touched, baselineByKey)
+  ) {
     return {
       skippedFileNoCoverage: true,
       rows: [],
       skippedMethodsNoCoverage: 0,
+      hasCoverageEntry: false,
+      resolvedMethods: 0,
+      totalMethods: 0,
     };
   }
-  let source;
-  try {
-    source = fs.readFileSync(abs, 'utf-8');
-  } catch {
-    return {
-      skippedFileNoCoverage: false,
-      rows: null,
-      skippedMethodsNoCoverage: 0,
-    };
-  }
-  const prepared = transpileIfNeeded(abs, source);
-  if (prepared === null) {
-    return {
-      skippedFileNoCoverage: false,
-      rows: null,
-      skippedMethodsNoCoverage: 0,
-    };
-  }
-  const { crapRows, parseError } = analyzeOnce(prepared, entry);
-  if (parseError) {
-    return {
-      skippedFileNoCoverage: false,
-      rows: null,
-      skippedMethodsNoCoverage: 0,
-    };
-  }
-  const rows = [];
-  let skippedMethodsNoCoverage = 0;
-  for (const mr of crapRows) {
-    if (mr.crap === null || mr.coverage === null) {
-      skippedMethodsNoCoverage += 1;
-      continue;
-    }
-    rows.push({
-      method: mr.method,
-      startLine: mr.startLine,
-      cyclomatic: mr.cyclomatic,
-      coverage: mr.coverage,
-      crap: mr.crap,
-    });
-  }
-  return { skippedFileNoCoverage: false, rows, skippedMethodsNoCoverage };
+  const dropped = {
+    skippedFileNoCoverage: false,
+    rows: null,
+    skippedMethodsNoCoverage: 0,
+    hasCoverageEntry: entry !== null,
+    resolvedMethods: 0,
+    totalMethods: 0,
+  };
+  const prepared = prepareSourceForScoring(abs);
+  if (prepared.error) return dropped;
+  const { crapRows, parseError } = analyzeOnce(
+    prepared.code,
+    entry,
+    prepared.mapLine,
+  );
+  if (parseError) return dropped;
+  const finalized = finalizeMethodRowsWithBaseline(crapRows, {
+    requireCoverage,
+    coverageAvailable,
+    touched,
+    baselineByKey,
+  });
+  return {
+    skippedFileNoCoverage: false,
+    hasCoverageEntry: entry !== null,
+    ...finalized,
+  };
 }
 
 async function scoreFilesViaPool(queue, coverage) {
@@ -475,281 +560,4 @@ async function scoreFilesViaPool(queue, coverage) {
     }
     return { item, result: r };
   });
-}
-
-/**
- * In-process combined scorer: parse `abs` exactly once via `analyzeOnce` and
- * derive BOTH the module MI score and the per-method CRAP rows. The reference
- * implementation for the combined worker, used directly below
- * `SERIAL_THRESHOLD` (matching the serial fast paths of `calculateAll` and
- * `scanAndScore`).
- *
- * Return shape mirrors `combined-mi-crap-worker.js`:
- *   - `miScore` — `null` on read failure (MI dropped by the host), `0` on
- *     transpile-null / parse-error (parity with `calculateForFile` /
- *     `calculateForSource`), otherwise the module maintainability index.
- *   - `crapRows` — `null` on read/transpile/parse failure (CRAP drops the
- *     file), `[]` when coverage-skipped, otherwise the scored method rows.
- *   - `skippedFileNoCoverage` / `skippedMethodsNoCoverage` — CRAP counters.
- */
-function scoreFileCombinedSerial({ abs, relPath, requireCoverage }, coverage) {
-  const entry = findCoverageEntry(coverage, relPath);
-  let source;
-  try {
-    source = fs.readFileSync(abs, 'utf-8');
-  } catch {
-    return {
-      relPath,
-      miScore: null,
-      skippedFileNoCoverage: false,
-      crapRows: null,
-      skippedMethodsNoCoverage: 0,
-    };
-  }
-  const prepared = transpileIfNeeded(abs, source);
-  if (prepared === null) {
-    return {
-      relPath,
-      miScore: 0,
-      skippedFileNoCoverage: false,
-      crapRows: null,
-      skippedMethodsNoCoverage: 0,
-    };
-  }
-  const {
-    miScore,
-    crapRows: rawCrapRows,
-    parseError,
-  } = analyzeOnce(prepared, entry);
-  if (parseError) {
-    return {
-      relPath,
-      miScore: 0,
-      skippedFileNoCoverage: false,
-      crapRows: null,
-      skippedMethodsNoCoverage: 0,
-    };
-  }
-  if (requireCoverage && entry === null) {
-    return {
-      relPath,
-      miScore,
-      skippedFileNoCoverage: true,
-      crapRows: [],
-      skippedMethodsNoCoverage: 0,
-    };
-  }
-  const crapRows = [];
-  let skippedMethodsNoCoverage = 0;
-  for (const mr of rawCrapRows) {
-    if (mr.crap === null || mr.coverage === null) {
-      skippedMethodsNoCoverage += 1;
-      continue;
-    }
-    crapRows.push({
-      method: mr.method,
-      startLine: mr.startLine,
-      cyclomatic: mr.cyclomatic,
-      coverage: mr.coverage,
-      crap: mr.crap,
-    });
-  }
-  return {
-    relPath,
-    miScore,
-    skippedFileNoCoverage: false,
-    crapRows,
-    skippedMethodsNoCoverage,
-  };
-}
-
-async function scoreFilesCombinedViaPool(queue, coverage) {
-  const enrichedQueue = queue.map((item) => ({
-    ...item,
-    coverageEntry: findCoverageEntry(coverage, item.relPath),
-  }));
-  const results = await runOnPool(COMBINED_MI_CRAP_WORKER_URL, enrichedQueue, {
-    workerData: {},
-  });
-  return results.map((r, i) => {
-    const item = queue[i];
-    if (!r || r.__cpuPoolError) {
-      Logger.warn(
-        `[crap-utils] combined worker pool error for ${item.relPath}: ${r?.message ?? 'unknown'}`,
-      );
-      return { item, result: null };
-    }
-    return { item, result: r };
-  });
-}
-
-/**
- * Combined MI + CRAP single-pass scan. Walks the shared `targetDirs` once (or
- * reuses `preScannedFiles`), dispatches every file through ONE worker that
- * calls `analyzeOnce` a single time, and returns BOTH the maintainability
- * score map and the CRAP scan result.
- *
- * This collapses the two independent escomplex passes the full-tree baseline
- * regenerator used to run (`calculateAll` → maintainability worker, then
- * `scanAndScore` → CRAP worker) into one parse per file. The outputs are
- * shaped to be drop-in equivalents of the two passes they replace, so the
- * downstream envelope projection + writer logic stays byte-identical:
- *
- *   - `miScores` — `Record<relPath, number>` keyed exactly as `calculateAll`
- *     keys its result (`path.relative(cwd, abs)`, POSIX-normalised), with
- *     read-failure files (`miScore === null`) dropped. Parity target:
- *     `calculateAll(files)`.
- *   - `crap` — `{ rows, scannedFiles, skippedFilesNoCoverage,
- *     skippedMethodsNoCoverage }`, identical in shape and content to
- *     `scanAndScore({ targetDirs, coverage, ... })`. The rows are
- *     CRAP-sorted (file → startLine → method) so the result matches
- *     `scanAndScore` even before the writer re-sorts.
- *
- * The `requireCoverage`, `scopeFiles`, `ignoreGlobs`, and `preScannedFiles`
- * semantics match `scanAndScore` exactly — coverage gating, scope filtering,
- * and the single-walk reuse path behave the same. Files dropped from CRAP by
- * the coverage gate STILL contribute their MI score (the MI pass never
- * required coverage), preserving the two-pass behaviour where MI scores every
- * file in the target dirs.
- *
- * @param {{
- *   targetDirs: string[],
- *   coverage: object|null,
- *   requireCoverage?: boolean,
- *   cwd?: string,
- *   scopeFiles?: Set<string>|string[]|null,
- *   ignoreGlobs?: string[],
- *   preScannedFiles?: string[]|null,
- * }} params
- * @returns {Promise<{
- *   miScores: Record<string, number>,
- *   crap: {
- *     rows: Array<{
- *       file: string, method: string, startLine: number,
- *       cyclomatic: number, coverage: number, crap: number,
- *     }>,
- *     scannedFiles: number,
- *     skippedFilesNoCoverage: number,
- *     skippedMethodsNoCoverage: number,
- *   },
- * }>}
- */
-export async function scanAndScoreCombined({
-  targetDirs,
-  coverage,
-  requireCoverage = true,
-  cwd = process.cwd(),
-  scopeFiles = null,
-  ignoreGlobs = [],
-  preScannedFiles = null,
-}) {
-  if (!Array.isArray(targetDirs)) {
-    throw new TypeError('scanAndScoreCombined: targetDirs must be an array');
-  }
-  const scopeSet =
-    scopeFiles == null
-      ? null
-      : scopeFiles instanceof Set
-        ? scopeFiles
-        : new Set(scopeFiles);
-
-  // Single directory walk (or reuse the caller's pre-walked list), mirroring
-  // scanAndScore so the file discovery is byte-identical between paths.
-  const files = preScannedFiles != null ? [...preScannedFiles] : [];
-  if (preScannedFiles == null) {
-    for (const dir of targetDirs) {
-      const abs = path.isAbsolute(dir) ? dir : path.resolve(cwd, dir);
-      scanDirectory(abs, files, { cwd, ignoreGlobs });
-    }
-  }
-  files.sort();
-
-  // Build the work queue. Each item carries both the canonicalised relPath
-  // (CRAP's key + scope filter, matching scanAndScore) and the raw relPath
-  // (MI's key, matching calculateAll's `path.relative(cwd, p)` shape).
-  const queue = [];
-  for (const abs of files) {
-    const rawRel = path.relative(cwd, abs).replace(/\\/g, '/');
-    const relPath = canonicalisePath(rawRel);
-    if (scopeSet && !scopeSet.has(relPath)) continue;
-    queue.push({ abs, relPath, miRel: rawRel, requireCoverage });
-  }
-  const scannedFiles = queue.length;
-
-  const perFile =
-    queue.length < SERIAL_THRESHOLD
-      ? queue.map((item) => ({
-          item,
-          result: scoreFileCombinedSerial(item, coverage),
-        }))
-      : await scoreFilesCombinedViaPool(queue, coverage);
-
-  // MI assembly — mirror calculateAll: drop read-failure files (miScore
-  // null), key by the raw relative path, then sort ascending so the returned
-  // object is insertion-order-stable.
-  const miEntries = [];
-  // CRAP assembly — mirror scanAndScore: file-level skip counter, drop
-  // read/transpile/parse failures, accumulate method rows.
-  const crapRows = [];
-  let skippedFilesNoCoverage = 0;
-  let skippedMethodsNoCoverage = 0;
-
-  for (const { item, result } of perFile) {
-    if (!result) continue; // unrecoverable per-file failure: drop silently
-
-    // MI side.
-    if (result.miScore !== null) {
-      miEntries.push({ relPath: item.miRel, score: result.miScore });
-    }
-
-    // CRAP side.
-    if (result.skippedFileNoCoverage) {
-      skippedFilesNoCoverage += 1;
-      continue;
-    }
-    if (result.crapRows === null) {
-      if (result.error) {
-        Logger.warn(
-          `[crap-utils] failed to score ${item.relPath}: ${result.error}`,
-        );
-      }
-      continue;
-    }
-    skippedMethodsNoCoverage += result.skippedMethodsNoCoverage ?? 0;
-    for (const mr of result.crapRows) {
-      crapRows.push({
-        file: item.relPath,
-        method: mr.method,
-        startLine: mr.startLine,
-        cyclomatic: mr.cyclomatic,
-        coverage: mr.coverage,
-        crap: mr.crap,
-      });
-    }
-  }
-
-  miEntries.sort((a, b) =>
-    a.relPath < b.relPath ? -1 : a.relPath > b.relPath ? 1 : 0,
-  );
-  const miScores = {};
-  for (const { relPath, score } of miEntries) {
-    miScores[relPath] = score;
-  }
-
-  crapRows.sort((a, b) => {
-    if (a.file !== b.file) return a.file < b.file ? -1 : 1;
-    if (a.startLine !== b.startLine) return a.startLine - b.startLine;
-    if (a.method !== b.method) return a.method < b.method ? -1 : 1;
-    return 0;
-  });
-
-  return {
-    miScores,
-    crap: {
-      rows: crapRows,
-      scannedFiles,
-      skippedFilesNoCoverage,
-      skippedMethodsNoCoverage,
-    },
-  };
 }

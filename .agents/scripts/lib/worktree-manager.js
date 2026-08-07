@@ -25,6 +25,7 @@ import {
   DEFAULT_WORKSPACE_FILES,
   provision as provisionWorkspace,
 } from './workspace-provisioner.js';
+import { materializeGitHooks } from './worktree/git-hooks.js';
 import {
   maybeWarnWindowsPath,
   parseWorktreePorcelain,
@@ -53,9 +54,8 @@ export class WorktreeManager {
    * @param {(phase: 'worktree-create'|'bootstrap'|'install') => void} [opts.onPhase]
    *   Optional phase-boundary callback fired from `ensure()` just before each
    *   internal phase (git worktree add, bootstrap-file copy, dependency
-   *   install). Consumed by `story-init` to drive `phase-timer.mark()`
-   *   so `[phase-timing]` log lines attribute wall-clock correctly to the
-   *   sub-phases of worktree provisioning.
+   *   install), so a caller can attribute wall-clock to the sub-phases of
+   *   worktree provisioning.
    */
   constructor({
     repoRoot,
@@ -160,6 +160,19 @@ export class WorktreeManager {
           files,
           logger: wrapped,
         });
+      },
+      provisionGitHooks: (wtPath) => {
+        const result = materializeGitHooks({
+          repoRoot: this.repoRoot,
+          worktree: wtPath,
+          gitImpl: this.git,
+        });
+        this.logger.info(
+          result.action === 'materialized'
+            ? `worktree.bootstrap hooks materialized path=${result.target} hooks=${result.hooks.length}`
+            : `worktree.bootstrap hooks skipped reason=${result.reason}`,
+        );
+        return result;
       },
     };
   }

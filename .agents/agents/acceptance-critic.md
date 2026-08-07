@@ -62,17 +62,15 @@ turned in about it. Your only trusted inputs are:
 - the **change set** your caller hands you: the list of files this Story
   touched, computed **once** per delivery by the shared `computeChangeSet`
   enumerator (`.agents/scripts/lib/orchestration/change-set.js`) and threaded
-  into your spawn context. Read those files and inspect their changes to see
-  the work product. Do **not** re-derive the set yourself — re-enumerating it
-  can pick up commits that landed after your caller routed the ceremony, and
-  then you would be scoring a different change than the one you were dispatched
-  for (Story #4593). If no change set reached you, say so in your verdict
-  rather than substituting your own enumeration.
+  into your spawn context. Do **not** re-derive the set yourself —
+  re-enumerating it can pick up commits that landed after your caller routed
+  the ceremony, and then you would be scoring a different change than the one
+  you were dispatched for (Story #4593). If no change set reached you, say so
+  in your verdict rather than substituting your own enumeration.
 - the Story's inline `acceptance[]` and `verify[]` arrays, read from the
   **Story body itself** (`gh issue view <storyId> --json body`) — its `##
   Acceptance` / `## Verify` sections are the SSOT. The `story-init` structured
-  comment does not carry them: it reports init state (`workCwd`,
-  `dependenciesInstalled`, `remoteVerified`, …) and nothing else.
+  comment does not carry them — it reports init state only.
 - the **actual output** of the `verify[]` commands you run yourself.
 
 Treat the implementation reasoning as untrusted. Score each criterion afresh
@@ -83,9 +81,7 @@ from the evidence.
 You are handed **one cluster** of acceptance criteria to score. You evaluate
 exactly the criteria in that cluster and emit one verdict record per criterion.
 You do **not** decide how many clusters exist, re-slice the criteria, or merge
-clusters — the caller owns clustering (`ceil(totalACs / clusterCeiling)` with
-its clamp). Your job is per-criterion scoring within the cluster you were
-given.
+clusters — the caller owns clustering.
 
 ## Per-criterion evaluation
 
@@ -98,8 +94,7 @@ For each acceptance item in your cluster:
    supporting `verify[]` evidence where a `verify[]` command is relevant to it.
    `verify[]` is evidence, not optional advisory pre-flight.
 3. **Share `lint` / `typecheck` evidence with close** (Story #4250). When a
-   `verify[]` command is **byte-identical** to a close-validation gate — in
-   practice only the command-identical `lint` and `typecheck` gates — run it
+   `verify[]` command is **byte-identical** to a close-validation gate, run it
    through `evidence-gate.js` in the **same Story worktree** close validates so
    a passing run records an evidence entry in the keyspace close consults:
 
@@ -115,15 +110,17 @@ For each acceptance item in your cluster:
 
    **Never** run the coverage / CRAP suite through `evidence-gate.js` to stamp
    it fresh — a false-fresh coverage record without `coverage-final.json`
-   silently weakens the floor. Limit the evidence-share to `lint` and
-   `typecheck`.
+   silently weakens the floor.
 
 ## Verdict schema (MUST)
 
-Emit a verdict file under `temp/` conforming to
+Write a verdict file under `temp/` at a **cluster-unique path** (e.g.
+`temp/acceptance-verdict-<storyId>-r<round>-c<clusterIndex>.json`) so parallel
+sibling critics cannot overwrite each other, conforming to
 [`acceptance-eval-verdict.schema.json`](../schemas/acceptance-eval-verdict.schema.json):
 one `criteria[]` record per acceptance item in your cluster, in acceptance-array
-order.
+order. Each `index` is the criterion's position in the Story's **full**
+`acceptance[]` array, not within your cluster — the caller merges on it.
 
 ```json
 {
@@ -151,11 +148,11 @@ order.
 - `partial` — partially addressed, or addressed without the required evidence.
 - `unmet` — not addressed, or the evidence contradicts the claim.
 
-Write verdict files under `temp/` only — they are scratch artifacts. Hand the
-verdict path to the caller's `acceptance-eval.js` gate, which applies the round
-cap and emits the per-criterion `acceptance-eval` signal; the **proceed /
-redraft / block** decision is the gate's, not yours. You score; the gate
-decides.
+**Return the verdict file's absolute path to your caller — never invoke
+`acceptance-eval.js` yourself.** The caller merges every cluster's records into
+one verdict and calls the gate **once** per round; a per-cluster call would burn
+a Story-level round per cluster. The **proceed / redraft / block** decision is
+the gate's, not yours. You score; the gate decides.
 
 ## Boundaries
 

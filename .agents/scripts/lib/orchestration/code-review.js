@@ -15,8 +15,8 @@
  *
  * v2.0.0 removed the Epic tier. The Epic-scope envelope and the
  * Epic-scoped `code-review.start` / `.end` lifecycle emits (whose schema
- * requires `epicId`) went with it; Story scope is the only scope and the
- * module no longer touches the lifecycle bus.
+ * requires `epicId`) went with it; Story scope is the only scope. Story #5024
+ * deleted those schemas along with the bus that was their only publish path.
  *
  * Public API:
  *   - `runCodeReview({ ticketId, headRef, provider, logger, ... })` →
@@ -43,6 +43,10 @@ import { hasSurvivingCritical } from '../audit-suite/findings.js';
 import { resolveConfig } from '../config-resolver.js';
 import { computeChangeSet } from './change-set.js';
 import { deriveChangeLevel, resolveDepth } from './review-depth.js';
+import {
+  collectProviderDegradations,
+  degradationEnvelope,
+} from './review-providers/degraded-gates.js';
 import {
   countBySeverity,
   renderFindings,
@@ -176,6 +180,7 @@ function resolveScopeEnvelope(opts, config) {
  *   postedCommentId: number|null,
  *   commentTargetId: number,
  *   halted: boolean,
+ *   degraded: boolean, degradations: Array<object>,
  *   blockerReason: string|null,
  * }>}
  */
@@ -357,6 +362,11 @@ async function executeReviewPipeline({ opts, config, envelope }) {
     logger,
   );
 
+  // Story #4839 — degraded gates ride beside the findings, never inside them.
+  const degradations = await collectProviderDegradations(
+    reviewProvider,
+    logger,
+  );
   const severity = countBySeverity(findings);
   const halted = hasSurvivingCritical(severity);
   const report = renderFindingsFn({
@@ -367,6 +377,7 @@ async function executeReviewPipeline({ opts, config, envelope }) {
     findings,
     provider: providerName,
     promptMessages,
+    degradations,
   });
 
   const { posted, postedCommentId } = await postReviewComment({
@@ -385,6 +396,7 @@ async function executeReviewPipeline({ opts, config, envelope }) {
     postedCommentId,
     commentTargetId,
     halted,
+    ...degradationEnvelope(degradations),
     blockerReason: halted
       ? `code-review reported ${severity.critical} critical blocker(s)`
       : null,

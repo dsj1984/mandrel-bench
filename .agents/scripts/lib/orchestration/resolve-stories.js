@@ -34,6 +34,7 @@ import {
   extractChangePaths,
   parse as parseStoryBody,
 } from '../story-body/story-body.js';
+import { expandIdList } from '../util/parse-id-list.js';
 import { resolveStoryDispatchMode } from './complexity-gate.js';
 
 /** Labels/state that mean a blocker no longer gates its dependents. */
@@ -181,9 +182,16 @@ export function storyFootprintPaths(body, id, warn) {
 }
 
 /**
- * Build the DAG nodes. `dependsOn` is the union the adjacency builder already
- * computes (body-parsed `blocked by #N` + explicit fields), plus any native
- * edges threaded in via `nativeEdges`. `files` is a plain `string[]`.
+ * Build the DAG nodes. `dependsOn` is the **union of the two declared-edge
+ * channels**: the Story body's `---` footer (`blocked by #N`) and the native
+ * GitHub `blocked_by` relations threaded in via `nativeEdges`. `files` is a
+ * plain `string[]`.
+ *
+ * The body channel is footer-scoped and strict (`parseBlockedBy`, Story
+ * #5046) — a `blocked by #123` mention in prose no longer mints a dispatch
+ * gate. Only `{ id, dependsOn }` is handed to the adjacency builder, never the
+ * body: the edge set is decided here, once, so the builder's own body parse
+ * cannot re-derive a different one behind this function's back.
  *
  * @param {object[]} stories
  * @param {Map<number, number[]>} [nativeEdges]
@@ -192,7 +200,7 @@ export function storyFootprintPaths(body, id, warn) {
  */
 export function storiesToDag(stories, nativeEdges = new Map(), warn) {
   const withNative = stories.map((s) => ({
-    ...s,
+    id: s.id,
     dependsOn: [
       ...new Set([
         ...parseBlockedBy(s.body ?? ''),
@@ -221,28 +229,39 @@ export function storiesToDag(stories, nativeEdges = new Map(), warn) {
  * matching no Story, foreign to the set, never satisfiable, and (because
  * foreign edges are real gates) a silent permanent wedge.
  *
- * Cross-repo blockers are rejected rather than matched: another repo's #4530
- * is not this repo's #4530, and treating it as one could satisfy a gate that
- * is still open.
+ * A cross-repo blocker is **dropped with a loud warning**, never matched:
+ * another repo's #4530 is not this repo's #4530, and treating it as one could
+ * satisfy a gate that is still open. It used to throw, which failed the WHOLE
+ * resolution — one Story's unsupported edge took every sibling down with it
+ * (Story #5046). The degrade is now scoped to the Story carrying the edge:
+ * its siblings resolve normally, and the operator is told, by number, which
+ * Story lost which edge.
  *
  * @param {unknown} data Parsed API response.
- * @param {{ owner: string, repo: string, issueNumber: number }} ctx
+ * @param {{ owner: string, repo: string, issueNumber: number, warn?: (msg: string) => void }} ctx
  * @returns {number[]}
  */
-export function nativeBlockedByNumbers(data, { owner, repo, issueNumber }) {
+export function nativeBlockedByNumbers(
+  data,
+  { owner, repo, issueNumber, warn },
+) {
   if (!Array.isArray(data)) return [];
   const out = [];
   for (const item of data) {
     const repoUrl = item?.repository_url ?? item?.repository?.url ?? null;
-    if (typeof repoUrl === 'string' && repoUrl.length > 0) {
-      const expected = `/repos/${owner}/${repo}`;
-      if (!repoUrl.endsWith(expected)) {
-        throw new Error(
-          `[resolve-stories] #${issueNumber} is blocked by an issue in another repository ` +
-            `(${repoUrl}). Cross-repo dependency edges are not supported — its number cannot ` +
-            `be matched against this repo's Stories without risking a false match.`,
-        );
-      }
+    if (
+      typeof repoUrl === 'string' &&
+      repoUrl.length > 0 &&
+      !repoUrl.endsWith(`/repos/${owner}/${repo}`)
+    ) {
+      warn?.(
+        `[resolve-stories] #${issueNumber} declares a native blocked_by edge on an issue in ` +
+          `another repository (${repoUrl}). Cross-repo edges are not supported — its number ` +
+          `cannot be matched against this repo's Stories without risking a false match, so the ` +
+          `edge is DROPPED for #${issueNumber} only. Its siblings resolve normally; re-declare ` +
+          `the ordering in this repo if #${issueNumber} must wait.`,
+      );
+      continue;
     }
     const number = Number(item?.number);
     if (Number.isInteger(number) && number > 0) out.push(number);
@@ -251,17 +270,33 @@ export function nativeBlockedByNumbers(data, { owner, repo, issueNumber }) {
 }
 
 /**
- * Read an issue's native `blocked_by` edges as issue numbers.
+ * Read an issue's native `blocked_by` edges as issue numbers, **paginated to
+ * exhaustion**.
  *
- * **Fails loud**, deliberately inverting the write path's non-fatal contract.
- * A dropped write-side edge is cosmetic (the ordering still lives in the
- * `blocked by #N` body footer); a dropped READ-side edge silently removes a
- * dispatch gate, so a 403 (dependencies API disabled, or a token without the
- * scope) would erase every native edge at once and co-dispatch the whole run
- * against unlanded blockers. A 404 means "no dependencies on this issue" and
- * is a legitimate empty result.
+ * The read used to take the first page only, so a Story with more than a
+ * page of blockers silently lost every edge past the boundary — the exact
+ * failure this function's fail-loud contract exists to prevent, arriving
+ * through the one door that never raised (Story #5046). `paginate` is
+ * injected (the CLI passes `paginateRest`) so the lib layer stays free of a
+ * provider import and the page walk stays testable without a live round-trip.
  *
- * @param {{ gh: object, owner: string, repo: string, issueNumber: number, parseJson: Function }} opts
+ * **Fails loud on every non-OK read**, deliberately inverting the write path's
+ * non-fatal contract. A dropped write-side edge is cosmetic (the ordering
+ * still lives in the `blocked by #N` body footer); a dropped READ-side edge
+ * silently removes a dispatch gate, so one failure would erase every native
+ * edge at once and co-dispatch the run against unlanded blockers.
+ *
+ * **A 404 is not an empty result.** It used to be treated as "this issue has
+ * no dependencies", which is how GitHub answers an issue that genuinely has
+ * none — but it is *also* how GitHub answers a token that cannot see the
+ * dependencies API at all. Reading the second as the first erases every
+ * native edge in the run under a mis-scoped token, silently, with a clean
+ * exit code. An issue with no dependencies returns `200 []`, so the empty
+ * case needs no 404 escape hatch and the ambiguity resolves loud.
+ *
+ * @param {{ gh: object, owner: string, repo: string, issueNumber: number,
+ *   paginate: (gh: object, endpoint: string, opts?: object) => Promise<unknown[]>,
+ *   warn?: (msg: string) => void }} opts
  * @returns {Promise<number[]>}
  */
 export async function readNativeBlockedBy({
@@ -269,27 +304,30 @@ export async function readNativeBlockedBy({
   owner,
   repo,
   issueNumber,
-  parseJson,
+  paginate,
+  warn,
 }) {
-  let result;
+  const endpoint = `/repos/${owner}/${repo}/issues/${issueNumber}/dependencies/blocked_by`;
+  let items;
   try {
-    result = await gh.api({
-      method: 'GET',
-      endpoint: `/repos/${owner}/${repo}/issues/${issueNumber}/dependencies/blocked_by`,
+    items = await paginate(gh, endpoint, {
+      label: `[resolve-stories] blocked_by #${issueNumber}`,
     });
   } catch (err) {
     const detail = String(err?.message ?? err);
-    if (/404|not found/i.test(detail)) return [];
     throw new Error(
       `[resolve-stories] Could not read native blocked_by edges for #${issueNumber}: ${detail}. ` +
         `Refusing to continue: a dropped dependency edge would silently remove a dispatch gate ` +
-        `and co-dispatch this Story against an unlanded blocker.`,
+        `and co-dispatch this Story against an unlanded blocker. A 404 here is NOT "no ` +
+        `dependencies" (that answers 200 with an empty list) — check the token's scopes and ` +
+        `that the dependencies API is enabled for ${owner}/${repo}.`,
     );
   }
-  return nativeBlockedByNumbers(parseJson(result), {
+  return nativeBlockedByNumbers(items, {
     owner,
     repo,
     issueNumber,
+    warn,
   });
 }
 
@@ -300,9 +338,6 @@ export async function readNativeBlockedBy({
  * @param {Map<number, number[]>} nativeEdges
  * @param {number[]} foreignDone Ids outside the set already satisfied.
  * @param {(msg: string) => void} [warn]
- * @param {object} [injectedRules] Test seam forwarded to the shape
- *   derivation — skips the `audit-rules.json` disk read. Production callers
- *   omit it (the real manifest, memoized per process, is the default).
  * @returns {{ kind: string, stories: object[], dag: object[], done: number[] }}
  */
 export function buildStoriesEnvelope({
@@ -310,41 +345,37 @@ export function buildStoriesEnvelope({
   nativeEdges = new Map(),
   foreignDone = [],
   warn,
-  config,
-  injectedRules,
 }) {
   const sorted = [...stories].sort((a, b) => a.id - b.id);
   const inSetDone = sorted.filter(isSatisfiedBlocker).map((s) => s.id);
   return {
     kind: 'stories',
-    // `dispatchMode` (Story #4722): the resolver derives the per-Story
-    // execution mode from the fetched Story BODY's own shape (the shared
-    // shape function in `complexity-gate.js`) so `/deliver` reads one field —
-    // `inline` (lite-shaped: no story-worker / acceptance-critic sub-agent
-    // boots) or `subagent` (everything else, the conservative default). The
-    // `route::lite` label is a human-visible hint only, never the control
-    // signal: a lost label cannot misroute delivery. Model-side fan-out
-    // only; close gates are untouched.
+    // `dispatchMode` (Story #4722, #4736, #4829): the resolver reports the
+    // per-Story execution mode so `/deliver` reads one field — `inline` (run
+    // deliver-story in the router's own session: no story-worker /
+    // acceptance-critic sub-agent boots) or `subagent` (the conservative
+    // default). Model-side fan-out only; close gates are untouched.
     //
-    // `storyCount` (Story #4736) carries the run's topology into that same
-    // decision: a run resolving exactly ONE Story is inline whatever its
-    // shape, because the isolation a sub-agent buys only matters against a
-    // concurrently-dispatched sibling. It is the resolved set size — not the
-    // undelivered remainder — so the mode a caller reads for a given `--ids`
-    // list never changes as siblings land mid-run.
-    stories: sorted.map(({ id, title, body, url, labels, state }) => ({
+    // `storyCount` is the ONLY premise that decides it, and it is this call
+    // site's whole argument: `inline` names the router's ONE session, so it is
+    // granted only to a run resolving exactly ONE Story, which has no
+    // concurrent sibling to share that session with. Passing the resolved set
+    // size here is therefore what makes the envelope self-consistent with the
+    // ready set `stories-wave-tick.js` computes from the same `dag`: a set of
+    // more than one can never come back with a Story claiming the session
+    // (Story #4829 — it previously could, whenever the body was lite-shaped).
+    // It is the resolved set size, NOT the undelivered remainder, so the mode
+    // a caller reads for a given `--ids` list never changes as siblings land
+    // mid-run. The `route::lite` label is a human-visible hint only, never the
+    // control signal.
+    stories: sorted.map(({ id, title, url, labels, state }) => ({
       id,
       title,
       url,
       labels,
       state,
-      dispatchMode: resolveStoryDispatchMode({
-        body,
-        labels,
-        config,
-        storyCount: sorted.length,
-        injectedRules,
-      }).mode,
+      dispatchMode: resolveStoryDispatchMode({ storyCount: sorted.length })
+        .mode,
     })),
     dag: storiesToDag(sorted, nativeEdges, warn),
     done: [...new Set([...inSetDone, ...foreignDone])].sort((a, b) => a - b),
@@ -352,29 +383,29 @@ export function buildStoriesEnvelope({
 }
 
 /**
- * Parse and validate the `--ids` list.
+ * Parse and validate the `--ids` list, expanding any `A-B` dash range.
+ *
+ * A contiguous span is how an operator names a plan run — `/deliver 4922 -
+ * 4926` — so the range is expanded here rather than transcribed by the host.
+ * `stories-wave-tick.js --stories` reads through this same function, which is
+ * what keeps the sequencing set identical to the resolved one.
  *
  * @param {string|undefined} raw
+ * @param {string} [flag] Flag name, for the error message.
  * @returns {number[]}
  */
-export function parseIds(raw) {
-  const ids = String(raw ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((s) => {
-      const n = Number.parseInt(s, 10);
-      if (!Number.isInteger(n) || n <= 0 || String(n) !== s) {
-        throw new Error(
-          `[resolve-stories] --ids must be a comma-separated list of positive issue numbers (got "${s}").`,
-        );
-      }
-      return n;
-    });
+export function parseIds(raw, flag = '--ids') {
+  const { ids, error } = expandIdList(raw, {
+    flag,
+    prefix: '[resolve-stories] ',
+  });
+  if (error) {
+    throw new Error(error);
+  }
   if (ids.length === 0) {
     throw new Error(
-      '[resolve-stories] --ids is required: node resolve-stories.js --ids 101,102',
+      `[resolve-stories] ${flag} is required: node resolve-stories.js --ids 101,102 (or a range: --ids 101-104)`,
     );
   }
-  return [...new Set(ids)];
+  return ids;
 }

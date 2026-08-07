@@ -10,25 +10,26 @@ description: >-
 # Deliver digest (read once per session)
 
 > **Bundle, not a procedure.** [`deliver-story.md`](deliver-story.md) is still
-> the steps. This file is the material those steps referenced across five
-> separate files and a JSON schema — bundled so one read covers the whole happy
-> path. Situational material (lease preflight, recovery routers, merge-wait
-> budgets, CI remediation) stays on demand in
+> the steps; this file is the material they reference, bundled so one read
+> covers the happy path. Situational material (lease preflight, recovery
+> routers, merge-wait budgets, CI remediation) stays on demand in
 > [`deliver-story-reference.md`](deliver-story-reference.md) and
 > [`deliver-reference.md`](deliver-reference.md); read those **only** when an
 > envelope or a failure routes you there.
 
 ## 1. Dispatch — where the engine runs
 
-Read `stories[].dispatchMode` from the `resolve-stories.js` envelope. Two
-rules produce it, in order:
+Read `stories[].dispatchMode` from the `resolve-stories.js` envelope.
+`inline` names one indivisible resource — **the router's own session** — so one
+rule produces it:
 
 1. **Run topology.** A run resolving **one** Story is `inline`
    whatever its shape — sub-agent isolation is load-bearing only against a
    *concurrent* sibling racing the same checkout, and a one-Story run has none.
-2. **Body shape.** In a multi-Story run, a lite-shaped body is
-   `inline`; a full-shaped body, an unparseable one, or a footprint touching a
-   sensitive-path class is `subagent`. The `route::lite` label is a
+2. **Every other run is `subagent`.** A multi-Story run dispatches every Story
+   as a sub-agent however trivial its shape — a lite body does not conjure a
+   second session for a sibling, and the wave tick may hand you the whole set
+   on one beat. Shape still sets ceremony; the `route::lite` label is a
    human-visible hint, never the control signal.
 
 `inline` removes model-side fan-out only — no `story-worker` boot, no fresh
@@ -52,21 +53,32 @@ the only sanctioned landing. A silent local build is not a delivery.
 ## 3. Change set — computed once, handed to everyone
 
 One enumeration per Story. A critic that re-runs its own `git diff`
-can score a different set than the one that routed it:
+can score a different set than the one that routed it. Both routing calls take
+a single options object and are **total — they never throw**, so a wrong-shaped
+argument is silently absorbed into the `null` fail-safe:
 
 ```bash
 node --input-type=module -e '
-  import { computeChangeSet } from "<main-repo>/.agents/scripts/lib/orchestration/change-set.js";
+  const lib = "<main-repo>/.agents/scripts/lib/orchestration";
+  const { computeChangeSet } = await import(`${lib}/change-set.js`);
+  const { deriveChangeLevel } = await import(`${lib}/review-depth.js`);
+  const { resolveCeremonyForRisk } = await import(`${lib}/ceremony-routing.js`);
   const { files } = computeChangeSet({ baseRef: "main", headRef: "story-<storyId>" });
-  console.log(JSON.stringify(files));
+  // deriveChangeLevel({ changedFiles, injectedRules?, selectSensitivePathClassesFn? })
+  //   -> { level, classes } — an OBJECT, never a bare level.
+  const { level, classes } = deriveChangeLevel({ changedFiles: files });
+  // resolveCeremonyForRisk({ derivedLevel, clusterIndex?, freshCriticSampleRate?,
+  //   ceremonyProfile? }) -> { mode, reason, sampled, profile, verdictOwner }.
+  // derivedLevel is that level STRING. Handing it the object above matches no
+  // tier, so it routes to the null fail-safe: a fresh critic, silently.
+  const ceremony = resolveCeremonyForRisk({ derivedLevel: level, clusterIndex: 0 });
+  console.log(JSON.stringify({ files, level, classes, ...ceremony }));
 '
 ```
 
-Derive the level with `deriveChangeLevel`
-([`review-depth.js`](../../scripts/lib/orchestration/review-depth.js)) over
-that one list: a sensitive path registered in `audit-rules.json` → `high`, none
-→ `low`, an unenumerable diff (`files === null`) → `null`. Resolve
-fresh-vs-inline critics with `resolveCeremonyForRisk`
+Level rules ([`review-depth.js`](../../scripts/lib/orchestration/review-depth.js)):
+a sensitive path registered in `audit-rules.json` → `high`, none → `low`, an
+unenumerable diff (`files === null`) → `null`. Ceremony rules
 ([`ceremony-routing.js`](../../scripts/lib/orchestration/ceremony-routing.js)):
 `minimal` → always inline, `strict` → always fresh, `standard` → `high`/`null`
 → fresh and `low` → inline unless the `freshCriticSampleRate` floor forces
@@ -76,15 +88,25 @@ fresh. An `inline` dispatch mode overrides all of it to inline critics. Close's
 ## 4. Acceptance self-eval (Step 1a, required)
 
 **One verdict-owner per cluster** — the fresh critic *or* the inline
-self-eval, named by `verdictOwner`, never both and never a warm-up pass. It
-scores each `acceptance[]` item against the change set above, with `verify[]`
-output as evidence. Bounded by `delivery.acceptanceEval.maxRounds` (default 2).
-Then score the authored verdict:
+self-eval, named by `verdictOwner`, never both and never a warm-up pass. Each
+scores its cluster's `acceptance[]` items against the change set above, with
+`verify[]` output as evidence. Bounded by `delivery.acceptanceEval.maxRounds`
+(default 2).
+
+**One round = N cluster critics → ONE merged verdict → ONE gate call.** Merge
+every cluster's records into a single `criteria[]` in `acceptance[]` order, one
+per acceptance item, and score that once. A gate call per cluster spends a
+round *per cluster* and races the round ledger:
 
 ```bash
 node <main-repo>/.agents/scripts/acceptance-eval.js \
-  --story <storyId> --verdict <verdict-path>
+  --story <storyId> --verdict <merged-verdict-path> \
+  --expected-criteria <acceptance[] count>
 ```
+
+Pass `--expected-criteria` — **without it the coverage assertion is inert**, so
+an unmerged cluster verdict scores a fraction of the criteria and still reports
+`proceed`. A mismatch is rejected before scoring and costs no round.
 
 `proceed` → close. `redraft` → one more round inside the cap. `block` → **do
 not close**: post a `friction` comment and flip `agent::blocked`.

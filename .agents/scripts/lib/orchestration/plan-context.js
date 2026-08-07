@@ -31,15 +31,13 @@ import {
   renderAcceptanceSpecSystemPrompt,
   renderTechSpecSystemPrompt,
 } from '../templates/spec-author-prompts.js';
-import { concurrentMap } from '../util/concurrent-map.js';
+import { concurrentMap, FANOUT_CONCURRENCY } from '../util/concurrent-map.js';
 import { buildComplexitySignals } from './complexity-gate.js';
 import { parseDeliverySlicingTable } from './consolidation-precondition.js';
 import { buildDocsDigest } from './docs-digest.js';
 import { buildAuthoringContext } from './planning/authoring-context.js';
 import { buildDecomposerSystemPrompt } from './planning/decomposer-context.js';
 
-/** Bounded concurrency for `--tickets` source-ticket hydration. */
-const SOURCE_TICKET_FETCH_CONCURRENCY = 4;
 /**
  * Envelope byte ceiling (regression guard for the design's named PR2 risk:
  * two envelopes → one bigger one). This is the **only** live bound on
@@ -48,20 +46,53 @@ const SOURCE_TICKET_FETCH_CONCURRENCY = 4;
  * body and ship the raw seed on `seed.content` instead — the budget bounded
  * a field that never left the function.
  *
- * The envelope's bounded parts are: the tier-capped codebase snapshot
- * (~35 KB skinny on this repo), the three rendered system prompts (~15 KB),
- * and the digest-first `docsContext` (outline-only, or inline digest in
- * one-pager/seed mode). The seed itself is operator-supplied and carried
- * verbatim. Measured folded envelopes on this repo land at ~42 KB; 256 KB
- * (~64K tokens at the ≈4-chars/token estimate) gives >2× headroom over a
- * worst-case seed + medium-tier snapshot while staying an order of magnitude
- * under the session budget. The test suite asserts serialized envelopes stay
- * under this value — raise it only with a measured justification.
+ * A measured seed-mode envelope on this repo (a thin `.feature` corpus) is
+ * ~120 KB, dominated by the digest-first `docsContext` (~63 KB inline
+ * digest) and the rendered `systemPrompts` (~54 KB); every other field is
+ * under 1 KB. Story #4811 retired the tier-capped codebase snapshot that
+ * used to sit alongside them (~35 KB skinny here). This measurement is
+ * **not** representative of every consumer, though: Story #4977 found
+ * `bddScenarios` at 118 KB on a consumer with a mature Gherkin corpus —
+ * larger than `docsContext` and `systemPrompts` combined, consuming nearly
+ * all of the ceiling's headroom on its own, because the scanner applied no
+ * cap. `bddScenarios` is now truncated to `BDD_SCENARIOS_BYTE_BUDGET`
+ * (`lib/bdd-scenario-budget.js`, ≤24 KB) before it reaches this envelope,
+ * so the seed remains the only field this ceiling leaves genuinely
+ * unbounded. 256 KB (~64K tokens at the ≈4-chars/token estimate) leaves
+ * roughly 2× headroom over the fixed-floor measurement above while staying
+ * well under the session budget. The test suite asserts serialized
+ * envelopes stay under this value — raise it only with a measured
+ * justification.
  */
 export const PLAN_CONTEXT_ENVELOPE_BYTE_CEILING = 256_000;
 
 /** Fields named in the over-ceiling error, to point at what to trim. */
 const OVERSIZE_REPORT_FIELDS = 3;
+
+/**
+ * Per-field remedy for the over-ceiling refusal, keyed by envelope field
+ * name. Story #4977 — the refusal used to hardcode "trim the seed, or plan
+ * fewer --tickets" regardless of which field actually blew the budget; on a
+ * consumer with a mature Gherkin corpus the dominant field was
+ * `bddScenarios` (repo-derived, not seed-derived), and "trim the seed" was a
+ * dead lever the operator had no way to act on. The remedy now follows the
+ * single largest field.
+ */
+const OVERSIZE_FIELD_REMEDIES = Object.freeze({
+  seed: 'Trim the seed text — it is carried verbatim by design and is the one field with no elision path.',
+  sourceTickets:
+    'Plan fewer --tickets source issues in one run — each source ticket body is carried verbatim.',
+  epic: 'Plan fewer --tickets source issues in one run, or re-plan with a shorter Epic body.',
+  bddScenarios:
+    "The project's .feature corpus is already capped near BDD_SCENARIOS_BYTE_BUDGET (lib/bdd-scenario-budget.js) — if this still dominates, another field is unusually small; check the full field breakdown.",
+  docsContext:
+    'Trim project.docsContextFiles — docsContext is a digest built from those files.',
+  systemPrompts:
+    'This field is a fixed framework prompt, not operator content — if it dominates, file a framework-gap issue rather than trying to trim it.',
+});
+
+const DEFAULT_OVERSIZE_REMEDY =
+  'Trim the seed, or plan fewer --tickets source issues in one run.';
 
 /**
  * Fail closed when an assembled envelope exceeds
@@ -98,23 +129,27 @@ function assertPlanContextWithinCeiling(envelope, opts = {}) {
   const bytes = Buffer.byteLength(JSON.stringify(envelope) ?? '', 'utf-8');
   if (bytes <= ceiling) return envelope;
 
-  const largest = Object.entries(envelope)
+  const sortedFields = Object.entries(envelope)
     .map(([field, value]) => [
       field,
       Buffer.byteLength(JSON.stringify(value) ?? '', 'utf-8'),
     ])
-    .sort((a, b) => b[1] - a[1])
+    .sort((a, b) => b[1] - a[1]);
+
+  const largest = sortedFields
     .slice(0, OVERSIZE_REPORT_FIELDS)
     .map(([field, size]) => `${field} (${Math.round(size / 1024)} KB)`)
     .join(', ');
+
+  const topField = sortedFields[0]?.[0];
+  const remedy = OVERSIZE_FIELD_REMEDIES[topField] ?? DEFAULT_OVERSIZE_REMEDY;
 
   throw new Error(
     `[plan-context] the assembled "${envelope?.mode}" envelope is ` +
       `${Math.round(bytes / 1024)} KB, over the ` +
       `${Math.round(ceiling / 1024)} KB planner-context ceiling. Largest ` +
-      `fields: ${largest}. Trim the seed, plan fewer --tickets source issues ` +
-      'in one run, or narrow `planning.codebaseSnapshot`. Raising the ceiling ' +
-      'needs a measured justification — see PLAN_CONTEXT_ENVELOPE_BYTE_CEILING.',
+      `fields: ${largest}. ${remedy} Raising the ceiling needs a measured ` +
+      'justification — see PLAN_CONTEXT_ENVELOPE_BYTE_CEILING.',
   );
 }
 
@@ -228,7 +263,8 @@ export function renderStoriesTemplate({ complexitySignals = null } = {}) {
           'codes, security invariants, and load-bearing constraints with ' +
           'their why. Implementation choices belong to the deliverer unless ' +
           'load-bearing. No per-file behavior paragraphs, no current-state ' +
-          'narration. Keep it under ~250 words (soft advisory budget). ' +
+          'narration. Aim for ~250 words; an advisory warning fires past 350, ' +
+          'and it never fails the persist. ' +
           'Delete this field when acceptance[] carries the whole contract.',
         changes: buildTemplateChanges(complexitySignals),
         non_goals: [],
@@ -378,14 +414,21 @@ function resolveRiskHeuristics(config = {}) {
  * this one screens a seed, that one decides. Collapsing them would make a
  * confirm a bypass.
  *
- *   - `maxArtifacts`           — enumerated seed items (one artifact each).
+ * **Risk only, never cardinality (Story #4856).** This carried a
+ * `maxArtifacts: 2` ceiling — the second surviving artifact count after Story
+ * #4764 retired the axis from the routing gate, and the more misleading of the
+ * two, because the artifacts it counted were **paths scraped from seed prose**
+ * rather than a measured footprint. Observed on the seed that produced Story
+ * #4856: a change spanning four framework modules was suggested as light off
+ * two scraped paths, one of which did not exist at the scraped location. A count
+ * of guesses is not a size signal, so the screen now keys on risk alone.
+ *
  *   - `maxRiskHeuristicHits`   — any risk-heuristic hit disqualifies: risk
  *                                is exactly what a light path should not carry.
  *   - `maxSensitivePathClasses`— any sensitive-path class disqualifies, the
  *                                same taxonomy close applies to a landed diff.
  */
 const DELIVER_LIGHT_SUGGESTION_CEILINGS = Object.freeze({
-  maxArtifacts: 2,
   maxRiskHeuristicHits: 0,
   maxSensitivePathClasses: 0,
 });
@@ -412,9 +455,6 @@ export function buildDeliverLightSuggestion(complexitySignals) {
   const advisory = /** @type {const} */ (true);
   const automatic = /** @type {const} */ (false);
   const s = complexitySignals ?? {};
-  const artifactCount = Number.isInteger(s.artifactCount)
-    ? s.artifactCount
-    : Number.POSITIVE_INFINITY;
   const riskHits = Array.isArray(s.riskHeuristicHits)
     ? s.riskHeuristicHits.length
     : Number.POSITIVE_INFINITY;
@@ -423,11 +463,6 @@ export function buildDeliverLightSuggestion(complexitySignals) {
     : Number.POSITIVE_INFINITY;
 
   const reasons = [];
-  if (artifactCount > ceilings.maxArtifacts) {
-    reasons.push(
-      `seed enumerates ${artifactCount} artifacts (> ${ceilings.maxArtifacts})`,
-    );
-  }
   if (riskHits > ceilings.maxRiskHeuristicHits) {
     reasons.push(`seed hits ${riskHits} risk-heuristic phrase(s)`);
   }
@@ -445,9 +480,9 @@ export function buildDeliverLightSuggestion(complexitySignals) {
     ceilings,
     reasons: suggested
       ? [
-          `seed fits the light-path ceilings (≤${ceilings.maxArtifacts} artifacts, ` +
-            'no risk-heuristic hits, no sensitive-path classes) — the operator ' +
-            'may prefer /deliver for this scope',
+          'seed carries no risk signal (no risk-heuristic hits, no ' +
+            'sensitive-path classes) — the operator may prefer /deliver for ' +
+            "this scope; the light path's own gate and diff backstop decide size",
         ]
       : reasons,
   };
@@ -814,6 +849,84 @@ async function searchStoryDuplicates({
 }
 
 /**
+ * Gather the three independent envelope inputs — the open-Story duplicate
+ * search, the folded authoring context, and the inline docs digest — under
+ * bounded concurrency (Story #4952).
+ *
+ * None of the three reads a value the others produce, so the result is a pure
+ * function of `seed` and the injected config: the assembled envelope is
+ * **byte-identical** to the serial build for the same inputs, whichever order
+ * the three happen to settle in. `concurrentMap` preserves input order, so the
+ * destructuring below is positional and stable.
+ *
+ * `docsContextFiles` is emptied for the `buildAuthoringContext` call: the
+ * per-plan digest-file path needs a plan id that does not exist yet — the
+ * inline digest gathered alongside it replaces that pointer.
+ *
+ * @param {{
+ *   seed: string,
+ *   epicTitle: string,
+ *   excludeIds?: Iterable<number|string>,
+ *   provider: object,
+ *   config: object,
+ *   settings: object,
+ *   cwd?: string,
+ * }} args
+ * @returns {Promise<{
+ *   duplicates: Array<object>,
+ *   authoring: object,
+ *   docsContext: { mode: 'digest-inline', digest: string }|null,
+ * }>}
+ */
+async function gatherEnvelopeInputs({
+  seed,
+  epicTitle,
+  excludeIds = [],
+  provider,
+  config,
+  settings,
+  cwd,
+}) {
+  const paths = settings?.paths ?? {};
+  const [duplicates, authoring, inlineDigest] = await concurrentMap(
+    [
+      () => searchStoryDuplicates({ seed, provider, config, excludeIds }),
+      () =>
+        buildAuthoringContext(
+          0,
+          /* provider (unused behind the prefetch seam) */ {},
+          { ...settings, docsContextFiles: [] },
+          {
+            epic: { id: 0, title: epicTitle, body: seed },
+            github: config.github ?? null,
+            cwd,
+          },
+        ),
+      () =>
+        buildDocsDigest({
+          docsContextFiles: settings?.docsContextFiles,
+          docsRoot: paths.docsRoot,
+        }),
+    ],
+    (gather) => gather(),
+    // The per-mode envelope gathers (Story #4952): the duplicate search, the
+    // authoring-context fold and the docs digest have no data dependency on
+    // one another, so their serialization was incidental and `/plan` paid it
+    // with the operator waiting at Gate #1.
+    { concurrency: FANOUT_CONCURRENCY },
+  );
+
+  return {
+    duplicates,
+    authoring,
+    docsContext:
+      inlineDigest == null
+        ? null
+        : { mode: 'digest-inline', digest: inlineDigest },
+  };
+}
+
+/**
  * Build the seed-file (ideation) envelope. No parent ticket
  * exists yet — creation moves to the persist half — so the open-Story
  * dup search is the mode's gating input. `docsContext` is inline-digest:
@@ -836,36 +949,16 @@ async function buildSeedFileModeEnvelope({
     );
   }
 
-  const duplicates = await searchStoryDuplicates({
+  // Dup search, the authoring-context fold grounded in the seed prose, and the
+  // inline docs digest are independent — gathered concurrently (Story #4952).
+  const { duplicates, authoring, docsContext } = await gatherEnvelopeInputs({
     seed: content,
+    epicTitle: seedFilePath ?? 'seed',
     provider,
     config,
+    settings,
+    cwd,
   });
-
-  // Fold the authoring-context builders grounded in the seed prose.
-  // `docsContextFiles` is emptied for this call: the per-plan digest-file
-  // path needs a plan id that does not exist yet — the inline digest
-  // below replaces it.
-  const authoring = await buildAuthoringContext(
-    0,
-    /* provider (unused behind the prefetch seam) */ {},
-    { ...settings, docsContextFiles: [] },
-    {
-      epic: { id: 0, title: seedFilePath ?? 'seed', body: content },
-      github: config.github ?? null,
-      cwd,
-    },
-  );
-
-  const paths = settings?.paths ?? {};
-  const inlineDigest = await buildDocsDigest({
-    docsContextFiles: settings?.docsContextFiles,
-    docsRoot: paths.docsRoot,
-  });
-  const docsContext =
-    inlineDigest == null
-      ? null
-      : { mode: 'digest-inline', digest: inlineDigest };
 
   const limits = getLimits(config);
   const heuristics = resolveRiskHeuristics(config);
@@ -890,10 +983,9 @@ async function buildSeedFileModeEnvelope({
     ),
     duplicates,
     docsContext,
-    codebaseSnapshot: authoring.codebaseSnapshot,
     bddRunner: authoring.bddRunner,
     bddScenarios: authoring.bddScenarios,
-    memoryFreshness: authoring.memoryFreshness,
+    memoryPoolAdvisory: authoring.memoryPoolAdvisory,
     priorFeedback: authoring.priorFeedback,
     ticketSchema: TICKET_SCHEMA_DESCRIPTOR,
     maxTickets: limits.maxTickets,
@@ -976,7 +1068,8 @@ async function fetchSourceTickets(ticketIds, provider) {
         state: ticket.state ?? undefined,
       };
     },
-    { concurrency: SOURCE_TICKET_FETCH_CONCURRENCY },
+    // `--tickets` source-ticket hydration: one independent read per id.
+    { concurrency: FANOUT_CONCURRENCY },
   );
 }
 
@@ -1002,37 +1095,18 @@ async function buildTicketsModeEnvelope({
     .map((t) => `# ${t.title}\n\n${t.body}`)
     .join('\n\n---\n\n');
 
-  const duplicates = await searchStoryDuplicates({
+  // Same three independent gathers as seed-file mode, concurrent under the
+  // same bound (Story #4952); only the source-ticket hydration above is a
+  // genuine data dependency, because `seed` is derived from it.
+  const { duplicates, authoring, docsContext } = await gatherEnvelopeInputs({
     seed,
+    epicTitle: sourceTickets[0]?.title ?? 'tickets',
+    excludeIds: ticketIds,
     provider,
     config,
-    excludeIds: ticketIds,
+    settings,
+    cwd,
   });
-
-  const authoring = await buildAuthoringContext(
-    0,
-    {},
-    { ...settings, docsContextFiles: [] },
-    {
-      epic: {
-        id: 0,
-        title: sourceTickets[0]?.title ?? 'tickets',
-        body: seed,
-      },
-      github: config.github ?? null,
-      cwd,
-    },
-  );
-
-  const paths = settings?.paths ?? {};
-  const inlineDigest = await buildDocsDigest({
-    docsContextFiles: settings?.docsContextFiles,
-    docsRoot: paths.docsRoot,
-  });
-  const docsContext =
-    inlineDigest == null
-      ? null
-      : { mode: 'digest-inline', digest: inlineDigest };
 
   const limits = getLimits(config);
   const heuristics = resolveRiskHeuristics(config);
@@ -1052,10 +1126,9 @@ async function buildTicketsModeEnvelope({
     ),
     duplicates,
     docsContext,
-    codebaseSnapshot: authoring.codebaseSnapshot,
     bddRunner: authoring.bddRunner,
     bddScenarios: authoring.bddScenarios,
-    memoryFreshness: authoring.memoryFreshness,
+    memoryPoolAdvisory: authoring.memoryPoolAdvisory,
     priorFeedback: authoring.priorFeedback,
     ticketSchema: TICKET_SCHEMA_DESCRIPTOR,
     maxTickets: limits.maxTickets,
@@ -1149,12 +1222,26 @@ async function buildAmendmentModeEnvelope({
 
   const heuristics = resolveRiskHeuristics(config);
   const limits = getLimits(config);
-  const duplicates = await searchStoryDuplicates({
-    seed: priorBody,
-    provider,
-    config,
-    excludeIds: [amendsId],
-  });
+  // Story #4952 — this builder's independent-gather set has exactly one
+  // member. `provider.getTicket` above is a hard data dependency (the prior
+  // body IS the seed), and the mode deliberately carries no authoring-context
+  // fold and no docs digest — the prior artifacts are the grounding. It still
+  // goes through the same bounded gather as the other two builders so one file
+  // does not carry two ways of gathering independent envelope inputs.
+  const [duplicates] = await concurrentMap(
+    [
+      () =>
+        searchStoryDuplicates({
+          seed: priorBody,
+          provider,
+          config,
+          excludeIds: [amendsId],
+        }),
+    ],
+    (gather) => gather(),
+    // Same independent-gather fan-out as the seed-mode envelope above.
+    { concurrency: FANOUT_CONCURRENCY },
+  );
 
   return {
     mode: 'amends',

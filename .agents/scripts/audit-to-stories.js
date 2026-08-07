@@ -45,19 +45,37 @@ import {
 } from './lib/audit-to-stories/ledger.js';
 import { parseAuditReports } from './lib/audit-to-stories/parse-audit-md.js';
 import { buildPlanSeedMarkdown } from './lib/audit-to-stories/seed-from-findings.js';
+import { wireAuditStoryEdges } from './lib/audit-to-stories/wire-dependencies.js';
 import { runAsCli } from './lib/cli-utils.js';
 import { searchSemanticCandidates } from './lib/findings/semantic-issue-search.js';
+import { SEVERITIES, SEVERITY_RANK } from './lib/findings/severity.js';
 import { Logger } from './lib/Logger.js';
 import { parse as parseStoryBody } from './lib/story-body/story-body.js';
 
-const SEVERITY_RANK = { critical: 4, high: 3, medium: 2, low: 1 };
 const DEFAULT_GLOB = 'temp/audits/audit-*-results.md';
 const FAN_OUT_REPORT = 'audit-fan-out-results.md';
 
+/**
+ * Does `finding` clear the `threshold` severity floor?
+ *
+ * `SEVERITY_RANK` is imported from the canonical scale rather than declared
+ * here (Story #4877). The local copy this replaces ranked only four levels
+ * (`critical|high|medium|low`), so `info` — the canonical floor — ranked `0`,
+ * below even `--severity low`, and every informational finding was silently
+ * dropped from every filtered run. Sourcing the ranking from the SSOT means a
+ * level cannot exist in the vocabulary and be invisible to the filter.
+ *
+ * An unrecognised or absent severity still ranks below every real floor: it
+ * failed to parse, so it is not evidence that a threshold was met.
+ *
+ * @param {{ severity?: string }} finding
+ * @param {string} [threshold] — a canonical level, `'all'`, or falsy for no floor.
+ * @returns {boolean}
+ */
 function meetsSeverity(finding, threshold) {
   if (!threshold || threshold === 'all') return true;
   const minRank = SEVERITY_RANK[threshold] ?? 0;
-  const fRank = SEVERITY_RANK[finding.severity] ?? 0;
+  const fRank = SEVERITY_RANK[finding.severity] ?? -1;
   return fRank >= minRank;
 }
 
@@ -77,8 +95,21 @@ function readReports(paths) {
   }));
 }
 
+/**
+ * Count findings per severity bucket. The buckets are the canonical levels plus
+ * `unknown` for a finding whose severity did not parse — kept as a visible
+ * bucket so an unparseable severity is reported rather than absorbed into a
+ * real level. Derived from `SEVERITIES` so a new level appears in the tally
+ * automatically instead of falling into `unknown` (Story #4877).
+ *
+ * @param {Array<{ severity?: string }>} findings
+ * @returns {Record<string, number>}
+ */
 function tallyBySeverity(findings) {
-  const t = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
+  const t = {
+    ...Object.fromEntries(SEVERITIES.map((s) => [s, 0])),
+    unknown: 0,
+  };
   for (const f of findings) {
     if (Object.hasOwn(t, f.severity)) t[f.severity] += 1;
     else t.unknown += 1;
@@ -224,8 +255,38 @@ function dedupDegradedWarning(entries) {
   );
 }
 
-async function buildPlan({ glob: pattern, severity, useProvider, ledger }) {
-  const reportPaths = await collectReportPaths(pattern ?? DEFAULT_GLOB);
+/**
+ * Scan → group → dedup → (optionally) reconcile the cross-run ledger, and
+ * return the plan envelope.
+ *
+ * Every seam on the optional final `deps` parameter defaults to the real
+ * implementation (`.agents/rules/test-seams.md` rules 1-2, 4), so `main`,
+ * `runAuto`, and every production caller are unchanged.
+ *
+ * @param {{ glob?: string, severity?: string, useProvider?: boolean, ledger?: object }} params
+ * @param {{
+ *   collectReportPathsImpl?: typeof collectReportPaths,
+ *   readReportsImpl?: typeof readReports,
+ *   loadProviderImpl?: typeof loadProvider,
+ *   classifyGroupsImpl?: typeof classifyGroupsAgainstGitHub,
+ *   reconcileScanLedgerImpl?: typeof reconcileScanLedger,
+ *   logger?: { warn: Function },
+ * }} [deps]
+ * @returns {Promise<object>} the plan envelope.
+ */
+async function buildPlan(
+  { glob: pattern, severity, useProvider, ledger },
+  deps = {},
+) {
+  const {
+    collectReportPathsImpl = collectReportPaths,
+    readReportsImpl = readReports,
+    loadProviderImpl = loadProvider,
+    classifyGroupsImpl = classifyGroupsAgainstGitHub,
+    reconcileScanLedgerImpl = reconcileScanLedger,
+    logger = Logger,
+  } = deps;
+  const reportPaths = await collectReportPathsImpl(pattern ?? DEFAULT_GLOB);
   if (reportPaths.length === 0) {
     return {
       generatedAt: new Date().toISOString(),
@@ -245,8 +306,8 @@ async function buildPlan({ glob: pattern, severity, useProvider, ledger }) {
     };
   }
 
-  const reports = readReports(reportPaths);
-  const allFindings = parseAuditReports(reports);
+  const reports = readReportsImpl(reportPaths);
+  const allFindings = parseAuditReports(reports, { repoRoot: process.cwd() });
   const filtered = allFindings.filter((f) => meetsSeverity(f, severity));
   const stamped = withFingerprints(filtered);
   const { groups, edges } = groupFindings(stamped);
@@ -261,9 +322,9 @@ async function buildPlan({ glob: pattern, severity, useProvider, ledger }) {
   let dedupApplied = false;
 
   if (useProvider) {
-    const provider = await loadProvider();
+    const provider = await loadProviderImpl();
     if (provider) {
-      const result = await classifyGroupsAgainstGitHub({
+      const result = await classifyGroupsImpl({
         groups,
         provider,
         searchCandidates: provider.searchCandidates,
@@ -275,19 +336,19 @@ async function buildPlan({ glob: pattern, severity, useProvider, ledger }) {
       // the --scan JSON on stdout stays clean) naming the groups that degraded
       // to create because their lookup could not complete (Story #4678).
       if (summary.dedupDegraded?.count > 0) {
-        Logger.warn(dedupDegradedWarning(summary.dedupDegraded.groups));
+        logger.warn(dedupDegradedWarning(summary.dedupDegraded.groups));
       }
     } else {
       // The provider could not resolve a searchIssues port — the dedup gate
       // is silently a no-op without this. Surface it loudly (stderr, so the
       // --scan JSON on stdout stays clean) so the operator does not read a
       // create-only plan as "no duplicates found".
-      Logger.warn(dedupSkippedWarning('no-provider-port'));
+      logger.warn(dedupSkippedWarning('no-provider-port'));
     }
   } else {
     // Operator explicitly opted out via --no-provider. Still warn so a
     // duplicate-opening re-run is never a surprise.
-    Logger.warn(dedupSkippedWarning('disabled'));
+    logger.warn(dedupSkippedWarning('disabled'));
   }
 
   // Cross-run ledger (Story #4626): fold this scan onto the committed memory,
@@ -296,7 +357,7 @@ async function buildPlan({ glob: pattern, severity, useProvider, ledger }) {
   // --scan path leaves it untouched so it never mutates a committed file.
   let ledgerSummary;
   if (ledger) {
-    const suppressed = reconcileScanLedger({
+    const suppressed = reconcileScanLedgerImpl({
       ledgerPath: ledger.path ?? DEFAULT_LEDGER_PATH,
       findings: stamped,
       classifications,
@@ -523,6 +584,81 @@ function buildAndGateStories(eligible, edges) {
   return built;
 }
 
+/**
+ * The `--wire-edges` pass: hand the opened issue numbers back so the cohort's
+ * detected group edges become declared ordering (Story #5044).
+ *
+ * This is the second half of the two-pass crossing `--emit-stories` starts. The
+ * host opens one Issue per group from the emitted drafts, then replays the
+ * `groupKey → issueNumber` map here; each Story whose blockers now exist is
+ * re-rendered with a canonical `blocked by #N` footer and the same edges are
+ * mirrored as native `blocked_by` relations.
+ *
+ * @param {object} params
+ * @param {object} params.plan   A `--scan` plan envelope.
+ * @param {Record<string, number>} params.issueByGroupKey
+ * @param {object} [deps]
+ * @param {Function} [deps.loadProviderImpl]
+ * @param {Function} [deps.wireImpl]
+ * @returns {Promise<object>} the wiring summary.
+ */
+async function wireEdges({ plan, issueByGroupKey }, deps = {}) {
+  const { loadProviderImpl = loadProvider, wireImpl = wireAuditStoryEdges } =
+    deps;
+  const groups = (plan.classifications ?? [])
+    .filter((c) => c.action === 'create')
+    .map((c) => c.group);
+  const provider = await loadProviderImpl();
+  if (typeof provider?.updateTicket !== 'function') {
+    throw new Error(
+      '--wire-edges needs a provider exposing updateTicket to rewrite the ' +
+        'Story bodies with their `blocked by #N` footers. Configure ' +
+        'github.owner/repo (and auth), or wire the edges by hand.',
+    );
+  }
+  return wireImpl({
+    groups,
+    edges: plan.edges ?? [],
+    issueByGroupKey,
+    provider,
+    updateBody: (issueNumber, body) =>
+      provider.updateTicket(issueNumber, { body }),
+  });
+}
+
+/**
+ * Parse the `--ids` argument: a JSON object mapping group key → issue number,
+ * or a path to a file containing one.
+ *
+ * @param {string|undefined} raw
+ * @returns {Record<string, number>}
+ */
+function parseIssueMap(raw) {
+  if (!raw) {
+    throw new Error(
+      '--wire-edges requires --ids \'{"<groupKey>": <issueNumber>, ...}\' ' +
+        '(or a path to a JSON file with that shape) — the issue numbers the ' +
+        'create pass opened. Without them there is nothing to resolve the ' +
+        'group edges against.',
+    );
+  }
+  const text = raw.trimStart().startsWith('{')
+    ? raw
+    : fs.readFileSync(raw, 'utf8');
+  const parsed = JSON.parse(text);
+  const out = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    const n = Number(value);
+    if (!Number.isInteger(n) || n <= 0) {
+      throw new Error(
+        `--ids: "${key}" maps to ${JSON.stringify(value)}, which is not a positive issue number.`,
+      );
+    }
+    out[key] = n;
+  }
+  return out;
+}
+
 function persist(text, outPath) {
   if (!outPath) {
     process.stdout.write(text);
@@ -544,17 +680,56 @@ export const __testing = {
   resolveSeverityFloor,
   reconcileScanLedger,
   issueStatesFromClassifications,
+  wireEdges,
+  parseIssueMap,
 };
 
-async function main() {
+/**
+ * The CLI core: dispatch one of the four sub-commands and persist its output.
+ * Extracted from the `main` shell so the whole sub-command table (including
+ * the no-sub-command usage throw) is reachable without spawning the CLI.
+ *
+ * Every seam on the optional final `deps` parameter defaults to the real
+ * implementation (`.agents/rules/test-seams.md` rules 1-2, 4), so `main` and
+ * every production invocation are unchanged.
+ *
+ * @param {string[]} [argv]
+ * @param {{
+ *   buildPlanImpl?: typeof buildPlan,
+ *   runAutoImpl?: typeof runAuto,
+ *   loadPlanImpl?: typeof loadPlan,
+ *   buildAndGateStoriesImpl?: typeof buildAndGateStories,
+ *   buildPlanSeedMarkdownImpl?: typeof buildPlanSeedMarkdown,
+ *   persistImpl?: typeof persist,
+ *   stdout?: { write: (s: string) => void },
+ * }} [deps]
+ * @returns {Promise<void>}
+ */
+export async function runAuditToStories(
+  argv = process.argv.slice(2),
+  deps = {},
+) {
+  const {
+    buildPlanImpl = buildPlan,
+    runAutoImpl = runAuto,
+    loadPlanImpl = loadPlan,
+    buildAndGateStoriesImpl = buildAndGateStories,
+    buildPlanSeedMarkdownImpl = buildPlanSeedMarkdown,
+    wireEdgesImpl = wireEdges,
+    parseIssueMapImpl = parseIssueMap,
+    persistImpl = persist,
+    stdout = process.stdout,
+  } = deps;
   const { values } = parseArgs({
-    args: process.argv.slice(2),
+    args: argv,
     options: {
       scan: { type: 'boolean' },
       auto: { type: 'boolean' },
       'dry-run': { type: 'boolean' },
       'emit-plan-seed': { type: 'boolean' },
       'emit-stories': { type: 'boolean' },
+      'wire-edges': { type: 'boolean' },
+      ids: { type: 'string' },
       glob: { type: 'string' },
       severity: { type: 'string' },
       ledger: { type: 'string' },
@@ -566,71 +741,104 @@ async function main() {
     strict: false,
   });
 
-  if (values.auto) {
-    const { summary } = await runAuto({
+  const json = (value) => JSON.stringify(value, null, 2);
+
+  const runAutoSummary = async () =>
+    (
+      await runAutoImpl({
+        glob: values.glob,
+        severity: values.severity,
+        dryRun: values['dry-run'],
+        useProvider: !values['no-provider'],
+        ledgerPath: values.ledger,
+      })
+    ).summary;
+
+  const scanPlan = () =>
+    buildPlanImpl({
       glob: values.glob,
       severity: values.severity,
-      dryRun: values['dry-run'],
-      useProvider: !values['no-provider'],
-      ledgerPath: values.ledger,
-    });
-    persist(JSON.stringify(summary, null, 2), values.out);
-    if (!values.out) process.stdout.write('\n');
-    return;
-  }
-
-  if (values.scan) {
-    const plan = await buildPlan({
-      glob: values.glob,
-      severity: values.severity,
       useProvider: !values['no-provider'],
     });
-    const out = JSON.stringify(plan, null, 2);
-    persist(out, values.out);
-    if (!values.out) process.stdout.write('\n');
-    return;
-  }
 
-  if (values['emit-plan-seed']) {
-    const plan = loadPlan(values.plan);
-    const md = buildPlanSeedMarkdown({
+  const seedMarkdown = () => {
+    const plan = loadPlanImpl(values.plan);
+    return buildPlanSeedMarkdownImpl({
       groups: plan.groups ?? [],
       findings: plan.findings ?? [],
       sourceReports: plan.sourceReports ?? [],
     });
-    persist(md, values.out);
-    return;
-  }
+  };
 
-  if (values['emit-stories']) {
-    const plan = loadPlan(values.plan);
+  const emittedStories = () => {
+    const plan = loadPlanImpl(values.plan);
     const eligible = (plan.classifications ?? [])
       .filter((c) => c.action === 'create')
       .map((c) => c.group);
-    const built = buildAndGateStories(eligible, plan.edges ?? []);
-    const out = values.json
-      ? JSON.stringify(built, null, 2)
-      : built
-          .map(
-            (s, i) =>
-              `--- story ${i + 1} ---\nTitle: ${s.title}\nLabels: ${s.labels.join(', ')}\n\n${s.body}\n`,
-          )
-          .join('\n');
-    persist(out, values.out);
-    if (!values.out) process.stdout.write('\n');
-    return;
-  }
+    const built = buildAndGateStoriesImpl(eligible, plan.edges ?? []);
+    return values.json ? json(built) : renderStoryDrafts(built);
+  };
 
-  throw new Error(
-    'Usage: node audit-to-stories.js (--scan | --emit-plan-seed | --emit-stories) [options]',
-  );
+  const wiredEdges = () =>
+    wireEdgesImpl({
+      plan: loadPlanImpl(values.plan),
+      issueByGroupKey: parseIssueMapImpl(values.ids),
+    });
+
+  // One table, not a chain of `if (values.X) { …; return; }`. Each entry
+  // renders its sub-command's output; persisting it — and the stdout newline a
+  // piped run needs — happens once, below. The chain restated that tail in
+  // every arm, so each new sub-command paid for it twice: once in the branch
+  // and once in the complexity budget.
+  const subcommands = [
+    ['auto', async () => json(await runAutoSummary()), true],
+    ['scan', async () => json(await scanPlan()), true],
+    ['emit-plan-seed', () => seedMarkdown(), false],
+    ['emit-stories', () => emittedStories(), true],
+    ['wire-edges', async () => json(await wiredEdges()), true],
+  ];
+
+  const entry = subcommands.find(([flag]) => values[flag]);
+  if (!entry) {
+    throw new Error(
+      'Usage: node audit-to-stories.js (--scan | --emit-plan-seed | --emit-stories | --wire-edges) [options]',
+    );
+  }
+  const [, render, newlineOnStdout] = entry;
+  persistImpl(await render(), values.out);
+  if (newlineOnStdout && !values.out) stdout.write('\n');
+}
+
+/**
+ * Render the Story drafts as the human-readable `--emit-stories` transcript
+ * (the `--json` form is the machine one). `dependsOn` is surfaced because the
+ * group edges no longer ride the body at emit time — the blockers have no issue
+ * numbers yet — so this is where a human driving the create pass by hand sees
+ * the ordering they will replay through `--wire-edges` (Story #5044).
+ *
+ * @param {Array<{ title: string, labels: string[], body: string, groupKey?: string, dependsOn?: string[] }>} built
+ * @returns {string}
+ */
+function renderStoryDrafts(built) {
+  return built
+    .map((s, i) => {
+      const deps = (s.dependsOn ?? []).length
+        ? `\nDepends on group(s): ${s.dependsOn.join(', ')}`
+        : '';
+      return `--- story ${i + 1} ---\nTitle: ${s.title}\nLabels: ${s.labels.join(', ')}\nGroup key: ${s.groupKey}${deps}\n\n${s.body}\n`;
+    })
+    .join('\n');
+}
+
+async function main() {
+  await runAuditToStories();
 }
 
 runAsCli(import.meta.url, main, {
   source: 'audit-to-stories',
   usage: {
     invocation:
-      'node .agents/scripts/audit-to-stories.js (--scan | --auto | --emit-plan-seed | --emit-stories) [options]',
+      'node .agents/scripts/audit-to-stories.js (--scan | --auto | --emit-plan-seed | --emit-stories | --wire-edges) [options]',
     summary:
       'Turn audit-lens findings under temp/audits/ into a dedup-checked plan seed or standalone Stories.',
     flags: [
@@ -638,6 +846,14 @@ runAsCli(import.meta.url, main, {
       ['--auto', 'Run the full scan → file pipeline and print the summary.'],
       ['--emit-plan-seed', 'Emit a /plan --seed-file document.'],
       ['--emit-stories', 'Emit the Story drafts as JSON.'],
+      [
+        '--wire-edges',
+        'Second pass: resolve the detected group edges to blocked by #N footers plus native blocked_by relations. Needs --plan and --ids.',
+      ],
+      [
+        '--ids <json|path>',
+        'Group key → opened issue number, as JSON or a path to a JSON file. Required by --wire-edges.',
+      ],
       ['--glob <pattern>', 'Override the audit-results glob.'],
       ['--severity <level>', 'Lowest severity to include (high|medium|low).'],
       ['--ledger <path>', 'Path to the dedup ledger.'],

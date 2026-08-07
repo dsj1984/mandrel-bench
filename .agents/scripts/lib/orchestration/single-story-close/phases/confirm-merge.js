@@ -95,6 +95,8 @@ import {
   confirmStoryMerged as defaultConfirmStoryMerged,
   readPrMergeState as defaultReadPrMergeState,
 } from '../../../single-story/confirm-merge.js';
+import { pollUntil } from '../../../util/poll-loop.js';
+import { applyBehindUpdate } from '../../behind-recovery.js';
 import {
   emitMergeFlipFailed as defaultEmitMergeFlipFailed,
   MERGED_FLIP_FAILED_BLOCK_CLASS,
@@ -281,15 +283,33 @@ export async function readPrWaitProbe({
  * explicit `maxWaitSecondsOverride` still wins over the async cap — a headless
  * caller with no host ceiling opts back into single-block waiting.
  *
+ * `modeOverride` is the per-invocation `--merge-watch-mode` flag (Story #4949)
+ * and wins over `delivery.mergeWatch.mode` on exactly the precedence
+ * `maxWaitSecondsOverride` already uses. It exists because run topology is
+ * knowable only to the orchestrator: close sees one Story and cannot tell a
+ * solo delivery (where a foreground wait is the cheapest ending) from the Nth
+ * close of a wave (where each foreground wait is serialized dead time). The
+ * config default therefore stays `sync`, and the caller that knows better says
+ * so per invocation. The two flags remain composable — `--merge-watch-mode
+ * async --max-wait-seconds 900` selects the async posture and then overrides
+ * its probe cap, because the cap check below keys on the override's presence,
+ * not on where the mode came from.
+ *
  * @param {object} [config]
  * @param {number} [maxWaitSecondsOverride]
+ * @param {'sync'|'async'} [modeOverride]
  * @returns {{ mode: 'sync'|'async', intervalSeconds: number, maxWaitSeconds: number, maxBudgetSeconds: number, updateAttempts: number }}
  */
-export function resolveMergeWaitConfig(config, maxWaitSecondsOverride) {
+export function resolveMergeWaitConfig(
+  config,
+  maxWaitSecondsOverride,
+  modeOverride,
+) {
   const mergeWatch = config?.delivery?.mergeWatch ?? {};
   const int = (value, fallback, min = 1) =>
     Number.isInteger(value) && value >= min ? value : fallback;
-  const mode = mergeWatch.mode === 'async' ? 'async' : 'sync';
+  const requestedMode = modeOverride ?? mergeWatch.mode;
+  const mode = requestedMode === 'async' ? 'async' : 'sync';
   const configuredMaxWait = int(
     maxWaitSecondsOverride,
     int(mergeWatch.maxWaitSeconds, DEFAULT_MAX_WAIT_SECONDS),
@@ -363,7 +383,8 @@ function formatUnlandedFriction({
   const remedy =
     blockClass === 'checks-failed'
       ? `A required check is **red**. Fix the failure and push a new commit on \`story-${storyId}\`; ` +
-        `auto-merge stays armed across retries. Watch the checks with:\n\n` +
+        `the red disarms auto-merge, and only a green on a new head SHA re-arms it — ` +
+        `re-running the failed job is forbidden. Watch the checks with:\n\n` +
         `\`\`\`bash\n${NEXT_COMMANDS.watchCi(storyId, prNumber)}\n\`\`\``
       : `Resolve the underlying condition (branch protection, required checks, ` +
         `or a manual merge), then resume the land:\n\n` +
@@ -615,7 +636,15 @@ async function blockOnUnlanded({
 /**
  * Bring a BEHIND PR up to date, bounded by `updateAttempts`. Best-effort:
  * a failed update is not itself a terminal — the next poll re-reads the
- * real state and lets the normal classification decide.
+ * real state and lets the normal classification decide, which is why a
+ * failed attempt still counts against the wait's tick.
+ *
+ * The BEHIND / budget / did-it-land decision itself lives in the shared
+ * {@link applyBehindUpdate} (Story #5006) — the CI-watch loop in
+ * `lib/orchestration/pr-watch.js` runs the same one. This wrapper supplies
+ * the merge wait's probe source, its `gh` facade (bounded by
+ * {@link withGhTimeout}, so a wedged child cannot strand an unattended
+ * async-mode wait), and its operator wording.
  *
  * @returns {Promise<boolean>} whether an update was actually attempted.
  */
@@ -628,31 +657,33 @@ async function maybeUpdateBehindPr({
   ghTimeoutMs = MERGE_WAIT_GH_TIMEOUT_MS,
   progress,
 }) {
-  if (probe.mergeStateStatus !== 'BEHIND') return false;
-  if (updatesUsed >= updateAttempts) {
-    progress?.(
-      'CONFIRM',
-      `⚠️ PR #${prNumber} is BEHIND but the update budget (${updateAttempts}) is spent — not updating again.`,
-    );
-    return false;
-  }
-  try {
-    await withGhTimeout(
-      (gh ?? defaultGh).pr.updateBranch(prNumber),
-      ghTimeoutMs,
-      `gh pr update-branch ${prNumber}`,
-    );
-    progress?.(
-      'CONFIRM',
-      `⏫ PR #${prNumber} was BEHIND its base — updated (attempt ${updatesUsed + 1}/${updateAttempts}).`,
-    );
-  } catch (err) {
-    progress?.(
-      'CONFIRM',
-      `⚠️ gh pr update-branch failed (continuing): ${err?.message ?? err}`,
-    );
-  }
-  return true;
+  const recovery = await applyBehindUpdate({
+    mergeStateStatus: probe.mergeStateStatus,
+    updatesUsed,
+    maxUpdates: updateAttempts,
+    updateBranch: () =>
+      withGhTimeout(
+        (gh ?? defaultGh).pr.updateBranch(prNumber),
+        ghTimeoutMs,
+        `gh pr update-branch ${prNumber}`,
+      ),
+    onBudgetSpent: () =>
+      progress?.(
+        'CONFIRM',
+        `⚠️ PR #${prNumber} is BEHIND but the update budget (${updateAttempts}) is spent — not updating again.`,
+      ),
+    onUpdated: () =>
+      progress?.(
+        'CONFIRM',
+        `⏫ PR #${prNumber} was BEHIND its base — updated (attempt ${updatesUsed + 1}/${updateAttempts}).`,
+      ),
+    onUpdateFailed: (detail) =>
+      progress?.(
+        'CONFIRM',
+        `⚠️ gh pr update-branch failed (continuing): ${detail}`,
+      ),
+  });
+  return recovery.attempted;
 }
 
 /**
@@ -757,6 +788,9 @@ async function onMergeObserved({
  * @param {string|null} args.autoMergeReason
  * @param {object} args.provider
  * @param {object} [args.config]
+ * @param {'sync'|'async'} [args.mergeWatchMode] Per-invocation
+ *   `--merge-watch-mode` override (Story #4949); wins over
+ *   `delivery.mergeWatch.mode`.
  * @param {(tag: string, msg: string) => void} [args.progress]
  * @param {object} [args.injectedGh]
  * @param {Function} [args.injectedNotify]
@@ -789,6 +823,7 @@ export async function runConfirmMergePhase({
   provider,
   config,
   maxWaitSeconds: maxWaitSecondsOverride,
+  mergeWatchMode: mergeWatchModeOverride,
   progress,
   injectedGh,
   injectedNotify,
@@ -831,7 +866,11 @@ export async function runConfirmMergePhase({
     maxWaitSeconds,
     maxBudgetSeconds,
     updateAttempts,
-  } = resolveMergeWaitConfig(config, maxWaitSecondsOverride);
+  } = resolveMergeWaitConfig(
+    config,
+    maxWaitSecondsOverride,
+    mergeWatchModeOverride,
+  );
   const intervalMs = intervalSeconds * 1000;
   const startedAtMs = nowMsFn();
   let anchorMs = startedAtMs;
@@ -851,7 +890,20 @@ export async function runConfirmMergePhase({
       `cumulative budget=${maxBudgetSeconds}s)...`,
   );
 
-  while (true) {
+  /**
+   * One poll iteration. Returns `{ done: false }` to keep polling, or
+   * `{ done: true, outcome }` with the phase's terminal. Story #4873 lifted
+   * this body out of a bespoke unbounded loop so the cadence is owned by the
+   * shared {@link pollUntil} primitive — the loop below sleeps, aborts, and
+   * counts ticks in exactly one place for every wait in the codebase. Every
+   * budget, floor, and classification decision is unchanged; only who owns the
+   * `await sleep(...)` moved.
+   *
+   * A throw from any of the terminal handlers is captured rather than allowed
+   * to escape into `pollUntil` (which treats a throwing `fn` as a non-match
+   * and would spin forever on it); the caller re-throws it after the loop.
+   */
+  async function runMergePoll() {
     const probe = await readPrWaitProbeFn({
       prNumber,
       gh: injectedGh,
@@ -875,26 +927,44 @@ export async function runConfirmMergePhase({
       maxBudgetSeconds,
     };
 
+    // Heartbeat (Story #4873). A backgrounded close writes this phase's
+    // progress to its own output file, and between the opening banner and the
+    // terminal there used to be NOTHING for minutes at a time — so an
+    // orchestrator watching that file could not tell a healthy in-flight wait
+    // from a wedged process without going back to GitHub itself. One line per
+    // poll makes the file's own growth the liveness signal.
+    progress?.(
+      'CONFIRM',
+      `⏱  poll ${polls}: PR #${prNumber} state=${probe.state ?? 'unknown'} ` +
+        `checks=${probe.checksStatus ?? 'unknown'} ` +
+        `mergeState=${probe.mergeStateStatus ?? 'unknown'} ` +
+        `(${waitBudget.waitedSeconds}s of ${maxWaitSeconds}s this invocation; ` +
+        `${waitBudget.cumulativeSeconds}s of ${maxBudgetSeconds}s cumulative)` +
+        (probe.error ? ` — probe error: ${probe.error}` : ''),
+    );
+
     if (probe.state === 'MERGED' || probe.mergedAt) {
-      return onMergeObserved({
-        storyId,
-        storyBranch,
-        baseBranch,
-        prNumber,
-        prUrl,
-        cwd,
-        config,
-        provider,
-        progress,
-        injectedGh,
-        injectedNotify,
-        readPrMergeStateFn,
-        confirmStoryMergedFn,
-        runPostLandTailFn,
-        emitMergeFlipFailedFn,
-        prProbe: probe,
-        elapsedSeconds: Math.round(waitedMs / 1000),
-      });
+      return doneWith(
+        await onMergeObserved({
+          storyId,
+          storyBranch,
+          baseBranch,
+          prNumber,
+          prUrl,
+          cwd,
+          config,
+          provider,
+          progress,
+          injectedGh,
+          injectedNotify,
+          readPrMergeStateFn,
+          confirmStoryMergedFn,
+          runPostLandTailFn,
+          emitMergeFlipFailedFn,
+          prProbe: probe,
+          elapsedSeconds: Math.round(waitedMs / 1000),
+        }),
+      );
     }
 
     // Everything below funnels into ONE terminal exit (Story #4710): each
@@ -987,16 +1057,18 @@ export async function runConfirmMergePhase({
     }
 
     if (unlanded) {
-      return blockOnUnlanded({
-        storyId,
-        prNumber,
-        prUrl,
-        ...unlanded,
-        provider,
-        progress,
-        classifyMergeBlockFn,
-        emitMergeUnlandedFn,
-      });
+      return doneWith(
+        await blockOnUnlanded({
+          storyId,
+          prNumber,
+          prUrl,
+          ...unlanded,
+          provider,
+          progress,
+          classifyMergeBlockFn,
+          emitMergeUnlandedFn,
+        }),
+      );
     }
 
     // This invocation's bound expired → PENDING. Deliberately NOT a block:
@@ -1011,16 +1083,43 @@ export async function runConfirmMergePhase({
           `${waitBudget.cumulativeSeconds}s of ${maxBudgetSeconds}s cumulative). PR #${prNumber} still in flight ` +
           `(checks=${probe.checksStatus ?? 'unknown'}). Story stays at agent::closing — resumable.`,
       );
-      return {
+      return doneWith({
         confirmed: false,
         terminal: 'pending',
         reason: `merge wait bound reached with the PR still in flight (checks=${probe.checksStatus ?? 'unknown'})`,
         prProbe: probe,
         waitBudget,
         elapsedSeconds: waitBudget.waitedSeconds,
-      };
+      });
     }
 
-    await sleepFn(intervalMs);
+    return { done: false };
   }
+
+  const tick = await pollUntil({
+    fn: async () => {
+      try {
+        return await runMergePoll();
+      } catch (err) {
+        // A terminal handler threw. `pollUntil` treats a throwing `fn` as a
+        // non-match and would poll forever on it, so the throw is carried out
+        // as a match and re-raised below.
+        return { done: true, thrown: err };
+      }
+    },
+    predicate: (result) => result?.done === true,
+    intervalMs,
+    // The wait owns its own bounds (`maxWaitSeconds` → `pending`,
+    // `maxBudgetSeconds` → blocked), and both are decided from the probe
+    // inside the tick. A second, cruder wall-clock timeout here would throw
+    // past those classifications.
+    sleepFn: (ms) => sleepFn(ms),
+  });
+  if (tick.thrown) throw tick.thrown;
+  return tick.outcome;
+}
+
+/** Wrap a phase terminal as the poll loop's match. */
+function doneWith(outcome) {
+  return { done: true, outcome };
 }

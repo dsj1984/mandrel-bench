@@ -14,7 +14,6 @@
       "patterns.md"
     ],
     "commands": {
-      "lintBaseline": "npx eslint . --format json",
       "test": "npm test",
       "typecheck": null,
       "formatCheck": "npx biome format .",
@@ -61,33 +60,11 @@
         "story-closing",
         "operator-message",
         "merge.unlanded",
-        "merge.flip-failed",
-        "loop.tick"
+        "merge.flip-failed"
       ]
     }
   },
   "planning": {
-    "codebaseSnapshot": {
-      "tier": "skinny",
-      "include": [
-        ".agents/scripts/**",
-        "src/**",
-        "lib/**",
-        "app/**",
-        "packages/**"
-      ],
-      "exclude": [
-        "**/node_modules/**",
-        "**/dist/**",
-        "**/build/**",
-        "**/.next/**",
-        "**/.turbo/**",
-        "**/coverage/**",
-        "**/*.test.*",
-        "**/*.spec.*"
-      ],
-      "recentCommitWindow": 30
-    },
     "riskHeuristics": [
       "Destructive or irreversible data mutations (dropping tables, deleting rows without soft-delete or backup, truncating production state).",
       "Modifications to shared security or auth infrastructure (IAM policies, auth middleware, session or token handling, secret rotation).",
@@ -97,14 +74,14 @@
     ],
     "failOnSharedEditors": false,
     "requireExplicitCrossStoryDeps": false,
-    "failOnRegistryConflicts": false,
-    "failOnLargeFanOut": false,
-    "largeFanOutThreshold": 10,
     "crossCuttingRegistries": [
       "lib/orchestration/lifecycle/listeners/index.js",
       "**/listeners/index.js",
       "**/handlers/index.js"
     ],
+    "failOnRegistryConflicts": false,
+    "failOnLargeFanOut": false,
+    "largeFanOutThreshold": 10,
     "navigation": {
       "routeGlobs": [],
       "navRegistry": []
@@ -114,22 +91,22 @@
     "execution": {
       "timeoutMs": 600000
     },
-    "lease": {
-      "ttlMs": 900000
-    },
-    "ci": {
-      "watch": {
-        "pollIntervalMs": 10000,
-        "maxPolls": 180,
-        "maxResumes": 3
-      },
-      "autoMerge": "trust-ci"
-    },
     "docsFreshness": {
       "paths": ["README.md"]
     },
+    "tempRetention": {
+      "enabled": true,
+      "staleDays": 7,
+      "classes": {
+        "orchestrationLogs": true,
+        "validationEvidence": true,
+        "auditResults": true,
+        "planDirs": true
+      }
+    },
     "deliverRunner": {
-      "concurrencyCap": 3
+      "concurrencyCap": 3,
+      "footprintGuard": "enforce"
     },
     "worktreeIsolation": {
       "enabled": true,
@@ -152,43 +129,6 @@
       "retry": {
         "repeatCount": 3
       }
-    },
-    "mergeWatch": {
-      "intervalSeconds": 30,
-      "maxBudgetSeconds": 3600
-    },
-    "codeReview": {
-      "providers": [
-        {
-          "name": "native"
-        },
-        {
-          "name": "security-review",
-          "scopes": ["story"],
-          "optional": true
-        },
-        {
-          "name": "ultrareview",
-          "scopes": ["story"],
-          "manualPrompt": true,
-          "when": {
-            "label": "risk::high"
-          }
-        }
-      ],
-      "maxFixAttempts": 3,
-      "maxFixScopeFiles": 5,
-      "autoFixSeverity": "medium"
-    },
-    "routing": {
-      "roleScopedAgents": true,
-      "freshCriticSampleRate": 0.2,
-      "ceremonyProfile": "standard",
-      "closeAndLand": true
-    },
-    "feedbackLoop": {
-      "auditResultsAutoFile": true,
-      "retroProposals": true
     },
     "quality": {
       "gateScoping": {
@@ -356,12 +296,57 @@
         "navRegistry": []
       }
     },
+    "mergeWatch": {
+      "intervalSeconds": 30,
+      "maxBudgetSeconds": 3600
+    },
+    "codeReview": {
+      "providers": [
+        {
+          "name": "native"
+        },
+        {
+          "name": "security-review",
+          "scopes": ["story"],
+          "optional": true
+        },
+        {
+          "name": "ultrareview",
+          "scopes": ["story"],
+          "manualPrompt": true,
+          "when": {
+            "label": "risk::high"
+          }
+        }
+      ],
+      "maxFixAttempts": 3,
+      "maxFixScopeFiles": 5,
+      "autoFixSeverity": "medium"
+    },
     "refactorStage": {
       "enabled": false
     },
     "acceptanceEval": {
-      "maxRounds": 2,
-      "clusterCeiling": 4
+      "maxRounds": 2
+    },
+    "feedbackLoop": {
+      "auditResultsAutoFile": true,
+      "retroProposals": true
+    },
+    "ci": {
+      "watch": {
+        "pollIntervalMs": 10000,
+        "maxPolls": 180,
+        "maxResumes": 3,
+        "attachWindowMs": 1200000
+      },
+      "autoMerge": "trust-ci"
+    },
+    "routing": {
+      "roleScopedAgents": true,
+      "freshCriticSampleRate": 0.2,
+      "ceremonyProfile": "standard",
+      "closeAndLand": true
     }
   },
   "qa": {
@@ -389,6 +374,16 @@
       "member": {
         "signInSkill": "stack/qa/sign-in-member"
       }
+    },
+    "gherkinLint": {
+      "scopes": {
+        "web": {
+          "featureRoots": ["apps/web/tests/features"],
+          "stepRoots": ["apps/web/tests/steps"]
+        }
+      },
+      "exemptionTags": ["@skip"],
+      "stepWaivers": []
     },
     "consoleAllowlist": ["Download the React DevTools", "[HMR]"],
     "designTokens": "src/styles/tokens.css"

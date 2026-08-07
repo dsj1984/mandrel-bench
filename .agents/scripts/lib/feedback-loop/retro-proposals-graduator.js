@@ -49,32 +49,76 @@ import {
 export const isAutoFileEnabled = makeIsAutoFileEnabled('retroProposals');
 
 /**
- * Build the content-hash idempotency marker embedded in freshly filed
- * follow-up bodies. Derived from the proposal's CATEGORY (retro proposals
- * are path-less and the rendered title embeds a mutable recurrence count)
- * so the marker is stable across sibling insert/remove/reorder churn AND
- * across re-runs that change the count. An HTML comment so it survives
- * markdown rendering without leaking into the visible body; the idempotency
- * probe strips the comment delimiters before querying `gh search` (the raw
- * `<!-- … -->` form never matches the index — Story #4657).
+ * The content fingerprint identifying one retro proposal.
  *
- * @param {number} epicId
- * @param {{ category?: string, title?: string }} finding
- * @returns {string}
+ * Fingerprinted on the CATEGORY only — never the rendered title. The title
+ * embeds the mutable recurrence count ("… recurred <N> times in …"), so
+ * hashing it made a retro re-run after the count changed mint a fresh
+ * fingerprint and re-file a duplicate issue for the same category.
+ *
+ * @param {{ category?: string }} finding
+ * @returns {string} 16-char lowercase hex digest.
  */
-export function buildContentMarker(epicId, finding) {
-  // Fingerprint on the CATEGORY only — never the rendered title. The
-  // title embeds the mutable recurrence count ("… recurred <N> times in
-  // Epic #X"), so hashing it made a retro re-run after the count changed
-  // mint a fresh fingerprint and re-file a duplicate issue for the same
-  // category. The idempotency identity of a retro proposal is
-  // (epic, category); the epic id is already carried in the marker text.
-  const fp = contentFingerprint({
-    category: finding.category,
+function proposalFingerprint(finding) {
+  return contentFingerprint({
+    category: finding?.category,
     path: '',
     title: '',
   });
-  return `<!-- retro-proposal-followup: epic-${epicId}-${fp} -->`;
+}
+
+/**
+ * Build the content-hash idempotency marker embedded in filed follow-up
+ * bodies. An HTML comment so it survives markdown rendering without leaking
+ * into the visible body; the idempotency probe strips the comment delimiters
+ * before querying `gh search` (the raw `<!-- … -->` form never matches the
+ * index — Story #4657).
+ *
+ * **Anchor-free by construction (Story #4837).** The marker used to read
+ * `epic-<anchorId>-<fp>`. The fingerprint half was stable, but the anchor
+ * half was the run's FIRST STORY for a run-scoped roll-up
+ * (`run-epilogue.js` passes `anchorId: Number(stories[0])`), so it changed
+ * every run and the key could never match a prior filing. Measured: closed
+ * issues #4833 and #4834 are one `story-blocked` finding under two anchors —
+ * `epic-101-e59976671e0b848b` and `epic-777-e59976671e0b848b` — identical
+ * fingerprint, different anchor. Dedup did not malfunction; its key was too
+ * narrow. The identity of a recurring friction category is the category,
+ * full stop: the anchor is evidence about one occurrence and belongs in the
+ * body, never in the key.
+ *
+ * The `epicId` parameter is retained because `graduate()` owns the calling
+ * convention for every graduator's `buildContentMarker`; this one
+ * deliberately does not consult it.
+ *
+ * @param {number} _epicId — unused; see above.
+ * @param {{ category?: string }} finding
+ * @returns {string}
+ */
+export function buildContentMarker(_epicId, finding) {
+  return `<!-- retro-proposal-followup: ${proposalFingerprint(finding)} -->`;
+}
+
+/**
+ * Body substrings that identify a follow-up already filed for this finding,
+ * handed to the graduator's strongly-consistent read (Story #4837).
+ *
+ * Two shapes, because the marker format changed under a live backlog:
+ *
+ *   1. The current anchor-free marker.
+ *   2. `-<fp> -->` — the tail every pre-cutover anchored marker ends with
+ *      (`<!-- retro-proposal-followup: epic-4828-d185e7279a48d03d -->`),
+ *      whatever anchor it carried. Without it the cutover would re-file the
+ *      whole already-filed backlog exactly once, which is the failure this
+ *      Story exists to stop rather than to perform one last time.
+ *
+ * Module-local: it reaches `graduate()` on the spec bundle, so the walk is
+ * the seam and a second exported symbol would only be one nothing imports.
+ *
+ * @param {{ finding: { category?: string }, contentMarker: string }} args
+ * @returns {string[]}
+ */
+function buildMatchTokens({ finding, contentMarker }) {
+  return [contentMarker, `-${proposalFingerprint(finding)} -->`];
 }
 
 /**
@@ -94,6 +138,14 @@ function metaSourceLabel(source) {
  * a single source so the constant classifier routes every finding in the
  * bucket to the correct repo (and the label reflects that source).
  *
+ * The bundle carries **only** builders. It used to declare a
+ * `commentMarker` / `noCommentReason` / `parseFindings` trio purely to satisfy
+ * the shared walk's shape — this graduator supplies its findings pre-parsed,
+ * so the walk never consulted any of the three. Story #5003 deleted that limb
+ * from `graduate()` along with the Epic-era graduator that was its only real
+ * consumer, and the placeholder fields went with it: a declared-but-unread
+ * field is a standing invitation to write a parser nothing will call.
+ *
  * @param {'framework'|'consumer'} source
  * @returns {object}
  */
@@ -101,13 +153,8 @@ function makeSpec(source) {
   return {
     fnName: 'graduateRetroProposals',
     isAutoFileEnabled,
-    // Pre-parsed seam: the comment marker / parser are never consulted
-    // (findings are supplied directly), but the fields are declared for the
-    // shared walk's shape.
-    commentMarker: '<!-- structured-comment: retro -->',
-    noCommentReason: 'no-retro-comment',
-    parseFindings: () => [],
     buildContentMarker,
+    buildMatchTokens,
     crossRepoCommentAttrs: { graduator: 'retro-proposals' },
     decorateRecord: (record, finding) => {
       record.category = finding.category;
@@ -165,8 +212,8 @@ function toFinding(item, source, index) {
  *
  * @param {object} opts
  * @param {number} opts.epicId
- * @param {object} opts.provider — ticketing provider (getTicketComments;
- *   postComment for the cross-repo-deferred persistence).
+ * @param {object} opts.provider — ticketing provider (`postComment`, for the
+ *   cross-repo-deferred persistence).
  * @param {object} [opts.config] — resolved agentrc.
  * @param {{owner: string, repo: string}} opts.currentRepo — the repo the
  *   retro is running inside (the consumer's own repo); the cross-repo guard's
@@ -232,6 +279,11 @@ export async function graduateRetroProposals({
   // circuit the repeat with no spawn.
   const filedMarkers = new Set();
 
+  // One live-label-set read per routed repo across both buckets (Story #4828):
+  // the two buckets file into at most two repos, and every finding in a bucket
+  // wants the same `meta::*` name.
+  const labelCache = new Map();
+
   let remaining = maxFilingsPerRun;
   for (const { source, items } of buckets) {
     if (items.length === 0) continue;
@@ -252,6 +304,7 @@ export async function graduateRetroProposals({
       maxFilingsPerRun: Math.max(0, remaining),
       findings,
       filedMarkers,
+      labelCache,
       logger,
       spec: makeSpec(source),
     });
@@ -444,5 +497,3 @@ export async function fileRetroProposals({
   );
   return { routedProposals: enriched, summary };
 }
-
-export default graduateRetroProposals;

@@ -5,8 +5,8 @@ core**: branch shapes, the Conventional-Commit subject contract, issue
 references, and the non-negotiable push/hygiene MUSTs. Deeper mechanics —
 the hard-cutover contract policy, the full push-validation procedure and
 the push-hook false-negative signature, checkout-hygiene scope rules,
-shared-checkout merge contention, the documentation-freshness gate, and
-the `meta::*` labels — live in the on-demand
+shared-checkout merge contention, and the `meta::*` labels — live in the
+on-demand
 [`git-conventions-reference.md`](git-conventions-reference.md); read it
 **before** doing the matching work.
 
@@ -19,7 +19,7 @@ commit on that branch only. Close opens a PR against `main` (squash +
 required checks). No `epic/<id>` integration branch, no `--no-ff` wave
 merge, no child tickets: commits land on `story-<storyId>` directly, the
 subject referencing the Story via `(refs #<storyId>)` — see
-[`.agents/instructions.md` § 5.D](../instructions.md).
+[`.agents/instructions.md` § 5.B](../instructions.md).
 
 ## Conventional Commits
 
@@ -32,6 +32,8 @@ subject referencing the Story via `(refs #<storyId>)` — see
   It does **not** run on squash-merge titles edited in the GitHub UI —
   author the PR title in conventional form so the squash commit parses
   for release-please.
+- Consumer-breaking changes MUST carry a `BREAKING CHANGE:` footer
+  (breaking commit or Story body); prose never reaches release-please.
 
 ## Push Validation & Reliability (MUSTs)
 

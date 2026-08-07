@@ -5,7 +5,7 @@
  * `/deliver` story-list path.
  *
  * Thin **adapter** over the path-agnostic ready-set scheduling core
- * (`lib/wave-runner/ready-set.js#selectReadySet`). It emits the set of
+ * (`lib/wave-runner/ready-set.js#planReadySet`). It emits the set of
  * Stories safe to dispatch **on this beat** — a Story becomes dispatchable
  * the instant its own dependencies are done, under the same global
  * concurrency cap and the same file-overlap co-dispatch guard
@@ -15,7 +15,7 @@
  * The previous static wave-batch plan (group N must fully drain before
  * group N+1 opens, via `Graph.js#assignLayers`) is gone. The scheduling
  * kernel — adjacency derivation, the done-predicate classifier, the
- * eligibility rule, and the overlap guard — lives once in `selectReadySet`;
+ * eligibility rule, and the overlap guard — lives once in `planReadySet`;
  * this file only gathers input, resolves the cap, and renders the envelope.
  *
  * **Two modes, one kernel.**
@@ -54,8 +54,33 @@
  *     concurrencyCap: number,
  *     inFlight: number,
  *     cycleError: string | null,
- *     wedged: { reason, stories: [{ id, unmetBlockers }] } | null
+ *     wedged: { reason, stories: [{ id, unmetBlockers }] } | null,
+ *     inFlightReservation: { available, withheld: [{ id, blockedBy, reason, source, paths }], note },
+ *     footprintGuard: { mode, withheld: [{ id, blockedBy, scope, source, paths }], advisory, note }
  *   }
+ *
+ * `inFlightReservation` reports the cross-beat half of the co-dispatch guard
+ * (Story #4875 widened the footprint; Story #4950 made it reserve). Under
+ * `--probe-live` the in-flight Stories' own records are handed to the kernel,
+ * so a candidate sharing a CONCRETE path with a Story dispatched on an EARLIER
+ * beat is withheld and named here with its blocker and a `reason`
+ * (`in-flight-earlier-beat` or `foreign-lease`). A glob / UNKNOWN footprint
+ * reserves nothing across beats — it would withhold the whole run for one
+ * blocker's entire implementation window — while still serializing its own
+ * beat (Story #4960). Flag mode carries a count and no records, so it reports
+ * `available: false` rather than an empty — and therefore indistinguishable —
+ * result.
+ *
+ * `footprintGuard` reports the **beat-local** half, which until Story #5044 was
+ * reported nowhere: a same-beat overlap skip was a bare `continue` inside
+ * `planReadySet`, so the Story vanished from `ready[]` with no field anywhere
+ * naming the collision. Every entry in either report now also carries the
+ * colliding `paths` and a `source` tag — `declared-overlap` when both Stories'
+ * `changes[]` named the path (intended serialization: two Stories really do
+ * rewrite the same generated baseline) versus `scraped-overlap` when only the
+ * text evidence produced it. `mode` names the `footprintGuard` config value;
+ * under `advisory` the collisions are detected and listed in `advisory[]` but
+ * dispatch follows the declared `depends_on` edges alone.
  *
  * Probe mode adds fields the caller can no longer compute for itself:
  * `done: number[]` (the resolved done set, in-set ∪ satisfied foreign
@@ -75,7 +100,9 @@
  * `/deliver` uses — `resolveConfig` + `getRunners` reading
  * `delivery.deliverRunner.concurrencyCap` (default 3) — so a
  * `.agentrc.local.json` override is honored. A `--concurrency <n>` CLI flag
- * overrides the config-resolved value for that run only. This shares one
+ * overrides the config-resolved value for that run only, and the envelope's
+ * `capPrecedence` names which source won so the override is never silent
+ * (Story #4875). This shares one
  * deterministic config source (`delivery.deliverRunner.concurrencyCap`) and
  * one scheduling kernel with every `/deliver` multi-Story invocation.
  *
@@ -96,18 +123,24 @@ import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 
 import { runAsCli } from './lib/cli-utils.js';
-import { getRunners, resolveConfig } from './lib/config-resolver.js';
+import { getPaths, getRunners, resolveConfig } from './lib/config-resolver.js';
 import { detectCycle } from './lib/Graph.js';
 import { Logger } from './lib/Logger.js';
 import { AGENT_LABELS } from './lib/label-constants.js';
 import { parseIds } from './lib/orchestration/resolve-stories.js';
 import { buildStoryAdjacency } from './lib/story-adjacency.js';
+import { expandIdList } from './lib/util/parse-id-list.js';
+import { OVERLAP_SOURCES } from './lib/wave-runner/footprint.js';
 import {
   createProbeContext,
   probeLiveState,
   validateProbeFlags,
 } from './lib/wave-runner/live-probe.js';
-import { selectReadySet } from './lib/wave-runner/ready-set.js';
+import {
+  GUARD_MODES,
+  planReadySet,
+  WITHHOLD_SCOPES,
+} from './lib/wave-runner/ready-set.js';
 
 /**
  * Exit code for a wedged run — deliberately distinct from the cycle exit (2)
@@ -133,7 +166,7 @@ const HELP = `Usage:
 Continuous ready-set planner for standalone Story delivery. Emits the set of
 Stories safe to dispatch on this beat — a Story is dispatchable the instant
 its own dependencies are done — plus the resolved per-beat concurrency cap
-and the same file-overlap guard as selectReadySet.
+and the same file-overlap guard as planReadySet.
 
 Two modes:
   --probe-live  Resolve the graph and derive done / in-flight from LIVE state
@@ -151,9 +184,10 @@ Each entry must include:
   dependsOn  - Array of Story IDs that must complete before this Story runs
 
 Options:
-  --stories <csv>    Story ids to deliver (probe mode). The graph, the done
-                     set, and the in-flight count are resolved from live
-                     state — no --done / --in-flight bookkeeping.
+  --stories <csv>    Story ids to deliver (probe mode). Singles or inclusive
+                     A-B ranges (101,104-107). The graph, the done set, and
+                     the in-flight count are resolved from live state — no
+                     --done / --in-flight bookkeeping.
   --probe-live       Enable probe mode. Requires --stories.
   --dispatched <csv> Probe mode only. Ids you have SPAWNED this run. Unioned
                      into the live-derived in-flight set, then filtered by
@@ -167,7 +201,10 @@ Options:
   --concurrency <n>  Override the per-beat concurrency cap for this run only.
                      Must be a positive integer. When omitted, the cap is
                      resolved from delivery.deliverRunner.concurrencyCap in
-                     .agentrc.json / .agentrc.local.json (default 3).
+                     .agentrc.json / .agentrc.local.json (default 3). The flag
+                     WINS over the configured value, and the envelope's
+                     capPrecedence records that it did — including when the
+                     request exceeds the configured cap.
   --done <csv>       Comma-separated Story IDs already completed this run.
                      Their dependents become eligible; they are never
                      re-dispatched. Defaults to empty.
@@ -181,10 +218,60 @@ Output envelope:
     "ready": [101],
     "totalStories": 2,
     "concurrencyCap": 3,
+    "capPrecedence": {
+      "cap": 3,
+      "source": "config",
+      "configuredCap": 3,
+      "requestedCap": null,
+      "exceedsConfigured": false,
+      "note": "..."
+    },
     "inFlight": 0,
     "cycleError": null,
-    "wedged": null
+    "wedged": null,
+    "inFlightReservation": {
+      "available": true,
+      "withheld": [
+        {
+          "id": 4951,
+          "blockedBy": 4949,
+          "reason": "in-flight-earlier-beat",
+          "source": "declared-overlap",
+          "paths": ["lib/shared.js"]
+        }
+      ],
+      "note": "..."
+    },
+    "footprintGuard": {
+      "mode": "enforce",
+      "withheld": [
+        {
+          "id": 4952,
+          "blockedBy": 4951,
+          "scope": "beat",
+          "source": "scraped-overlap",
+          "paths": ["lib/other.js"]
+        }
+      ],
+      "advisory": [],
+      "note": "..."
+    }
   }
+
+inFlightReservation names each Story withheld this beat because its file
+footprint overlaps one still IN FLIGHT from an earlier beat, together with the
+blocking id — so an unfilled slot is explained rather than mysterious. It needs
+the in-flight Stories' footprints, which only --probe-live has: under --dag the
+report is { available: false } and selection de-conflicts within the beat only.
+
+footprintGuard names each Story withheld from THIS beat by a peer already
+admitted on it — the half that used to be an unreported skip — and every
+entry in either report carries the colliding paths plus a source tag
+(declared-overlap when both changes[] declarations named the path, else
+scraped-overlap from the text evidence). Its "mode" echoes
+delivery.deliverRunner.footprintGuard: under "advisory" the collisions are
+detected and listed in "advisory" but never withhold, and dispatch follows the
+declared depends_on edges alone.
 
 Exit codes:
   0 - Success, ready set emitted
@@ -214,13 +301,219 @@ function inputErrorResult(message, concurrencyCap = null, inFlightValue = 0) {
       ready: [],
       totalStories: 0,
       concurrencyCap,
+      capPrecedence: null,
       inFlight: inFlightValue,
       cycleError: null,
       wedged: null,
+      inFlightReservation: null,
+      footprintGuard: null,
       inputError: message,
     },
     exitCode: 1,
   };
+}
+
+/**
+ * Why a reservation withheld a Story. Machine-readable companion to the
+ * operator-facing `note`, so a consumer never has to parse prose to tell an
+ * earlier-beat blocker from a foreign-lease one (Story #4960).
+ */
+const RESERVATION_REASONS = Object.freeze({
+  EARLIER_BEAT: 'in-flight-earlier-beat',
+  FOREIGN_LEASE: 'foreign-lease',
+});
+
+/**
+ * Describe this beat's in-flight footprint reservation for the envelope
+ * (Story #4950).
+ *
+ * The reservation needs the in-flight Stories' **records** — their footprints
+ * — not just how many there are, so its availability is a property of the
+ * mode rather than of the run:
+ *
+ *   - **Probe mode** hands over the records `live-probe.js` already fetched,
+ *     so `inFlightRecords` is an array (possibly empty) and reservation is
+ *     `available: true`.
+ *   - **Flag mode** (`--dag` + `--in-flight <n>`) supplies a graph and a
+ *     count; no node carries a label, so nothing there can even classify as
+ *     in-flight. There is no footprint to reserve against, and selection is
+ *     unchanged from before #4950. Saying so explicitly is the point: a
+ *     silently-absent guard reads exactly like a guard that found nothing.
+ *
+ * A reservation is held either by a Story **this run** dispatched on an
+ * earlier beat or by one **another operator's lease** holds — `live-probe.js`
+ * folds both into the in-flight set, and they reserve identically but read
+ * very differently to an operator. Reporting a foreign-held peer as "still in
+ * flight from an earlier beat" is simply false: this run never dispatched it
+ * and no later beat of this run will clear it. `foreignHeldIds` splits the two
+ * so each carries its own reason (Story #4960).
+ *
+ * Each entry also carries the **colliding paths** and an
+ * `OVERLAP_SOURCES` tag (Story #5044). A withhold that names no path is one an
+ * operator cannot act on, and `declared-overlap` vs `scraped-overlap` is the
+ * difference between "these two Stories both declared this generated baseline,
+ * serializing them is the point" and "one Story's body happened to mention a
+ * path the other declared" — the same unfilled slot for two very different
+ * reasons.
+ *
+ * @param {object[]|null|undefined} inFlightRecords
+ * @param {Array<{id: number, blockedBy: number, source?: string, paths?: string[]}>} withheld
+ * @param {Iterable<number>} [foreignHeldIds] Ids held by a foreign lease.
+ * @returns {{ available: boolean, withheld: Array<{id: number, blockedBy: number, reason: string, source: string, paths: string[]}>, note: string|null }}
+ */
+export function buildReservationReport(
+  inFlightRecords,
+  withheld,
+  foreignHeldIds = [],
+) {
+  if (!Array.isArray(inFlightRecords)) {
+    return {
+      available: false,
+      withheld: [],
+      note:
+        'In-flight footprint reservation is UNAVAILABLE this beat: flag mode ' +
+        'supplies a dependency graph and an --in-flight count, never the ' +
+        'in-flight Stories themselves, so there are no footprints to reserve ' +
+        'against. Selection is unchanged (same-beat de-confliction only). ' +
+        'Use --probe-live to reserve in-flight footprints.',
+    };
+  }
+  if (withheld.length === 0) {
+    return { available: true, withheld: [], note: null };
+  }
+  const foreign = new Set(foreignHeldIds);
+  const classified = withheld.map((w) => ({
+    id: w.id,
+    blockedBy: w.blockedBy,
+    reason: foreign.has(w.blockedBy)
+      ? RESERVATION_REASONS.FOREIGN_LEASE
+      : RESERVATION_REASONS.EARLIER_BEAT,
+    source: w.source ?? OVERLAP_SOURCES.DECLARED,
+    paths: w.paths ?? [],
+  }));
+  return {
+    available: true,
+    withheld: classified,
+    note: reservationNote(classified),
+  };
+}
+
+/**
+ * Report the **beat-local** half of the footprint guard, plus the guard mode
+ * itself (Story #5044).
+ *
+ * Until now a same-beat overlap skip was an anonymous `continue` inside
+ * `planReadySet`: the Story simply did not appear in `ready[]` and no field
+ * anywhere said why. That is the same unexplained-unfilled-slot failure the
+ * cross-beat `inFlightReservation` report was built to remove, left standing on
+ * the other half of the guard — and it is how a plan whose siblings collided
+ * only on machine-generated footer text ran fully serial without leaving a
+ * trace to notice.
+ *
+ * `withheld` and `advisory` are disjoint by construction: under `enforce` every
+ * detection withheld, under `advisory` none did. Reporting them as separate
+ * lists rather than one flagged list means a consumer counting withheld
+ * dispatches never has to inspect a boolean to get the count right.
+ *
+ * @param {Array<object>} footprintWithholds The kernel's complete ledger.
+ * @param {'enforce'|'advisory'} mode
+ * @returns {{ mode: string, withheld: object[], advisory: object[], note: string|null }}
+ */
+export function buildFootprintGuardReport(footprintWithholds, mode) {
+  const ledger = Array.isArray(footprintWithholds) ? footprintWithholds : [];
+  const project = ({ id, blockedBy, scope, source, paths }) => ({
+    id,
+    blockedBy,
+    scope,
+    source,
+    paths,
+  });
+  const beat = ledger
+    .filter((w) => w.scope === WITHHOLD_SCOPES.BEAT && w.enforced)
+    .map(project);
+  const advisory = ledger.filter((w) => !w.enforced).map(project);
+  return {
+    mode,
+    withheld: beat,
+    advisory,
+    note: footprintGuardNote(beat, advisory, mode),
+  };
+}
+
+/**
+ * Render the operator-facing note for the beat-local guard, naming the
+ * colliding path(s) for every entry. `null` when the guard neither withheld nor
+ * waved anything through.
+ *
+ * @param {object[]} beat
+ * @param {object[]} advisory
+ * @param {string} mode
+ * @returns {string|null}
+ */
+function footprintGuardNote(beat, advisory, mode) {
+  const detail = (entries) =>
+    entries
+      .map(
+        (w) =>
+          `#${w.id} ← #${w.blockedBy} on ${w.paths.join(', ')} (${w.source})`,
+      )
+      .join('; ');
+  if (beat.length > 0) {
+    return (
+      `${beat.length} Story(ies) withheld from THIS beat because their file ` +
+      `footprint overlaps a peer already admitted on it — ${detail(beat)}. ` +
+      `Each is still eligible and re-admits on a later beat once its peer ` +
+      `lands. A ${OVERLAP_SOURCES.SCRAPED} source means the collision came ` +
+      `from path evidence in the Story text rather than from either ` +
+      `changes[] declaration.`
+    );
+  }
+  if (advisory.length > 0) {
+    return (
+      `footprintGuard is '${mode}': ${advisory.length} footprint collision(s) ` +
+      `were detected and NOT enforced — ${detail(advisory)}. Dispatch followed ` +
+      `the declared depends_on edges alone. Set ` +
+      `delivery.deliverRunner.footprintGuard: 'enforce' to serialize these.`
+    );
+  }
+  return null;
+}
+
+/**
+ * Render the operator-facing reservation note, one sentence per reason class
+ * present. Neither class is a failure or a wedge, but they clear by different
+ * events, so each names its own.
+ *
+ * @param {Array<{id: number, blockedBy: number, reason: string}>} withheld
+ * @returns {string}
+ */
+function reservationNote(withheld) {
+  const detail = (entries) =>
+    entries.map((w) => `#${w.id} ← #${w.blockedBy}`).join('; ');
+  const byBeat = withheld.filter(
+    (w) => w.reason === RESERVATION_REASONS.EARLIER_BEAT,
+  );
+  const byLease = withheld.filter(
+    (w) => w.reason === RESERVATION_REASONS.FOREIGN_LEASE,
+  );
+  const parts = [];
+  if (byBeat.length > 0) {
+    parts.push(
+      `${byBeat.length} Story(ies) withheld because their file footprint ` +
+        `overlaps a Story still in flight from an earlier beat — ${detail(byBeat)}. ` +
+        `Each re-admits automatically on a later beat, once the Story ` +
+        `reserving its files leaves the in-flight set.`,
+    );
+  }
+  if (byLease.length > 0) {
+    parts.push(
+      `${byLease.length} Story(ies) withheld because their file footprint ` +
+        `overlaps a Story another operator's lease holds — ${detail(byLease)}. ` +
+        `No beat of THIS run clears that: the peer is the holder's work, and ` +
+        `each re-admits once their lease clears (see foreignHeldReason).`,
+    );
+  }
+  return `${parts.join(' ')} Neither is a wedge and neither is a failure.`;
 }
 
 /**
@@ -294,33 +587,22 @@ export function parseDag(raw) {
 }
 
 /**
- * Parse a comma-separated list of Story IDs into a deduped set of positive
- * integers. Empty / absent input yields an empty set. Rejects any token that
- * is not a positive integer so a typo never silently drops a dependency gate
- * (`--done`) or a held dispatch slot (`--dispatched`).
+ * Parse a comma-separated list of Story IDs — singles or `A-B` dash ranges —
+ * into a deduped set of positive integers. Empty / absent input yields an
+ * empty set. Rejects any token that is not a positive integer or a valid
+ * range, so a typo never silently drops a dependency gate (`--done`) or a
+ * held dispatch slot (`--dispatched`).
+ *
+ * Ranges are accepted here for the same reason `--stories` accepts them: an
+ * operator delivering `4922-4926` writes the dispatched set back the same way.
  *
  * @param {string|undefined} raw
  * @param {string} flag Flag name, for the error message.
  * @returns {{ ids: Set<number>|null, error: string|null }}
  */
 export function parseIdCsv(raw, flag) {
-  if (raw == null || raw === '') {
-    return { ids: new Set(), error: null };
-  }
-  const ids = new Set();
-  for (const token of String(raw).split(',')) {
-    const trimmed = token.trim();
-    if (trimmed === '') continue;
-    const num = Number(trimmed);
-    if (!Number.isInteger(num) || num <= 0) {
-      return {
-        ids: null,
-        error: `${flag} must be a comma-separated list of positive integers, got "${trimmed}"`,
-      };
-    }
-    ids.add(num);
-  }
-  return { ids, error: null };
+  const { ids, error } = expandIdList(raw, { flag });
+  return error ? { ids: null, error } : { ids: new Set(ids), error: null };
 }
 
 /**
@@ -394,13 +676,92 @@ export function parseConcurrencyOverride(raw) {
  *                                   `--concurrency`; wins over config.
  * @returns {number} The resolved positive-integer concurrency cap.
  */
-export function resolveConcurrencyCap({ cwd, config, override } = {}) {
-  if (override != null) {
-    return override;
-  }
+export function resolveConcurrencyCap(opts = {}) {
+  return resolveCapPrecedence(opts).cap;
+}
+
+/**
+ * Resolve the per-beat cap **and the precedence that produced it** (Story
+ * #4875).
+ *
+ * `--concurrency` wins over `delivery.deliverRunner.concurrencyCap`, and that
+ * is the intended contract — a flag an operator typed for one run should not be
+ * outranked by a checked-in default. What was wrong is that it won *silently*:
+ * the envelope reported a single `concurrencyCap` number with no record of
+ * which source set it, so a run at 8 when the project configured 3 was
+ * indistinguishable from a project configured at 8. A reader could not tell an
+ * override from a default, and an override that ran the repo above its own
+ * configured ceiling left no trace at all.
+ *
+ * So the flag still wins, but never quietly: the source is named, the
+ * configured value is carried alongside the requested one, and a request that
+ * exceeds the configured cap is called out as such. Reporting rather than
+ * refusing is deliberate — the configured cap is a project default, not a
+ * safety limit, and refusing a deliberate operator escalation would trade a
+ * silent override for a silent stall.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.cwd]      Repo root for config resolution.
+ * @param {object} [opts.config]   Pre-resolved config (test injection).
+ * @param {number} [opts.override] Validated positive integer from
+ *                                 `--concurrency`.
+ * @returns {{
+ *   cap: number,
+ *   source: 'flag'|'config',
+ *   configuredCap: number,
+ *   requestedCap: number|null,
+ *   exceedsConfigured: boolean,
+ *   note: string,
+ * }}
+ */
+export function resolveCapPrecedence({ cwd, config, override } = {}) {
   const resolved = config ?? resolveConfig({ cwd });
   const { deliverRunner } = getRunners(resolved);
-  return deliverRunner.concurrencyCap;
+  const configuredCap = deliverRunner.concurrencyCap;
+  if (override == null) {
+    return {
+      cap: configuredCap,
+      source: 'config',
+      configuredCap,
+      requestedCap: null,
+      exceedsConfigured: false,
+      note: `cap ${configuredCap} from delivery.deliverRunner.concurrencyCap (no --concurrency given)`,
+    };
+  }
+  const exceedsConfigured = override > configuredCap;
+  return {
+    cap: override,
+    source: 'flag',
+    configuredCap,
+    requestedCap: override,
+    exceedsConfigured,
+    note: exceedsConfigured
+      ? `cap ${override} from --concurrency, which OVERRIDES and EXCEEDS the configured delivery.deliverRunner.concurrencyCap ${configuredCap} — this run is deliberately above the project default`
+      : `cap ${override} from --concurrency, which overrides the configured delivery.deliverRunner.concurrencyCap ${configuredCap}`,
+  };
+}
+
+/**
+ * Resolve the two footprint-guard inputs from the same config seam the cap
+ * comes from (Story #5044).
+ *
+ * `tempRoot` is threaded rather than hardcoded because the evidence scrape must
+ * exclude the project's *configured* scratch root: a consumer that sets
+ * `project.paths.tempRoot: '.scratch'` would otherwise have every sibling
+ * citing a report under it collide, which is the exact defect this Story
+ * removes for the default `temp/`.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.cwd]     Repo root for config resolution.
+ * @param {object} [opts.config]  Pre-resolved config (test injection).
+ * @returns {{ footprintGuard: 'enforce'|'advisory', tempRoot: string }}
+ */
+export function resolveFootprintGuardSettings({ cwd, config } = {}) {
+  const resolved = config ?? resolveConfig({ cwd });
+  return {
+    footprintGuard: getRunners(resolved).deliverRunner.footprintGuard,
+    tempRoot: getPaths(resolved).tempRoot,
+  };
 }
 
 /**
@@ -410,7 +771,7 @@ export function resolveConcurrencyCap({ cwd, config, override } = {}) {
  * understands (`{ id, dependsOn }`), tags any node already in the done set
  * as `agent::done` so the core's classifier excludes it from the dispatch
  * set **and** counts it as a satisfied dependency, then delegates the
- * scheduling decision to `selectReadySet`. A cyclic operator DAG is a
+ * scheduling decision to `planReadySet`. A cyclic operator DAG is a
  * planning error (the core would silently never schedule the cycle), so we
  * detect it up front via the shared `detectCycle` kernel and short-circuit
  * with a `cycleError` and exit code 2.
@@ -418,8 +779,18 @@ export function resolveConcurrencyCap({ cwd, config, override } = {}) {
  * @param {Array<{id: number, dependsOn: number[]}>} nodes
  * @param {object} args
  * @param {number} args.concurrencyCap Resolved per-beat concurrency cap.
+ * @param {object|null} [args.capPrecedence] The {@link resolveCapPrecedence}
+ *   record explaining which source set the cap.
  * @param {Set<number>} [args.doneIds] Story IDs already completed this run.
  * @param {number} [args.inFlight]     Stories already occupying a slot.
+ * @param {object[]|null} [args.inFlightRecords] Records for the Stories
+ *   already in flight, so the kernel reserves their footprints instead of
+ *   merely counting them (Story #4950). `null` (flag mode) means reservation
+ *   is structurally unavailable — see {@link buildReservationReport}.
+ * @param {number[]} [args.foreignHeldIds] Ids among `inFlightRecords` that a
+ *   **foreign operator's lease** holds rather than this run's own earlier
+ *   beat, so a withholding against one is reported for what it is
+ *   (Story #4960). Flag mode has no lease view and passes none.
  * @returns {{
  *   envelope: {
  *     kind: 'stories-ready-set',
@@ -434,7 +805,16 @@ export function resolveConcurrencyCap({ cwd, config, override } = {}) {
  */
 export function buildReadySetEnvelope(
   nodes,
-  { concurrencyCap, doneIds = new Set(), inFlight = 0 },
+  {
+    concurrencyCap,
+    capPrecedence = null,
+    doneIds = new Set(),
+    inFlight = 0,
+    inFlightRecords = null,
+    foreignHeldIds = [],
+    footprintGuard = GUARD_MODES.ENFORCE,
+    tempRoot,
+  },
 ) {
   const totalStories = nodes.length;
 
@@ -443,9 +823,22 @@ export function buildReadySetEnvelope(
     ready: [],
     totalStories,
     concurrencyCap,
+    // Which source set `concurrencyCap`, and whether it outranks the project's
+    // configured value (Story #4875). Never omitted on a resolved beat: a
+    // missing precedence record is what made a silent override possible.
+    capPrecedence,
     inFlight,
     cycleError: null,
     wedged: null,
+    // Whether this beat could reserve the in-flight Stories' footprints, and
+    // which Stories a reservation withheld (Story #4950). Never omitted on a
+    // resolved beat: an absent report reads exactly like an empty one.
+    inFlightReservation: buildReservationReport(inFlightRecords, []),
+    // The beat-local half of the same guard, plus the mode it ran in (Story
+    // #5044). Also never omitted: a same-beat skip used to be reported nowhere
+    // at all, which is precisely how an evidence-widening artifact could
+    // serialize a whole run unnoticed.
+    footprintGuard: buildFootprintGuardReport([], footprintGuard),
   };
 
   if (totalStories === 0) {
@@ -455,7 +848,7 @@ export function buildReadySetEnvelope(
   // Cycle detection before scheduling — a cycle is a planning error the
   // operator must fix. dropForeign:false preserves the operator-DAG contract
   // (a dependency on an id outside the supplied set is honored, not pruned),
-  // matching the same builder seam selectReadySet uses internally.
+  // matching the same builder seam planReadySet uses internally.
   const adjacency = buildStoryAdjacency(nodes, { dropForeign: false });
   const cycle = detectCycle(adjacency);
   if (cycle) {
@@ -484,15 +877,38 @@ export function buildReadySetEnvelope(
       labels: doneIds.has(node.id) ? [AGENT_LABELS.DONE] : (node.labels ?? []),
     };
     if (node.files !== undefined) rec.files = node.files;
+    // Probe-mode nodes carry the Story body so the overlap guard can widen a
+    // declared footprint from the paths the Story's own text names (Story
+    // #4875). Flag-mode nodes carry none — `parseDag` accepts no body — so
+    // this is inert there and the legacy contract is unchanged.
+    if (typeof node.body === 'string') rec.body = node.body;
     return rec;
   });
 
-  const ready = selectReadySet({
+  const { selected, footprintWithholds, guardMode } = planReadySet({
     stories: records,
     doneIds,
     inFlight,
     globalCap: concurrencyCap,
-  }).map((rec) => rec.id);
+    // Flag mode has no in-flight records at all; `?? []` keeps the kernel's
+    // contract (an array) while `base.inFlightReservation` reports that the
+    // reservation itself was unavailable rather than merely empty.
+    inFlightRecords: inFlightRecords ?? [],
+    footprintGuard,
+    tempRoot,
+  });
+  const ready = selected.map((rec) => rec.id);
+  // The cross-beat report reads the enforced in-flight slice of the kernel's
+  // ledger rather than the legacy `withheldByInFlight` list, so it carries the
+  // colliding paths and the overlap source through to the operator.
+  const reservation = buildReservationReport(
+    inFlightRecords,
+    footprintWithholds.filter(
+      (w) => w.scope === WITHHOLD_SCOPES.IN_FLIGHT && w.enforced,
+    ),
+    foreignHeldIds,
+  );
+  const guardReport = buildFootprintGuardReport(footprintWithholds, guardMode);
 
   // Wedge detection (Story #4540). `ready: []` is normal while work is in
   // flight — the loop is simply waiting. But ready-empty AND nothing in
@@ -508,12 +924,27 @@ export function buildReadySetEnvelope(
   const wedge = detectWedge({ nodes, doneIds, ready, inFlight });
   if (wedge) {
     return {
-      envelope: { ...base, ready, wedged: wedge },
+      envelope: {
+        ...base,
+        ready,
+        wedged: wedge,
+        inFlightReservation: reservation,
+        footprintGuard: guardReport,
+      },
       exitCode: WEDGED_EXIT_CODE,
     };
   }
 
-  return { envelope: { ...base, ready, wedged: null }, exitCode: 0 };
+  return {
+    envelope: {
+      ...base,
+      ready,
+      wedged: null,
+      inFlightReservation: reservation,
+      footprintGuard: guardReport,
+    },
+    exitCode: 0,
+  };
 }
 
 /**
@@ -600,7 +1031,8 @@ export function runStoriesWaveTick({
     return inputErrorResult(doneError, null, inFlightValue);
   }
 
-  const concurrencyCap = resolveConcurrencyCap({ cwd, config, override });
+  const capPrecedence = resolveCapPrecedence({ cwd, config, override });
+  const concurrencyCap = capPrecedence.cap;
 
   let rawJson;
 
@@ -642,8 +1074,10 @@ export function runStoriesWaveTick({
 
   return buildReadySetEnvelope(nodes, {
     concurrencyCap,
+    capPrecedence,
     doneIds,
     inFlight: inFlightValue,
+    ...resolveFootprintGuardSettings({ cwd, config }),
   });
 }
 
@@ -692,7 +1126,7 @@ export async function runProbedStoriesWaveTick({
 
   let ids;
   try {
-    ids = parseIds(stories);
+    ids = parseIds(stories, '--stories');
   } catch (err) {
     return inputErrorResult(err.message);
   }
@@ -705,7 +1139,8 @@ export async function runProbedStoriesWaveTick({
     return inputErrorResult(dispatchedError);
   }
 
-  const concurrencyCap = resolveConcurrencyCap({ cwd, config, override });
+  const capPrecedence = resolveCapPrecedence({ cwd, config, override });
+  const concurrencyCap = capPrecedence.cap;
 
   let probed;
   try {
@@ -735,11 +1170,20 @@ export async function runProbedStoriesWaveTick({
     inFlight,
     blockedIds = [],
     foreignHeld = [],
+    inFlightRecords = [],
   } = probed;
   const { envelope, exitCode } = buildReadySetEnvelope(nodes, {
     concurrencyCap,
+    capPrecedence,
     doneIds,
     inFlight,
+    // Probe mode is the only mode that HAS the in-flight Stories' records, so
+    // it is the only mode that can reserve their footprints (Story #4950).
+    inFlightRecords,
+    // ...and the only mode that can tell a foreign lease-holder apart from
+    // this run's own earlier-beat dispatch (Story #4960).
+    foreignHeldIds: foreignHeld.map((h) => h.id),
+    ...resolveFootprintGuardSettings({ cwd, config }),
   });
 
   const done = [...doneIds].sort((a, b) => a - b);

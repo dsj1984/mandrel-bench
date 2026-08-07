@@ -1,20 +1,21 @@
 /**
- * Append-only signals/trace writer (Epic #1030 Story #1041).
+ * Append-only signals writer (Epic #1030 Story #1041).
  *
  * Centralizes the per-(epic, story) NDJSON streams under
- * `temp/run-<id>/stories/story-<sid>/signals.ndjson` (and a sibling
- * `traces.ndjson` for trace-shaped records). Detector modules and the
- * runtime trace hook all funnel through this writer so the on-disk
- * shape stays under one schema and one set of robustness guarantees.
+ * `temp/run-<id>/stories/story-<sid>/signals.ndjson`. Every live emitter
+ * funnels through this writer so the on-disk shape stays under one schema
+ * and one set of robustness guarantees. The sibling `traces.ndjson` stream
+ * and its `appendTrace` entry point went in Story #5003 with the tool-trace
+ * hook that was its only producer.
  *
  * Robustness contract (Tech Spec #1032 §observability):
  *   - **Best-effort.** Every entry point swallows fs / JSON failures
  *     after logging via `Logger.warn`. Observability MUST NOT take down
  *     the runner — a failed write is a missing signal, not a halted
  *     wave.
- *   - **No buffering.** Each `appendSignal` / `appendTrace` opens the
- *     target file, writes one newline-terminated JSON line, and closes.
- *     The Tech Spec explicitly forbids in-process buffering: detectors
+ *   - **No buffering.** Each `appendSignal` opens the target file, writes
+ *     one newline-terminated JSON line, and closes.
+ *     The Tech Spec explicitly forbids in-process buffering: emitters
  *     fire from inside per-Story sub-agents that may exit abruptly, and
  *     a buffered tail would silently disappear on `process.exit`.
  *   - **Lazy directory creation.** The first write to a fresh Story
@@ -36,21 +37,16 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 
-import { signalsFile, storyTempDir } from '../config/temp-paths.js';
+import {
+  resolvedTempRoot,
+  SIGNALS_BASENAME,
+  STANDALONE_DIRNAME,
+  STORIES_DIRNAME,
+  signalsFile,
+} from '../config/temp-paths.js';
 import { Logger } from '../Logger.js';
-import { recordSignalReject, validateSignal } from './signal-validator.js';
-import { classifyPathSource } from './source-classifier.js';
-
-const TRACES_BASENAME = 'traces.ndjson';
-
-/**
- * Async traces-file path (kept private — consumers thread through
- * `appendTrace`). Mirrors `signalsFile` but with the `traces.ndjson`
- * sibling so the analyzer can scan signals and traces independently.
- */
-function tracesFile(eid, sid, config) {
-  return path.join(storyTempDir(eid, sid, config), TRACES_BASENAME);
-}
+import { validateSignal } from './signal-validator.js';
+import { classifySignalSource } from './source-classifier.js';
 
 /**
  * Best-effort decoration of a signal record with a `source` field
@@ -69,10 +65,14 @@ function tracesFile(eid, sid, config) {
  *     `"consumer"`, preserve it verbatim — some detectors classify
  *     upstream and we MUST NOT overwrite their intentional tag.
  *   - Otherwise (absent, or any other value — defense in depth against a
- *     stray non-canonical `source`), invoke `classifyPathSource` against
- *     the record's `failingPath` / `path` and `command` /
- *     `emitter.command` fields and inject/overwrite `source` with the
- *     result.
+ *     stray non-canonical `source`), invoke `classifySignalSource` against
+ *     the whole record and inject/overwrite `source` with the result.
+ *
+ * Story #4824 moved the field extraction into the classifier. The writer
+ * used to hand it only `failingPath` / `command`, which meant every
+ * runtime-emitted record — which populates neither — took the `consumer`
+ * default and the framework limb of the feedback loop was unreachable. The
+ * classifier now sees the `category` and `details` it needs to resolve those.
  *
  * @param {unknown} signal
  * @returns {unknown}
@@ -86,14 +86,7 @@ function tagSignalSource(signal) {
     return record;
   }
   try {
-    const failingPath = record.failingPath ?? record.path;
-    const emitter =
-      record.emitter && typeof record.emitter === 'object'
-        ? /** @type {Record<string, unknown>} */ (record.emitter)
-        : null;
-    const command = record.command ?? emitter?.command;
-    const source = classifyPathSource(failingPath, command);
-    return { ...record, source };
+    return { ...record, source: classifySignalSource(record) };
   } catch (err) {
     Logger.warn(
       `signals-writer: source classifier failed (${
@@ -107,21 +100,23 @@ function tagSignalSource(signal) {
 /**
  * Validate a record against the canonical `signal-event.schema.json`
  * before it is appended. On failure the record is **dropped** (never
- * appended), a `Logger.warn` names the violating field, and the per-Epic
- * reject tally is incremented under the Epic temp tree. Never throws —
+ * appended) and a `Logger.warn` names the violating field. Never throws —
  * the writer's best-effort contract is preserved.
  *
+ * Story #5003 removed the persisted per-Epic reject tally this used to
+ * increment: v2 Stories are standalone (`epicId` is always null), so the
+ * tally was never written and its only reader could never see one.
+ *
  * @param {unknown} record
- * @param {{ epicId?: number|null, config?: object, label: string }} ctx
- * @returns {Promise<boolean>} true when the record is valid (safe to append).
+ * @param {string} label
+ * @returns {boolean} true when the record is valid (safe to append).
  */
-async function validateOrDrop(record, { epicId, config, label }) {
+function validateOrDrop(record, label) {
   const { valid, violatingField, message } = validateSignal(record);
   if (valid) return true;
   Logger.warn(
     `signals-writer: dropping schema-invalid ${label} record — violating field '${violatingField}' (${message}).`,
   );
-  await recordSignalReject({ epicId, config, field: violatingField });
   return false;
 }
 
@@ -185,42 +180,8 @@ export async function appendSignal(args) {
     return false;
   }
   const tagged = tagSignalSource(signal);
-  const ok = await validateOrDrop(tagged, {
-    epicId: Number.isInteger(epicId) ? epicId : null,
-    config,
-    label: 'signal',
-  });
-  if (!ok) return false;
+  if (!validateOrDrop(tagged, 'signal')) return false;
   return appendOne(target, tagged);
-}
-
-/**
- * Append one trace record to `temp/run-<id>/stories/story-<sid>/traces.ndjson`.
- * Same robustness contract as `appendSignal` — never throws.
- *
- * @param {{ epicId: number, storyId: number, trace: unknown, config?: object }} args
- * @returns {Promise<boolean>}
- */
-export async function appendTrace(args) {
-  const { epicId, storyId, trace, config } = args ?? {};
-  let target;
-  try {
-    target = tracesFile(epicId, storyId, config);
-  } catch (err) {
-    Logger.warn(
-      `signals-writer: invalid epicId/storyId for appendTrace: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-    return false;
-  }
-  const ok = await validateOrDrop(trace, {
-    epicId: Number.isInteger(epicId) ? epicId : null,
-    config,
-    label: 'trace',
-  });
-  if (!ok) return false;
-  return appendOne(target, trace);
 }
 
 /**
@@ -320,4 +281,119 @@ export async function forEachLine(epicId, storyId, cb, config) {
   }
 
   return forEachLineIn(target, cb, 'forEachLine');
+}
+
+/** Matches an Epic run directory (`run-<eid>`) directly under `tempRoot`. */
+const RUN_DIR_RE = /^run-\d+$/;
+
+/** Matches a per-Story directory (`story-<sid>`) under a `stories/` parent. */
+const STORY_DIR_RE = /^story-(\d+)$/;
+
+/**
+ * List directory entries, or `[]` when the directory is absent/unreadable.
+ * Absence is the common case (a fresh checkout has no temp tree at all) and
+ * must not throw — the discovery walk feeds a roll-up that may not fail the
+ * land.
+ *
+ * @param {string} dir
+ * @returns {Promise<import('node:fs').Dirent[]>}
+ */
+async function readDirEntries(dir) {
+  try {
+    return await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Discover every per-Story `signals.ndjson` surviving under the configured
+ * temp root (Story #4824).
+ *
+ * Both canonical layouts are walked — `<tempRoot>/standalone/stories/story-<sid>/`
+ * (v2 standalone Stories, where every close writes) and
+ * `<tempRoot>/run-<eid>/stories/story-<sid>/` (Epic-attached streams). The
+ * walk is the **recurrence window** the follow-up composer reduces over: a
+ * defect that fires exactly once per Story is invisible inside a single
+ * Story's stream and only becomes a recurrence across the surviving ones.
+ *
+ * Sorted by absolute path so a given tree always yields the same order and
+ * the composed proposals stay byte-identical.
+ *
+ * @param {object} [config]
+ * @returns {Promise<Array<{ storyId: number, file: string }>>}
+ */
+async function listStorySignalStreams(config) {
+  let root;
+  try {
+    root = resolvedTempRoot(config);
+  } catch (err) {
+    Logger.warn(
+      `signals-writer: cannot resolve tempRoot for stream discovery: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return [];
+  }
+
+  const storiesDirs = [];
+  for (const entry of await readDirEntries(root)) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name !== STANDALONE_DIRNAME && !RUN_DIR_RE.test(entry.name)) {
+      continue;
+    }
+    storiesDirs.push(path.join(root, entry.name, STORIES_DIRNAME));
+  }
+
+  const streams = [];
+  for (const storiesDir of storiesDirs) {
+    for (const entry of await readDirEntries(storiesDir)) {
+      if (!entry.isDirectory()) continue;
+      const match = STORY_DIR_RE.exec(entry.name);
+      if (match === null) continue;
+      streams.push({
+        storyId: Number(match[1]),
+        file: path.join(storiesDir, entry.name, SIGNALS_BASENAME),
+      });
+    }
+  }
+  return streams.sort((a, b) => a.file.localeCompare(b.file));
+}
+
+/**
+ * Stream **every** surviving per-Story `signals.ndjson` under the configured
+ * temp root, invoking `cb(parsed, context)` per parsed row (Story #4824).
+ *
+ * `context` carries `{ storyId, file, lineNumber }` — `storyId` is the
+ * **stream owner** (from the directory name), used only as the fallback when
+ * a row carries no `storyId` of its own; `file` + `lineNumber` identify the
+ * physical row, which is what lets a caller de-duplicate a legacy row that
+ * predates `eventId`.
+ *
+ * Same robustness contract as `forEachLine`: a missing tree, an unreadable
+ * directory, a malformed line, or a throwing callback each degrade to a
+ * warning rather than a rejection.
+ *
+ * @param {(parsed: unknown, context: { storyId: number, file: string, lineNumber: number }) => unknown | Promise<unknown>} cb
+ * @param {object} [config]
+ * @returns {Promise<{ streams: number, linesParsed: number }>}
+ */
+export async function forEachSignalStreamLine(cb, config) {
+  if (typeof cb !== 'function') {
+    Logger.warn(
+      'signals-writer: forEachSignalStreamLine called without a callback',
+    );
+    return { streams: 0, linesParsed: 0 };
+  }
+  const streams = await listStorySignalStreams(config);
+  let linesParsed = 0;
+  for (const { storyId, file } of streams) {
+    const result = await forEachLineIn(
+      file,
+      (parsed, lineNumber) => cb(parsed, { storyId, file, lineNumber }),
+      'forEachSignalStreamLine',
+    );
+    linesParsed += result.linesParsed;
+  }
+  return { streams: streams.length, linesParsed };
 }

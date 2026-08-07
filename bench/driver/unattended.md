@@ -26,10 +26,14 @@ auto-proceed directive** (behavioral, covering the rest).
 
 Sourced from the live workflow definitions in the materialized bundle
 (`.agents/workflows/plan.md`, `.agents/workflows/deliver.md`,
-`.agents/workflows/helpers/deliver-epic.md`) as of `mandrel` 1.70.x. The
-pinned framework has since moved (1.88.x at the time of the 2026-07-09
-review); re-verify this gate inventory against the materialized bundle
-before relying on it for a new unattended surface.
+`.agents/workflows/helpers/deliver-epic.md`) as of `mandrel` 1.70.x.
+
+> **Stale as of `mandrel` 2.33.0 (2026-08-07).** The Epic tier is retired:
+> `helpers/deliver-epic.md` no longer ships, and rows 2, 5 and 6 below
+> describe gates that no longer exist. `--yes` (rows 4 and, by extension,
+> the `/plan` gates) is still the live headless control on both `/plan` and
+> `/deliver`. Re-derive this inventory from the materialized bundle before
+> relying on it for a new unattended surface.
 
 | # | Gate | Where | Native unattended control | Verdict |
 | - | ---- | ----- | ------------------------- | ------- |

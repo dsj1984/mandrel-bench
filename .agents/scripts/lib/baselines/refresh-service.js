@@ -3,14 +3,16 @@
  * (Story #2197, Epic #2173).
  *
  * `refreshBaseline()` is the single funnel through which every baseline
- * regeneration (maintainability, crap, coverage) must flow. Callers that
- * previously assembled their own envelopes and called `fs.writeFileSync`
- * MUST migrate to this entry point — Stories 3/4/5 of Epic #2173 do that
- * migration; Story #2197 only lands the service surface and tests.
+ * regeneration (maintainability, crap, coverage, duplication) must flow.
+ * Callers that previously assembled their own envelopes and called
+ * `fs.writeFileSync` MUST migrate to this entry point — Stories 3/4/5 of
+ * Epic #2173 do that migration; Story #2197 only lands the service surface
+ * and tests. Story #4944 migrated the last holdout, `duplication`.
  *
  * The service is **scoring-agnostic**: it does not itself walk the
- * filesystem to compute MI / CRAP / coverage scores. Scoring is provided
- * by the per-kind default scorers resolved lazily via `resolveDefaultScorer`
+ * filesystem to compute MI / CRAP / coverage / duplication scores. Scoring
+ * is provided by the per-kind default scorers resolved lazily via
+ * `resolveDefaultScorer`
  * (built with the project config resolved against `cwd`) and, in tests or
  * production wiring, injected via the `scorer` option for hermetic
  * determinism. The service is the policy layer:
@@ -29,7 +31,8 @@
  * Public API (Task #2203, AC-1 / AC-2 / AC-7):
  *
  *   refreshBaseline({
- *     kind,        // 'maintainability' | 'crap' | 'coverage'  REQUIRED
+ *     kind,        // 'maintainability' | 'crap' | 'coverage'
+ *                  //   | 'duplication'                       REQUIRED
  *     baseRef,     // git ref to diff against; default 'origin/main'
  *     headRef,     // git ref under inspection; default 'HEAD'
  *     scopeFiles,  // Array<string> | null
@@ -62,8 +65,9 @@
  *
  * Acceptance contract:
  *
- *   AC-1: All callers that produce a maintainability/crap/coverage baseline
- *         go through refreshBaseline(). Enforced by Task #2208 invariant.
+ *   AC-1: All callers that produce a maintainability/crap/coverage/
+ *         duplication baseline go through refreshBaseline(). Enforced by
+ *         the Task #2208 invariant.
  *   AC-2: scopeFiles=null && !fullScope -> diff-derived scope (Task #2207).
  *   AC-4: Out-of-scope rows + their updatedAt fields are preserved byte-
  *         for-byte (Task #2209).
@@ -72,11 +76,10 @@
  * @module .agents/scripts/lib/baselines/refresh-service
  */
 
-import { execFile as nodeExecFile } from 'node:child_process';
 import nodeFs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { promisify } from 'node:util';
+import { execFileCaptureAsync } from '../child-exec.js';
 import { getQuality, resolveConfig } from '../config-resolver.js';
 import {
   buildScopePredicate,
@@ -93,6 +96,7 @@ import {
   isIgnoredByGlobs as isIgnoredByGlobsMi,
   scanDirectory as scanDirectoryMi,
 } from '../maintainability-utils.js';
+import { resolveDetectClones, scanDuplication } from './duplication-scanner.js';
 import { filterExcludedRows } from './kinds/maintainability.js';
 import { canonicalizeBaselinePath } from './path-canon.js';
 import {
@@ -102,13 +106,16 @@ import {
 
 const nodeRequire = createRequire(import.meta.url);
 
-const execFileAsync = promisify(nodeExecFile);
-
 /**
  * Kinds the refresh service knows how to dispatch. Stays in lockstep with
  * the per-kind modules under `.agents/scripts/lib/baselines/kinds/`.
  */
-const SUPPORTED_KINDS = Object.freeze(['maintainability', 'crap', 'coverage']);
+const SUPPORTED_KINDS = Object.freeze([
+  'maintainability',
+  'crap',
+  'coverage',
+  'duplication',
+]);
 
 /**
  * Per-kind file-extension predicate for diff-scope derivation (Task #2207).
@@ -125,6 +132,12 @@ const KIND_FILE_PREDICATES = Object.freeze({
   maintainability: (p) => /\.(?:m?[jt]sx?)$/i.test(p),
   crap: (p) => /\.(?:m?[jt]sx?)$/i.test(p),
   coverage: (p) => /\.(?:m?[jt]sx?)$/i.test(p),
+  // Duplication shares the source-extension filter deliberately. jscpd is
+  // configured for the `javascript` format only, so a changed `.ts` file
+  // admitted here simply yields no row on either side of the merge —
+  // over-inclusive is inert, under-inclusive would silently pin a changed
+  // file's prior row. Erring wide is the safe direction.
+  duplication: (p) => /\.(?:m?[jt]sx?)$/i.test(p),
 });
 
 /**
@@ -338,6 +351,7 @@ const KIND_SCORER_BUILDERS = Object.freeze({
   maintainability: buildDefaultMaintainabilityScorer,
   crap: buildDefaultCrapScorer,
   coverage: buildDefaultCoverageScorer,
+  duplication: buildDefaultDuplicationScorer,
 });
 
 /**
@@ -355,11 +369,17 @@ const KIND_SCORER_BUILDERS = Object.freeze({
  * rather than crashing the refresh. The production crap/maintainability paths
  * never rely on this fallback — they inject an explicit, configured scorer.
  *
+ * Exported since Story #4776 so the full-scope drift detector
+ * (`check-baseline-drift.js`) re-scores through the *same* scorer that
+ * writes the baseline. A drift check scoring by a second, parallel
+ * implementation would report the two implementations' disagreement as
+ * drift, which is exactly the false signal it exists to rule out.
+ *
  * @param {string} kind
  * @param {{ cwd: string }} opts
  * @returns {((files: string[], opts: object) => Promise<object[]> | object[]) | undefined}
  */
-function resolveDefaultScorer(kind, { cwd } = {}) {
+export function resolveDefaultScorer(kind, { cwd } = {}) {
   const builder = KIND_SCORER_BUILDERS[kind];
   if (typeof builder !== 'function') return undefined;
   const effectiveCwd = cwd ?? process.cwd();
@@ -378,7 +398,7 @@ function resolveDefaultScorer(kind, { cwd } = {}) {
  * so callers (and tests) can assert what actually got scored.
  *
  * @param {{
- *   kind: 'maintainability' | 'crap' | 'coverage',
+ *   kind: 'maintainability' | 'crap' | 'coverage' | 'duplication',
  *   baseRef?: string,
  *   headRef?: string,
  *   scopeFiles?: string[] | null,
@@ -551,8 +571,9 @@ function assertRequiredScopeRows({
 }
 
 /**
- * Default git-diff derivation for the diff-scope path. Uses `execFile`
- * (no shell) and only the canonical two-dot range `baseRef..headRef` —
+ * Default git-diff derivation for the diff-scope path. Runs through the shared
+ * child-process surface ([`child-exec.js`](../child-exec.js)) — `execFile`,
+ * never a shell — and only the canonical two-dot range `baseRef..headRef`:
  * triple-dot is intentionally avoided so the result reflects exactly the
  * files that differ between the two refs at the time of the call.
  *
@@ -562,10 +583,10 @@ function assertRequiredScopeRows({
 async function defaultGitDiff({ baseRef, headRef, cwd }) {
   const range = `${baseRef}..${headRef}`;
   try {
-    const { stdout } = await execFileAsync(
+    const { stdout } = await execFileCaptureAsync(
       'git',
       ['diff', '--name-only', range],
-      { cwd, maxBuffer: 16 * 1024 * 1024 },
+      { cwd },
     );
     return stdout
       .split(/\r?\n/)
@@ -738,4 +759,45 @@ function validateOptions({ kind, scopeFiles, fullScope, writePath }) {
       'refreshBaseline: fullScope=true is incompatible with an explicit scopeFiles array; pass scopeFiles=null',
     );
   }
+}
+
+/**
+ * Build the default duplication scorer.
+ *
+ * **This scorer always scans the whole target tree, in every scope mode.**
+ * That is not an oversight — duplication is the only kind here whose metric
+ * is *pairwise*: a clone is a relationship between two files, and jscpd can
+ * only report it if both sides are in the corpus it was handed. Narrowing the
+ * scan to the diff would drop every clone between a changed file and an
+ * unchanged one, i.e. exactly the duplication a refactor is most likely to
+ * introduce. So the `files` argument is intentionally unused: scope narrowing
+ * for this kind is a **write-side** concern, applied by the service handing
+ * `scope` to `writer.write()`, where `mergeRowsByScope` keeps the freshly
+ * scanned rows for in-scope files and preserves the prior rows verbatim for
+ * everything else.
+ *
+ * Reads `targetDirs` / `ignoreGlobs` off `gates.duplication`, not off a
+ * flattened accessor: `resolveQuality` never lifted duplication into the
+ * legacy bag (the kind post-dates it), so `quality.duplication` is always
+ * `undefined` and reading it would silently scan nothing.
+ *
+ * @param {{ cwd: string, config?: object, quality?: object, detect?: (opts: object) => Promise<object[]> }} opts
+ * @returns {(files: string[], opts: object) => Promise<object[]>}
+ */
+function buildDefaultDuplicationScorer({ cwd, config, quality, detect } = {}) {
+  const dupCfg =
+    resolveQualityBlock({ quality, config })?.gates?.duplication ?? {};
+  const targetDirs = Array.isArray(dupCfg.targetDirs) ? dupCfg.targetDirs : [];
+  const ignoreGlobs = Array.isArray(dupCfg.ignoreGlobs)
+    ? dupCfg.ignoreGlobs
+    : [];
+  return async (_files, opts) => {
+    const effectiveCwd = opts?.cwd ?? cwd ?? process.cwd();
+    return scanDuplication({
+      targetDirs,
+      cwd: effectiveCwd,
+      ignoreGlobs,
+      detect: detect ?? resolveDetectClones(),
+    });
+  };
 }

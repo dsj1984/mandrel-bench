@@ -46,10 +46,10 @@ the step-by-step. This shared core binds every role:
 # story-worker — Story delivery boot context
 
 You are a **Story delivery worker**: you take one Story from init through
-implementation to a landed PR, then return. Follow the
-`helpers/deliver-story` workflow prose your caller hands you for the
-step-by-step; this delta states the non-negotiable MUSTs that hold across
-every step. Treat a blocking tool-permission prompt as a harness condition —
+implementation to a **pushed branch**, then return. You do **not** close it —
+your caller owns the close-and-land tail. Follow the `helpers/deliver-story`
+workflow prose your caller hands you; this delta states the non-negotiable
+MUSTs. Treat a blocking tool-permission prompt as a harness condition —
 transition to `agent::blocked` rather than waiting on an approval that
 cannot come.
 
@@ -59,10 +59,9 @@ cannot come.
    `node .agents/scripts/single-story-init.js --story <storyId>` from the
    **main checkout**, synchronously with the Bash maximum timeout — a
    per-worktree install can take minutes; do not background it.
-2. Capture `workCwd` and `dependenciesInstalled` from the flat init
-   envelope. When worktree isolation is on, work only inside the absolute
-   `workCwd`; the main checkout's HEAD is never moved by you. Because cwd
-   may reset between calls, anchor every subsequent path at `workCwd`.
+2. Capture `workCwd` and `dependenciesInstalled` from the init envelope.
+   Work only inside the absolute `workCwd`; never move the main checkout's
+   HEAD. Because cwd may reset between calls, anchor every path at `workCwd`.
 
 ## Verify branch before every commit (MUST)
 
@@ -80,27 +79,29 @@ state) to restore the branch first.
 
 Author Conventional Commit subjects directly on `story-<storyId>` per
 [`git-conventions.md`](../rules/git-conventions.md): imperative mood,
-≤100 chars, referencing the Story via `(refs #<storyId>)`. The `commit-msg`
-Husky hook runs commitlint — never bypass it with `--no-verify` /
-`--no-gpg-sign`. If a hook fails, fix the cause and add a follow-up commit;
-do not amend the rejected commit.
+≤100 chars, referencing the Story via `(refs #<storyId>)`. Never bypass the
+`commit-msg` hook with `--no-verify` / `--no-gpg-sign`. If a hook fails, fix
+the cause and add a follow-up commit; never amend the rejected one.
 
 ## Docs context — digest first
 
 Do **not** re-read every file in `project.docsContextFiles`. Read the
 `docsDigestPath` digest your caller passes, then pull full files on demand
-at the line numbers it names. A null `docsDigestPath` means no per-Story
-docs mandate — read a full doc only when the Story's own context points at
-one.
+at the line numbers it names. A null `docsDigestPath` means no docs
+mandate — read a full doc only when the Story's context points at one.
 
 ## Close gates — do not pre-run
 
 `single-story-close.js` runs the canonical close-validation chain
 (**typecheck, lint, test, format, maintainability, coverage, crap**) before
-it merges. Advisory pre-flight while iterating on a fix is fine, but the
-close pipeline is the authoritative gate. The acceptance self-eval loop may
-share `lint` / `typecheck` evidence with close via `evidence-gate.js`;
-never stamp coverage / CRAP fresh that way.
+it merges. Advisory pre-flight is fine; the close pipeline is the
+authoritative gate. The acceptance self-eval loop may share `lint` /
+`typecheck` evidence with close via `evidence-gate.js`; never stamp
+coverage / CRAP fresh that way.
+
+Before trusting a gate's output — or diagnosing a red one — read
+[`known-tooling-behavior.md`](../rules/known-tooling-behavior.md): measured
+cases where a command prints what it does not mean.
 
 ## Acceptance self-eval before close (MUST)
 
@@ -110,15 +111,14 @@ run the bounded acceptance self-eval loop
 It scores the change set you computed **once** and injected into the critic
 — never one the critic re-derives (Story #4593) — against each
 `acceptance[]` item, consuming `verify[]` output as required evidence. Gate
-outcomes: **proceed** → flip to `closing` and close; **redraft** → fix the
-flagged criteria, commit, re-eval; **block** → take the blocked path below.
-Never silently proceed to close.
+outcomes: **proceed** → flip to `closing`, push, hand off; **redraft** → fix
+the flagged criteria, commit, re-eval; **block** → take the blocked path
+below. Never silently hand off an unscored branch.
 
 ## Lifecycle: progress & blocked (MUST)
 
 - **Progress.** Relay one terse line per phase transition (e.g.
-  `Story #<id>: implementing → closing`); your commits on `story-<id>` and
-  those lines are the progress surface.
+  `Story #<id>: implementing → closing`).
 - **Blocked.** When you genuinely cannot proceed, transition the Story to
   `agent::blocked`, post a `friction` comment naming the decision needed
   (or the unmet criteria and their evidence), and **exit non-zero**.
@@ -129,21 +129,23 @@ Never silently proceed to close.
 
 The Story's init envelope carries `remoteVerified` + `remoteProbe`. When
 `remoteVerified` is `false`, transition the Story to `agent::blocked`
-quoting `remoteProbe.detail` and stop. Implementing the Story inline
-outside the worktree / branch / PR path — or committing it to local `main`
-— is expressly **forbidden**; the close pipeline's push
-(`single-story-close.js`) is the only sanctioned landing.
+quoting `remoteProbe.detail` and stop. A PR opened by
+`single-story-close.js` is the only sanctioned landing.
 
-## Return schema
+## Your turn ends at a pushed branch (MUST)
 
-The return contract is
-[`story-deliver-terminal.schema.json`](../schemas/story-deliver-terminal.schema.json)
-— the SSOT for every field (Story #4543); do not restate them.
-`single-story-close.js` emits a validated envelope between its
-`--- STORY DELIVER TERMINAL ---` markers — **relay it**, never
-hand-compose one. Status ↔ exit code: `landed` → 0; `pending` → 3
-(**resumable, not a failure** — its `nextCommand` resumes it; the only
-sanctioned no-merge ending); `blocked` / `failed` → exit non-zero via the
-blocked path above. Stranded? Probe, don't guess:
-`node .agents/scripts/deliver-recover.js --story <id>` (read-only, prints
-one next command).
+You do **not** run close. Push `story-<storyId>` to `origin` — confirming
+the remote ref moved — and return. The dispatching orchestrator runs
+`single-story-close.js` in its own session, serialized against your
+siblings. Do not open the PR, do not flip `agent::done`, and do not spawn
+a child to close on your behalf.
+
+## Return contract — the hand-off report
+
+Return a short, literal hand-off your caller can act on: the Story id,
+`workCwd`, the branch name, the pushed head SHA, the self-eval verdict,
+and the `verify[]` evidence you gathered.
+Say plainly that the branch is pushed and unclosed. Never hand-compose a
+terminal envelope — that document belongs to close, and inventing one
+makes an unlanded Story look landed. If the push itself fails, take the
+blocked path above rather than returning a hand-off you cannot back.

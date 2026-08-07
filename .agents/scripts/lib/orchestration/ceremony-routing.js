@@ -28,12 +28,11 @@
  * ## The load-bearing invariant (M4-B acceptance floor — DO NOT VIOLATE)
  *
  * Risk-routing chooses fresh-vs-inline **PER CLUSTER**. It NEVER changes the
- * cluster COUNT. The cluster count is `ceil(totalACs / clusterCeiling)` with
- * the non-disableable `[1, 8]` clamp, owned entirely by
- * `acceptance-clusters.js` and untouched here. A low-risk Story still gets one
- * verdict per cluster — just possibly authored inline instead of by a fresh
- * sub-agent. This module takes the cluster index as an INPUT and returns a
- * decision for that one cluster; it has no way to add or remove clusters.
+ * cluster COUNT — the caller owns clustering and hands this module a cluster
+ * index. A low-risk Story still gets one verdict per cluster — just possibly
+ * authored inline instead of by a fresh sub-agent. This module takes the
+ * cluster index as an INPUT and returns a decision for that one cluster; it
+ * has no way to add or remove clusters.
  *
  * ## One verdict-owner per cluster (Story #4723)
  *
@@ -78,7 +77,7 @@
  * @typedef {'fresh'|'inline'} CeremonyMode
  * @typedef {'fresh-critic'|'inline-self-eval'} VerdictOwner
  * @typedef {import('./review-depth.js').ChangeLevel} ChangeLevel
- * @typedef {'minimal'|'standard'|'strict'} CeremonyProfile
+ * @typedef {(typeof CEREMONY_PROFILES)[number]} CeremonyProfile
  */
 
 /**
@@ -93,12 +92,18 @@ export function verdictOwnerForMode(mode) {
   return mode === 'fresh' ? 'fresh-critic' : 'inline-self-eval';
 }
 
-/** @type {readonly CeremonyProfile[]} */
-export const CEREMONY_PROFILES = Object.freeze([
-  'minimal',
-  'standard',
-  'strict',
-]);
+/**
+ * The ceremony-profile vocabulary — the **single** place the three profile
+ * names are written. `normalizeCeremonyProfile` is its reader and the
+ * `CeremonyProfile` typedef is derived from it, so adding a profile is a
+ * one-line change here (Story #4926).
+ *
+ * @type {readonly ['minimal', 'standard', 'strict']}
+ */
+const CEREMONY_PROFILES = Object.freeze(['minimal', 'standard', 'strict']);
+
+/** The profile an absent or unrecognized value degrades to. */
+const DEFAULT_CEREMONY_PROFILE = 'standard';
 
 /**
  * Normalize an operator/config ceremony profile. Unknown values degrade to
@@ -107,11 +112,10 @@ export const CEREMONY_PROFILES = Object.freeze([
  * @param {unknown} value
  * @returns {CeremonyProfile}
  */
-export function normalizeCeremonyProfile(value) {
-  if (value === 'minimal' || value === 'standard' || value === 'strict') {
-    return value;
-  }
-  return 'standard';
+function normalizeCeremonyProfile(value) {
+  return CEREMONY_PROFILES.includes(/** @type {CeremonyProfile} */ (value))
+    ? /** @type {CeremonyProfile} */ (value)
+    : DEFAULT_CEREMONY_PROFILE;
 }
 
 /**
@@ -122,8 +126,8 @@ export function normalizeCeremonyProfile(value) {
  * 2·stride, …) is forced fresh, yielding ≈`r` of clusters fresh. `r <= 0`
  * disables the floor (no cluster forced); `r >= 1` forces every cluster.
  *
- * @param {number} clusterIndex  Zero-based cluster position (from the fixed
- *   `ceil(totalACs / clusterCeiling)` fan-out — an INPUT, never mutated here).
+ * @param {number} clusterIndex  Zero-based cluster position (from the
+ *   caller-owned fan-out — an INPUT, never mutated here).
  * @param {number} rate          Sampling rate, already clamped into [0, 1] by
  *   `getDeliveryRouting`.
  * @returns {boolean} `true` when the floor forces this cluster fresh.
