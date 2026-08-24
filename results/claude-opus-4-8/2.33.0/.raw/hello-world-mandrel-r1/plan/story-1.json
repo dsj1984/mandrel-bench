@@ -1,0 +1,25 @@
+{
+  "body": "## Goal\nProvide a dependency-free HTTP server that answers GET / with a 200 text/html \"Hello, World!\" response, launchable via npm start.\n\n## Spec\nAdd a single ESM source file `server.js` at the repo root using only Node's built-in `node:http` module — no Express, Fastify, Koa, or any other web framework, and no new runtime dependencies. The server MUST bind to the port from `process.env.PORT`, defaulting to `3000` when the variable is unset or empty. A `GET` request to path `/` MUST return HTTP status `200`, a `Content-Type` header of `text/html`, and a response body that contains the exact substring `Hello, World!`. The response contract for other methods/paths is left to the deliverer (a 404 for unknown paths is reasonable) and is not load-bearing. `package.json` already exists (`mandrel-bench-target`, `\"type\": \"module\"`); amend it by adding a `\"start\"` script that launches the server with `node server.js` — do not remove the existing `typecheck`/`lint`/`test` scripts and do not introduce dependencies. Keep the implementation to exactly the one new source file plus the amended `package.json`.\n\n## Changes\n- `server.js` — creates\n- `package.json` — refactors-existing\n\n## Acceptance\n- [ ] AC-1: A single new source file `server.js` exists at the repo root and imports only Node built-ins (`node:http`); no external web framework or new dependency appears in package.json\n- [ ] AC-2: Starting the server with no PORT set binds to port 3000; when PORT is set to a value it binds to that port instead\n- [ ] AC-3: A GET request to `/` returns HTTP status 200 with a `Content-Type` header of `text/html` and a response body containing the exact text `Hello, World!`\n- [ ] AC-4: `package.json` has a `start` script that launches the server (`node server.js`), and the existing typecheck/lint/test scripts remain intact\n\n## Verify\n- PORT=3100 node server.js & SRV=$!; sleep 1; curl -si http://localhost:3100/ | tee /tmp/hw.out | grep -qi '^HTTP/1.1 200' && grep -qi '^Content-Type: text/html' /tmp/hw.out && grep -q 'Hello, World!' /tmp/hw.out; RC=$?; kill $SRV; exit $RC (validate)\n- node --check server.js (validate)\n\n## Non-Goals\n- No external web framework or added npm dependencies\n- No routing beyond GET / (other paths/methods are unconstrained)\n- No TLS/HTTPS, logging framework, or config system\n\n<!-- meta: {\"reason_to_exist\":\"Deliver a minimal, framework-free HTTP entry point that satisfies the hello-world contract.\"} -->\n\n<!-- plan-story: d09b4bf3eae67f7b -->",
+  "labels": [
+    {
+      "id": "LA_kwDOTxpx6s8AAAACvVfT5Q",
+      "name": "plan-run::6caacd71",
+      "description": "Groups the Stories one /plan persist run authored (metadata only — /deliver stays ids-only).",
+      "color": "C5DEF5"
+    },
+    {
+      "id": "LA_kwDOTxpx6s8AAAACvVfU1w",
+      "name": "type::story",
+      "description": "",
+      "color": "ededed"
+    },
+    {
+      "id": "LA_kwDOTxpx6s8AAAACvVfWqQ",
+      "name": "agent::ready",
+      "description": "",
+      "color": "ededed"
+    }
+  ],
+  "number": 1,
+  "title": "Minimal Node.js ESM hello-world HTTP server"
+}

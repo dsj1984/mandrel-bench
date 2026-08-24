@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 29400,
+  "num_turns": 7,
+  "stop_reason": "end_turn",
+  "session_id": "151c3f29-592a-493f-8f78-4b9be4994734",
+  "total_cost_usd": 0.2716925,
+  "usage": {
+    "input_tokens": 12,
+    "cache_creation_input_tokens": 13755,
+    "cache_read_input_tokens": 184005,
+    "output_tokens": 1649,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 13755,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 197,
+        "cache_read_input_tokens": 33721,
+        "cache_creation_input_tokens": 255,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 255
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 760,
+      "outputTokens": 19,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.0008550000000000001,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 12,
+      "outputTokens": 1649,
+      "cacheReadInputTokens": 184005,
+      "cacheCreationInputTokens": 13755,
+      "webSearchRequests": 0,
+      "costUSD": 0.2708375,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "Done. Built and committed a minimal ESM HTTP server.\n\n- **`server.js`** — uses Node's built-in `node:http`, listens on `process.env.PORT || 3000`. `GET /` returns HTTP 200 with `Content-Type: text/html` and body `Hello, World!`; other requests get a 404.\n- **`package.json`** — added `\"start\": \"node server.js\"` (kept the existing scripts and `\"type\": \"module\"`).\n\nVerified with curl: 200 status, `text/html` content type, and the exact `Hello, World!` body. Committed as `584fe1b`.",
+  "ttft_ms": 2842,
+  "ttft_stream_ms": 1850,
+  "time_to_request_ms": 296,
+  "type": "result",
+  "duration_ms": 31370,
+  "uuid": "a565658e-82a5-44b3-9f7b-4b7d92ed0fb7"
+}

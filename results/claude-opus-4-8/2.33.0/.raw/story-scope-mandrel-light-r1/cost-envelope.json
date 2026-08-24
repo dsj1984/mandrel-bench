@@ -1,0 +1,77 @@
+{
+  "is_error": false,
+  "duration_api_ms": 56846,
+  "num_turns": 8,
+  "stop_reason": "end_turn",
+  "session_id": "8f98d730-209c-4190-a6d5-a2e40b4344bd",
+  "total_cost_usd": 0.569798,
+  "usage": {
+    "input_tokens": 9,
+    "cache_creation_input_tokens": 37465,
+    "cache_read_input_tokens": 209238,
+    "output_tokens": 3572,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 37465,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 1,
+        "output_tokens": 969,
+        "cache_read_input_tokens": 55626,
+        "cache_creation_input_tokens": 2060,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2060
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 1099,
+      "outputTokens": 17,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.001184,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty"
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 9,
+      "outputTokens": 3572,
+      "cacheReadInputTokens": 209238,
+      "cacheCreationInputTokens": 37465,
+      "webSearchRequests": 0,
+      "costUSD": 0.568614,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "canonicalModel": "claude-opus-4-8",
+      "provider": "firstParty"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "The `/deliver` session ended at the **suitability gate** — it judged the task over-scope and escalated. This is a legitimate terminal outcome, and per protocol I'm respecting it rather than working around it.\n\n## Outcome: `escalated` (session ended)\n\nThe gate emitted a schema-validated `story-deliver-terminal` envelope with `status: \"escalated\"`:\n\n- **Why it escalated:** The predicted footprint has **3 distinct change kinds** (`http-server-and-routing`, `sqlite-persistence`, `session-auth`) — over the light path's `maxChangeKinds: 2`. The gate reads that as an explicit multi-capability enumeration, not a single capability slice, so it routes to `full`.\n- **Why it ended rather than asked:** `--yes` (runner-set, non-interactive) fails an over-scope prompt *closed* — it never silently proceeds light and never bounces to an operator question.\n- **What was created:** nothing — `receiptStory: false`, `storyBranch: false`, `worktree: false`. The escalation path returns before any creation call site, so there's no half-started state to clean up.\n\nThe declared shape was honest (three genuinely distinct capabilities: an HTTP server/router, a persistence layer, and session auth), so I did **not** re-shape the prediction to slip under the ceiling — under-declaring the footprint is the one thing the gate's coarse design must not reward.\n\nPer the deliver-light contract, **escalation is terminal**: I must not invoke `/plan` in this session (planning inside a session framed as small work under-decomposes — the exact failure the guard exists to prevent). The work belongs in a fresh `/plan` session.\n\n**Next command** (run in a new session):\n\n```\n/plan \"Build a small JSON REST API in Node.js (ESM, no external web framework) for user accounts and personal notes, backed by a persistent on-disk SQLite store. PORT env (default 3000). POST /signup, POST /login (returns opaque bearer session), GET /me, POST /notes, GET /notes. Multi-user, bearer-auth on /me and notes. Survives restart. npm start script.\"\n```\n\nNothing was delivered, and that is the correct result for this input under the single-session `--yes` constraint.",
+  "ttft_ms": 2123,
+  "ttft_stream_ms": 1287,
+  "time_to_request_ms": 100,
+  "type": "result",
+  "duration_ms": 57835,
+  "uuid": "dc0207ef-7322-4a36-8816-5d1831af44e9"
+}
