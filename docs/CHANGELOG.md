@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.19.0...mandrel-bench-v0.20.0) (2026-08-07)
+
+
+### Fixed
+
+* drop the Pre/PostToolUse hooks for the deleted tool-trace script ([#210](https://github.com/dsj1984/mandrel-bench/issues/210)) ([305f373](https://github.com/dsj1984/mandrel-bench/commit/305f37367cb1c34d4ec6489238baccf24b53b61c))
+
 ## [0.19.0](https://github.com/dsj1984/mandrel-bench/compare/mandrel-bench-v0.18.0...mandrel-bench-v0.19.0) (2026-07-25)
 
 
